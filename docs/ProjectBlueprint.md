@@ -1,0 +1,96 @@
+# 🦚 Al-Tawoos FMCG ERP — System Architecture & Technical Master Snapshot
+
+> **Release Version**: `v2.7-ssot-inventory-unified-kardex-dynamic-warehouse`
+> 
+> **System Architecture**: React 18 (Vite) + Tailwind CSS + Firebase Cloud Firestore + i18next (RTL/LTR)
+> 
+> **Target Environment**: Food Manufacturing & Bottling (Vinegar, Tahina, Packaging Lines, Outer Cartons, Rice)
+> 
+> **Repository Target**: `docs/INVENTORY_MODULE_MASTER_SNAPSHOT.md`
+
+---
+
+## 📑 Table of Contents
+
+1. System Architecture & Component Directory
+2. Authentication, User Accounts & 2-Tier RBAC
+3. Scoped Permissions Matrix Engine (2D Grid)
+4. Landing Page Operations Hub & Universal Default Tabs
+5. Raw Materials, Flag Taxonomy & Stockless Utilities
+6. Multi-Tier Manufacturing BOM & Bulk Liquid Tanks Architecture
+   * 6.1 Tier 1: Intermediate Manufacturing BOM (Flag M)
+   * 6.2 Tier 2: Bulk Liquid Tanks & In-Situ Production Transformation Engine (Phase 4)
+   * 6.3 Tier 3: Packing & Filling BOM Matrix (Flag F)
+7. Finished Goods Work Orders & Floor Packaging Execution (Phase 5)
+8. Spare Parts & Maintenance Consumption Engine (Flag X)
+9. Single Source of Truth (SSOT) Inventory Engine & Dynamic Warehouse Classifier
+   * 9.1 Universal Warehouse Classifier (`warehouseClassifier.js`)
+   * 9.2 Unified Live Stock Formula (`stockResolver.jsx`)
+   * 9.3 9-Stream Chronological Kardex Lifecycle
+   * 9.4 Pure Procurement Quarantine (`GoodsReceipt.jsx`)
+10. Dynamic Database Inspector, Interactive ERD Graph & Backup Hub
+11. Universal Data Importer & Image Compression Pipeline
+12. Firestore Collections Data Dictionary
+
+---
+
+## 1. System Architecture & Component Directory
+
+```text
+fmcg-erp/
+├── src/
+│   ├── components/
+│   │   ├── LandingPage.jsx                  # 5-Module Central ERP Hub, Floating Utility Header & Expandable Chips
+│   │   ├── TopNavbar.jsx                    # Top Breadcrumbs with Dynamic User Default Tab Routing & Presence Capsule
+│   │   ├── ScopedPermissionMatrixModal.jsx   # 2D Multi-User Scoped Permissions Matrix Modal
+│   │   ├── ItemMaster.jsx                   # Compound Raw Material SKU Engine, Categories & Decoupled OB Ingest
+│   │   ├── SupplierMaster.jsx               # Certified Supplier Registry & Multi-Tranche Terms
+│   │   ├── FinishedProductsMaster.jsx       # Finished Goods Master, Production Lines, Barcodes & Options
+│   │   ├── IntermediateBOMMaster.jsx        # Intermediate Manufacturing BOM (M-Flag Formulation, Prep Codes & QA Gates)
+│   │   ├── LiquidTanksMaster.jsx            # Bulk Liquid Tanks, QA Laboratory Inspection, Stopwatch Pump & Pipe Lifting
+│   │   ├── BOMRecipesMaster.jsx             # 2D Packing & Filling BOM Matrix, Coverage KPI & Audit Trail
+│   │   ├── WorkOrdersMaster.jsx             # Floor Work Orders, Staging Stamping & Direct Floor Component Deductions
+│   │   ├── SparePartsConsumption.jsx        # MRO / Spare Parts Consumption Logger (X-Flag Stock Deductions)
+│   │   ├── POCreation.jsx                   # Procurement Orders & Dual-Route Versioning
+│   │   ├── GoodsReceipt.jsx                 # Quarantined Vendor Goods Receipts (GRN) & Vendor Return Notes (RTN)
+│   │   ├── StockTransfers.jsx               # Multi-Warehouse TRN Orders, Custodian Verification & Pipeline Auto-Transfers
+│   │   ├── StockBalances.jsx                # SSOT Master Tab, 9-Stream Unified Kardex Ledger (HH:MM:SS Precision)
+│   │   ├── StockCount.jsx                   # Physical Count, Multi-Tab XLSX, Proof & Granular Reconciliation
+│   │   ├── SearchableSelect.jsx             # Reusable Search Popover Dropdown Component
+│   │   ├── AdminControlPanel.jsx            # User Accounts, DB Inspector, Dynamic ERD Graph, Backup/Restore
+│   │   ├── UIUXComponents.jsx               # Shared UI Atoms (UserAvatar, HeaderPresencePill, ModernTable, RowActions)
+│   │   └── PeacockLoader.jsx                # High-Frame-Rate Rotating Light Beam SVG Peacock Loader
+│   ├── config/
+│   │   └── appArchitecture.js               # Central Metadata Blueprint & Default RBAC Matrix
+│   ├── utils/
+│   │   ├── warehouseClassifier.js           # Universal Dynamic Warehouse Resolver (No Static ID Hardcoding)
+│   │   └── stockResolver.jsx                # Decoupled Multi-Warehouse SSOT Stock Engine (9-Stream Balance Equation)
+│   ├── App.jsx                              # Shell Router, Module-Bound Sidebars, Firestore Preference Sync
+│   └── firebase.js                          # Firestore SDK & Storage Helpers
+
+
+2. Authentication, User Accounts & 2-Tier RBACPrimary Identifier: Unique user email address (email) acting as the login key across Firebase Authentication and Firestore profiles (users collection).2-Tier Roles Model:General Admin (general_admin): Master unrestricted access across all modules, operational actions, category managers, factory reset purge, raw database inspection, and unmasked financial valuations.Standard User (standard): Full access granted by default to operational tabs, strictly gated by General Admin overrides in the Permissions Matrix (Admin Control Panel remains exclusively restricted).Access Control Hierarchy:Module Access Gating: Card activation on the Landing Page and Top Navbar items are governed by user.allowedModules.Tab Navigation Visibility: Sidebar tab items render strictly when effectivePermissions.modules[tabId] !== false.Operational Actions Authority: Action buttons (Create, Edit, Approve, Delete, Cancel, Verify, StartPump, FinishPump, AnalyzeQA) dynamically evaluate effectivePermissions.actions['tabId.actionKey'].Field Privacy & Sensitive Data: Sensitive fields (unitPrice, totalAmount, taxCardNumber, commercialRegister, openingBalance) are dynamically evaluated and masked/omitted when unpermitted.3. Scoped Permissions Matrix Engine (2D Grid)The ScopedPermissionMatrixModal.jsx provides real-time, in-context permission editing without requiring the General Admin to navigate away to the settings panel:Trigger Points:Module Level: Shield icon on module cards in LandingPage.jsx opens a matrix scoped to all tabs in that module.Tab Level: Shield icon on sidebar items in App.jsx opens a matrix scoped strictly to that single tab.Matrix Grid Architecture:Columns (Top Row): Dynamic user columns with multi-select filter toggles to display specific users side-by-side.Rows (Left Column): 3-level tree hierarchy (Tab Visibility $\rightarrow$ Operational Actions $\rightarrow$ Sensitive Field Masking).Live Synchronization: Commits directly to Firestore document system_config/permissions via writeBatch, propagating immediately across all connected client sessions.4. Landing Page Operations Hub & Universal Default Tabs4.1 Modular Structure & Visual DesignModule 1: الخامات / Materials (id: 'purchases') — Manages items, suppliers, purchase orders, goods receipts, transfers, stock balances, stock counts, and spare parts issues.Module 2: الإنتاج والتشغيل / Production & Manufacturing (id: 'production') — Finished goods master, intermediate formulations, bulk liquid tanks, packing BOM, work orders, material issues, finished goods receipts, and yield audits.Modules 3, 4, 5: المبيعات (Sales), المالية (Finance), and الموارد البشرية (HR) — Locked upcoming operational previews.Floating Utility Header: Anchored at the top of the landing page, housing the live persona switcher, language toggle (العربية $\leftrightarrow$ English), and Admin Control Panel shortcut.Space-Aware Expandable Tab Chips: Display compact icons that smoothly expand on desktop hover or mobile tap without container overflow. Clicking any chip navigates directly to that specific tab.4.2 Standardized Default Tab Routing HierarchyWhen a user opens any module from any entry point (Landing Page Card, Top Navbar Droplist, Breadcrumbs, or Direct Links), the destination tab resolves via a strict 3-tier hierarchy:User's Saved Preference: Evaluates currentUser.defaultModuleTabs[moduleId]. If set and permitted for the active user, it is selected.System Module Default: If no preference is set, falls back to the module's predefined default tab if permitted.First Permitted Tab: If neither of the above is accessible due to RBAC restrictions, it automatically routes to the first visible tab permitted for that user.Persistence: Changing the default tab dropdown on any card immediately synchronizes { defaultModuleTabs: { [moduleId]: tabId } } to the Firestore users collection.5. Raw Materials, Flag Taxonomy & Stockless Utilities5.1 Dynamic SKU Engine (ItemMaster.jsx)$$\text{SKU} = [\text{Usage Prefix: } F / M / R / X] - [\text{Category Base: } 100 / 200 / 300 \dots] + [\text{Sequence}]$$Usage Flag Taxonomy:F (Final): Usable directly in Packing & Filling BOM recipes (bottles, caps, labels, cartons, finished bulk liquids).M (Made): Bulk intermediate materials processed or blended in-house (5% vinegar, tahini paste) requiring an Intermediate BOM.R (Raw Input): Raw chemical or ingredient used to produce M items (10% concentrate, sesame seeds, water).X (Non-Production / MRO): Spare parts, machine consumables, and maintenance supplies (printer ink, filters, belts) excluded from production BOMs.Stockless Utilities (isStocklessUtility): Continuous-supply utilities (municipal water, gas) that bypass warehouse stock checks and FIFO costing, marked with an ∞ Stockless Utility badge.5.2 Opening Balance Decoupling (Phase 2 Closure)Opening balances are strictly decoupled from goods_receipts.Defining an initial quantity in ItemMaster.jsx writes directly to stock_ledger using an idempotent document key (OB-${targetCode}-${suffix}), setting docType: 'opening_balance'.Any legacy OB-* vouchers in goods_receipts are purged automatically upon save, keeping vendor registers 100% clean.
+
+
+6. Multi-Tier Manufacturing BOM & Bulk Liquid Tanks Architecture┌────────────────────────────────────────────────────────────────────────┐
+│               Tier 1: Intermediate Manufacturing BOM (Flag M)          │
+│               Input: Raw Ingredients (Flag R)                          │
+│               Attributes: Mandatory Prep Code, QA & Serial Toggles     │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│         Tier 2: Bulk Liquid Tanks & In-Situ Transformations (Phase 4)  │
+│         Doc: production_transformations (Decoupled from GRN)           │
+│         Output: Bulk M-Item Inward to Source WH                        │
+│         Outflow: Direct FIFO R-Ingredients Warehouse Deduction         │
+│         Transfer: Automatic Pipeline Transfer (TRN-PIPE-*) to Floor    │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│               Tier 3: Packing & Filling BOM Matrix (Flag F)            │
+│               Input: Bulk Liquid (F) + Bottles + Caps + Cartons        │
+│               Yield: Strictly 1 Large Unit (Carton = X Units)          │
+└────────────────────────────────────────────────────────────────────────┘
+6.1 Tier 1: Intermediate Manufacturing BOM (Flag M)Target Output: Strictly Flag M materials.Eligible Components: Strictly Flag R ingredients.Preparation Code (prepCode): Unique alphanumeric identifier (e.g. 100, 50, C) assigned per formula.Workflow Toggles:needsQA: Gates pump lifting until laboratory concentration and oxidation tests pass.needsTankSerial: Enforces sequential tank numbering and mandatory photo capture.6.2 Tier 2: Bulk Liquid Tanks & Direct Pipeline Lifting (Phase 4 Validation)Step 1 (Tank Registration): Mixing bulk ingredients consumes raw materials ($R$) from the chosen Source WH (e.g. WH-01) and credits the newly prepared intermediate batch ($M$) inside the same Source WH under production_transformations.Step 2 (Pipeline Pumping): Upon completing the pump operation, the system auto-commits an internal stock transfer (TRN-PIPE-*) moving bulk liquid from the Source WH into the dynamic Production Floor Warehouse (operationalClassification === 'factory_floor').Shift Handover Verification: Requires capturing a photo of the next physical serial sticker to audit sequence continuity and prevents handovers during active pump cycles.6.3 Tier 3: Packing & Filling BOM Matrix (Flag F)Yield: Standardized strictly per 1 Large Unit (Outer Carton) = $X$ Small Units ($\text{الشدة}$).2D Matrix Workspace: Frozen product and validity columns on the left with horizontal columns for all Flag F components in alphanumeric order.7. Finished Goods Work Orders & Floor Packaging Execution (Phase 5)Component: src/components/WorkOrdersMaster.jsxFloor Gating: Evaluates component staging feasibility strictly against the warehouse classified as factory_floor.Pallet Passports: Decomposes production runs into individual pallet passports with crew roster logging and duration tracking.Direct Component Deductions: Saving a pallet passport writes an atomic material consumption record (TRANS-WO-${orderId}) into production_transformations, deducting bottles, caps, cartons, and bulk liquids from the production floor warehouse. Deleting a work order automatically rolls back its transformation document.8. Spare Parts & Maintenance Consumption Engine (Flag X)Component: src/components/SparePartsConsumption.jsxIsolation: Restricted strictly to Category 9 items carrying Flag X.Direct Ledger Deductions: Logs outward consumption vouchers directly to stock_ledger (action: 'spare_parts_consumption'), which are immediately reflected as deductions in buildLiveStockMatrix and the Unified Kardex under tag XISS.9. Single Source of Truth (SSOT) Inventory Engine & Dynamic Warehouse Classifier9.1 Universal Warehouse Classifier (warehouseClassifier.js)Eliminates hardcoded warehouse IDs across the codebase by exporting standard classification helpers:getFactoryFloorWarehouse(warehouses): Dynamically resolves the warehouse record where operationalClassification === 'factory_floor' or isFactoryLinked === true.getRawStorageWarehouses(warehouses): Returns warehouses designated for raw materials storage.getQuarantineWarehouses(warehouses): Returns warehouses classified as returns, scrap, or quarantine (excluded from usable stock calculations).isUsableWarehouse(wh): Returns true only if the warehouse holds active, usable inventory.9.2 Unified Live Stock Formula (stockResolver.jsx)For any Item-Variant in a specific Warehouse:$$\text{Available Stock} = \sum \text{GRN} - \sum \text{RTN} + \sum \text{OB} \pm \sum \text{TRN} \pm \sum \text{ADJ} + \sum \text{M Produced} - \sum \text{R Consumed} - \sum \text{XISS} - \sum \text{MO Consumed}$$Usable Stock: Computed strictly across Storage Warehouses and the dynamic Production Floor Warehouse, automatically excluding Quarantine, Returns, and Scrap locations.9.3 9-Stream Chronological Kardex LifecycleStockBalances.jsx operates as the single authoritative ledger, tracking every transaction affecting raw materials with HH:MM:SS precision:TagTransaction DescriptionColor BadgeFlow EffectOBInitial Baseline Stock Opening BalanceTeal+ InGRNVendor Inward Goods DeliveryEmerald+ InRTNVendor Non-Compliant Material ReturnRose- OutTRNInternal Multi-Warehouse MovementIndigo⇄ TransferPIPEOverhead Pipeline Liquid TransferSky Blue⇄ TransferPRD-INTBulk Intermediate Liquid Tank PreparationBlue+ In / - OutISSWork Order Floor Packaging Material IssueAmber- OutXISSMachine Spare Parts & Maintenance IssueFuchsia- OutADJPhysical Count Reconciliation (Surplus/Deficit)Purple± Reconcile9.4 Pure Procurement Quarantine (GoodsReceipt.jsx)The goods_receipts tab and collection are strictly quarantined to external vendor transactions (GRN and RTN). Opening balances and internal stock count adjustments are excluded from the list and supplier filter dropdowns, ensuring vendor billing and payment tranches remain 100% accurate.10. Dynamic Database Inspector, Interactive ERD Graph & Backup HubClient-Side Auto-Discovery Scanner: Probes active collections across metadata blueprints, system configs, and operational transactions with zero backend dependency.Interactive 3-Tier ERD Graph: Renders relationship links across three distinct flow columns (Upstream $\rightarrow$ Center Node $\rightarrow$ Downstream) using foreign key heuristics.Granular Multi-Collection Backup & Chunked Restore: Exports selective JSON backups and supports chunked transactions (400 document writes per batch) with clean slate or merge/upsert restore strategies.11. Universal Data Importer & Image Compression PipelinePre-Import Data Validation Engine: Classifies spreadsheet rows as Valid, Warning, or Error with 1-click auto-fix rules for delivery bases, tranches, and shelf life calculations.HTML5 Canvas Compression: Compresses uploaded photos to a maximum dimension of 800–1600px JPEG (quality: 0.70–0.75), maintaining file sizes under 80KB to prevent exceeding Firestore's 1MB document limit.Mozilla PDF.js Rasterizer: Stitches multi-page PDFs (up to 6 pages) into a single vertical image for in-app lightbox viewing.12. Firestore Collections Data DictionaryCollection NameDocument ID PatternDescriptionusersusr_[email_cleaned]User accounts with 2-tier roles, module arrays, and defaultModuleTabs preferenceswarehousesWH-01, WH-FLOORMulti-warehouse master with operational classifications (factory_floor, raw_materials, returns)itemsF-101, R-301, X-801Raw materials catalog, compound SKUs, stockless utilities, and vendor variationscategories1, 2, 3Raw material coding series (100 to 900+)intermediate_recipesIBOM-R301-V1Intermediate manufacturing formulations (M-flag output from R-flag inputs)liquid_tanksTANK-[Timestamp]-[Serial]Bulk liquid tanks, QA results, stopwatch pump timers, and lifting stateproduction_transformationsTRANS-TANK-*, TRANS-WO-*Decoupled in-situ production transactions (M-credits, R-deductions, and WO component issues)shift_handoversSH-[Timestamp]-[Serial]Shift handover logs and physical serial sticker verification auditsbom_recipesBOM-FG101-GEN, BOM-FG101-APacking & filling BOM recipes per 1 carton yield with component audit trailswork_ordersMO-YYYYMMDD-XXFloor work orders, scheduled quantities, priorities, and pallet passportsspare_parts_issuesXISS-YYYYMMDD-01Non-production spare parts & consumables issue voucherssuppliersSUP-101, SUP-102Certified vendors, statutory tax files, and multi-tranche credit termspurchase_ordersPO-YYYYMMDD-XXProcurement orders with dual-route revision historygoods_receiptsGRN-..., RTN-...Quarantined vendor delivery receipts and supplier return notesstock_transfersTRN-..., TRN-PIPE-...Inter-warehouse transfers and automatic pipeline liquid transfer vouchersstock_countsSTK-YYYYMMDD-XXPhysical inventory audit sessions, snapshots, proof, and line audit historystock_ledgerOB-..., Auto-IDImmutable stock movement ledger (FIFO lots, opening balances, and consumption logs)system_configpermissions, tanks_config, app_architectureCentral RBAC overrides, starting serials, and architecture metadata

@@ -1,0 +1,8 @@
+{
+  "name": "Tawoos ERP",
+  "description": "Al-Tawoos FMCG ERP — Food Manufacturing & Bottling Management System with SSOT Inventory, 9-Stream Kardex, and Work Order Floor Tracking",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
