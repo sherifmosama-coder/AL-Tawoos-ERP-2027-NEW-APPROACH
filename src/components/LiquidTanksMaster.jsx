@@ -5,6 +5,7 @@ import {
   collection,
   onSnapshot,
   doc,
+  getDoc,
   setDoc,
   deleteDoc,
   writeBatch,
@@ -59,8 +60,8 @@ import {
   BarChart3
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
-import { buildLiveStockMatrix, matchWarehouse, getFactoryFloorWarehouse } from '../utils/stockResolver';
-import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
+import { buildLiveStockMatrix, matchWarehouse, getFactoryFloorWarehouse, resolveItemOrLotCost } from '../utils/stockResolver';
+import SearchableSelect from './SearchableSelect';
 
 // Helper: Normalize Arabic-Indic digits to standard digits
 const normalizeArabicNumerals = (str) => {
@@ -113,20 +114,6 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
   const isAr = i18n.language === 'ar';
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
   const currentUserName = isAr ? (currentUser?.nameAr || 'المسؤول') : (currentUser?.name || 'Authorized User');
-
-  // In-app configured tab appearance (respecting user-configured icon and color)
-  const [tabConfig, setTabConfig] = useState(() => getTabConfig('liquid_tanks'));
-  useEffect(() => {
-    const handleConfigUpdate = () => {
-      setTabConfig(getTabConfig('liquid_tanks'));
-    };
-    window.addEventListener('app_tab_config_updated', handleConfigUpdate);
-    return () => window.removeEventListener('app_tab_config_updated', handleConfigUpdate);
-  }, []);
-
-  const TabConfigIcon = getIconComponent(tabConfig?.iconName);
-  const tabColor = tabConfig?.color || '#0d6cba';
-  const { r, g, b } = hexToRgb(tabColor);
 
   // Dynamic Authority Resolvers
   const canCreate = isGeneralAdmin || (
@@ -199,6 +186,11 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
     permissions?.actions?.['liquid_tanks.canDelete'] !== undefined
       ? permissions.actions['liquid_tanks.canDelete'] === true
       : permissions?.actions?.canDelete === true
+  );
+
+  // Sensitive Data Access Gate: Consumed R-materials LOTs (default hidden for everyone except General Admin)
+  const canViewRMaterialLots = isGeneralAdmin || (
+    permissions?.actions?.['liquid_tanks.canViewRMaterialLots'] === true
   );
 
   // Cloud Collections State
@@ -457,8 +449,9 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
       goodsReceipts,
       transfers,
       transformations,
+      intermediateRecipes,
     });
-  }, [itemsMaster, warehouses, goodsReceipts, transfers, transformations]);
+  }, [itemsMaster, warehouses, goodsReceipts, transfers, transformations, intermediateRecipes]);
 
   // Non-utility R-Materials Stock Engine (Source WH vs Entire Company in Small & Large Units)
   const rItemsStockData = useMemo(() => {
@@ -811,6 +804,54 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
 
       const existingAudit = Array.isArray(editingTank?.auditTrail) ? editingTank.auditTrail : [];
 
+      // Resolve Contributing Raw Materials (R-Materials) LOTs from live stock matrix
+      const sourceWhObj = warehouses.find((w) => matchWarehouse(sourceWhId, w)) || { id: sourceWhId, code: sourceWhId };
+      const resolvedRMaterialLots = (selectedRecipe?.components || [])
+        .filter((c) => !itemsMaster.find((itm) => itm.code === c.itemId)?.isStocklessUtility)
+        .map((c) => {
+          const itmDoc = itemsMaster.find((itm) => itm.code === c.itemId);
+          const scaledStdQty = Number(c.standardQty || 0) * cleanQty;
+          const resolvedVarCode = c.variantCode || itmDoc?.variations?.[0]?.variantCode || `${c.itemId}-A`;
+
+          // Find active lots for this raw material in the source warehouse (or all warehouses if none found)
+          const allMatchingLots = Object.values(liveStockMatrix?.lotMap || {}).filter(
+            (l) => l.itemId === c.itemId && l.availableQty > 0
+          );
+          const whLots = allMatchingLots.filter((l) => matchWarehouse(l.warehouseId, sourceWhObj));
+          const candidateLots = whLots.length > 0 ? whLots : allMatchingLots;
+          candidateLots.sort((a, b) => (a.receivedDate || '').localeCompare(b.receivedDate || ''));
+
+          const matchedLotNumber = candidateLots[0]?.lotNumber || (editingTank?.rMaterialLots?.find(r => r.itemId === c.itemId)?.lotNumber || 'LOT-R-RAW');
+          const rUnitCost = resolveItemOrLotCost({
+            itemId: c.itemId,
+            variantCode: resolvedVarCode,
+            lotNumber: matchedLotNumber,
+            warehouseId: sourceWhId,
+            liveStockMatrix,
+            itemsMaster,
+            goodsReceipts,
+            intermediateRecipes,
+          });
+          const rTotalCost = Number((scaledStdQty * rUnitCost).toFixed(2));
+
+          return {
+            itemId: c.itemId,
+            variantCode: resolvedVarCode,
+            nameAr: c.materialNameAr || itmDoc?.nameAr || c.itemId,
+            nameEn: itmDoc?.nameEn || '',
+            lotNumber: matchedLotNumber,
+            qtySmallUnits: scaledStdQty,
+            smallUnit: c.unit || itmDoc?.smallUnit || 'كجم',
+            warehouseId: sourceWhId,
+            unitCost: rUnitCost,
+            unitPrice: rUnitCost,
+            totalCost: rTotalCost,
+          };
+        });
+
+      const totalRawCost = Number(resolvedRMaterialLots.reduce((sum, r) => sum + (r.totalCost || 0), 0).toFixed(2));
+      const tankUnitCost = totalTransformedYield > 0 ? Number((totalRawCost / totalTransformedYield).toFixed(4)) : 0;
+
       const payload = {
         id: tankDocId,
         tankNumber: cleanTankNum,
@@ -836,6 +877,11 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
         qaStatus: editingTank ? editingTank.qaStatus : (!isQARequired ? 'bypassed' : 'pending'),
         qaData: editingTank?.qaData || null,
         pumpStatus: editingTank?.pumpStatus || 'idle',
+        totalCost: (editingTank && Number(editingTank.totalCost) > 0 && Number(editingTank.unitCost) !== 5) ? editingTank.totalCost : totalRawCost,
+        unitCost: (editingTank && Number(editingTank.unitCost) > 0 && Number(editingTank.unitCost) !== 5) ? editingTank.unitCost : tankUnitCost,
+        rMaterialLots: (editingTank?.rMaterialLots && editingTank.rMaterialLots.length > 0)
+          ? editingTank.rMaterialLots
+          : resolvedRMaterialLots,
         registeredBy: editingTank?.registeredBy || currentUserName,
         auditTrail: [auditEntry, ...existingAudit],
         updatedAt: serverTimestamp(),
@@ -850,29 +896,27 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
 
       // 2. Dedicated Production Transformation Record (Decoupled from goods_receipts)
       if (!editingTank && selectedRecipe) {
-        const consumedLines = (selectedRecipe.components || [])
-          .filter((c) => !itemsMaster.find((itm) => itm.code === c.itemId)?.isStocklessUtility)
-          .map((c) => {
-            const itmDoc = itemsMaster.find((itm) => itm.code === c.itemId);
-            const ratio = Number(itmDoc?.packagingRatio || 1);
-            const scaledStdQty = Number(c.standardQty || 0) * cleanQty;
-            const resolvedVarCode = c.variantCode || itmDoc?.variations?.[0]?.variantCode || `${c.itemId}-A`;
-
-            return {
-              itemId: c.itemId,
-              variantCode: resolvedVarCode,
-              code: resolvedVarCode,
-              nameAr: c.materialNameAr || itmDoc?.nameAr || c.itemId,
-              nameEn: itmDoc?.nameEn || '',
-              smallUnit: c.unit || itmDoc?.smallUnit || 'كجم',
-              largeUnitName: itmDoc?.largeUnitName || 'شيكارة',
-              packagingRatio: ratio,
-              qtySmallUnits: scaledStdQty,
-              qtyLargeUnits: Number((scaledStdQty / ratio).toFixed(2)),
-              warehouseId: sourceWhId,
-              lotNumber: tankLotNumber,
-            };
-          });
+        const consumedLines = resolvedRMaterialLots.map((r) => {
+          const itmDoc = itemsMaster.find((itm) => itm.code === r.itemId);
+          const ratio = Number(itmDoc?.packagingRatio || 1);
+          return {
+            itemId: r.itemId,
+            variantCode: r.variantCode,
+            code: r.variantCode,
+            nameAr: r.nameAr,
+            nameEn: r.nameEn,
+            smallUnit: r.smallUnit,
+            largeUnitName: itmDoc?.largeUnitName || 'شيكارة',
+            packagingRatio: ratio,
+            qtySmallUnits: r.qtySmallUnits,
+            qtyLargeUnits: Number((r.qtySmallUnits / ratio).toFixed(2)),
+            warehouseId: sourceWhId,
+            lotNumber: r.lotNumber,
+            unitCost: r.unitCost,
+            unitPrice: r.unitPrice,
+            totalCost: r.totalCost,
+          };
+        });
 
         batch.set(doc(db, 'production_transformations', transformationDocId), {
           id: transformationDocId,
@@ -888,7 +932,11 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
           specs: selectedRecipe.nameAr || '',
           producedQty: totalTransformedYield,
           yieldUnit: yieldUnit,
+          totalCost: totalRawCost,
+          unitCost: tankUnitCost,
+          unitPrice: tankUnitCost,
           consumedComponents: consumedLines,
+          rMaterialLots: resolvedRMaterialLots,
           status: 'completed',
           registeredBy: currentUserName,
           createdAt: serverTimestamp(),
@@ -1074,6 +1122,20 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
         const tankLot = tank.lotNumber || (tank.tankNumber ? `TANK-${tank.tankNumber}` : `LOT-${tank.id}`);
         const transferQty = Number(tank.batchYieldQty) || 200;
         const transferLargeQty = Number(tank.quantityCount) || 1;
+        const tankCostPerLiter = (Number(tank.unitCost) > 0 && Number(tank.unitCost) !== 5)
+          ? Number(tank.unitCost)
+          : resolveItemOrLotCost({
+              lotNumber: tankLot,
+              itemId: tank.itemCode,
+              variantCode: tank.variantCode,
+              tanks: [tank, ...tanks],
+              transformations,
+              goodsReceipts,
+              itemsMaster,
+              liveStockMatrix,
+              intermediateRecipes,
+            });
+        const transferTotalCost = Number((transferQty * tankCostPerLiter).toFixed(2));
 
         batch.set(doc(db, 'liquid_tanks', tank.id), { pipeTransferDocId: trnId }, { merge: true });
 
@@ -1102,7 +1164,8 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
               qtySmallUnits: transferQty,
               qtyLargeUnits: transferLargeQty,
               lotNumber: tankLot,
-              unitPrice: 0,
+              unitPrice: tankCostPerLiter,
+              totalPrice: transferTotalCost,
               currency: 'EGP',
               receivedDate: nowIso.split('T')[0],
             }
@@ -1126,6 +1189,81 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+
+        // 3. Auto-Feed Floor Liquid Vessels Storage Pool (Continuous Top-up)
+        const vRef = doc(db, 'floor_liquid_vessels', tank.itemCode);
+        const vSnap = await getDoc(vRef);
+        const vData = vSnap.exists() ? vSnap.data() : null;
+
+        const isWhite = (tank.itemNameAr || '').includes('أبيض') || (tank.itemCode || '').includes('301');
+        const isApple = (tank.itemNameAr || '').includes('تفاح');
+
+        const vesselCount = Number(vData?.vesselCount) || (isWhite ? 2 : 1);
+        const vesselType = vData?.vesselType || (isWhite ? 'interconnected' : 'single');
+        const capacityPerVessel = Number(vData?.capacityPerVessel) || (isWhite ? 3000 : (isApple ? 2000 : 3000));
+        const totalCapacity = Number(vData?.totalCapacity) || (vesselCount * capacityPerVessel);
+
+        const currentActiveTanks = Array.isArray(vData?.activeTanks) ? [...vData.activeTanks] : [];
+        const currentHistoryTanks = Array.isArray(vData?.historyTanks) ? [...vData.historyTanks] : [];
+
+        const tankNum = tank.tankNumber || (tank.shortLotNumber ? tank.shortLotNumber.replace('#', '') : (tank.lotNumber || tank.id));
+
+        const newActiveTankEntry = {
+          tankId: tank.id,
+          tankNumber: tankNum,
+          lotNumber: tankLot,
+          initialVolume: transferQty,
+          remainingVolume: transferQty,
+          unitCost: tankCostPerLiter,
+          totalCost: transferTotalCost,
+          qaAcidity: Number(tank.qaData?.acidity || tank.qaData?.concentration) || (tank.recipeName?.includes('5%') ? 5.0 : 5.0),
+          pumpFinishedAt: nowIso,
+          pumpedBy: currentUserName,
+          rMaterialLots: Array.isArray(tank.rMaterialLots) ? tank.rMaterialLots : [],
+          status: 'active',
+        };
+
+        const existingIdx = currentActiveTanks.findIndex((t) => t.tankId === tank.id);
+        if (existingIdx >= 0) {
+          currentActiveTanks[existingIdx] = { ...currentActiveTanks[existingIdx], ...newActiveTankEntry };
+        } else {
+          currentActiveTanks.push(newActiveTankEntry);
+        }
+
+        // Dynamically determine max tanks based on storage capacity and single batch volume
+        const singleBatchVol = Number(vData?.singleBatchVolume) || Number(transferQty) || 1000;
+        const dynamicMaxTanks = Math.max(1, Math.ceil(totalCapacity / singleBatchVol));
+
+        while (currentActiveTanks.length > dynamicMaxTanks) {
+          const overflowTank = currentActiveTanks.shift();
+          currentHistoryTanks.unshift({
+            ...overflowTank,
+            depletedAt: nowIso,
+            status: 'archived_overflow',
+          });
+        }
+
+        const newPoolVolume = currentActiveTanks.reduce((s, t) => s + (Number(t.remainingVolume) || 0), 0);
+
+        batch.set(vRef, {
+          materialCode: tank.itemCode,
+          materialNameAr: tank.itemNameAr,
+          materialNameEn: tank.shortName || tank.itemNameAr,
+          vesselType,
+          vesselCount,
+          capacityPerVessel,
+          totalCapacity,
+          singleBatchVolume: singleBatchVol,
+          lowLevelThreshold: Number(vData?.lowLevelThreshold) || 500,
+          heelTolerancePct: Number(vData?.heelTolerancePct) || 5,
+          currentVolume: newPoolVolume,
+          activeTanks: currentActiveTanks,
+          historyTanks: currentHistoryTanks,
+          lastInflowAt: nowIso,
+          lastInflowTankNumber: tankNum,
+          updatedAt: serverTimestamp(),
+          updatedBy: currentUserName,
+        }, { merge: true });
       }
 
       await batch.commit();
@@ -1311,31 +1449,17 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
         />
       )}
 
-      {/* Top Header & Prominent Shift Actions */}
-      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 bg-[#131722] p-4 rounded-3xl border border-slate-800 shadow-lg">
-        <div className="flex items-center gap-3">
-          <div
-            className="p-2.5 border rounded-2xl shrink-0 flex items-center justify-center transition-all duration-200"
-            style={{
-              backgroundColor: `rgba(${r}, ${g}, ${b}, 0.2)`,
-              borderColor: `rgba(${r}, ${g}, ${b}, 0.4)`,
-              color: tabColor,
-            }}
-          >
-            <TabConfigIcon className="h-6 w-6" />
-          </div>
-          <div>
-            <h3 className="text-base font-extrabold text-white leading-tight">
-              {isAr ? (tabConfig?.labelAr || 'تشغيل وتانكات الخامات المصنعة (Liquid Tanks)') : (tabConfig?.labelEn || 'Bulk Liquid Tanks & QA')}
-            </h3>
-            <span className="text-xs text-slate-400 font-medium block mt-0.5">
-              {isAr ? 'تسجيل التانكات، الفحص المعملي، والرفع المباشر لصالة الإنتاج' : 'Tank logging, QA laboratory gate, and direct pipe lifting'}
-            </span>
-          </div>
+      {/* Top Shift & Tank Action Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-[#131722] p-3.5 rounded-2xl border border-slate-800 shadow-lg">
+        <div className="flex items-center gap-2">
+          {/* Active Tanks Counter Badge */}
+          <span className="text-xs font-bold text-slate-300 px-3 py-1.5 bg-[#1c2233] border border-slate-700 rounded-xl">
+            {isAr ? `إجمالي التانكات: ${tanks.length}` : `Total Tanks: ${tanks.length}`}
+          </span>
         </div>
 
         {/* Action Buttons: R-Stock Balances, Shift Handover, Serial Configurator, Register Tank */}
-        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           {/* R-Ingredients Stock Tracker Modal Trigger */}
           {canViewRStock && (
             <button
@@ -1760,6 +1884,40 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
                           </button>
                         )
                       )}
+                    </div>
+                  )}
+
+                  {/* 2B. Sensitive Data: Formulating R-Materials LOTs & Consumed Quantities */}
+                  {canViewRMaterialLots && Array.isArray(tank.rMaterialLots) && tank.rMaterialLots.length > 0 && (
+                    <div className="p-2.5 bg-[#171c2b] border border-cyan-900/40 rounded-2xl space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between text-[10px] text-cyan-400 font-bold border-b border-slate-800 pb-1">
+                        <span className="flex items-center gap-1">
+                          <Boxes className="h-3 w-3 text-cyan-400" />
+                          <span>{isAr ? 'الخامات الأولية المستهلكة (R-Materials LOTs):' : 'Consumed R-Materials LOTs:'}</span>
+                        </span>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-cyan-950/80 text-cyan-300 rounded border border-cyan-800/50 font-mono font-bold">
+                          {tank.rMaterialLots.length} {isAr ? 'خامات' : 'items'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {tank.rMaterialLots.map((r, rIdx) => (
+                          <div
+                            key={rIdx}
+                            className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#131722] text-slate-200 rounded-xl font-mono text-[10px] border border-slate-700/80 shadow-2xs"
+                            title={`${r.nameAr || r.itemId} - ${r.qtySmallUnits || ''} ${r.smallUnit || ''}`}
+                          >
+                            <span className="font-bold text-slate-400">{r.nameAr ? r.nameAr.slice(0, 10) : r.itemId}:</span>
+                            <span className="px-1.5 py-0.2 bg-purple-950/80 text-purple-300 border border-purple-700/50 rounded font-black">
+                              {r.lotNumber || '—'}
+                            </span>
+                            {r.qtySmallUnits > 0 && (
+                              <span className="text-slate-400 font-sans text-[9px]">
+                                ({Number(r.qtySmallUnits).toLocaleString()} {r.smallUnit || 'كجم'})
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
 
@@ -2305,6 +2463,39 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
                 <X className="h-5 w-5" />
               </button>
             </div>
+
+            {/* Sensitive Data: Formulating Raw Materials Breakdown (General Admin or authorized only) */}
+            {canViewRMaterialLots && Array.isArray(showAuditModal.rMaterialLots) && showAuditModal.rMaterialLots.length > 0 && (
+              <div className="p-3 bg-[#171c2b] border border-cyan-900/40 rounded-2xl space-y-1.5 text-xs shrink-0">
+                <div className="flex items-center justify-between text-[10px] text-cyan-400 font-bold border-b border-slate-800 pb-1">
+                  <span className="flex items-center gap-1">
+                    <Boxes className="h-3.5 w-3.5 text-cyan-400" />
+                    <span>{isAr ? 'الخامات الأولية المكونة للتشغيلة (R-Materials):' : 'Formulating Raw Materials:'}</span>
+                  </span>
+                  <span className="text-[9px] px-1.5 py-0.2 bg-cyan-950/80 text-cyan-300 rounded border border-cyan-800/50 font-mono font-bold">
+                    {showAuditModal.rMaterialLots.length} {isAr ? 'خامات' : 'items'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {showAuditModal.rMaterialLots.map((r, rIdx) => (
+                    <div
+                      key={rIdx}
+                      className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#131722] text-slate-200 rounded-xl font-mono text-[10px] border border-slate-700/80 shadow-2xs"
+                    >
+                      <span className="font-bold text-slate-400">{r.nameAr ? r.nameAr.slice(0, 10) : r.itemId}:</span>
+                      <span className="px-1.5 py-0.2 bg-purple-950/80 text-purple-300 border border-purple-700/50 rounded font-black">
+                        {r.lotNumber || '—'}
+                      </span>
+                      {r.qtySmallUnits > 0 && (
+                        <span className="text-slate-400 font-sans text-[9px]">
+                          ({Number(r.qtySmallUnits).toLocaleString()} {r.smallUnit || 'كجم'})
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Timeline Event List */}
             <div className="flex-1 space-y-2.5 overflow-y-auto pe-1 text-xs">

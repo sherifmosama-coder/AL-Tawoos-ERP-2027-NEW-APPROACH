@@ -27,23 +27,44 @@ import {
   Sparkles,
   Home,
   Menu,
-  Palette
+  Palette,
+  Workflow,
+  AlertOctagon,
+  Activity,
+  BarChart3,
+  Database,
+  FolderKanban,
+  PackageCheck,
+  Warehouse,
+  Settings
 } from 'lucide-react';
 import LandingPage from './components/LandingPage';
 import TopNavbar from './components/TopNavbar';
 import TabPageHeaderBanner from './components/TabPageHeaderBanner';
 import {
   getStoredTabConfigs,
+  initTabAppearanceLiveSync,
   getIconComponent,
   hexToRgb
 } from './utils/tabAppearanceConfig';
 import ItemMaster from './components/ItemMaster';
 import SupplierMaster from './components/SupplierMaster';
+import CategoriesMaster from './components/CategoriesMaster';
 import FinishedProductsMaster from './components/FinishedProductsMaster';
-import IntermediateBOMMaster from './components/IntermediateBOMMaster';
-import LiquidTanksMaster from './components/LiquidTanksMaster';
+import FGCategoriesMaster from './components/FGCategoriesMaster';
 import BOMRecipesMaster from './components/BOMRecipesMaster';
+import IntermediateBOMMaster from './components/IntermediateBOMMaster';
+import ProductionProcessesMaster from './components/ProductionProcessesMaster';
+import WarehouseMaster from './components/WarehouseMaster';
+import ProductionWorkersMaster from './components/ProductionWorkersMaster';
+import UsersMaster from './components/UsersMaster';
+import SystemConfigMaster from './components/SystemConfigMaster';
+import LiquidTanksMaster from './components/LiquidTanksMaster';
+import FloorLiquidStorage from './components/FloorLiquidStorage';
 import WorkOrdersMaster from './components/WorkOrdersMaster';
+import FaultyFGReturnMaster from './components/FaultyFGReturnMaster';
+import FinishedGoodsInward from './components/FinishedGoodsInward';
+import ProductionPerformanceReports from './components/ProductionPerformanceReports';
 import POCreation from './components/POCreation';
 import GoodsReceipt from './components/GoodsReceipt';
 import StockTransfers from './components/StockTransfers';
@@ -67,7 +88,7 @@ const INITIAL_SEED_USERS = [
     role: 'general_admin',
     department: 'الإدارة العليا',
     isGeneralAdmin: true,
-    allowedModules: ['purchases', 'production', 'sales', 'finance', 'hr'],
+    allowedModules: ['master_data', 'purchases', 'production', 'sales', 'finance', 'hr'],
     status: 'active',
   },
   {
@@ -203,9 +224,15 @@ export default function App() {
       }
     );
 
+    // 3. Subscribe to Global Tab Appearance (Colors, Icons & Names) in Cloud Firestore
+    const unsubTabAppearance = initTabAppearanceLiveSync((syncedConfigs) => {
+      setTabAppearanceMap(syncedConfigs);
+    });
+
     return () => {
       unsubUsers();
       unsubPerms();
+      if (typeof unsubTabAppearance === 'function') unsubTabAppearance();
     };
   }, []);
 
@@ -263,10 +290,21 @@ export default function App() {
 
   // Module-Bound Sidebar Navigation Schema
   const MODULE_NAV_DEFINITIONS = {
-    purchases: [
-      { id: 'dashboard', labelAr: 'الرئيسية', labelEn: 'Dashboard', icon: LayoutDashboard, moduleKey: 'dashboard' },
+    master_data: [
       { id: 'items', labelAr: 'كارت الأصناف والخامات', labelEn: 'Item Master', icon: Package, moduleKey: 'items' },
-      { id: 'suppliers', labelAr: 'سجل الموردين', labelEn: 'Supplier Master', icon: Building2, moduleKey: 'suppliers' },
+      { id: 'suppliers', labelAr: 'سجل الموردين المعتمدين', labelEn: 'Supplier Master', icon: Building2, moduleKey: 'suppliers' },
+      { id: 'categories', labelAr: 'مجموعات وتصنيفات التكويد', labelEn: 'Raw Material Categories', icon: FolderKanban, moduleKey: 'categories' },
+      { id: 'finished_products', labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Goods Master', icon: PackageCheck, moduleKey: 'finished_products' },
+      { id: 'finished_product_categories', labelAr: 'تصنيفات ومجموعات المنتج التام', labelEn: 'FG Categories', icon: Boxes, moduleKey: 'finished_product_categories' },
+      { id: 'bom', labelAr: 'تعبئة وتغليف المنتج التام (BOM)', labelEn: 'Packing & Filling BOM', icon: Layers, moduleKey: 'bom' },
+      { id: 'intermediate_bom', labelAr: 'تصنيع الخامات الوسيطة (M)', labelEn: 'Intermediate Recipes (M)', icon: FlaskConical, moduleKey: 'intermediate_bom' },
+      { id: 'production_processes', labelAr: 'مسارات ومراحل التشغيل (SOP)', labelEn: 'Production Processes & SOPs', icon: Workflow, moduleKey: 'production_processes' },
+      { id: 'warehouses', labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', icon: Warehouse, moduleKey: 'warehouses' },
+      { id: 'production_workers', labelAr: 'سجل عمالة وفنيي الإنتاج', labelEn: 'Production Workers', icon: Users, moduleKey: 'production_workers' },
+      { id: 'users', labelAr: 'المستخدمين والصلاحيات', labelEn: 'Users & Roles', icon: ShieldCheck, moduleKey: 'users' },
+      { id: 'system_config', labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', icon: Settings, moduleKey: 'system_config' },
+    ],
+    purchases: [
       { id: 'orders', labelAr: 'أوامر الشراء (PO)', labelEn: 'Purchase Orders', icon: ShoppingCart, moduleKey: 'purchase_orders' },
       { id: 'receipts', labelAr: 'إذن استلام خامات (GRN)', labelEn: 'Goods Receipt', icon: ArrowDownLeft, moduleKey: 'goods_receipts' },
       { id: 'transfers', labelAr: 'تحويلات المخازن (TRN)', labelEn: 'Stock Transfers', icon: ArrowLeftRight, moduleKey: 'transfers' },
@@ -275,14 +313,12 @@ export default function App() {
       { id: 'spare_parts', labelAr: 'صرف قطع الغيار والمستهلكات (X)', labelEn: 'Spare Parts Issue', icon: Wrench, moduleKey: 'spare_parts_issue' },
     ],
     production: [
-      { id: 'finished_products', labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Products Master', icon: Package, moduleKey: 'finished_products' },
-      { id: 'intermediate_bom', labelAr: 'تصنيع الخامات الوسيطة', labelEn: 'Intermediate Recipes (M)', icon: FlaskConical, moduleKey: 'intermediate_bom' },
-      { id: 'liquid_tanks', labelAr: 'تشغيل وتانكات الخامات (M)', labelEn: 'Bulk Liquid Tanks (M)', icon: Cog, moduleKey: 'liquid_tanks' },
-      { id: 'bom', labelAr: 'تعبئة وتغليف المنتج التام (BOM)', labelEn: 'Packing & Filling BOM', icon: Layers, moduleKey: 'bom' },
       { id: 'work_orders', labelAr: 'أوامر التشغيل والإنتاج', labelEn: 'Work Orders', icon: Factory, moduleKey: 'work_orders' },
-      { id: 'material_issue', labelAr: 'صرف خامات للتشغيل', labelEn: 'Material Issue', icon: ArrowDownLeft, moduleKey: 'material_issue' },
+      { id: 'liquid_tanks', labelAr: 'تشغيل وتانكات الخامات (M)', labelEn: 'Bulk Liquid Tanks (M)', icon: Cog, moduleKey: 'liquid_tanks' },
+      { id: 'liquid_storage', labelAr: 'خزانات وتدفق السوائل (M)', labelEn: 'Floor Liquid Storage (M)', icon: Activity, moduleKey: 'liquid_storage' },
+      { id: 'faulty_fg', labelAr: 'مرتجعات ومعيب المنتج التام', labelEn: 'Faulty FG & Returns', icon: AlertOctagon, moduleKey: 'faulty_fg' },
       { id: 'fg_inward', labelAr: 'استلام المنتج التام', labelEn: 'Finished Goods Inward', icon: CheckCircle2, moduleKey: 'fg_inward' },
-      { id: 'yield_recon', labelAr: 'تدقيق الهالك والإنتاجية', labelEn: 'Yield & Scrap Audit', icon: Scale, moduleKey: 'yield_recon' },
+      { id: 'production_reports', labelAr: 'تقارير الإنتاجية والأداء التنفيذي', labelEn: 'Production & Performance Reports', icon: BarChart3, moduleKey: 'production_reports' },
     ],
     sales: [
       { id: 'customers', labelAr: 'سجل العملاء', labelEn: 'Customers Master', icon: Users, moduleKey: 'customers' },
@@ -296,21 +332,24 @@ export default function App() {
     ]
   };
 
-  // Derive nav items dynamically for the active module with dynamic tab appearance
-  const rawCurrentModuleNavItems = MODULE_NAV_DEFINITIONS[activeModule] || MODULE_NAV_DEFINITIONS.purchases;
-  const currentModuleNavItems = rawCurrentModuleNavItems.map((item) => {
-    const customConfig = tabAppearanceMap[item.id];
-    if (customConfig) {
-      return {
-        ...item,
-        labelAr: customConfig.labelAr || item.labelAr,
-        labelEn: customConfig.labelEn || item.labelEn,
-        icon: customConfig.iconName ? getIconComponent(customConfig.iconName) : item.icon,
-        color: customConfig.color || '#059669',
-      };
-    }
-    return { ...item, color: '#059669' };
-  });
+  // Derive nav items dynamically for the active module with dynamic tab appearance & custom order sequence
+  const rawCurrentModuleNavItems = MODULE_NAV_DEFINITIONS[activeModule] || MODULE_NAV_DEFINITIONS.master_data || MODULE_NAV_DEFINITIONS.purchases;
+  const currentModuleNavItems = rawCurrentModuleNavItems
+    .map((item) => {
+      const customConfig = tabAppearanceMap[item.id];
+      if (customConfig) {
+        return {
+          ...item,
+          labelAr: customConfig.labelAr || item.labelAr,
+          labelEn: customConfig.labelEn || item.labelEn,
+          icon: customConfig.iconName ? getIconComponent(customConfig.iconName) : item.icon,
+          color: customConfig.color || '#059669',
+          order: typeof customConfig.order === 'number' ? customConfig.order : 99,
+        };
+      }
+      return { ...item, color: '#059669', order: 99 };
+    })
+    .sort((a, b) => (Number(a.order) || 99) - (Number(b.order) || 99));
 
   const navItems = currentModuleNavItems
     .filter((item) => {
@@ -330,17 +369,28 @@ export default function App() {
     }
 
     const moduleNav = MODULE_NAV_DEFINITIONS[moduleId] || [];
-    const permittedNav = moduleNav.filter((item) => {
-      if (currentUser.isGeneralAdmin || currentUser.role === 'general_admin') return true;
-      return effectivePermissions.modules[item.moduleKey] !== false;
-    });
+    const permittedNav = moduleNav
+      .map((item) => {
+        const customConfig = tabAppearanceMap[item.id];
+        return {
+          ...item,
+          order: typeof customConfig?.order === 'number' ? customConfig.order : 99,
+        };
+      })
+      .filter((item) => {
+        if (currentUser.isGeneralAdmin || currentUser.role === 'general_admin') return true;
+        return effectivePermissions.modules[item.moduleKey] !== false;
+      })
+      .sort((a, b) => (Number(a.order) || 99) - (Number(b.order) || 99));
 
     const userDefault = currentUser?.defaultModuleTabs?.[moduleId];
     const isTargetPermitted = targetTab && permittedNav.some((t) => t.id === targetTab);
     const isUserDefaultPermitted = userDefault && permittedNav.some((t) => t.id === userDefault);
     const defaultFallback =
-      moduleId === 'production'
-        ? 'finished_products'
+      moduleId === 'master_data'
+        ? 'items'
+        : moduleId === 'production'
+        ? 'work_orders'
         : moduleId === 'purchases'
         ? 'orders'
         : 'dashboard';
@@ -752,6 +802,7 @@ export default function App() {
                     }}
                     onOpenTabPermissions={(tabId) => {
                       const allNavItems = [
+                        ...(MODULE_NAV_DEFINITIONS.master_data || []),
                         ...(MODULE_NAV_DEFINITIONS.purchases || []),
                         ...(MODULE_NAV_DEFINITIONS.production || [])
                       ];
@@ -780,6 +831,10 @@ export default function App() {
                 )}
 
                 {activeTab === 'dashboard' && <p className="text-slate-500 text-sm">Dashboard metrics view coming next...</p>}
+            
+            {/* ========================================================================= */}
+            {/* 12 MASTER COLLECTIONS (MASTER DATABASE MODULE)                            */}
+            {/* ========================================================================= */}
             {activeTab === 'items' && (
               <ItemMaster 
                 currentUser={currentUser} 
@@ -792,17 +847,82 @@ export default function App() {
                 permissions={effectivePermissions} 
               />
             )}
-            {activeTab === 'orders' && (
-              <POCreation 
+            {activeTab === 'categories' && (
+              <CategoriesMaster 
                 currentUser={currentUser} 
                 permissions={effectivePermissions} 
               />
             )}
-            {activeTab === 'admin_panel' && (currentUser.isGeneralAdmin || currentUser.role === 'general_admin') && (
-              <AdminControlPanel 
-                currentUser={currentUser}
-                initialSubTab={adminPanelSubTab || 'users'}
-                initialTabFocus={adminPanelTabFocus}
+            {activeTab === 'finished_products' && (
+              <FinishedProductsMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'finished_product_categories' && (
+              <FGCategoriesMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'bom' && (
+              <BOMRecipesMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'intermediate_bom' && (
+              <IntermediateBOMMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'production_processes' && (
+              <ProductionProcessesMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'warehouses' && (
+              <WarehouseMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'production_workers' && (
+              <ProductionWorkersMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'users' && (
+              <UsersMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'system_config' && (
+              <SystemConfigMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+                onOpenTabAppearance={() => {
+                  setAdminPanelSubTab('tab_appearance');
+                  setActiveTab('admin_panel');
+                }}
+                onOpenPermissionsMatrix={() => {
+                  setAdminPanelSubTab('permissions');
+                  setActiveTab('admin_panel');
+                }}
+              />
+            )}
+
+            {/* ========================================================================= */}
+            {/* OPERATIONAL PURCHASES & INVENTORY VIEWS                                  */}
+            {/* ========================================================================= */}
+            {activeTab === 'orders' && (
+              <POCreation 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
               />
             )}
             {activeTab === 'receipts' && (
@@ -836,69 +956,53 @@ export default function App() {
               />
             )}
 
-            {/* Production Module Views */}
-            {activeModule === 'production' && activeTab === 'finished_products' && (
-              <FinishedProductsMaster 
-                currentUser={currentUser} 
-                permissions={effectivePermissions} 
-              />
-            )}
-            {activeModule === 'production' && activeTab === 'intermediate_bom' && (
-              <IntermediateBOMMaster 
-                currentUser={currentUser} 
-                permissions={effectivePermissions} 
-              />
-            )}
-            {activeModule === 'production' && activeTab === 'liquid_tanks' && (
-              <LiquidTanksMaster 
-                currentUser={currentUser} 
-                permissions={effectivePermissions} 
-              />
-            )}
-            {activeModule === 'production' && activeTab === 'bom' && (
-              <BOMRecipesMaster 
-                currentUser={currentUser} 
-                permissions={effectivePermissions} 
-              />
-            )}
-            {activeModule === 'production' && activeTab === 'work_orders' && (
+            {/* ========================================================================= */}
+            {/* OPERATIONAL PRODUCTION & FLOOR EXECUTION VIEWS                            */}
+            {/* ========================================================================= */}
+            {activeTab === 'work_orders' && (
               <WorkOrdersMaster 
                 currentUser={currentUser} 
                 permissions={effectivePermissions} 
               />
             )}
-            {activeModule === 'production' && activeTab === 'material_issue' && (
-              <div className="p-8 text-center space-y-3">
-                <ArrowDownLeft className="h-10 w-10 text-blue-600 mx-auto" />
-                <h3 className="text-lg font-bold text-slate-800">
-                  {isAr ? 'صرف واستهلاك الخامات للتشغيل' : 'Production Floor Material Issues'}
-                </h3>
-                <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  {isAr ? 'صرف الخامات من مستودع التشغيل وفق معادلات الـ BOM وقواعد FIFO.' : 'Issue raw inventory to the production line under FIFO rules.'}
-                </p>
-              </div>
+            {activeTab === 'liquid_tanks' && (
+              <LiquidTanksMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
             )}
-            {activeModule === 'production' && activeTab === 'fg_inward' && (
-              <div className="p-8 text-center space-y-3">
-                <CheckCircle2 className="h-10 w-10 text-blue-600 mx-auto" />
-                <h3 className="text-lg font-bold text-slate-800">
-                  {isAr ? 'استلام المنتج التام (Finished Goods Inward)' : 'Finished Goods Inward'}
-                </h3>
-                <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  {isAr ? 'توريد المنتجات التامة وتوليد لوطات المنتج التام.' : 'Receive finished production batches into Finished Goods stock.'}
-                </p>
-              </div>
+            {activeTab === 'liquid_storage' && (
+              <FloorLiquidStorage 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
             )}
-            {activeModule === 'production' && activeTab === 'yield_recon' && (
-              <div className="p-8 text-center space-y-3">
-                <Scale className="h-10 w-10 text-blue-600 mx-auto" />
-                <h3 className="text-lg font-bold text-slate-800">
-                  {isAr ? 'تدقيق الهالك والإنتاجية (Yield Reconciliation)' : 'Yield & Scrap Reconciliation'}
-                </h3>
-                <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  {isAr ? 'مقارنة الاستهلاك الفعلي بالمعياري وحساب نسب الهالك.' : 'Calculate production yield percentages and reconcile line scrap.'}
-                </p>
-              </div>
+            {activeTab === 'faulty_fg' && (
+              <FaultyFGReturnMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'fg_inward' && (
+              <FinishedGoodsInward 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'production_reports' && (
+              <ProductionPerformanceReports 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+
+            {/* Admin Panel (General Admin Only) */}
+            {activeTab === 'admin_panel' && (currentUser.isGeneralAdmin || currentUser.role === 'general_admin') && (
+              <AdminControlPanel 
+                currentUser={currentUser}
+                initialSubTab={adminPanelSubTab || 'users'}
+                initialTabFocus={adminPanelTabFocus}
+              />
             )}
               </>
             )}

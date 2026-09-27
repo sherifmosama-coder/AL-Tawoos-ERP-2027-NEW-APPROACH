@@ -1,0 +1,3627 @@
+// Google Sheets Custom Menu Trigger
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('⚙️ أدوات النظام (System Tools)')
+    .addItem('🛠️ مولد البيانات التجريبية (Mock Data Generator)', 'openMockDataDialog')
+    .addToUi();
+}
+
+function openMockDataDialog() {
+  const html = HtmlService.createHtmlOutputFromFile('MOCK_GENERATOR')
+    .setWidth(900)
+    .setHeight(700)
+    .setTitle('مولد البيانات التجريبية - سجلات الصيانة والنظافة');
+  SpreadsheetApp.getUi().showModalDialog(html, '🛠️ مولد البيانات التجريبية (Mock Data Generator)');
+}
+
+// Complete CODE.gs - With External Spreadsheet Copy for Portal A
+function doGet() {
+  return HtmlService.createTemplateFromFile('INDEX')
+    .evaluate()
+    .setTitle('نظام إدارة العينات')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1.0');
+}
+function include(filename) {
+  return HtmlService.createHtmlOutputFromFile(filename).getContent();
+}
+// --- UNIFIED RBAC AUTHENTICATION ---
+function loginUser(passcode, requestedPortal) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const usersSheet = ss.getSheetByName('App_Users');
+    
+    if (!usersSheet) {
+      throw new Error('Sheet "App_Users" not found. Please create it with the specified columns.');
+    }
+
+    const lastRow = usersSheet.getLastRow();
+    if (lastRow < 2) return { valid: false, message: 'No users configured in the system.' };
+
+    // Fetch Columns A through G (7 columns)
+    const data = usersSheet.getRange(2, 1, lastRow - 1, 7).getValues(); 
+    
+    // Map portal ID to the respective Checkbox Column Index (0-based array)
+    // Col C (Index 2) = Portal A
+    // Col D (Index 3) = Portal B
+    // Col E (Index 4) = PROD
+    // Col F (Index 5) = TDS
+    // Col G (Index 6) = MNT (Maintenance & Cleaning)
+    const portalColMap = {
+      'A': 2,
+      'B': 3,
+      'PROD': 4,
+      'TDS': 5,
+      'MNT': 6
+    };
+    const targetColIndex = portalColMap[requestedPortal];
+
+    for (let i = 0; i < data.length; i++) {
+      if (String(data[i][1]) === String(passcode)) { // Found the PIN in Col B
+        const userName = data[i][0]; // Name in Col A
+        const hasAccess = data[i][targetColIndex] === true; // Checkbox value
+        
+        if (hasAccess) {
+          return { valid: true, userName: userName };
+        } else {
+          return { valid: false, message: 'ليس لديك صلاحية للدخول إلى هذه البوابة.' };
+        }
+      }
+    }
+    return { valid: false, message: 'الرمز السري غير صحيح.' };
+  } catch (error) {
+    return { valid: false, message: 'System Error: ' + error.message };
+  }
+}
+
+// --- HEARTBEAT & ONLINE TRACKING ---
+function updateHeartbeat(userName, portalName) {
+  if (!userName) return;
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const usersSheet = ss.getSheetByName('App_Users');
+    if (!usersSheet || usersSheet.getLastRow() < 2) return;
+    
+    const data = usersSheet.getRange(2, 1, usersSheet.getLastRow() - 1, 1).getValues();
+    for (let i = 0; i < data.length; i++) {
+      if (data[i][0] === userName) {
+        const rowIndex = i + 2;
+        const timestamp = new Date();
+        // Col H (Index 8) = Last Ping, Col I (Index 9) = Location
+        usersSheet.getRange(rowIndex, 8).setValue(timestamp);
+        usersSheet.getRange(rowIndex, 9).setValue(portalName);
+        break;
+      }
+    }
+  } catch (e) {
+    // Silent fail to avoid disrupting user experience
+  }
+}
+
+function getOnlineUsers() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const usersSheet = ss.getSheetByName('App_Users');
+    if (!usersSheet || usersSheet.getLastRow() < 2) return [];
+
+    // Fetch Name (A) to Location (I) -> 9 Columns
+    const data = usersSheet.getRange(2, 1, usersSheet.getLastRow() - 1, 9).getValues();
+    const now = new Date().getTime();
+    const onlineUsers = [];
+
+    for (let i = 0; i < data.length; i++) {
+      const userName = String(data[i][0] || '').trim();
+      const lastPingDate = data[i][7]; // Col H (Index 7)
+      const location = String(data[i][8] || '').trim(); // Col I (Index 8)
+
+      if (userName && lastPingDate instanceof Date) {
+        const diffMs = now - lastPingDate.getTime();
+        // Consider "Online" if pinged within the last 2 minutes (120,000 ms)
+        if (diffMs <= 120000 && location && !location.includes('Idle')) {
+           // Get first 2 characters for initials
+           const initials = userName.substring(0, 2).toUpperCase();
+           onlineUsers.push({
+             name: userName,
+             initials: initials,
+             location: location
+           });
+        }
+      }
+    }
+    return onlineUsers;
+  } catch (e) {
+    return [];
+  }
+}
+// Get material options from index sheet
+function getMaterialOptions() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const indexSheet = ss.getSheetByName('index');
+    if (!indexSheet) {
+      throw new Error('Sheet "index" not found');
+    }
+
+    const options = indexSheet.getRange('A2:A5').getValues();
+    return options.map(function (row) { return row[0]; }).filter(function (val) { return val !== ''; });
+  } catch (error) {
+    throw new Error('Error loading options: ' + error.message);
+  }
+}
+// Get product names for Portal B
+function getProductNames() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const indexSheet = ss.getSheetByName('index');
+    if (!indexSheet) {
+      throw new Error('Sheet "index" not found');
+    }
+
+    const lastRow = indexSheet.getLastRow();
+    if (lastRow < 2) return [];
+
+    const products = indexSheet.getRange('B2:B' + lastRow).getValues();
+    return products.map(function (row) { return row[0]; }).filter(function (val) { return val !== ''; });
+  } catch (error) {
+    throw new Error('Error loading products: ' + error.message);
+  }
+}
+// [UPDATED] Get tank serial numbers (Merges both sheets)
+function getTankSerialNumbers() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let allSerials = [];
+    // Get from NEW sheet
+    const newTankSheet = ss.getSheetByName('Tank');
+    if (newTankSheet) {
+      allSerials = allSerials.concat(getSheetSerials(newTankSheet));
+    }
+
+    // Get from OLD sheet
+    const oldTankSheet = ss.getSheetByName('Tank_2025');
+    if (oldTankSheet) {
+      allSerials = allSerials.concat(getSheetSerials(oldTankSheet));
+    }
+
+    // Remove duplicates and sort descending
+    // Note: If Serial #1 exists in both, this will only show one #1. 
+    // The system prioritizes the NEW sheet (2026) in getTankInfo.
+    const uniqueSerials = [...new Set(allSerials)];
+    uniqueSerials.sort(function (a, b) { return b - a; });
+
+    return uniqueSerials;
+  } catch (error) {
+    throw new Error('Error loading tank serials: ' + error.message);
+  }
+}
+function getSheetSerials(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  const serials = sheet.getRange(2, 13, lastRow - 1, 1).getValues();
+  return serials.map(function (row) { return row[0]; })
+    .filter(function (val) { return val !== '' && !isNaN(val); });
+}
+// [UPDATED] Get tank info by serial number (Searches 2026 then 2025)
+function getTankInfo(serialNumber) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    // 1. Try to find in the NEW sheet first
+    const newTankSheet = ss.getSheetByName('Tank');
+    if (newTankSheet) {
+      const result = searchSheetForTank(newTankSheet, serialNumber);
+      if (result) return result;
+    }
+
+    // 2. If not found, try the OLD sheet
+    const oldTankSheet = ss.getSheetByName('Tank_2025');
+    if (oldTankSheet) {
+      const result = searchSheetForTank(oldTankSheet, serialNumber);
+      if (result) return result;
+    }
+
+    throw new Error('Serial number not found in current or archived records');
+  } catch (error) {
+    throw new Error('Error loading tank info: ' + error.message);
+  }
+}
+// Helper function to avoid duplicate code
+function searchSheetForTank(sheet, serialNumber) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  // Column 13 contains Serial Numbers (Index 12)
+  const serials = sheet.getRange(2, 13, lastRow - 1, 1).getValues();
+  for (let i = 0; i < serials.length; i++) {
+    if (serials[i][0] == serialNumber) {
+      const rowNum = i + 2;
+      const data = sheet.getRange(rowNum, 1, 1, 18).getValues()[0];
+      return {
+        timestamp: data[0] ? Utilities.formatDate(new Date(data[0]), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : '',
+        deviceReading1: data[10] || '',
+        vvPercent: data[13] || '',
+        previousDeviceReading: data[11] || '',
+        previousVVPercent: data[14] || '',
+        previousLabResult: data[15] || '',
+        deviceAnalysisTime: data[16] ? Utilities.formatDate(new Date(data[16]), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : '',
+        labAnalysisTime: data[17] ? Utilities.formatDate(new Date(data[17]), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : ''
+      };
+    }
+  }
+  return null;
+}
+// Save Tank Analysis (Concurrent Workflow Upsert)
+function saveTankAnalysis(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let tankSheet = ss.getSheetByName('Tank');
+    if (!tankSheet) {
+      tankSheet = ss.insertSheet('Tank');
+      const headers = [
+        'Timestamp', 'User Email', 'التاريخ', '', 'نوع الخامة', 'طريقة التحضير',
+        'العدد (A2)', 'العدد (A3)', 'العدد (A4)', 'العدد (A5)',
+        'Old Device', 'Old Prev Dev', 'Serial Number', 'Old v/v%', 'Old Prev v/v%',
+        'نتيجة التحليل المعملي', 'وقت التحليل المعملي', 'صورة التحليل المعملي'
+      ];
+      tankSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      tankSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+    }
+    const lastRow = tankSheet.getLastRow();
+    let rowIndex = -1;
+
+    if (lastRow >= 2) {
+      const table = tankSheet.getRange(2, 1, lastRow - 1, 18).getValues();
+      for (let i = 0; i < table.length; i++) {
+        if (table[i][12] == data.serialNumber) { // Col M
+          rowIndex = i + 2; break;
+        }
+      }
+    }
+
+    const timestampStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    const labResStr = (data.labResult / 100);
+
+    if (rowIndex > -1) {
+      // UPDATE EXISTING ROW (Started by Portal A)
+      if (data.oxidationValue !== undefined && data.oxidationValue !== '') {
+        tankSheet.getRange(rowIndex, 15).setValue(data.oxidationValue); // Col O (Index 14)
+      }
+      tankSheet.getRange(rowIndex, 16).setValue(labResStr); // Col P
+      tankSheet.getRange(rowIndex, 17).setValue(timestampStr); // Col Q
+      if (data.imageUrl) tankSheet.getRange(rowIndex, 18).setValue(data.imageUrl); // Col R
+    } else {
+      // INSERT NEW ROW (Portal B First)
+      const row = new Array(18).fill('');
+      row[12] = data.serialNumber; // Col M
+      if (data.oxidationValue !== undefined && data.oxidationValue !== '') {
+        row[14] = data.oxidationValue; // Col O (Index 14)
+      }
+      row[15] = labResStr; // Col P
+      row[16] = timestampStr; // Col Q
+      if (data.imageUrl) row[17] = data.imageUrl; // Col R
+
+      tankSheet.appendRow(row);
+    }
+
+    return { success: true, message: 'تم حفظ نتيجة التحليل بنجاح' };
+  } catch (error) {
+    throw new Error('Error updating tank: ' + error.message);
+  }
+}
+// Save product analysis (Portal B - Product path)
+function saveProductAnalysis(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let analysisSheet = ss.getSheetByName('Analysis');
+    if (!analysisSheet) {
+      analysisSheet = ss.insertSheet('Analysis');
+      const headers = ['Timestamp', 'Product Name', 'Analysis Method', 'Device Reading', 'v/v%', 'Lab Result', 'Reference Number', 'Image URL'];
+      analysisSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      analysisSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+    }
+
+    const row = new Array(8).fill('');
+    row[0] = new Date();
+    row[1] = data.productName;
+    row[2] = 'معملي'; // Always Lab
+    row[3] = data.oxidationValue !== undefined ? data.oxidationValue : ''; // Col D (Oxidation Result)
+    row[5] = data.labResult / 100;
+    row[6] = data.referenceNumber;
+    row[7] = data.imageUrl || '';
+
+    analysisSheet.appendRow(row);
+    return { success: true, message: 'تم حفظ البيانات بنجاح' };
+  } catch (error) {
+    throw new Error('Error saving analysis: ' + error.message);
+  }
+}
+
+// Save Raw Vinegar Receipt (Dedicated Sheet)
+function saveRawVinegarReceipt(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('Raw_Vinegar_Receipts');
+    if (!sheet) {
+      sheet = ss.insertSheet('Raw_Vinegar_Receipts');
+      const headers = ['Timestamp', 'User Email', 'التاريخ', 'اسم المورد', 'تركيز حمض الخليك', 'رقم الأكسدة', 'صورة التوثيق'];
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+    }
+
+    const timestampStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    const labResStr = data.labResult ? (data.labResult / 100) : '';
+
+    const row = [
+      timestampStr,
+      Session.getActiveUser().getEmail(),
+      data.receiptDate || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+      data.supplierName,
+      labResStr,
+      data.oxidationValue !== undefined ? data.oxidationValue : '',
+      data.imageUrl || ''
+    ];
+
+    sheet.appendRow(row);
+    return { success: true, message: 'تم حفظ بيانات استلام الخام بنجاح' };
+  } catch (error) {
+    throw new Error('Error saving raw vinegar receipt: ' + error.message);
+  }
+}
+// Upload image to Google Drive
+function uploadImageToDrive(imageData, fileName) {
+  try {
+    const folderId = '1L3c3hS4fBdQ6Z6eFXOzzplkmV6pXkOei';
+    const folder = DriveApp.getFolderById(folderId);
+    const contentType = imageData.substring(5, imageData.indexOf(';'));
+    const bytes = Utilities.base64Decode(imageData.substr(imageData.indexOf('base64,') + 7));
+    const blob = Utilities.newBlob(bytes, contentType, fileName);
+
+    const file = folder.createFile(blob);
+
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+    return {
+      success: true,
+      url: file.getUrl(),
+      id: file.getId()
+    };
+  } catch (error) {
+    throw new Error('Error uploading image: ' + error.message);
+  }
+}
+// Delete image from Google Drive
+function deleteImageFromDrive(fileId) {
+  try {
+    const file = DriveApp.getFileById(fileId);
+    file.setTrashed(true);
+    return { success: true };
+  } catch (error) {
+    throw new Error('Error deleting image: ' + error.message);
+  }
+}
+// Validate serial number (Concurrent Context-Aware Workflow)
+function validateSerialNumber(serialNumber, portal) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const tankSheet = ss.getSheetByName('Tank');
+    if (!tankSheet || tankSheet.getLastRow() < 2) {
+      if (serialNumber === 1) {
+        return {
+          valid: true,
+          message: portal === 'B' ? "يرجي الابلاغ بالنتيجة للتجهيز.. جاهز لإدخال نتيجة التحليل." : "لم يتم التحليل بعد، يرجي مراجعة المعمل قبل الارسال",
+          type: portal === 'B' ? 'success' : 'warning'
+        };
+      } else {
+        return { valid: false, message: 'رقم التانك يجب أن يبدأ من 1', type: 'error' };
+      }
+    }
+
+    const data = tankSheet.getRange(2, 1, tankSheet.getLastRow() - 1, 18).getValues();
+    let maxSerial = 0;
+    let existingRow = null;
+
+    for (let i = 0; i < data.length; i++) {
+      let s = data[i][12]; // Col M (index 12)
+      if (s !== '' && !isNaN(s)) {
+        let num = parseInt(s);
+        if (num > maxSerial) maxSerial = num;
+        if (num === serialNumber) existingRow = data[i];
+      }
+    }
+
+    if (existingRow) {
+      const hasMaterial = existingRow[4] !== ''; // Col E
+      const hasLabResult = existingRow[15] !== ''; // Col P
+
+      if (hasMaterial && hasLabResult) { // Case 1
+        return { valid: false, message: 'هذا التانك مكتمل التسجيل والتحليل (مكرر).', type: 'error' };
+      }
+      if (portal === 'A' && hasMaterial) { // Case 2
+        return { valid: false, message: 'تم تسجيل الإنتاج مسبقاً لهذا التانك.', type: 'error' };
+      }
+      if (portal === 'B' && hasLabResult) { // Case 3
+        return { valid: false, message: 'تم تحليل هذا التانك مسبقاً.', type: 'error' };
+      }
+      if (portal === 'A' && hasLabResult && !hasMaterial) { // Case 4
+        return { valid: true, message: 'تم التحليل معملياً.. جاهز لاستكمال بيانات الإنتاج.', type: 'success' };
+      }
+      if (portal === 'B' && hasMaterial && !hasLabResult) { // Case 5
+        return { valid: true, message: 'تم ارسال التانك.. جاهز لإدخال نتيجة التحليل.', type: 'info' };
+      }
+    }
+
+    if (serialNumber === maxSerial + 1) {
+      if (portal === 'B') { // Case 6
+        return { valid: true, message: 'يرجي الابلاغ بالنتيجة للتجهيز.. جاهز لإدخال نتيجة التحليل.', type: 'success' };
+      } else { // Case 7
+        return { valid: true, message: 'لم يتم التحليل بعد، يرجي مراجعة المعمل قبل الارسال', type: 'warning' };
+      }
+    } else {
+      return { valid: false, message: 'رقم التانك يجب أن يكون ' + (maxSerial + 1), type: 'error' };
+    }
+  } catch (error) {
+    throw new Error('Error validating serial: ' + error.message);
+  }
+}
+// Save Portal A data (Concurrent Workflow Upsert)
+function savePortalAData(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let tankSheet = ss.getSheetByName('Tank');
+    if (!tankSheet) {
+      tankSheet = ss.insertSheet('Tank');
+      const headers = [
+        'Timestamp', 'User Email', 'التاريخ', '', 'نوع الخامة', 'طريقة التحضير',
+        'العدد (A2)', 'العدد (A3)', 'العدد (A4)', 'العدد (A5)',
+        'Old Device', 'Old Prev Dev', 'Serial Number', 'Old v/v%', 'Old Prev v/v%',
+        'نتيجة التحليل المعملي', 'وقت التحليل المعملي', 'صورة التحليل المعملي'
+      ];
+      tankSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      tankSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+    }
+    const quantityCol = data.materialIndex + 4;
+    let rowIndex = -1;
+
+    const hasSerial = data.serialNumber !== null && data.serialNumber !== undefined && !isNaN(data.serialNumber);
+
+    if (hasSerial) {
+      const lastRow = tankSheet.getLastRow();
+      if (lastRow >= 2) {
+        const table = tankSheet.getRange(2, 1, lastRow - 1, 18).getValues();
+        for (let i = 0; i < table.length; i++) {
+          if (table[i][12] == data.serialNumber) { // Col M (Index 12)
+            rowIndex = i + 2; break;
+          }
+        }
+      }
+    }
+
+    const timestampStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+
+    if (rowIndex > -1) {
+      // UPDATE EXISTING ROW (Started by Portal B)
+      tankSheet.getRange(rowIndex, 1).setValue(timestampStr);
+      tankSheet.getRange(rowIndex, 2).setValue(Session.getActiveUser().getEmail());
+      tankSheet.getRange(rowIndex, 3).setValue('تاريخ اليوم');
+      tankSheet.getRange(rowIndex, 5).setValue(data.material); // Col E
+      tankSheet.getRange(rowIndex, 6).setValue(data.preparation || ''); // Col F
+      tankSheet.getRange(rowIndex, quantityCol + 1).setValue(data.quantity);
+      if (data.imageUrl) tankSheet.getRange(rowIndex, 14).setValue(data.imageUrl); // Col N (Index 13)
+    } else {
+      // INSERT NEW ROW (Portal A First)
+      const row = new Array(18).fill('');
+      row[0] = timestampStr;
+      row[1] = Session.getActiveUser().getEmail();
+      row[2] = 'تاريخ اليوم';
+      row[4] = data.material;
+      row[5] = data.preparation || '';
+      row[quantityCol] = data.quantity;
+      if (hasSerial) row[12] = data.serialNumber; // Col M
+      if (data.imageUrl) row[13] = data.imageUrl; // Col N (Index 13)
+
+      tankSheet.appendRow(row);
+    }
+
+    // Export to external spreadsheet (Strictly 14 Columns)
+    try {
+      const extRow = new Array(14).fill('');
+      extRow[0] = timestampStr;
+      extRow[1] = Session.getActiveUser().getEmail();
+      extRow[2] = 'تاريخ اليوم';
+      extRow[4] = data.material;
+      extRow[5] = data.preparation || '';
+      extRow[quantityCol] = data.quantity;
+      if (hasSerial) extRow[12] = data.serialNumber; // Col M
+      saveToExternalSpreadsheet(extRow);
+    } catch (err) {
+      Logger.log('Error saving external: ' + err.message);
+    }
+
+    return { success: true, message: 'تم حفظ بيانات الإنتاج بنجاح' };
+  } catch (error) {
+    throw new Error('Error saving data: ' + error.message);
+  }
+}
+// [UPDATED] Save to external spreadsheet with NEW ID
+function saveToExternalSpreadsheet(rowData) {
+  try {
+    // UPDATED: New Spreadsheet ID for 2026
+    const externalSpreadsheetId = '1AATh8aLorXF428tbExFU6LjWAdsn8ybQjp4933BeTzU';
+    // Open external spreadsheet
+    const externalSS = SpreadsheetApp.openById(externalSpreadsheetId);
+
+    // Get the first sheet
+    const externalSheet = externalSS.getSheetById(1416876654);
+
+    // Append the row to external spreadsheet
+    externalSheet.appendRow(rowData);
+
+    Logger.log('Successfully saved to external spreadsheet');
+  } catch (error) {
+    throw new Error('Failed to save to external spreadsheet: ' + error.message);
+  }
+}
+// Portal C - Get report data
+function getReportData(reportType, startDate, endDate) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+
+    if (reportType === 'tank') {
+      return getTankReportData(ss, start, end);
+    } else if (reportType === 'analysis') {
+      return getAnalysisReportData(ss, start, end);
+    } else if (reportType === 'raw') {
+      return getRawVinegarReportData(ss, start, end);
+    }
+
+    throw new Error('نوع التقرير غير صحيح');
+  } catch (error) {
+    throw new Error('خطأ في تحميل البيانات: ' + error.message);
+  }
+}
+// [UPDATED] Get Tank Report Data (Includes Lab Result & Merges Sheets)
+function getTankReportData(ss, startDate, endDate) {
+  let allData = [];
+  // 1. Get data from NEW sheet
+  const newTankSheet = ss.getSheetByName('Tank');
+  if (newTankSheet) {
+    allData = allData.concat(extractSheetData(newTankSheet));
+  }
+  // 2. Get data from OLD sheet
+  const oldTankSheet = ss.getSheetByName('Tank_2025');
+  if (oldTankSheet) {
+    allData = allData.concat(extractSheetData(oldTankSheet));
+  }
+  const filtered = [];
+  allData.forEach(function (row) {
+    const timestamp = new Date(row[0]);
+    if (timestamp >= startDate && timestamp <= endDate) {
+      filtered.push({
+        date: Utilities.formatDate(timestamp, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
+        serial: row[12] || 'N/A',
+        material: row[4] || 'N/A',
+        preparation: row[5] || '',
+        quantity: row[6] || row[7] || row[8] || row[9] || 'N/A',
+        reading: row[10] ? parseFloat(row[10]).toFixed(2) : 'N/A',
+        vv: row[13] ? (parseFloat(row[13]) * 100).toFixed(2) : 'N/A',
+        // NEW: Lab Result from Column P (Index 15)
+        labResult: row[15] ? (parseFloat(row[15]) * 100).toFixed(2) + '%' : '-',
+        // Oxidation from Column O (Index 14)
+        oxidation: (row[14] !== '' && row[14] !== undefined) ? row[14] : '-',
+        // Lab Image URL from Column R (Index 17)
+        imageUrl: row[17] ? String(row[17]) : '',
+        // Portal A Photo URL from Column N (Index 13)
+        portalAImage: row[13] ? String(row[13]) : ''
+      });
+    }
+  });
+  filtered.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+  return filtered;
+}
+// [UPDATED] Helper to extract raw data (Widened range to 18 columns)
+function extractSheetData(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  // UPDATED: Now reads 18 columns (A to R) instead of 14 to include Lab Data
+  return sheet.getRange(2, 1, lastRow - 1, 18).getValues();
+}
+// [UPDATED] Get Analysis Report Data (Combines Products + Tanks from 2026 & 2025)
+function getAnalysisReportData(ss, startDate, endDate) {
+  const filtered = [];
+  // --- PART 1: Get Product Analysis (Existing Logic) ---
+  const analysisSheet = ss.getSheetByName('Analysis');
+  if (analysisSheet && analysisSheet.getLastRow() >= 2) {
+    const data = analysisSheet.getRange(2, 1, analysisSheet.getLastRow() - 1, 8).getValues();
+    data.forEach(function (row) {
+      const timestamp = new Date(row[0]);
+      if (timestamp >= startDate && timestamp <= endDate) {
+        filtered.push({
+          date: Utilities.formatDate(timestamp, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
+          product: row[1] || 'N/A',
+          method: row[2] || 'N/A',
+          oxidation: (row[3] !== '' && row[3] !== undefined) ? row[3] : '-',
+          deviceReading: row[3] ? parseFloat(row[3]).toFixed(2) : 'N/A',
+          vv: row[4] ? (parseFloat(row[4]) * 100).toFixed(2) + '%' : 'N/A',
+          labResult: row[5] ? (parseFloat(row[5]) * 100).toFixed(2) + '%' : 'N/A',
+          refNumber: row[6] || 'N/A',
+          imageUrl: row[7] || '',
+          type: 'product' // Internal marker
+        });
+      }
+    });
+  }
+  // --- PART 2: Get Tank Analysis (New Logic) ---
+  // We check both current Tank sheet and archived Tank_2025
+  const sheetsToCheck = ['Tank', 'Tank_2025'];
+  sheetsToCheck.forEach(function (sheetName) {
+    const tankSheet = ss.getSheetByName(sheetName);
+    if (!tankSheet || tankSheet.getLastRow() < 2) return;
+    const tankData = tankSheet.getRange(2, 1, tankSheet.getLastRow() - 1, 18).getValues();
+
+    tankData.forEach(function (row) {
+      const serial = row[12];
+
+      if (sheetName === 'Tank_2025') {
+        // Old 2025 Structure: Col Q (16) = Device Time, Col R (17) = Lab Time
+        const deviceTime = row[16] ? new Date(row[16]) : null;
+        if (deviceTime && deviceTime >= startDate && deviceTime <= endDate) {
+          filtered.push({
+            date: Utilities.formatDate(deviceTime, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
+            product: 'Tank ' + serial,
+            method: 'الجهاز',
+            deviceReading: row[10] ? parseFloat(row[10]).toFixed(2) : 'N/A',
+            vv: row[13] ? (parseFloat(row[13]) * 100).toFixed(2) + '%' : 'N/A',
+            labResult: 'N/A',
+            refNumber: serial,
+            imageUrl: '',
+            type: 'tank'
+          });
+        }
+        const labTime = row[17] ? new Date(row[17]) : null;
+        if (labTime && labTime >= startDate && labTime <= endDate) {
+          filtered.push({
+            date: Utilities.formatDate(labTime, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
+            product: 'Tank ' + serial,
+            method: 'معملي',
+            deviceReading: 'N/A',
+            vv: 'N/A',
+            labResult: row[15] ? (parseFloat(row[15]) * 100).toFixed(2) + '%' : 'N/A',
+            refNumber: serial,
+            imageUrl: '',
+            type: 'tank'
+          });
+        }
+      } else {
+        // New 2026 Structure: Col Q (16) = Lab Time, Col R (17) = Image URL
+        const labTime = row[16] ? new Date(row[16]) : null;
+        if (labTime && labTime >= startDate && labTime <= endDate) {
+          filtered.push({
+            date: Utilities.formatDate(labTime, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
+            product: 'Tank ' + serial,
+            method: 'معملي',
+            oxidation: (row[14] !== '' && row[14] !== undefined) ? row[14] : '-',
+            deviceReading: 'N/A',
+            vv: 'N/A',
+            labResult: row[15] ? (parseFloat(row[15]) * 100).toFixed(2) + '%' : 'N/A',
+            refNumber: serial,
+            imageUrl: row[17] ? String(row[17]) : '',
+            type: 'tank'
+          });
+        }
+      }
+    });
+  });
+  // Sort by Date Descending
+  filtered.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+  return filtered;
+}
+// Get Raw Vinegar Receipts Report Data
+function getRawVinegarReportData(ss, startDate, endDate) {
+  const sheet = ss.getSheetByName('Raw_Vinegar_Receipts');
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getValues();
+  const filtered = [];
+  
+  data.forEach(function(row) {
+    const timestamp = new Date(row[0]);
+    if (timestamp >= startDate && timestamp <= endDate) {
+      filtered.push({
+        date: Utilities.formatDate(timestamp, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
+        receiptDate: row[2] ? (row[2] instanceof Date ? Utilities.formatDate(row[2], Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(row[2])) : '-',
+        supplier: row[3] || '-',
+        labResult: row[4] ? (parseFloat(row[4]) * 100).toFixed(2) + '%' : '-',
+        oxidation: (row[5] !== '' && row[5] !== undefined) ? row[5] : '-',
+        imageUrl: row[6] ? String(row[6]) : ''
+      });
+    }
+  });
+  
+  filtered.sort(function(a, b) { return new Date(b.date) - new Date(a.date); });
+  return filtered;
+}
+
+// Export report to Excel
+function exportReportToExcel(reportType, reportData) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss');
+    let sheetName = 'تقرير_' + timestamp;
+    let title = 'تقرير البيانات';
+    if (reportType === 'tank') { sheetName = 'تقرير_تانكات_' + timestamp; title = 'تقرير التانكات'; }
+    else if (reportType === 'analysis') { sheetName = 'تقرير_تحليلات_' + timestamp; title = 'تقرير التحليلات'; }
+    else if (reportType === 'raw') { sheetName = 'تقرير_استلامات_' + timestamp; title = 'تقرير استلامات خام الخل'; }
+
+    const reportSheet = ss.insertSheet(sheetName);
+    reportSheet.getRange(1, 1).setValue(title);
+    reportSheet.getRange(1, 1).setFontSize(16).setFontWeight('bold');
+
+    const exportDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    reportSheet.getRange(2, 1).setValue('تاريخ التصدير: ' + exportDate);
+    reportSheet.getRange(2, 1).setFontSize(10).setFontStyle('italic');
+
+    if (reportType === 'tank') {
+      const headers = [['التاريخ', 'رقم العينة', 'نوع الخامة', 'طريقة التحضير', 'العدد', 'تركيز الخليك', 'رقم الأكسدة', 'صورة الإنتاج', 'صورة المعمل']];
+      reportSheet.getRange(4, 1, 1, 9).setValues(headers);
+      reportSheet.getRange(4, 1, 1, 9).setFontWeight('bold').setBackground('#3b82f6').setFontColor('#ffffff');
+      if (reportData.length > 0) {
+        const rows = reportData.map(function (row) {
+          return [
+            row.date,
+            row.serial,
+            row.material,
+            row.preparation || '-',
+            row.quantity || '-',
+            row.labResult,
+            row.oxidation || '-',
+            row.portalAImage || '-',
+            row.imageUrl || '-'
+          ];
+        });
+        reportSheet.getRange(5, 1, rows.length, 9).setValues(rows);
+        reportSheet.getRange(4, 1, rows.length + 1, 9).setBorder(true, true, true, true, true, true);
+      }
+      for (let i = 1; i <= 9; i++) reportSheet.autoResizeColumn(i);
+    } else if (reportType === 'analysis') {
+      const headers = [['التاريخ', 'اسم المنتج', 'تركيز الخليك', 'رقم الأكسدة', 'رقم التشغيلة', 'صورة']];
+      reportSheet.getRange(4, 1, 1, 6).setValues(headers);
+      reportSheet.getRange(4, 1, 1, 6).setFontWeight('bold').setBackground('#10b981').setFontColor('#ffffff');
+
+      if (reportData.length > 0) {
+        const rows = reportData.map(function (row) {
+          return [
+            row.date,
+            row.product,
+            row.labResult !== 'N/A' ? row.labResult : '-',
+            row.oxidation || '-',
+            row.refNumber,
+            row.imageUrl || '-'
+          ];
+        });
+        reportSheet.getRange(5, 1, rows.length, 6).setValues(rows);
+        reportSheet.getRange(4, 1, rows.length + 1, 6).setBorder(true, true, true, true, true, true);
+      }
+      for (let i = 1; i <= 6; i++) reportSheet.autoResizeColumn(i);
+    } else if (reportType === 'raw') {
+      const headers = [['تاريخ التسجيل', 'تاريخ الاستلام', 'اسم المورد', 'تركيز الخليك', 'رقم الأكسدة', 'صورة التوثيق']];
+      reportSheet.getRange(4, 1, 1, 6).setValues(headers);
+      reportSheet.getRange(4, 1, 1, 6).setFontWeight('bold').setBackground('#8b5cf6').setFontColor('#ffffff');
+
+      if (reportData.length > 0) {
+        const rows = reportData.map(function (row) {
+          return [
+            row.date,
+            row.receiptDate,
+            row.supplier,
+            row.labResult,
+            row.oxidation || '-',
+            row.imageUrl || '-'
+          ];
+        });
+        reportSheet.getRange(5, 1, rows.length, 6).setValues(rows);
+        reportSheet.getRange(4, 1, rows.length + 1, 6).setBorder(true, true, true, true, true, true);
+      }
+      for (let i = 1; i <= 6; i++) reportSheet.autoResizeColumn(i);
+    }
+
+    const summaryRow = reportSheet.getLastRow() + 2;
+    reportSheet.getRange(summaryRow, 1).setValue('إجمالي السجلات: ' + reportData.length);
+    reportSheet.getRange(summaryRow, 1).setFontWeight('bold');
+
+    return ss.getUrl() + '#gid=' + reportSheet.getSheetId();
+
+  } catch (error) {
+    throw new Error('خطأ في التصدير: ' + error.message);
+  }
+}
+// Dashboard Functions
+function getTodayTanksDashboardData(targetDateStr) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const tankSheet = ss.getSheetByName('Tank');
+    if (!tankSheet || tankSheet.getLastRow() < 2) return getEmptyTanksDashboard();
+
+    const tz = Session.getScriptTimeZone();
+    let today;
+    if (targetDateStr) {
+      today = new Date(targetDateStr);
+    } else {
+      today = new Date();
+    }
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const data = tankSheet.getRange(2, 1, tankSheet.getLastRow() - 1, 18).getValues();
+
+    let todayData = [];
+    let unserializedItems = [];
+    data.forEach(function (row) {
+      // A tank can be initiated by Production (Col A/0) OR by the Lab (Col Q/16)
+      let regTime = row[0] ? new Date(row[0]) : null;
+      let labTime = row[16] ? new Date(row[16]) : null;
+      
+      let isValidDay = false;
+      if (regTime && regTime >= today && regTime < tomorrow) isValidDay = true;
+      if (labTime && labTime >= today && labTime < tomorrow) isValidDay = true;
+
+      if (isValidDay) {
+        let serial = parseInt(row[12]);
+        if (!isNaN(serial)) {
+          todayData.push({
+            // Show registration time if it exists, otherwise fallback to lab analysis time
+            timestamp: regTime ? regTime : labTime, 
+            serial: serial,
+            labResult: row[15] !== '' ? parseFloat(row[15]) * 100 : null,
+            productType: row[4] || 'غير مسجل', // Provide a fallback label if Col E is empty
+            isRegistered: regTime !== null,
+            portalAImage: row[13] ? String(row[13]) : '', // Col N (Index 13)
+            labImage: row[17] ? String(row[17]) : ''      // Col R (Index 17)
+          });
+        } else if (regTime) {
+          // Special non-serialized material (e.g. ورد, زهر)
+          unserializedItems.push({
+            material: row[4] || 'خامة خاصة',
+            quantity: row[6] || row[7] || row[8] || row[9] || 1,
+            time: Utilities.formatDate(regTime, tz, 'hh:mm a')
+          });
+        }
+      }
+    });
+
+    const serials = todayData.map(function(i) { return i.serial; });
+    const startSerial = serials.length > 0 ? Math.min.apply(null, serials) : 0;
+    const endSerial = serials.length > 0 ? Math.max.apply(null, serials) : 0;
+    
+    // Find the highest serial number actually registered by production
+    const registeredSerials = todayData.filter(function(i) { return i.isRegistered; }).map(function(i) { return i.serial; });
+    const maxRegisteredSerial = registeredSerials.length > 0 ? Math.max.apply(null, registeredSerials) : 0;
+
+    const concData = todayData.filter(function(i) { return i.labResult !== null; });
+    let avg = 0, highest = 0, lowest = 0;
+    let highestSerials = [], lowestSerials = [];
+
+    if (concData.length > 0) {
+      let sum = 0;
+      concData.forEach(function(i) { sum += i.labResult; });
+      avg = sum / concData.length;
+      
+      const vals = concData.map(function(i) { return i.labResult; });
+      highest = Math.max.apply(null, vals);
+      lowest = Math.min.apply(null, vals);
+
+      highestSerials = concData.filter(function(i) { return i.labResult === highest; }).map(function(i) { return i.serial; });
+      lowestSerials = concData.filter(function(i) { return i.labResult === lowest; }).map(function(i) { return i.serial; });
+    }
+
+    // Fetch Handover Data safely (Foolproof ISO String Matching)
+    let handover = {};
+    let prevShiftLastTank = {};
+    try {
+      const hoSheet = ss.getSheetByName("Shift_Handovers");
+      if (hoSheet && hoSheet.getLastRow() >= 2) {
+         const hoData = hoSheet.getRange(2, 1, hoSheet.getLastRow() - 1, 4).getValues();
+         let hoRow = null;
+
+         // Establish target date string (always yyyy-MM-dd format)
+         const targetDate = targetDateStr || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+
+         // Look backwards for the first handover timestamp that is strictly BEFORE the target date
+         for (let i = hoData.length - 1; i >= 0; i--) {
+           let hoDateStr = '';
+           if (hoData[i][0]) {
+             try {
+               hoDateStr = Utilities.formatDate(new Date(hoData[i][0]), tz, 'yyyy-MM-dd');
+             } catch (e) {
+               // Safe fallback if row is read as a raw string format 'YYYY-MM-DD HH:mm:ss'
+               hoDateStr = String(hoData[i][0]).substring(0, 10);
+             }
+           }
+
+           if (hoDateStr && hoDateStr < targetDate) {
+             hoRow = hoData[i];
+             break;
+           }
+         }
+
+         // Global Fallback: If no previous row satisfies the condition, load the absolute last available entry
+         if (!hoRow && hoData.length > 0) {
+            hoRow = hoData[hoData.length - 1];
+         }
+
+         if (hoRow) {
+           handover = {
+              time: String(hoRow[0]),
+              lastTankNum: parseInt(hoRow[1]),
+              expectedNext: parseInt(hoRow[2]),
+              image: String(hoRow[3])
+           };
+           // Scan historical data for the actual last tank to get its real timestamp and image
+           for(let i = data.length - 1; i >= 0; i--) {
+              if(parseInt(data[i][12]) === handover.lastTankNum) {
+                 prevShiftLastTank = {
+                    time: data[i][0] ? Utilities.formatDate(new Date(data[i][0]), tz, 'yyyy-MM-dd HH:mm') : '',
+                    image: String(data[i][17] || '')
+                 };
+                 break;
+              }
+           }
+         }
+      }
+    } catch(e) {}
+
+    // Format timestamps and lab results for the frontend chip popovers
+    const formattedTanks = {};
+    todayData.forEach(function(t) {
+      formattedTanks[t.serial] = {
+        time: Utilities.formatDate(t.timestamp, Session.getScriptTimeZone(), 'hh:mm a'),
+        labResult: t.labResult !== null ? t.labResult.toFixed(2) + '%' : '-',
+        productType: t.productType,
+        isRegistered: t.isRegistered,
+        portalAImage: t.portalAImage || '',
+        labImage: t.labImage || ''
+      };
+    });
+
+    return {
+      totalCount: todayData.length,
+      startSerial: startSerial,
+      endSerial: endSerial,
+      maxRegisteredSerial: maxRegisteredSerial,
+      avgConc: avg.toFixed(2),
+      highestConc: highest.toFixed(2),
+      lowestConc: lowest.toFixed(2),
+      highestSerialUnique: highestSerials.length === 1 ? highestSerials[0] : null,
+      lowestSerialUnique: lowestSerials.length === 1 ? lowestSerials[0] : null,
+      hasConcentrationData: concData.length > 0,
+      handover: handover,
+      prevShiftLastTank: prevShiftLastTank,
+      tanksMap: formattedTanks,
+      unserializedItems: unserializedItems
+    };
+  } catch (error) {
+    return getEmptyTanksDashboard();
+  }
+}
+
+function getEmptyTanksDashboard() {
+  return {
+    totalCount: 0, startSerial: 0, endSerial: 0, maxRegisteredSerial: 0,
+    avgConc: '0.00', highestConc: '0.00', lowestConc: '0.00',
+    highestSerialUnique: null, lowestSerialUnique: null,
+    hasConcentrationData: false,
+    handover: {}, prevShiftLastTank: {},
+    tanksMap: {},
+    unserializedItems: []
+  };
+}
+function getTodayAnalysisDashboardData() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const analysisSheet = ss.getSheetByName('Analysis');
+    const tankSheet = ss.getSheetByName('Tank');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    let deviceProducts = 0;
+    let deviceTanks = 0;
+    let labProducts = 0;
+    let labTanks = 0;
+    let allConcentrations = [];
+
+    if (analysisSheet) {
+      const lastRow = analysisSheet.getLastRow();
+      if (lastRow >= 2) {
+        const data = analysisSheet.getRange(2, 1, lastRow - 1, 7).getValues();
+
+        data.forEach(function (row, index) {
+          const timestamp = new Date(row[0]);
+          if (timestamp >= today && timestamp < tomorrow) {
+            const method = row[2];
+            const vv = row[4];
+            const labResult = row[5];
+            const refNumber = row[6];
+
+            if (method === 'الجهاز') {
+              deviceProducts++;
+              if (vv && !isNaN(vv)) {
+                allConcentrations.push({
+                  value: parseFloat(vv) * 100,
+                  id: refNumber,
+                  label: 'منتج: ' + refNumber,
+                  rowIndex: index + 2
+                });
+              }
+            } else if (method === 'معملي') {
+              labProducts++;
+              if (labResult && !isNaN(labResult)) {
+                allConcentrations.push({
+                  value: parseFloat(labResult) * 100,
+                  id: refNumber,
+                  label: 'منتج: ' + refNumber,
+                  rowIndex: index + 2
+                });
+              }
+            }
+          }
+        });
+      }
+    }
+
+    if (tankSheet) {
+      const lastRow = tankSheet.getLastRow();
+      if (lastRow >= 2) {
+        const data = tankSheet.getRange(2, 1, lastRow - 1, 18).getValues();
+
+        data.forEach(function (row, index) {
+          const deviceAnalysisTime = row[16];
+          const labAnalysisTime = row[17];
+          const serial = row[12];
+
+          if (deviceAnalysisTime) {
+            const analysisDate = new Date(deviceAnalysisTime);
+            if (analysisDate >= today && analysisDate < tomorrow) {
+              deviceTanks++;
+              const vv = row[14];
+              if (vv && !isNaN(vv)) {
+                allConcentrations.push({
+                  value: parseFloat(vv) * 100,
+                  id: 'T' + serial,
+                  label: 'تانك: ' + serial,
+                  rowIndex: index + 2
+                });
+              }
+            }
+          }
+
+          if (labAnalysisTime) {
+            const analysisDate = new Date(labAnalysisTime);
+            if (analysisDate >= today && analysisDate < tomorrow) {
+              labTanks++;
+              const labResult = row[15];
+              if (labResult && !isNaN(labResult)) {
+                allConcentrations.push({
+                  value: parseFloat(labResult) * 100,
+                  id: 'T' + serial,
+                  label: 'تانك: ' + serial,
+                  rowIndex: index + 2
+                });
+              }
+            }
+          }
+        });
+      }
+    }
+
+    let highest = 0;
+    let lowest = 0;
+    let highestId = '0';
+    let lowestId = '0';
+    let highestLabel = '';
+    let lowestLabel = '';
+
+    if (allConcentrations.length > 0) {
+      const sortedConc = allConcentrations.sort(function (a, b) { return b.value - a.value; });
+
+      highest = sortedConc[0].value;
+      highestId = sortedConc[0].id;
+      highestLabel = sortedConc[0].label;
+
+      lowest = sortedConc[sortedConc.length - 1].value;
+      lowestId = sortedConc[sortedConc.length - 1].id;
+      lowestLabel = sortedConc[sortedConc.length - 1].label;
+    }
+
+    return {
+      deviceTotal: deviceProducts + deviceTanks,
+      deviceProducts: deviceProducts,
+      deviceTanks: deviceTanks,
+      labTotal: labProducts + labTanks,
+      labProducts: labProducts,
+      labTanks: labTanks,
+      highest: highest.toFixed(2),
+      lowest: lowest.toFixed(2),
+      highestId: highestId,
+      lowestId: lowestId,
+      highestLabel: highestLabel,
+      lowestLabel: lowestLabel
+    };
+
+  } catch (error) {
+    Logger.log('Error in getTodayAnalysisDashboardData: ' + error.message);
+    return getEmptyAnalysisDashboard();
+  }
+}
+
+function getEmptyAnalysisDashboard() {
+  return {
+    deviceTotal: 0,
+    deviceProducts: 0,
+    deviceTanks: 0,
+    labTotal: 0,
+    labProducts: 0,
+    labTanks: 0,
+    highest: '0.00',
+    lowest: '0.00',
+    highestId: '0',
+    lowestId: '0',
+    highestLabel: '',
+    lowestLabel: ''
+  };
+}
+// --- TDS GENERATOR FUNCTIONS ---
+// Get Product Options from TDS_Settings
+function getTDSProducts() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('TDS_Settings');
+    if (!sheet) return [];
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return [];
+
+    // Get Product Names from Column A
+    const products = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    return products.map(function (row) { return row[0]; }).filter(function (val) { return val !== ''; });
+  } catch (error) {
+    throw new Error('Error loading TDS products: ' + error.message);
+  }
+}
+// Get Fixed Settings for a specific product (Safe Version)
+function getTDSDetails(productName) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('TDS_Settings');
+    const lastRow = sheet.getLastRow();
+    // Get all data A2:K
+    const data = sheet.getRange(2, 1, lastRow - 1, 11).getValues();
+
+    for (let i = 0; i < data.length; i++) {
+      if (data[i][0] == productName) {
+        // Convert EVERYTHING to String to avoid "Complex Object" errors
+        return {
+          product: String(data[i][0] || ''),
+          standard: String(data[i][1] || ''),
+          appearance: String(data[i][2] || ''),
+          odor: String(data[i][3] || ''),
+          density: String(data[i][4] || ''),
+          alcohol: String(data[i][5] || ''),
+          solids: String(data[i][6] || ''),
+          micro: String(data[i][7] || ''),
+          shelfLife: String(data[i][8] || ''),
+          storage: String(data[i][9] || ''),
+          logoUrl: String(data[i][10] || '')
+        };
+      }
+    }
+    throw new Error('Product settings not found');
+  } catch (error) {
+    throw new Error('Error fetching TDS details: ' + error.message);
+  }
+}
+// --- TDS GENERATION & LOGGING ---
+function generateAndLogTDS(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let logSheet = ss.getSheetByName('TDS_Logs');
+    if (!logSheet) throw new Error('Sheet "TDS_Logs" not found');
+    // 1. Generate Unique ID
+    const year = new Date().getFullYear();
+    const lastRow = Math.max(logSheet.getLastRow(), 1);
+    const sequence = lastRow; // Starts at 1 if sheet is empty
+    const padSequence = ('000' + sequence).slice(-3);
+    const uniqueID = 'TDS-' + year + '-' + padSequence;
+
+    // 2. Fetch Fixed Settings for the PDF
+    const settings = getTDSDetails(data.productName);
+
+    // 3. Prepare Data for Template
+    data.documentId = uniqueID; // Add ID to data object
+
+    const template = HtmlService.createTemplateFromFile('TDSTEMPLATE');
+    template.data = data;
+    template.settings = settings;
+
+    // 4. Generate PDF Blob
+    const htmlOutput = template.evaluate();
+    const pdfBlob = htmlOutput.getAs('application/pdf');
+    pdfBlob.setName(uniqueID + '_' + data.productName + '.pdf');
+
+    // 5. Save to Google Drive (Folder: "TDS Certificates")
+    const folderName = "TDS Certificates";
+    const folders = DriveApp.getFoldersByName(folderName);
+    let folder;
+    if (folders.hasNext()) {
+      folder = folders.next();
+    } else {
+      folder = DriveApp.createFolder(folderName);
+    }
+
+    const file = folder.createFile(pdfBlob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    const fileUrl = file.getUrl();
+
+    // 6. Save Log to Spreadsheet (Col K = URL)
+    const row = [
+      uniqueID,                  // A: ID
+      new Date(),                // B: Timestamp
+      data.batchNumber,          // C: Batch
+      data.productName,          // D: Product
+      data.prodDate,             // E: Prod
+      data.expDate,              // F: Exp
+      data.acidity,              // G: Acidity
+      data.oxidation,            // H: Oxidation
+      data.ph,                   // I: pH
+      Session.getActiveUser().getEmail(), // J: User
+      fileUrl                    // K: URL
+    ];
+
+    logSheet.appendRow(row);
+
+    return { success: true, documentId: uniqueID, url: fileUrl };
+
+  } catch (error) {
+    throw new Error('Error generating TDS: ' + error.message);
+  }
+}
+// --- GENERIC TDS GENERATION ---
+function generateAndLogGenericTDS(productName) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let logSheet = ss.getSheetByName('TDS_Logs');
+    // 1. Generate ID (use "SPEC" prefix instead of "TDS")
+    const year = new Date().getFullYear();
+    const lastRow = Math.max(logSheet.getLastRow(), 1);
+    const uniqueID = 'SPEC-' + year + '-' + ('000' + lastRow).slice(-3);
+
+    // 2. Fetch Fixed Settings
+    const settings = getTDSDetails(productName);
+
+    // 3. Prepare Data (Flag isGeneric = true)
+    const data = {
+      productName: productName,
+      documentId: uniqueID,
+      isGeneric: true  // <--- This controls the template
+    };
+
+    // 4. Generate PDF
+    const template = HtmlService.createTemplateFromFile('TDSTEMPLATE');
+    template.data = data;
+    template.settings = settings;
+
+    const htmlOutput = template.evaluate();
+    const pdfBlob = htmlOutput.getAs('application/pdf');
+    pdfBlob.setName(uniqueID + '_' + productName + '_Spec.pdf');
+
+    // 5. Save to Drive
+    const folderName = "TDS Certificates";
+    const folders = DriveApp.getFoldersByName(folderName);
+    const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+
+    const file = folder.createFile(pdfBlob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    const fileUrl = file.getUrl();
+
+    // 6. Save Log (Simple log for generic specs)
+    const row = [
+      uniqueID,
+      new Date(),
+      'GENERIC',     // Batch
+      productName,
+      '-',           // Prod Date
+      '-',           // Exp Date
+      '-', '-', '-', // Results
+      Session.getActiveUser().getEmail(),
+      fileUrl
+    ];
+    logSheet.appendRow(row);
+
+    return { success: true, documentId: uniqueID, url: fileUrl };
+
+  } catch (error) {
+    throw new Error('Error generating Generic Spec: ' + error.message);
+  }
+}
+
+function getProdSetup() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('Production_Logs');
+    if (!sheet) {
+      sheet = ss.insertSheet('Production_Logs');
+      sheet.appendRow(['Session ID (Master)', 'Timestamp', 'User Name', 'Date', 'Product Name', 'Start Time', 'End Time', 'Duration (Mins)', 'Quantity', 'Avg Time/Unit (Mins)', 'Notes', 'Image URL', 'Status', 'Segment ID']);
+      sheet.getRange(1, 1, 1, 14).setFontWeight('bold');
+    }
+    const idxSheet = ss.getSheetByName('index');
+    let products = [];
+    if (idxSheet && idxSheet.getLastRow() >= 2) {
+      const data = idxSheet.getRange(2, 2, idxSheet.getLastRow() - 1, 1).getValues();
+      products = data.map(function (r) { return r[0]; }).filter(function (v) { return v !== ''; });
+    }
+    return { products: products };
+  } catch (e) { throw new Error(e.message); }
+}
+function startProdSession(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Production_Logs');
+    const sessionId = 'PRD-' + new Date().getTime();
+    const segmentId = sessionId + '-1'; // Phase 1: Initialize Segment ID
+    sheet.appendRow([
+      sessionId, new Date(), data.user, data.date, data.product,
+      data.startTime, '', '', '', '', '', '', 'Active', segmentId
+    ]);
+    syncWasteTimes(data.date);
+    return { success: true };
+  } catch (e) { throw new Error(e.message); }
+}
+function endProdSession(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Production_Logs');
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('لا توجد بيانات');
+    const table = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+    let rowIndex = -1;
+
+    // Find the ACTIVE row for this session (searching from bottom ensures we get the latest resumed segment)
+    for (let i = table.length - 1; i >= 0; i--) {
+      if (table[i][0] === data.sessionId && table[i][12] !== 'Completed' && table[i][12] !== 'Paused' && table[i][12] !== 'Cancelled') {
+        rowIndex = i + 2; break;
+      }
+    }
+    if (rowIndex === -1) throw new Error('لم يتم العثور على الجلسة النشطة');
+
+    const startTimeStr = table[rowIndex - 2][5];
+    const duration = calculateDuration(startTimeStr, data.endTime);
+    const tz = Session.getScriptTimeZone();
+    const timestamp = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm');
+
+    // Determine Action Logic
+    let statusStr = 'Completed';
+    let notePrefix = '';
+
+    if (data.action === 'pause') {
+      statusStr = 'Paused';
+      notePrefix = '[إيقاف مؤقت] ';
+    } else if (data.action === 'cancel') {
+      statusStr = 'Cancelled';
+      notePrefix = '[إلغاء] ';
+    }
+
+    // Save Current Segment Data
+    sheet.getRange(rowIndex, 7).setValue(data.endTime);
+    sheet.getRange(rowIndex, 8).setValue(duration);
+    let existingNote = String(table[rowIndex - 2][10] || '');
+    let finalNote = existingNote + (existingNote ? '\n' : '') + notePrefix + (data.notes || '');
+    sheet.getRange(rowIndex, 11).setValue(finalNote);
+    if (data.imageUrl) sheet.getRange(rowIndex, 12).setValue(data.imageUrl);
+    sheet.getRange(rowIndex, 13).setValue(statusStr);
+    addCellNote(sheet, rowIndex, 13, `[${timestamp}] Session ${statusStr} by ${data.user}.`);
+
+    // --- PROPORTIONAL ACCRUAL ACCOUNTING (If Completed) ---
+    if (data.action === 'complete') {
+      const updatedTable = sheet.getRange(2, 1, sheet.getLastRow() - 1, 14).getValues();
+      let segments = [];
+      let totalDur = 0;
+
+      // Find ALL segments belonging to this Session ID (including Resumed ones)
+      for (let i = 0; i < updatedTable.length; i++) {
+        let stat = updatedTable[i][12];
+        if (updatedTable[i][0] === data.sessionId && (stat === 'Paused' || stat === 'Resumed' || stat === 'Completed')) {
+          segments.push(i + 2);
+          totalDur += (parseFloat(updatedTable[i][7]) || 0); // Index 7 is Duration (Col H)
+        }
+      }
+
+      // Distribute Quantity Proportionally across all days/segments
+      const totalQty = parseFloat(data.quantity) || 0;
+      if (totalDur > 0 && totalQty > 0) {
+        segments.forEach(rIdx => {
+          let segDur = parseFloat(sheet.getRange(rIdx, 8).getValue()) || 0;
+          let proportion = segDur / totalDur;
+          // Strictly round quantity to 1 decimal place, stripping trailing zeroes
+          let segQty = parseFloat((proportion * totalQty).toFixed(1));
+          let segAvg = segQty > 0 ? (segDur / segQty).toFixed(2) : 0;
+
+          sheet.getRange(rIdx, 9).setValue(segQty);
+          sheet.getRange(rIdx, 10).setValue(segAvg);
+          sheet.getRange(rIdx, 13).setValue('Completed'); // Force status to Completed
+        });
+      }
+    }
+
+    let dateStr = table[rowIndex - 2][3] instanceof Date ? Utilities.formatDate(table[rowIndex - 2][3], tz, 'yyyy-MM-dd') : String(table[rowIndex - 2][3]);
+    syncWasteTimes(dateStr);
+
+    return { success: true };
+  } catch (e) { throw new Error(e.message); }
+}
+function resumeProdSession(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Production_Logs');
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('لا توجد بيانات');
+    const table = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+    let parentRow = null;
+    let parentRowIndex = -1;
+
+    // Find the last paused row for this session to copy its data
+    for (let i = table.length - 1; i >= 0; i--) {
+      if (table[i][0] === data.sessionId && table[i][12] === 'Paused') {
+        parentRow = table[i];
+        parentRowIndex = i + 2;
+        break;
+      }
+    }
+    if (!parentRow) throw new Error('لم يتم العثور على تشغيلة معلقة لهذا المعرف');
+
+    // Update the old Paused row to 'Resumed' so it disappears from the frontend queue
+    sheet.getRange(parentRowIndex, 13).setValue('Resumed');
+
+    const tz = Session.getScriptTimeZone();
+    const newDate = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd'); // Resume happens TODAY
+
+    // Create new row segment linked to the same sessionId (Master_Batch_ID)
+    const segmentId = parentRow[0] + '-' + new Date().getTime(); // Phase 1: Unique Segment ID
+    sheet.appendRow([
+      parentRow[0], // A: sessionId (Master)
+      new Date(),   // B: Timestamp
+      data.user,    // C: User
+      newDate,      // D: Date
+      parentRow[4], // E: Product
+      data.resumeTime, // F: Start Time
+      '', '', '', '', '', '', 'Active', // Force status to Active
+      segmentId     // N: Segment ID
+    ]);
+
+    return { success: true };
+  } catch (e) { throw new Error(e.message); }
+}
+function getTodayProdSessions(targetDateStr) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Production_Logs');
+    if (!sheet || sheet.getLastRow() < 2) return [];
+    const todayStr = targetDateStr || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+    // Auto-Sync Waste Times BEFORE fetching the data to ensure the dashboard timeline is 100% accurate on load
+    syncWasteTimes(todayStr);
+
+    // Re-fetch the Last Row because syncWasteTimes might have added or deleted rows!
+    const finalLastRow = sheet.getLastRow();
+    const data = finalLastRow < 2 ? [] : sheet.getRange(2, 1, finalLastRow - 1, 14).getValues();
+    const notesData = finalLastRow < 2 ? [] : sheet.getRange(2, 1, finalLastRow - 1, 14).getNotes();
+
+    const filtered = [];
+    for (let i = 0; i < data.length; i++) {
+      // Ensure the cell date is formatted to match todayStr regardless of how Sheets saved it
+      let rowDateStr = '';
+      if (data[i][3]) {
+        try {
+          rowDateStr = Utilities.formatDate(new Date(data[i][3]), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+        } catch (e) {
+          rowDateStr = String(data[i][3]).trim();
+        }
+      }
+
+      if (rowDateStr === todayStr || data[i][12] === 'Paused') {
+        let sTime = data[i][5] instanceof Date ? Utilities.formatDate(data[i][5], Session.getScriptTimeZone(), 'HH:mm') : String(data[i][5] || '');
+        let eTime = data[i][6] instanceof Date ? Utilities.formatDate(data[i][6], Session.getScriptTimeZone(), 'HH:mm') : String(data[i][6] || '');
+
+        // Combine notes from Start, End, Qty, Notes, and Image columns (Indices 5, 6, 8, 10, 11)
+        let combinedNotes = [notesData[i][5], notesData[i][6], notesData[i][8], notesData[i][10], notesData[i][11]]
+          .filter(function (n) { return n !== ''; })
+          .join('\n');
+
+        filtered.push({
+          id: data[i][0], user: data[i][2], date: rowDateStr, product: data[i][4],
+          startTime: sTime, endTime: eTime, duration: data[i][7],
+          quantity: data[i][8], avg: data[i][9], notes: data[i][10], image: data[i][11], status: data[i][12],
+          editHistory: combinedNotes
+        });
+      }
+    }
+    return filtered.reverse();
+// Newest first
+  } catch (e) { throw new Error(e.message);
+}
+}
+
+// ============================================================================
+// --- PHASE 2: NEW UNIFIED DUAL-MATH ENGINE & CONCURRENCY PROFILER ---
+// ============================================================================
+
+function getUnifiedProdData(targetDateStr) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Production_Logs');
+    if (!sheet || sheet.getLastRow() < 2) return { timeline: [], masterCards: [] };
+    
+    const tz = Session.getScriptTimeZone();
+    const todayStr = targetDateStr || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+    
+    // Auto-Sync Waste Times for the visual timeline
+    syncWasteTimes(todayStr);
+    
+    const finalLastRow = sheet.getLastRow();
+    const data = finalLastRow < 2 ? [] : sheet.getRange(2, 1, finalLastRow - 1, 14).getValues();
+    const notesData = finalLastRow < 2 ? [] : sheet.getRange(2, 1, finalLastRow - 1, 14).getNotes();
+
+    const touchedMasterIds = new Set();
+    const timelineSegments = [];
+    const breaksTimeline = [];
+    const breaksByDate = {}; // Store ALL historical breaks
+    
+    // PASS 1: Identify all Master IDs touched today & build Factory Minute Map
+    for (let i = 0; i < data.length; i++) {
+      let rowDateStr = data[i][3] instanceof Date ? Utilities.formatDate(new Date(data[i][3]), tz, 'yyyy-MM-dd') : String(data[i][3]).trim();
+      let status = data[i][12];
+      let product = data[i][4];
+      
+      // If it belongs to today, or is currently hanging in Paused/Active state
+      if (rowDateStr === todayStr || status === 'Paused' || status === 'Active') {
+         if (product !== 'وقت مهدر' && product !== 'وقت الراحة') {
+            touchedMasterIds.add(data[i][0]); // Add Master_Batch_ID
+         }
+      }
+      
+      let sTime = data[i][5] instanceof Date ? Utilities.formatDate(data[i][5], tz, 'HH:mm') : String(data[i][5] || '');
+      let eTime = data[i][6] instanceof Date ? Utilities.formatDate(data[i][6], tz, 'HH:mm') : String(data[i][6] || '');
+      
+      // Collect ALL breaks historically for net operational calculation
+      if (product === 'وقت الراحة' && status !== 'Cancelled') {
+         if (!breaksByDate[rowDateStr]) breaksByDate[rowDateStr] = [];
+         breaksByDate[rowDateStr].push({ startTime: sTime, endTime: eTime });
+      }
+
+      // Collect purely today's physical blocks for the UI Timeline & Concurrency Mapping
+      if (rowDateStr === todayStr) {
+         let segmentObj = {
+            masterId: data[i][0], segmentId: data[i][13], user: data[i][2], date: rowDateStr, product: product,
+            startTime: sTime, endTime: eTime, duration: data[i][7], status: status
+         };
+         timelineSegments.push(segmentObj);
+         if (product === 'وقت الراحة') breaksTimeline.push(segmentObj);
+      }
+    }
+
+    // BUILD FACTORY MINUTE MAP (For Concurrency Math)
+    // 0 = Idle, 1 = Solo run, 2+ = Simultaneous Batches
+    const minuteMap = new Array(1440).fill(0);
+    timelineSegments.forEach(seg => {
+       if (seg.product !== 'وقت مهدر' && seg.product !== 'وقت الراحة' && seg.status !== 'Cancelled') {
+          let sM = timeToMins(seg.startTime);
+          let eM = seg.endTime ? timeToMins(seg.endTime) : timeToMins(Utilities.formatDate(new Date(), tz, 'HH:mm'));
+          if (eM < sM) eM += 1440; // Midnight rollover
+          
+          for (let m = sM; m < eM; m++) {
+             // Ensure this minute doesn't overlap with a global break
+             let isBreak = breaksTimeline.some(b => m >= timeToMins(b.startTime) && m < (b.endTime ? timeToMins(b.endTime) : 1440));
+             if (!isBreak) minuteMap[m % 1440]++;
+          }
+       }
+    });
+
+    // PASS 2: Assemble Complete Multi-Day History for Master Cards
+    const masterBatches = {};
+    for (let i = 0; i < data.length; i++) {
+       let masterId = data[i][0];
+       if (touchedMasterIds.has(masterId)) {
+          if (!masterBatches[masterId]) {
+             masterBatches[masterId] = {
+                masterId: masterId,
+                product: data[i][4],
+                totalQuantity: 0,
+                finalStatus: 'Active',
+                finalImage: '',
+                history: [],
+                metrics: { operationalDur: 0, financialDur: 0, concurrencyCounts: { "1": 0, "2": 0, "3": 0, "4+": 0 } }
+             };
+          }
+          
+          let rowDateStr = data[i][3] instanceof Date ? Utilities.formatDate(new Date(data[i][3]), tz, 'yyyy-MM-dd') : String(data[i][3]).trim();
+          let sTime = data[i][5] instanceof Date ? Utilities.formatDate(data[i][5], tz, 'HH:mm') : String(data[i][5] || '');
+          let eTime = data[i][6] instanceof Date ? Utilities.formatDate(data[i][6], tz, 'HH:mm') : String(data[i][6] || '');
+          let dur = parseFloat(data[i][7]) || 0;
+          let qty = parseFloat(data[i][8]) || 0;
+          let status = data[i][12];
+          let combinedNotes = [notesData[i][5], notesData[i][6], notesData[i][8], notesData[i][10], notesData[i][11]].filter(n => n !== '').join('\n');
+          
+          // DEDUCT BREAKS FOR NET OPERATIONAL DURATION
+          let sM = timeToMins(sTime);
+          let eM = eTime ? timeToMins(eTime) : timeToMins(Utilities.formatDate(new Date(), tz, 'HH:mm'));
+          if (eM < sM) eM += 1440;
+          
+          let netDur = dur;
+          let overlappingBreaks = [];
+          let dailyBreaks = breaksByDate[rowDateStr] || [];
+          
+          dailyBreaks.forEach(b => {
+             let bStart = timeToMins(b.startTime);
+             let bEnd = b.endTime ? timeToMins(b.endTime) : timeToMins(Utilities.formatDate(new Date(), tz, 'HH:mm'));
+             if (bEnd < bStart) bEnd += 1440;
+             
+             let oStart = Math.max(sM, bStart);
+             let oEnd = Math.min(eM, bEnd);
+             
+             if (oStart < oEnd) {
+                let overlap = oEnd - oStart;
+                netDur -= overlap;
+                overlappingBreaks.push({
+                   start: minsToTime(oStart % 1440),
+                   end: minsToTime(oEnd % 1440),
+                   dur: overlap
+                });
+             }
+          });
+          if (netDur < 0) netDur = 0; // Fallback safety
+
+          // Push Segment to History
+          masterBatches[masterId].history.push({
+             segmentId: data[i][13] || masterId,
+             date: rowDateStr,
+             startTime: sTime,
+             endTime: eTime,
+             duration: dur,
+             netDuration: netDur,
+             overlappingBreaks: overlappingBreaks,
+             quantityAllocated: qty,
+             status: status,
+             notes: data[i][10],
+             editHistory: combinedNotes
+          });
+          // Update Master Batch Global Variables
+          masterBatches[masterId].metrics.operationalDur += netDur;
+          masterBatches[masterId].totalQuantity += qty;
+          masterBatches[masterId].finalStatus = status; // Will overwrite sequentially to latest status
+          if (data[i][11]) masterBatches[masterId].finalImage = data[i][11]; // Grab latest uploaded image
+          
+          // PASS 3: Calculate Diluted Financial Math & Concurrency for TODAY's segments
+          if (rowDateStr === todayStr && status !== 'Cancelled') {
+             let sM = timeToMins(sTime);
+             let eM = eTime ? timeToMins(eTime) : timeToMins(Utilities.formatDate(new Date(), tz, 'HH:mm'));
+             if (eM < sM) eM += 1440;
+             
+             for (let m = sM; m < eM; m++) {
+                let isBreak = breaksTimeline.some(b => m >= timeToMins(b.startTime) && m < (b.endTime ? timeToMins(b.endTime) : 1440));
+                if (!isBreak) {
+                   let concurrentActive = minuteMap[m % 1440];
+                   if (concurrentActive > 0) {
+                      masterBatches[masterId].metrics.financialDur += (1 / concurrentActive);
+                      
+                      // Log concurrency context
+                      if (concurrentActive === 1) masterBatches[masterId].metrics.concurrencyCounts["1"]++;
+                      else if (concurrentActive === 2) masterBatches[masterId].metrics.concurrencyCounts["2"]++;
+                      else if (concurrentActive === 3) masterBatches[masterId].metrics.concurrencyCounts["3"]++;
+                      else masterBatches[masterId].metrics.concurrencyCounts["4+"]++;
+                   }
+                }
+             }
+          }
+       }
+    }
+
+    // Convert Object to Array and Reverse (Newest First)
+    const masterCardsArray = Object.values(masterBatches).reverse();
+
+    return {
+       timeline: timelineSegments,
+       masterCards: masterCardsArray
+    };
+    
+  } catch (e) { 
+    throw new Error(e.message);
+  }
+}
+// ============================================================================
+
+function editProdSession(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Production_Logs');
+    const table = sheet.getRange(2, 1, sheet.getLastRow() - 1, 14).getValues();
+    
+    let targetRowIndex = -1;
+    let masterIdForRipple = '';
+    let targetData = [];
+
+    // 1. Locate Target Row (Segment ID [Col 13] or Master ID [Col 0])
+    for (let i = table.length - 1; i >= 0; i--) {
+       if (table[i][13] === data.targetId || table[i][0] === data.targetId) {
+           targetRowIndex = i + 2;
+           targetData = table[i];
+           masterIdForRipple = table[i][0];
+           break;
+       }
+    }
+    if (targetRowIndex === -1) throw new Error('تعذر العثور على السجل في قاعدة البيانات.');
+
+    const tz = Session.getScriptTimeZone();
+    const timestamp = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm');
+    
+    // 2. Apply Time Edits (Segment Level)
+    if (data.editTime) {
+       let oldSTime = targetData[5] instanceof Date ? Utilities.formatDate(targetData[5], tz, 'HH:mm') : String(targetData[5] || '');
+       sheet.getRange(targetRowIndex, 6).setValue(data.newStartTime);
+       if (oldSTime !== data.newStartTime) addCellNote(sheet, targetRowIndex, 6, `[${timestamp}] ${data.user}: تعديل وقت البدء إلى ${data.newStartTime}`);
+       
+       if (data.newEndTime && targetData[12] !== 'Active') {
+           let oldETime = targetData[6] instanceof Date ? Utilities.formatDate(targetData[6], tz, 'HH:mm') : String(targetData[6] || '');
+           sheet.getRange(targetRowIndex, 7).setValue(data.newEndTime);
+           
+           const newDuration = calculateDuration(data.newStartTime, data.newEndTime);
+           sheet.getRange(targetRowIndex, 8).setValue(newDuration);
+           
+           if (oldETime !== data.newEndTime) addCellNote(sheet, targetRowIndex, 7, `[${timestamp}] ${data.user}: تعديل وقت الإنهاء إلى ${data.newEndTime}`);
+       }
+    }
+
+    // 3. Apply Notes & Image Edits (Universal for both Segment and Master)
+    let oldNotes = targetData[10];
+    sheet.getRange(targetRowIndex, 11).setValue(data.newNotes || '');
+    if (String(oldNotes) !== String(data.newNotes)) addCellNote(sheet, targetRowIndex, 11, `[${timestamp}] ${data.user}: تم تعديل الملاحظات`);
+    
+    if (data.newImageUrl) {
+       sheet.getRange(targetRowIndex, 12).setValue(data.newImageUrl);
+       addCellNote(sheet, targetRowIndex, 12, `[${timestamp}] ${data.user}: تم تحديث الصورة`);
+    }
+
+    // 4. RIPPLE EFFECT: Proportional Math for Production Batches
+    if (targetData[4] !== 'وقت مهدر' && targetData[4] !== 'وقت الراحة') {
+       const updatedTable = sheet.getRange(2, 1, sheet.getLastRow() - 1, 14).getValues();
+       let segments = [];
+       let totalBatchDur = 0;
+       let globalQty = data.editQuantity ? data.newTotalQuantity : 0;
+       
+       for (let i = 0; i < updatedTable.length; i++) {
+           let stat = updatedTable[i][12];
+           if (updatedTable[i][0] === masterIdForRipple && (stat === 'Paused' || stat === 'Resumed' || stat === 'Completed' || stat === 'Active')) {
+               segments.push(i + 2);
+               totalBatchDur += (parseFloat(updatedTable[i][7]) || 0); // Accumulate updated durations
+               if (!data.editQuantity) globalQty += (parseFloat(updatedTable[i][8]) || 0); // Retain existing global qty if not editing it
+           }
+       }
+
+       if (totalBatchDur > 0 && globalQty > 0) {
+           segments.forEach(rIdx => {
+               let sDur = parseFloat(sheet.getRange(rIdx, 8).getValue()) || 0;
+               let proportion = sDur / totalBatchDur;
+               let sQty = parseFloat((proportion * globalQty).toFixed(1));
+               let sAvg = sQty > 0 ? (sDur / sQty).toFixed(2) : 0;
+
+               sheet.getRange(rIdx, 9).setValue(sQty);
+               sheet.getRange(rIdx, 10).setValue(sAvg);
+           });
+           if (data.editQuantity) addCellNote(sheet, targetRowIndex, 9, `[${timestamp}] ${data.user}: إعادة توزيع إجمالي الدفعة (${globalQty})`);
+       }
+    }
+
+    // 5. SYNC WASTE & JSON ACROSS ALL AFFECTED DAYS
+    let affectedDates = new Set();
+    
+    // Always add the base date of the specific row being edited
+    let baseDate = targetData[3] instanceof Date ? Utilities.formatDate(targetData[3], tz, 'yyyy-MM-dd') : String(targetData[3]).trim();
+    if (baseDate) affectedDates.add(baseDate);
+
+    // If this is a multi-segment Master Batch, scan the original table for ANY other dates it touched
+    if (masterIdForRipple && targetData[4] !== 'وقت مهدر' && targetData[4] !== 'وقت الراحة') {
+       for (let i = 0; i < table.length; i++) {
+           if (table[i][0] === masterIdForRipple) {
+               let dStr = table[i][3] instanceof Date ? Utilities.formatDate(table[i][3], tz, 'yyyy-MM-dd') : String(table[i][3]).trim();
+               if (dStr) affectedDates.add(dStr);
+           }
+       }
+    }
+
+    // Trigger the recalculation and ledger sync for EVERY affected day
+    affectedDates.forEach(dateStr => {
+       syncWasteTimes(dateStr);
+       triggerRetroactiveSync(dateStr, data.user);
+    });
+    
+    return { success: true };
+  } catch (e) { throw new Error(e.message); }
+}
+function calculateDuration(startStr, endStr) {
+  let sStr = startStr instanceof Date ? Utilities.formatDate(startStr, Session.getScriptTimeZone(), 'HH:mm') : String(startStr);
+  let eStr = endStr instanceof Date ? Utilities.formatDate(endStr, Session.getScriptTimeZone(), 'HH:mm') : String(endStr);
+  const s = sStr.split(':');
+  const e = eStr.split(':');
+  const d1 = new Date(); d1.setHours(parseInt(s[0] || 0), parseInt(s[1] || 0), 0);
+  const d2 = new Date(); d2.setHours(parseInt(e[0] || 0), parseInt(e[1] || 0), 0);
+  let diff = Math.round((d2 - d1) / 60000);
+  if (diff < 0) diff += 24 * 60; // Over midnight
+  return diff;
+}
+function addCellNote(sheet, row, col, newNoteLine) {
+  const cell = sheet.getRange(row, col);
+  const existingNote = cell.getNote();
+  const fullNote = existingNote ? existingNote + '\n' + newNoteLine : newNoteLine;
+  cell.setNote(fullNote);
+}
+// --- NEW TIMELINE ENGINE & BREAK LOGIC ---
+function addBreakSession(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Production_Logs');
+    const sessionId = 'BRK-' + new Date().getTime();
+    const duration = data.endTime ? calculateDuration(data.startTime, data.endTime) : '';
+    const status = data.endTime ? 'Completed' : 'Active';
+    const segmentId = sessionId + '-1'; // Phase 1: Initialize Segment ID
+    sheet.appendRow([
+      sessionId, new Date(), data.user, data.date, 'وقت الراحة',
+      data.startTime, data.endTime || '', duration, '', '', data.notes || '', '', status, segmentId
+    ]);
+    syncWasteTimes(data.date);
+    return { success: true };
+  } catch (e) {
+    throw new Error(e.message);
+  }
+}
+function endBreakSession(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Production_Logs');
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('لا توجد بيانات');
+    const table = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+    let rowIndex = -1;
+    
+    // BUG FIX: Search backward, match either Master ID (Col 0) or Segment ID (Col 13), AND ensure it is the 'Active' row.
+    for (let i = table.length - 1; i >= 0; i--) {
+      if ((table[i][0] === data.sessionId || table[i][13] === data.sessionId) && table[i][12] === 'Active') { 
+         rowIndex = i + 2; 
+         break; 
+      }
+    }
+    
+    if (rowIndex === -1) throw new Error('لم يتم العثور على الجلسة النشطة. قد تكون انتهت بالفعل.');
+    
+    const startTimeStr = table[rowIndex - 2][5];
+    const duration = calculateDuration(startTimeStr, data.endTime);
+
+    let statusStr = 'Completed';
+    if (data.action === 'cancel') statusStr = 'Cancelled';
+
+    sheet.getRange(rowIndex, 7).setValue(data.endTime);
+    sheet.getRange(rowIndex, 8).setValue(duration);
+
+    if (data.action === 'cancel' && data.notes) {
+      let existingNote = String(table[rowIndex - 2][10] || '');
+      let finalNote = existingNote + (existingNote ? '\n' : '') + '[إلغاء الراحة] ' + data.notes;
+      sheet.getRange(rowIndex, 11).setValue(finalNote);
+    }
+
+    sheet.getRange(rowIndex, 13).setValue(statusStr);
+
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+    addCellNote(sheet, rowIndex, 13, `[${timestamp}] Break ${statusStr} by ${data.user}.`);
+
+    let dateStr = table[rowIndex - 2][3] instanceof Date ? Utilities.formatDate(table[rowIndex - 2][3], Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(table[rowIndex - 2][3]);
+    syncWasteTimes(dateStr);
+
+    return { success: true };
+  } catch (e) { throw new Error(e.message); }
+}
+function timeToMins(timeStr) {
+  if (!timeStr) return 0;
+  let p = String(timeStr).split(':');
+  return parseInt(p[0] || 0) * 60 + parseInt(p[1] || 0);
+}
+function minsToTime(mins) {
+  let h = Math.floor((mins % 1440) / 60);
+  let m = (mins % 1440) % 60;
+  return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+}
+function forceSyncWasteTimes(dateStr) {
+  syncWasteTimes(dateStr);
+  return { success: true };
+}
+function syncWasteTimes(dateStr) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Production_Logs');
+  if (!sheet) return;
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 14).getValues();
+  let timeline = new Array(1440).fill(false);
+  let todayRows = [];
+  data.forEach(function (r, i) {
+    let rowDate = r[3] instanceof Date ? Utilities.formatDate(r[3], Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(r[3] || '').trim();
+    let status = String(r[12] || '').trim();
+    // CRITICAL: Completely ignore Cancelled sessions so they correctly turn into Waste time
+    if (rowDate === dateStr && status !== 'Cancelled' && status !== 'ملغي') {
+      let type = (r[4] === 'وقت مهدر') ? 'Waste' : 'Busy';
+
+      // Safely extract HH:mm regardless of how Google Sheets formatted the cell
+      let sTime = r[5] instanceof Date ? Utilities.formatDate(r[5], Session.getScriptTimeZone(), 'HH:mm') : String(r[5] || '').trim();
+      let eTime = r[6] instanceof Date ? Utilities.formatDate(r[6], Session.getScriptTimeZone(), 'HH:mm') : String(r[6] || '').trim();
+
+      // Handle cases where Sheets appends seconds to string representations
+      if (sTime.length > 5 && sTime.includes(':')) sTime = sTime.substring(0, 5);
+      if (eTime.length > 5 && eTime.includes(':')) eTime = eTime.substring(0, 5);
+
+      todayRows.push({ rowIndex: i + 2, type: type, start: sTime, end: eTime, status: r[12] });
+    }
+  });
+  const shiftStart = 480; // 08:00 AM
+  const shiftEnd = 990;   // 16:30 PM (4:30 PM)
+  let isToday = dateStr === Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  let nowTimeStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'HH:mm');
+  let nowMin = timeToMins(nowTimeStr);
+  // Do not project waste into the future if the shift is still ongoing
+  let latestEvalTime = isToday ? Math.min(shiftEnd, nowMin) : shiftEnd;
+  if (isToday && nowMin < shiftStart) return; // Shift hasn't started yet
+  todayRows.forEach(function (r) {
+    if (r.type === 'Waste' || !r.start) return;
+    let sMin = timeToMins(r.start);
+    if (r.status === 'Active') {
+      for (let m = sMin; m < nowMin; m++) timeline[m] = true;
+    } else if (r.end) {
+      let eMin = timeToMins(r.end);
+      if (eMin < sMin) eMin += 1440;
+      for (let m = sMin; m < eMin; m++) timeline[m] = true;
+    }
+  });
+  let gaps = []; let inGap = false; let gapStart = 0;
+  // Scan strictly within the shift boundaries
+  for (let m = shiftStart; m <= latestEvalTime; m++) {
+    if (!timeline[m] && m !== latestEvalTime) {
+      if (!inGap) { inGap = true; gapStart = m; }
+    } else {
+      if (inGap) {
+        if (m - gapStart > 0) gaps.push({ start: gapStart, end: m });
+        inGap = false;
+      }
+    }
+  }
+  let wasteRows = todayRows.filter(function (r) { return r.type === 'Waste'; }).sort(function (a, b) { return timeToMins(a.start) - timeToMins(b.start); });
+  let maxI = Math.max(gaps.length, wasteRows.length);
+  let rowsToDelete = [];
+  for (let i = 0; i < maxI; i++) {
+    if (i < gaps.length && i < wasteRows.length) {
+      sheet.getRange(wasteRows[i].rowIndex, 6).setValue(minsToTime(gaps[i].start));
+      sheet.getRange(wasteRows[i].rowIndex, 7).setValue(minsToTime(gaps[i].end));
+      sheet.getRange(wasteRows[i].rowIndex, 8).setValue(gaps[i].end - gaps[i].start);
+    } else if (i < gaps.length) {
+      const sessionId = 'WST-' + new Date().getTime() + '-' + i;
+      const segmentId = sessionId + '-1';
+      sheet.appendRow([
+        sessionId, new Date(), 'النظام', dateStr, 'وقت مهدر',
+        minsToTime(gaps[i].start), minsToTime(gaps[i].end), gaps[i].end - gaps[i].start,
+        '', '', '', '', 'Completed', segmentId
+      ]);
+    } else {
+      rowsToDelete.push(wasteRows[i].rowIndex);
+    }
+  }
+  rowsToDelete.sort(function (a, b) { return b - a; }).forEach(function (r) { sheet.deleteRow(r); });
+}
+// --- END OF DAY AUTOMATION & DAILY SUMMARY ---
+function endOfDayRoutine() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Production_Logs');
+  if (!sheet) return;
+  const tz = Session.getScriptTimeZone();
+  const today = new Date();
+  const todayStr = Utilities.formatDate(today, tz, 'yyyy-MM-dd');
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 14).getValues();
+  let updatedActive = false;
+  // 1. Force-close any uncompleted Active sessions to 16:30
+  for (let i = 0; i < data.length; i++) {
+    let rowDate = data[i][3] instanceof Date ? Utilities.formatDate(data[i][3], tz, 'yyyy-MM-dd') : String(data[i][3]).trim();
+    if (rowDate === todayStr && data[i][12] === 'Active') {
+      let sTime = data[i][5] instanceof Date ? Utilities.formatDate(data[i][5], tz, 'HH:mm') : String(data[i][5]).trim();
+      let dur = calculateDuration(sTime, '16:30');
+      let oldNotes = data[i][10] || '';
+      let newNotes = oldNotes ? oldNotes + '\nإغلاق تلقائي بواسطة النظام' : 'إغلاق تلقائي بواسطة النظام';
+      let rowIndex = i + 2;
+      sheet.getRange(rowIndex, 7).setValue('16:30'); // Force close at 4:30 PM
+      sheet.getRange(rowIndex, 8).setValue(dur);
+      sheet.getRange(rowIndex, 11).setValue(newNotes);
+      sheet.getRange(rowIndex, 13).setValue('Completed');
+      updatedActive = true;
+    }
+  }
+  // 2. Synchronize Waste Times completely for the day
+  syncWasteTimes(todayStr);
+  // 3. Gather Updated Data for Metric Calculation
+  const updatedData = sheet.getRange(2, 1, sheet.getLastRow() - 1, 14).getValues();
+  let actualStart = 1440; let actualEnd = 0;
+  let totalProd = 0; let totalBreak = 0; let totalWaste = 0;
+  let hasData = false;
+  let endDayBreaks = [];
+  updatedData.forEach(function (r) {
+    let rowDate = r[3] instanceof Date ? Utilities.formatDate(r[3], tz, 'yyyy-MM-dd') : String(r[3]).trim();
+    if (rowDate === todayStr && r[12] === 'Completed' && r[4] === 'وقت الراحة') {
+      let sM = timeToMins(r[5] instanceof Date ? Utilities.formatDate(r[5], tz, 'HH:mm') : String(r[5]));
+      let eM = timeToMins(r[6] instanceof Date ? Utilities.formatDate(r[6], tz, 'HH:mm') : String(r[6]));
+      let dur = eM - sM; if (dur < 0) dur += 1440;
+      endDayBreaks.push({ start: sM, end: sM + dur });
+    }
+  });
+  updatedData.forEach(function (r) {
+    let rowDate = r[3] instanceof Date ? Utilities.formatDate(r[3], tz, 'yyyy-MM-dd') : String(r[3]).trim();
+    if (rowDate === todayStr && r[12] === 'Completed') {
+      hasData = true;
+      let product = r[4];
+      let sM = timeToMins(r[5] instanceof Date ? Utilities.formatDate(r[5], tz, 'HH:mm') : String(r[5]));
+      let eM = timeToMins(r[6] instanceof Date ? Utilities.formatDate(r[6], tz, 'HH:mm') : String(r[6]));
+      let dur = eM - sM; if (dur < 0) dur += 1440;
+      let absEM = sM + dur;
+      if (sM < actualStart) actualStart = sM;
+      if (eM > actualEnd) actualEnd = eM;
+
+      if (product === 'وقت مهدر') {
+        totalWaste += dur;
+      } else if (product === 'وقت الراحة') {
+        totalBreak += dur;
+      } else {
+        let netDur = dur;
+        endDayBreaks.forEach(b => {
+          let oStart = Math.max(sM, b.start);
+          let oEnd = Math.min(absEM, b.end);
+          if (oStart < oEnd) netDur -= (oEnd - oStart);
+        });
+        totalProd += netDur;
+      }
+    }
+  });
+  if (!hasData) return; // Exit if no activity happened today
+  // Apply Flex-Time / Overtime Math
+  let shiftStart = (actualStart < 480) ? actualStart : 480;
+  let shiftEnd = shiftStart + 510; // 8.5 hours
+  let deficit = (actualStart > 480) ? actualStart - 480 : 0;
+  let extraMins = actualEnd > shiftEnd ? actualEnd - shiftEnd : 0;
+  let compMins = Math.min(deficit, extraMins);
+  let overtimeMins = extraMins - compMins;
+  function formatDurSummary(mins) {
+    if (!mins) return '0 د';
+    let h = Math.floor(mins / 60);
+    let m = mins % 60;
+    if (h > 0 && m > 0) return h + ' س و ' + m + ' د';
+    if (h > 0) return h + ' س';
+    return m + ' د';
+  }
+  // 4. Update or Create Daily_Summary Sheet
+  let summarySheet = ss.getSheetByName('Daily_Summary');
+  if (!summarySheet) {
+    summarySheet = ss.insertSheet('Daily_Summary');
+    summarySheet.appendRow(['التاريخ', 'وقت الإنتاج الفعلي', 'وقت الراحة', 'الوقت المهدر', 'الوقت الإضافي']);
+    summarySheet.getRange(1, 1, 1, 5).setFontWeight('bold').setBackground('#f3f4f6');
+  }
+  // Check if today already exists to prevent duplicate rows
+  let sumData = summarySheet.getDataRange().getValues();
+  let rowIndexToUpdate = -1;
+  for (let i = 1; i < sumData.length; i++) {
+    let sumDate = sumData[i][0] instanceof Date ? Utilities.formatDate(sumData[i][0], tz, 'yyyy-MM-dd') : String(sumData[i][0]).trim();
+    if (sumDate === todayStr) {
+      rowIndexToUpdate = i + 1;
+      break;
+    }
+  }
+  let rowValues = [
+    todayStr,
+    formatDurSummary(totalProd),
+    formatDurSummary(totalBreak),
+    formatDurSummary(totalWaste),
+    formatDurSummary(overtimeMins)
+  ];
+  if (rowIndexToUpdate > -1) {
+    summarySheet.getRange(rowIndexToUpdate, 1, 1, 5).setValues([rowValues]);
+  } else {
+    summarySheet.appendRow(rowValues);
+  }
+
+  // 5. AUTO-SYNC: Capture snapshot into Daily_Product_Performance JSON API
+  triggerRetroactiveSync(todayStr, 'النظام التلقائي (Automated)');
+}
+function setupDailyTrigger() {
+  // 1. Clean up any existing triggers to prevent duplicates
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'endOfDayRoutine') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  // 2. Create the daily trigger to run at 11:55 PM (23:55)
+  ScriptApp.newTrigger('endOfDayRoutine')
+    .timeBased()
+    .everyDays(1)
+    .atHour(23)
+    .nearMinute(55)
+    .create();
+}
+// --- EXECUTIVE REPORTING ENGINE (PORTAL C) ---
+function getProductionDateRange() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Production_Logs');
+  if (!sheet) return { min: '', max: '' };
+  // Fetch Dates (Col D/Index 3) and Status (Col M/Index 12)
+  const data = sheet.getRange(2, 4, sheet.getLastRow() - 1, 10).getValues();
+  const tz = Session.getScriptTimeZone();
+  let minDate = null;
+  let maxDate = null;
+  data.forEach(r => {
+    if (r[9] !== 'Completed') return; // Only count productive days
+    let dObj = new Date(r[0]);
+    if (isNaN(dObj.getTime())) return;
+    if (!minDate || dObj < minDate) minDate = dObj;
+    if (!maxDate || dObj > maxDate) maxDate = dObj;
+  });
+  return {
+    min: minDate ? Utilities.formatDate(minDate, tz, 'yyyy-MM-dd') : '',
+    max: maxDate ? Utilities.formatDate(maxDate, tz, 'yyyy-MM-dd') : ''
+  };
+}
+function getProductionReportData(filters) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Production_Logs');
+  if (!sheet) throw new Error("Sheet not found");
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 14).getValues();
+  const tz = Session.getScriptTimeZone();
+  let kpis = { prod: 0, break: 0, waste: 0, overtime: 0 };
+  let prodMap = {};
+  let trendMap = {};
+  let productsSet = new Set();
+  let usersSet = new Set();
+  let dayGroups = {};
+
+  // 1. Filter & Group Chronologically
+  data.forEach(r => {
+    if (r[12] !== 'Completed') return; // Only process finished sessions
+
+    let dateStr = r[3] instanceof Date ? Utilities.formatDate(r[3], tz, 'yyyy-MM-dd') : String(r[3]).trim();
+    let product = r[4];
+    let user = r[2];
+
+    if (product !== 'وقت مهدر' && product !== 'وقت الراحة') productsSet.add(product);
+    if (user && user !== 'النظام') usersSet.add(user);
+
+    if (filters.startDate && dateStr < filters.startDate) return;
+    if (filters.endDate && dateStr > filters.endDate) return;
+
+    if (filters.user && filters.user !== 'الكل' && user !== filters.user) return;
+
+    if (filters.product && filters.product !== 'الكل') {
+      if (product !== filters.product && product !== 'وقت مهدر' && product !== 'وقت الراحة') return;
+      // Hide general waste/breaks if a specific product is filtered to avoid skewed data
+      if (product === 'وقت مهدر' || product === 'وقت الراحة') return;
+    }
+
+    if (!dayGroups[dateStr]) dayGroups[dateStr] = [];
+    dayGroups[dateStr].push(r);
+  });
+  // 2. Process Daily Flex-Time Logic
+  for (let d in dayGroups) {
+    let dayRows = dayGroups[d];
+    let actualStart = 1440; let actualEnd = 0;
+    let dProd = 0; let dBreak = 0; let dWaste = 0;
+    // Collect breaks for the day
+    let dayBreaks = [];
+    dayRows.forEach(r => {
+      if (r[4] === 'وقت الراحة') {
+        let sM = timeToMins(r[5] instanceof Date ? Utilities.formatDate(r[5], tz, 'HH:mm') : String(r[5]));
+        let eM = timeToMins(r[6] instanceof Date ? Utilities.formatDate(r[6], tz, 'HH:mm') : String(r[6]));
+        let dur = eM - sM; if (dur < 0) dur += 1440;
+        dayBreaks.push({ start: sM, end: sM + dur });
+      }
+    });
+
+    let prodSessions = [];
+    let minuteMap = new Array(1440).fill(null).map(() => []);
+
+    dayRows.forEach(r => {
+      let sM = timeToMins(r[5] instanceof Date ? Utilities.formatDate(r[5], tz, 'HH:mm') : String(r[5]));
+      let eM = timeToMins(r[6] instanceof Date ? Utilities.formatDate(r[6], tz, 'HH:mm') : String(r[6]));
+      let dur = eM - sM; if (dur < 0) dur += 1440;
+      let absEM = sM + dur;
+      let product = r[4];
+
+      if (sM < actualStart) actualStart = sM;
+      if (eM > actualEnd) actualEnd = eM;
+
+      if (product === 'وقت مهدر') {
+        dWaste += dur; kpis.waste += dur;
+      } else if (product === 'وقت الراحة') {
+        dBreak += dur; kpis.break += dur;
+      } else {
+        prodSessions.push({
+          product: product,
+          start: sM,
+          end: absEM,
+          qty: parseFloat(r[8]) || 0,
+          allocatedDur: 0
+        });
+      }
+    });
+
+    // Build the minute map for valid production times
+    prodSessions.forEach((session, idx) => {
+      for (let m = session.start; m < session.end; m++) {
+        let minuteOfDay = m % 1440;
+
+        // Check if this minute overlaps with ANY break (ensuring breaks don't count towards production time)
+        let isBreak = false;
+        for (let b of dayBreaks) {
+          if (m >= b.start && m < b.end) {
+            isBreak = true; break;
+          }
+        }
+
+        if (!isBreak) {
+          minuteMap[minuteOfDay].push(idx);
+        }
+      }
+    });
+
+    // Calculate fractional durations and absolute factory production time
+    for (let m = 0; m < 1440; m++) {
+      let activeCount = minuteMap[m].length;
+      if (activeCount > 0) {
+        dProd += 1; // Exactly 1 minute of net factory uptime
+        kpis.prod += 1;
+
+        // Dilute the minute equally across all products running at that exact time
+        let fraction = 1 / activeCount;
+        minuteMap[m].forEach(idx => {
+          prodSessions[idx].allocatedDur += fraction;
+        });
+      }
+    }
+
+    // Aggregate the perfectly balanced times back into the product maps
+    prodSessions.forEach(session => {
+      let p = session.product;
+      if (!prodMap[p]) prodMap[p] = { qty: 0, dilutedDur: 0, rawDur: 0, breakdown: {} };
+      
+      // DEDUCT BREAKS FOR NET RAW DURATION
+      let netRawDur = session.end - session.start;
+      dayBreaks.forEach(b => {
+          let oStart = Math.max(session.start, b.start);
+          let oEnd = Math.min(session.end, b.end);
+          if (oStart < oEnd) netRawDur -= (oEnd - oStart);
+      });
+      if (netRawDur < 0) netRawDur = 0;
+
+      prodMap[p].qty += session.qty;
+      prodMap[p].dilutedDur += session.allocatedDur;
+      prodMap[p].rawDur += netRawDur;
+
+      if (!prodMap[p].breakdown[d]) prodMap[p].breakdown[d] = { qty: 0, dilutedDur: 0, rawDur: 0 };
+      prodMap[p].breakdown[d].qty += session.qty;
+      prodMap[p].breakdown[d].dilutedDur += session.allocatedDur;
+      prodMap[p].breakdown[d].rawDur += netRawDur;
+    });
+
+    let shiftStart = (actualStart < 480) ? actualStart : 480;
+    let shiftEnd = shiftStart + 510;
+    let deficit = (actualStart > 480) ? actualStart - 480 : 0;
+    let extraMins = actualEnd > shiftEnd ? actualEnd - shiftEnd : 0;
+    let compMins = Math.min(deficit, extraMins);
+    let overtimeMins = extraMins - compMins;
+
+    // RULE: If NO actual production happened, ignore waste and overtime for this day
+    if (dProd === 0) {
+      kpis.waste -= dWaste; // Remove this day's waste from the global KPI tally
+      dWaste = 0;           // Zero it out for the daily chart trend
+      overtimeMins = 0;     // Zero out daily overtime
+    }
+
+    kpis.overtime += overtimeMins;
+    trendMap[d] = { date: d, prod: dProd, waste: dWaste, break: dBreak, ot: overtimeMins };
+  }
+  let trendArray = Object.values(trendMap).sort((a, b) => a.date.localeCompare(b.date));
+  let productsArray = Object.keys(prodMap).map(p => {
+    let d = prodMap[p];
+    
+    // NEW DUAL MATH:
+    // Operational Speed strictly uses Raw Duration. Financial Cost uses Diluted Duration.
+    let opAvgTime = d.qty > 0 ? (d.rawDur / d.qty).toFixed(2) : 0;
+    let finLoadedTime = d.qty > 0 ? (d.dilutedDur / d.qty).toFixed(2) : 0;
+    
+    return { 
+      name: p, 
+      qty: d.qty, 
+      dur: d.dilutedDur, // Keep 'dur' tied to financial for backward compatibility
+      rawDur: d.rawDur,
+      dilutedDur: d.dilutedDur,
+      opAvg: opAvgTime,
+      finAvg: finLoadedTime,
+      breakdown: d.breakdown 
+    };
+  }).sort((a, b) => b.dur - a.dur);
+  return {
+    kpis: kpis,
+    trend: trendArray,
+    products: productsArray,
+    productNames: Array.from(productsSet).sort(),
+    users: Array.from(usersSet).sort()
+  };
+}
+
+// --- RETROACTIVE PERFORMANCE & JSON SYNC ENGINE ---
+
+function formatDurationBackend(mins) {
+  if (!mins || isNaN(mins) || mins === Infinity) return '00:00:00';
+  let totalSeconds = Math.round(mins * 60);
+  let h = Math.floor(totalSeconds / 3600);
+  let m = Math.floor((totalSeconds % 3600) / 60);
+  let s = totalSeconds % 60;
+  return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function triggerRetroactiveSync(startDateStr, triggerSource) {
+  try {
+    let tz = Session.getScriptTimeZone();
+    let todayStr = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+    let currentDate = new Date(startDateStr);
+    let endDate = new Date(todayStr);
+
+    if (isNaN(currentDate.getTime()) || isNaN(endDate.getTime())) throw new Error("تاريخ غير صالح");
+
+    // Ripple Effect: Sync the edited day and every single day after it up to today
+    while (currentDate <= endDate) {
+      let dStr = Utilities.formatDate(currentDate, tz, 'yyyy-MM-dd');
+      syncPerformanceData(dStr, triggerSource);
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    return { success: true, message: 'تمت مزامنة بيانات الأداء بنجاح!' };
+  } catch (e) {
+    throw new Error("خطأ في المزامنة: " + e.message);
+  }
+}
+
+function syncPerformanceData(dateStr, triggerSource) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('Daily_Product_Performance');
+  if (!sheet) {
+    sheet = ss.insertSheet('Daily_Product_Performance');
+    sheet.appendRow(['التاريخ', 'المنتج', 'الكمية المنتجة', 'وقت الإنتاج الصافي', 'متوسط وقت الإنتاج التشغيلي', 'الوقت المالي المخفف', 'الوقت المحمل للوحدة', 'نسبة التكلفة المجمعة', 'وزن تكلفة الوحدة', 'Daily JSON', 'Monthly JSON', 'ملف التزامن', 'وقت الحفظ', 'بواسطة']);
+    sheet.getRange(1, 1, 1, 14).setFontWeight('bold').setBackground('#f3f4f6');
+  }
+
+  // 1. Get Daily Data via your existing bulletproof reporting engine
+  let report = getProductionReportData({ startDate: dateStr, endDate: dateStr, product: 'الكل', user: 'الكل' });
+  let totalFactoryTime = report.kpis.prod;
+
+  // 2. Delete existing rows for dateStr (to allow clean Upsert)
+  let data = sheet.getDataRange().getValues();
+  let rowsToDelete = [];
+  for (let i = 1; i < data.length; i++) {
+    let rowDate = data[i][0] instanceof Date ? Utilities.formatDate(data[i][0], Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(data[i][0]).trim();
+    if (rowDate === dateStr) rowsToDelete.push(i + 1);
+  }
+  rowsToDelete.reverse().forEach(r => sheet.deleteRow(r));
+
+  // 3. Prepare new rows & JSONs
+  let timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+  let newRows = [];
+  let startOfMonth = dateStr.substring(0, 8) + '01'; // 'YYYY-MM-01'
+
+  // Pre-fetch MTD Factory Time to avoid loop queries
+  let mtdFactoryReport = getProductionReportData({ startDate: startOfMonth, endDate: dateStr, product: 'الكل', user: 'الكل' });
+  let mtdTotalFactoryTime = mtdFactoryReport.kpis.prod;
+
+  // We need the Unified Data to grab the exact concurrency breakdown JSON
+  let unifiedData = getUnifiedProdData(dateStr);
+  
+  report.products.forEach(p => {
+    let aggCostPct = totalFactoryTime > 0 ? (p.dilutedDur / totalFactoryTime) * 100 : 0;
+    let unitWeightPct = p.qty > 0 ? (aggCostPct / p.qty) : 0;
+    let loadedTimePerUnit = p.qty > 0 ? (p.dilutedDur / p.qty) : 0;
+    let operationalTimePerUnit = p.qty > 0 ? (p.rawDur / p.qty) : 0;
+
+    // Find the master card to extract the concurrency profile
+    let masterCard = unifiedData.masterCards.find(m => m.product === p.name);
+    let concurrencyProfileJSON = masterCard && masterCard.metrics ? JSON.stringify(masterCard.metrics.concurrencyCounts) : '{}';
+
+    let dailyJson = {
+      date: dateStr,
+      product: p.name,
+      qty: p.qty,
+      rawProdTimeMins: parseFloat(p.rawDur.toFixed(2)),
+      dilutedProdTimeMins: parseFloat(p.dilutedDur.toFixed(2)),
+      opTimePerUnitMins: parseFloat(operationalTimePerUnit.toFixed(2)),
+      finTimePerUnitMins: parseFloat(loadedTimePerUnit.toFixed(2)),
+      aggCostPct: parseFloat(aggCostPct.toFixed(4)),
+      unitWeightPct: parseFloat(unitWeightPct.toFixed(6))
+    };
+
+    let mtdProduct = mtdFactoryReport.products.find(x => x.name === p.name);
+    let mtdJson = {
+      month: dateStr.substring(0, 7),
+      product: p.name,
+      mtdQty: mtdProduct ? mtdProduct.qty : 0,
+      mtdRawProdTimeMins: mtdProduct ? parseFloat(mtdProduct.rawDur.toFixed(2)) : 0,
+      mtdDilutedProdTimeMins: mtdProduct ? parseFloat(mtdProduct.dilutedDur.toFixed(2)) : 0,
+      mtdTotalFactoryTimeMins: mtdTotalFactoryTime
+    };
+
+    newRows.push([
+      dateStr,
+      p.name,
+      p.qty,
+      formatDurationBackend(p.rawDur),        // D: Raw Operational Time
+      formatDurationBackend(operationalTimePerUnit), // E: Avg Operational Time / Unit
+      formatDurationBackend(p.dilutedDur),    // F: Financial Diluted Time
+      formatDurationBackend(loadedTimePerUnit),// G: Financial Time / Unit
+      aggCostPct.toFixed(2) + '%',
+      unitWeightPct.toFixed(4) + '%',
+      JSON.stringify(dailyJson),
+      JSON.stringify(mtdJson),
+      concurrencyProfileJSON,                 // L: Concurrency State Array
+      timestamp,
+      triggerSource
+    ]);
+  });
+
+  if (newRows.length > 0) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, 14).setValues(newRows);
+  }
+}
+
+// --- END OF SHIFT (HANDOVER) ENGINE ---
+
+function getLastTankNumber() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    // Strictly target the active 'Tank' sheet
+    const tankSheet = ss.getSheetByName('Tank');
+    if (!tankSheet || tankSheet.getLastRow() < 2) return 0;
+
+    // Fetch exclusively Column M (Column Index 13)
+    const data = tankSheet.getRange(2, 13, tankSheet.getLastRow() - 1, 1).getValues();
+    
+    let maxSerial = 0;
+    // Scan all rows to find the absolute highest registered serial number
+    for (let i = 0; i < data.length; i++) {
+      let val = parseInt(data[i][0]);
+      if (!isNaN(val) && val > maxSerial) {
+        maxSerial = val;
+      }
+    }
+    return maxSerial;
+  } catch(e) {
+    return 0;
+  }
+}
+
+function processEndOfShift(inputNumberStr, imageBase64) {
+  try {
+    const lastTank = getLastTankNumber();
+    const expected = lastTank + 1;
+    const input = parseInt(inputNumberStr);
+
+    if (isNaN(input)) {
+      return { success: false, message: "الرقم المدخل غير صالح. يرجى إدخال أرقام فقط." };
+    }
+
+    // Sequence Verification Logic (Arabic Only)
+    if (input > expected) {
+      return { success: false, message: `الرقم المدخل (${input}) أكبر من المتوقع (${expected}).\n\nيبدو أن هناك ملصق مفقود! يرجى المراجعة.` };
+    } else if (input < expected) {
+      return { success: false, message: `الرقم المدخل (${input}) أصغر من المتوقع (${expected}).\n\nيبدو أن هناك تانك لم يتم تسجيله في النظام أو تم تكرار الرقم! يرجى المراجعة.` };
+    }
+
+    // Exact Match Success - Save Data
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let handoverSheet = ss.getSheetByName("Shift_Handovers");
+    if (!handoverSheet) {
+      handoverSheet = ss.insertSheet("Shift_Handovers");
+      handoverSheet.appendRow(["وقت التسليم", "آخر تانك", "الرقم القادم المتوقع", "رابط الصورة"]);
+      handoverSheet.getRange(1, 1, 1, 4).setFontWeight("bold").setBackground("#f3f4f6");
+    }
+
+    // Save Image to Drive
+    let imageUrl = "";
+    if (imageBase64) {
+      const folderName = "Shift_Handovers_Images";
+      let folders = DriveApp.getFoldersByName(folderName);
+      let folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+      
+      let base64Data = imageBase64.split(',')[1];
+      let blob = Utilities.newBlob(Utilities.base64Decode(base64Data), 'image/jpeg', 'Handover_Next_' + expected + '_' + new Date().getTime() + '.jpg');
+      let file = folder.createFile(blob);
+      imageUrl = file.getUrl();
+    }
+
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    handoverSheet.appendRow([timestamp, lastTank, expected, imageUrl]);
+
+    return { success: true, message: "تطابق التسلسل! تم إنهاء الوردية وتسليم العهدة بنجاح." };
+  } catch(e) {
+    return { success: false, message: "خطأ في النظام: " + e.message };
+  }
+}
+
+function getLatestHandover() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ws = ss.getSheetByName("Shift_Handovers");
+    if (!ws || ws.getLastRow() < 2) return null;
+    
+    // Get the absolute last row saved
+    const lastRow = ws.getRange(ws.getLastRow(), 1, 1, 4).getValues()[0];
+    return {
+      time: String(lastRow[0]),
+      number: lastRow[2], 
+      image: String(lastRow[3])
+    };
+  } catch(e) { return null; }
+}
+
+// ============================================================================
+// --- PHASE 6: ONE-TIME HISTORICAL DATA MIGRATION SCRIPT ---
+// ============================================================================
+
+function runHistoricalDataMigration() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const logSheet = ss.getSheetByName('Production_Logs');
+    if (!logSheet || logSheet.getLastRow() < 2) {
+      return "عذراً، لم يتم العثور على أي بيانات في جدول Production_Logs.";
+    }
+    
+    const lastRow = logSheet.getLastRow();
+    const range = logSheet.getRange(2, 1, lastRow - 1, 14);
+    const values = range.getValues();
+    
+    const tz = Session.getScriptTimeZone();
+    const sessionCounters = {};
+    const uniqueDates = new Set();
+    let segmentsUpdated = 0;
+    
+    // PASS 1: Assign Retroactive Segment IDs and Collect Unique Logged Dates
+    for (let i = 0; i < values.length; i++) {
+      let sessionId = values[i][0];
+      if (!sessionId) continue;
+      
+      // Extract the chronological date string
+      let dateStr = values[i][3] instanceof Date 
+        ? Utilities.formatDate(values[i][3], tz, 'yyyy-MM-dd') 
+        : String(values[i][3]).trim();
+        
+      if (dateStr && dateStr !== 'وقت مهدر' && dateStr !== 'وقت الراحة' && values[i][4]) {
+        uniqueDates.add(dateStr);
+      }
+      
+      // Track serialized counters for segment grouping
+      if (!sessionCounters[sessionId]) {
+        sessionCounters[sessionId] = 0;
+      }
+      sessionCounters[sessionId]++;
+      
+      // If Column N (Segment ID) is completely blank, retro-assign identity
+      if (!values[i][13] || String(values[i][13]).trim() === "") {
+        values[i][13] = sessionId + '-' + sessionCounters[sessionId];
+        segmentsUpdated++;
+      }
+    }
+    
+    // Save generated segment IDs back to Column N in bulk execution
+    if (segmentsUpdated > 0) {
+      const segmentIdColumnValues = values.map(row => [row[13]]);
+      logSheet.getRange(2, 14, segmentIdColumnValues.length, 1).setValues(segmentIdColumnValues);
+    }
+    
+    // PASS 2: Sequential Backfill via the Live Dual-Math Engine
+    let datesArray = Array.from(uniqueDates).sort();
+    let datesSynced = 0;
+    
+    datesArray.forEach(dateStr => {
+      try {
+        // Triggers full deletion of old row + complete recalculation of the 14 columns
+        syncPerformanceData(dateStr, 'الهجرة التاريخية (Data Migration)');
+        datesSynced++;
+      } catch (err) {
+        Logger.log(`خطأ أثناء معالجة تاريخ ${dateStr}: ${err.message}`);
+      }
+    });
+    
+    return `🎉 تمت عملية الهجرة وتحديث البيانات التاريخية بنجاح!\n\n` +
+           `- تم إنشاء معرّفات تشغيل جزئية (Segment IDs): ${segmentsUpdated} سجل.\n` +
+           `- تم إعادة احتساب ومزامنة الأداء المالي والتشغيلي لـ: ${datesSynced} يومًا بالكامل.`;
+           
+  } catch (e) {
+    throw new Error("فشلت عملية الهجرة: " + e.message);
+  }
+}
+
+// ============================================================================
+// --- UNIFIED SSO AUTHENTICATION ENGINE ---
+// ============================================================================
+function globalLogin(pin) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('App_Users');
+    if (!sheet) throw new Error("لم يتم العثور على قاعدة بيانات المستخدمين.");
+
+    const data = sheet.getDataRange().getValues();
+    let userRow = -1;
+    let userData = null;
+
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][1]).trim() === String(pin).trim()) {
+        userRow = i + 1;
+        userData = data[i];
+        break;
+      }
+    }
+
+    if (userRow === -1) {
+      return { valid: false, message: "رمز المرور غير صحيح أو غير مسجل بالنظام." };
+    }
+
+    // Map permissions directly from Columns C(2), D(3), E(4), F(5), G(6)
+    const permissions = {
+      'A': userData[2] === true || String(userData[2]).toLowerCase() === 'true',
+      'B': userData[3] === true || String(userData[3]).toLowerCase() === 'true',
+      'PROD': userData[4] === true || String(userData[4]).toLowerCase() === 'true',
+      'TDS': userData[5] === true || String(userData[5]).toLowerCase() === 'true',
+      'MNT': userData[6] === true || String(userData[6]).toLowerCase() === 'true',
+      'C': true // Executive Reports portal is visible to all authenticated users
+    };
+
+    const userName = String(userData[0]).trim();
+    
+    // Update Online Presence instantly
+    const tz = Session.getScriptTimeZone();
+    const timestamp = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm:ss');
+    sheet.getRange(userRow, 8).setValue(timestamp); // Last Ping (Col H)
+    sheet.getRange(userRow, 9).setValue('الرئيسية (Dashboard)'); // Location (Col I)
+
+    return { 
+      valid: true, 
+      userName: userName, 
+      permissions: permissions 
+    };
+  } catch (e) {
+    return { valid: false, message: e.message };
+  }
+}
+
+// ============================================================================
+// --- MAINTENANCE & CLEANING PORTAL ENGINE (MNT) ---
+// ============================================================================
+
+function getMntSetupData() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('تعليمات الصيانة و النظافة');
+    if (!sheet || sheet.getLastRow() < 2) {
+      throw new Error('لم يتم العثور على شيت "تعليمات الصيانة و النظافة" أو الشيت فارغ.');
+    }
+
+    const tz = Session.getScriptTimeZone();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Fetch Columns A to H (ID, Name, MaintDays, MaintProc, CleanDays, CleanProc, Category, Location)
+    const lastRow = sheet.getLastRow();
+    const rawData = sheet.getRange(2, 1, lastRow - 1, 8).getValues();
+
+    // Scan Logs sheet to collect historical last performed dates and performer names
+    const logSheet = ss.getSheetByName('Maintenance_Cleaning_Logs');
+    const lastTaskMap = {}; // Key: "itemId_taskType" -> { date, performer, notes, images }
+    const performersSet = new Set();
+
+    if (logSheet && logSheet.getLastRow() >= 2) {
+      const logData = logSheet.getRange(2, 1, logSheet.getLastRow() - 1, 12).getValues();
+      logData.forEach(row => {
+        const rowDate = row[2] instanceof Date ? Utilities.formatDate(row[2], tz, 'yyyy-MM-dd') : String(row[2]).trim();
+        const taskType = String(row[3] || '').trim(); // 'نظافة' or 'صيانة'
+        const itemId = String(row[4] || '').trim();
+        const rawPerformer = String(row[8] || '').trim();
+
+        // Extract individual performer names from JSON, comma-separated strings, or legacy text
+        if (rawPerformer) {
+          try {
+            const parsed = JSON.parse(rawPerformer);
+            if (Array.isArray(parsed)) {
+              parsed.forEach(p => { if (p && p.name) performersSet.add(p.name.trim()); });
+            }
+          } catch(e) {
+            rawPerformer.split(',').forEach(p => {
+              const cleanName = p.replace(/\(.*?\)/g, '').trim();
+              if (cleanName) performersSet.add(cleanName);
+            });
+          }
+        }
+
+        // Extract display name for the last task record
+        let displayPerformer = rawPerformer;
+        if (rawPerformer) {
+          try {
+            const parsed = JSON.parse(rawPerformer);
+            if (Array.isArray(parsed)) {
+              displayPerformer = parsed.map(p => p.name).filter(Boolean).join(', ');
+            }
+          } catch(e) {}
+        }
+
+        const key = itemId + '_' + taskType;
+        if (!lastTaskMap[key] || rowDate > lastTaskMap[key].date) {
+          let imgs = [];
+          try { imgs = JSON.parse(row[11] || '[]'); } catch(e) { if(row[11]) imgs = [String(row[11])]; }
+          lastTaskMap[key] = {
+            date: rowDate,
+            performer: displayPerformer || rawPerformer,
+            notes: row[10] || '',
+            images: imgs
+          };
+        }
+      });
+    }
+
+    let overdueCount = 0;
+    let dueTodayCount = 0;
+    let upToDateCount = 0;
+
+    const locationsSet = new Set();
+    const categoriesSet = new Set();
+
+    const items = [];
+
+    rawData.forEach(row => {
+      const id = String(row[0] !== null && row[0] !== undefined ? row[0] : '').trim();
+      // Guard Clause: Skip empty rows or section headers with no Item ID in Column A
+      if (!id) return;
+
+      const name = String(row[1] || '').trim();
+      const maintDays = parseFloat(row[2]) || null;
+      const maintProc = String(row[3] || '').trim();
+      const cleanDays = parseFloat(row[4]) || null;
+      const cleanProc = String(row[5] || '').trim();
+      const category = String(row[6] || 'عام').trim();
+      const location = String(row[7] || 'المصنع').trim();
+
+      if (category) categoriesSet.add(category);
+      if (location) locationsSet.add(location);
+
+      // Cleaning Status Math
+      let cleanInfo = { status: 'none', lastDate: '-', nextDate: '-', daysLeft: null };
+      if (cleanDays !== null && cleanDays > 0) {
+        const lastRecord = lastTaskMap[id + '_نظافة'];
+        if (lastRecord && lastRecord.date) {
+          const lastD = new Date(lastRecord.date);
+          lastD.setHours(0, 0, 0, 0);
+          const nextD = new Date(lastD.getTime() + (cleanDays * 24 * 60 * 60 * 1000));
+          const diff = Math.round((nextD.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+          
+          cleanInfo.lastDate = lastRecord.date;
+          cleanInfo.nextDate = Utilities.formatDate(nextD, tz, 'yyyy-MM-dd');
+          cleanInfo.daysLeft = diff;
+          
+          if (diff < 0) { cleanInfo.status = 'overdue'; overdueCount++; }
+          else if (diff === 0) { cleanInfo.status = 'due_today'; dueTodayCount++; }
+          else { cleanInfo.status = 'up_to_date'; upToDateCount++; }
+        } else {
+          cleanInfo.status = 'overdue'; // Never done = Overdue
+          overdueCount++;
+        }
+      }
+
+      // Maintenance Status Math
+      let maintInfo = { status: 'none', lastDate: '-', nextDate: '-', daysLeft: null };
+      if (maintDays !== null && maintDays > 0) {
+        const lastRecord = lastTaskMap[id + '_صيانة'];
+        if (lastRecord && lastRecord.date) {
+          const lastD = new Date(lastRecord.date);
+          lastD.setHours(0, 0, 0, 0);
+          const nextD = new Date(lastD.getTime() + (maintDays * 24 * 60 * 60 * 1000));
+          const diff = Math.round((nextD.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+          
+          maintInfo.lastDate = lastRecord.date;
+          maintInfo.nextDate = Utilities.formatDate(nextD, tz, 'yyyy-MM-dd');
+          maintInfo.daysLeft = diff;
+          
+          if (diff < 0) { maintInfo.status = 'overdue'; overdueCount++; }
+          else if (diff === 0) { maintInfo.status = 'due_today'; dueTodayCount++; }
+          else { maintInfo.status = 'up_to_date'; upToDateCount++; }
+        } else {
+          maintInfo.status = 'overdue';
+          overdueCount++;
+        }
+      }
+
+      items.push({
+        id: id,
+        name: name,
+        maintDays: maintDays,
+        maintProc: maintProc,
+        cleanDays: cleanDays,
+        cleanProc: cleanProc,
+        category: category,
+        location: location,
+        cleaning: cleanInfo,
+        maintenance: maintInfo
+      });
+    });
+
+    return {
+      items: items,
+      locations: Array.from(locationsSet).sort(),
+      categories: Array.from(categoriesSet).sort(),
+      performers: Array.from(performersSet).sort(),
+      kpis: {
+        totalItems: items.length,
+        overdue: overdueCount,
+        dueToday: dueTodayCount,
+        upToDate: upToDateCount
+      }
+    };
+  } catch (e) {
+    throw new Error('خطأ في تحميل بيانات الصيانة والنظافة: ' + e.message);
+  }
+}
+
+function saveMntLog(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('Maintenance_Cleaning_Logs');
+    if (!sheet) {
+      sheet = ss.insertSheet('Maintenance_Cleaning_Logs');
+      const headers = [
+        'Log ID', 'Timestamp', 'Date', 'Task Type', 'Item ID', 'Item Name', 
+        'Category', 'Location', 'Performer', 'Recorded By', 'Notes', 'Image URLs'
+      ];
+      sheet.appendRow(headers);
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#f3f4f6');
+    }
+
+    const tz = Session.getScriptTimeZone();
+    const timestamp = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm:ss');
+    const logId = 'MNT-' + new Date().getTime();
+
+    // Upload Multi-Images to Drive
+    let imageUrls = [];
+    if (data.images && Array.isArray(data.images) && data.images.length > 0) {
+      const folderName = "Maintenance_Cleaning_Images";
+      const folders = DriveApp.getFoldersByName(folderName);
+      const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+
+      data.images.forEach((base64Data, idx) => {
+        try {
+          const contentType = base64Data.substring(5, base64Data.indexOf(';'));
+          const bytes = Utilities.base64Decode(base64Data.substr(base64Data.indexOf('base64,') + 7));
+          const fileName = `${data.taskType}_${data.itemId}_${new Date().getTime()}_${idx + 1}.jpg`;
+          const blob = Utilities.newBlob(bytes, contentType, fileName);
+          const file = folder.createFile(blob);
+          file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+          imageUrls.push(file.getUrl());
+        } catch (err) {
+          Logger.log('Error uploading sub-image: ' + err.message);
+        }
+      });
+    }
+
+    // Multi-Performers formatted for storage (JSON array preserving ratings 1-10)
+    let performersJSON = '';
+    if (data.performers && Array.isArray(data.performers)) {
+      performersJSON = JSON.stringify(data.performers);
+    } else {
+      performersJSON = JSON.stringify([{ name: data.performer || '', rating: null }]);
+    }
+
+    const row = [
+      logId,
+      timestamp,
+      data.date || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd'),
+      data.taskType, // 'نظافة' or 'صيانة'
+      data.itemId,
+      data.itemName,
+      data.category,
+      data.location,
+      performersJSON, // Col I (Index 8)
+      data.recorder,
+      data.notes || '',
+      JSON.stringify(imageUrls)
+    ];
+
+    sheet.appendRow(row);
+    return { success: true, message: 'تم توثيق المهمة بنجاح!' };
+  } catch (e) {
+    throw new Error('خطأ في حفظ سجل المهمة: ' + e.message);
+  }
+}
+
+function getMntLogsHistory(filters) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Maintenance_Cleaning_Logs');
+    if (!sheet || sheet.getLastRow() < 2) return [];
+
+    const tz = Session.getScriptTimeZone();
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues();
+    const filtered = [];
+
+    data.forEach(row => {
+      const logDate = row[2] instanceof Date ? Utilities.formatDate(row[2], tz, 'yyyy-MM-dd') : String(row[2]).trim();
+      const taskType = String(row[3] || '').trim();
+      const itemId = String(row[4] || '').trim();
+      const itemName = String(row[5] || '').trim();
+      const category = String(row[6] || '').trim();
+      const location = String(row[7] || '').trim();
+      const rawPerformer = String(row[8] || '').trim();
+      const recorder = String(row[9] || '').trim();
+      const notes = String(row[10] || '').trim();
+
+      let imgs = [];
+      try { imgs = JSON.parse(row[11] || '[]'); } catch(e) { if(row[11]) imgs = [String(row[11])]; }
+
+      let performersList = [];
+      try {
+        const parsed = JSON.parse(rawPerformer);
+        if (Array.isArray(parsed)) performersList = parsed;
+        else performersList = [{ name: rawPerformer, rating: null }];
+      } catch(e) {
+        // Fallback for legacy text
+        rawPerformer.split(',').forEach(p => {
+          const matchRating = p.match(/\((\d+)\/10\)/);
+          const name = p.replace(/\(.*?\)/g, '').trim();
+          performersList.push({
+            name: name,
+            rating: matchRating ? parseInt(matchRating[1]) : null
+          });
+        });
+      }
+
+      if (filters.startDate && logDate < filters.startDate) return;
+      if (filters.endDate && logDate > filters.endDate) return;
+      if (filters.taskType && filters.taskType !== 'الكل' && taskType !== filters.taskType) return;
+      if (filters.location && filters.location !== 'الكل' && location !== filters.location) return;
+      if (filters.category && filters.category !== 'الكل' && category !== filters.category) return;
+      
+      if (filters.performer && filters.performer !== 'الكل') {
+        const hasPerformer = performersList.some(p => p.name === filters.performer);
+        if (!hasPerformer) return;
+      }
+
+      const performerNames = performersList.map(p => p.name).filter(Boolean).join(', ');
+
+      filtered.push({
+        id: row[0],
+        timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1], tz, 'yyyy-MM-dd HH:mm') : String(row[1]),
+        date: logDate,
+        taskType: taskType,
+        itemId: itemId,
+        itemName: itemName,
+        category: category,
+        location: location,
+        performers: performersList,
+        performer: performerNames || rawPerformer,
+        recorder: recorder,
+        notes: notes,
+        images: imgs
+      });
+    });
+
+    return filtered.reverse(); // Newest first
+  } catch (e) {
+    throw new Error('خطأ في جلب سجلات الصيانة: ' + e.message);
+  }
+}
+
+// ============================================================================
+// --- BULK MOCK DATA GENERATION ENGINE ---
+// ============================================================================
+
+function getMockGeneratorSetup() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('تعليمات الصيانة و النظافة');
+    if (!sheet || sheet.getLastRow() < 2) {
+      throw new Error('شيت "تعليمات الصيانة و النظافة" غير موجود أو فارغ.');
+    }
+
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues();
+    const items = [];
+    const cleanFreqs = new Set();
+    const maintFreqs = new Set();
+    const categories = new Set();
+    const locations = new Set();
+
+    data.forEach(row => {
+      const id = String(row[0] !== null && row[0] !== undefined ? row[0] : '').trim();
+      // Guard Clause: Ignore empty row if Column A (#) is blank
+      if (!id) return;
+
+      const name = String(row[1] || '').trim();
+      const maintDays = parseFloat(row[2]) || null;
+      const maintProc = String(row[3] || '').trim();
+      const cleanDays = parseFloat(row[4]) || null;
+      const cleanProc = String(row[5] || '').trim();
+      const category = String(row[6] || 'عام').trim();
+      const location = String(row[7] || 'المصنع').trim();
+
+      if (cleanDays !== null && cleanDays > 0) cleanFreqs.add(cleanDays);
+      if (maintDays !== null && maintDays > 0) maintFreqs.add(maintDays);
+      if (category) categories.add(category);
+      if (location) locations.add(location);
+
+      items.push({
+        id: id,
+        name: name,
+        cleanDays: cleanDays,
+        maintDays: maintDays,
+        category: category,
+        location: location
+      });
+    });
+
+    return {
+      items: items,
+      cleanFreqs: Array.from(cleanFreqs).sort((a, b) => a - b),
+      maintFreqs: Array.from(maintFreqs).sort((a, b) => a - b),
+      categories: Array.from(categories).sort(),
+      locations: Array.from(locations).sort()
+    };
+  } catch (e) {
+    throw new Error('فشل جلب بيانات البنود: ' + e.message);
+  }
+}
+
+function generateBulkMntLogs(params) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('Maintenance_Cleaning_Logs');
+    if (!sheet) {
+      sheet = ss.insertSheet('Maintenance_Cleaning_Logs');
+      const headers = [
+        'Log ID', 'Timestamp', 'Date', 'Task Type', 'Item ID', 'Item Name', 
+        'Category', 'Location', 'Performers JSON', 'Recorded By', 'Notes', 'Image URLs'
+      ];
+      sheet.appendRow(headers);
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#f3f4f6');
+    }
+
+    const itemsMap = {};
+    params.items.forEach(it => { itemsMap[it.id] = it; });
+
+    const startDate = new Date(params.startDate);
+    const endDate = new Date(params.endDate);
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    const excludedDays = (params.excludedDays || []).map(Number); // 0 = Sunday, 5 = Friday, 6 = Saturday
+    const performersPool = params.performersPool && params.performersPool.length > 0 
+      ? params.performersPool 
+      : ['أحمد عرفة', 'إسلام محمد', 'محمود علي', 'محمد إبراهيم'];
+
+    // 1. Pre-index existing image URLs per Item ID and Task Type (Deduplicated with Set)
+    const itemImagesMap = {};
+    if (sheet.getLastRow() >= 2) {
+      const existingData = sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues();
+      existingData.forEach(r => {
+        const tType = String(r[3] || '').trim(); // Col D: Task Type
+        const itId = String(r[4] || '').trim();  // Col E: Item ID
+        const rawImgs = r[11];                   // Col L: Image URLs JSON
+
+        if (!itId || !rawImgs) return;
+        try {
+          const parsed = JSON.parse(rawImgs);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            if (!itemImagesMap[itId]) itemImagesMap[itId] = new Set();
+            if (!itemImagesMap[itId + '_' + tType]) itemImagesMap[itId + '_' + tType] = new Set();
+            
+            parsed.forEach(url => {
+              if (url && typeof url === 'string') {
+                itemImagesMap[itId].add(url);
+                itemImagesMap[itId + '_' + tType].add(url);
+              }
+            });
+          }
+        } catch (e) {}
+      });
+    }
+
+    // Helper: Pick 1 or 2 random images for the item from existing pool
+    function pickRandomImages(itemId, taskType) {
+      const specificSet = itemImagesMap[itemId + '_' + taskType];
+      const generalSet = itemImagesMap[itemId];
+      const pool = (specificSet && specificSet.size > 0) 
+        ? Array.from(specificSet) 
+        : (generalSet && generalSet.size > 0 ? Array.from(generalSet) : []);
+
+      if (pool.length === 0) return [];
+
+      const count = Math.min(pool.length, Math.floor(Math.random() * 2) + 1); // Pick 1 or 2
+      const shuffled = [...pool].sort(() => 0.5 - Math.random());
+      return shuffled.slice(0, count);
+    }
+
+    const newRows = [];
+    const tz = Session.getScriptTimeZone();
+
+    // Helper: Generate random time between startTime and endTime
+    function getRandomTime(dateObj) {
+      const [startH, startM] = (params.startTime || '08:30').split(':').map(Number);
+      const [endH, endM] = (params.endTime || '16:30').split(':').map(Number);
+      
+      const startMinutes = startH * 60 + startM;
+      const endMinutes = endH * 60 + endM;
+      const randMinutes = Math.floor(Math.random() * (endMinutes - startMinutes + 1)) + startMinutes;
+      
+      const h = Math.floor(randMinutes / 60);
+      const m = randMinutes % 60;
+      const s = Math.floor(Math.random() * 60);
+      
+      const d = new Date(dateObj);
+      d.setHours(h, m, s, 0);
+      return d;
+    }
+
+    // Helper: Pick random performers
+    function pickRandomPerformers(isClean) {
+      const minP = Math.max(1, params.minPerformers || 1);
+      const maxP = Math.min(performersPool.length, Math.max(minP, params.maxPerformers || 2));
+      const count = Math.floor(Math.random() * (maxP - minP + 1)) + minP;
+      
+      const shuffled = [...performersPool].sort(() => 0.5 - Math.random());
+      const selected = shuffled.slice(0, count);
+      
+      return selected.map(name => {
+        let rating = null;
+        if (isClean) {
+          const minR = Math.max(1, params.minRating || 7);
+          const maxR = Math.min(10, Math.max(minR, params.maxRating || 10));
+          rating = Math.floor(Math.random() * (maxR - minR + 1)) + minR;
+        }
+        return { name: name.trim(), rating: rating };
+      });
+    }
+
+    // Iterate across each selected item
+    params.selectedItemIds.forEach(itemId => {
+      const item = itemsMap[itemId];
+      if (!item) return;
+
+      const tasksToGenerate = [];
+      if (params.taskType === 'both') {
+        if (item.cleanDays) tasksToGenerate.push({ type: 'نظافة', interval: item.cleanDays });
+        if (item.maintDays) tasksToGenerate.push({ type: 'صيانة', interval: item.maintDays });
+      } else if (params.taskType === 'نظافة' && item.cleanDays) {
+        tasksToGenerate.push({ type: 'نظافة', interval: item.cleanDays });
+      } else if (params.taskType === 'صيانة' && item.maintDays) {
+        tasksToGenerate.push({ type: 'صيانة', interval: item.maintDays });
+      }
+
+      tasksToGenerate.forEach(task => {
+        const isClean = task.type === 'نظافة';
+        const targetDates = [];
+
+        if (params.generationMode === 'interval') {
+          // Interval-based scheduling with forward day-shift fallback
+          let currentD = new Date(startDate.getTime());
+          const stepDays = Math.max(1, task.interval);
+          
+          while (currentD <= endDate) {
+            // Fallback: Increment day-by-day until a non-excluded working day is met
+            let shiftAttempts = 0;
+            while (excludedDays.includes(currentD.getDay()) && currentD <= endDate && shiftAttempts < 7) {
+              currentD.setDate(currentD.getDate() + 1);
+              shiftAttempts++;
+            }
+
+            // Record task on the shifted working day
+            if (currentD <= endDate && !excludedDays.includes(currentD.getDay())) {
+              targetDates.push(new Date(currentD));
+            }
+
+            // Step forward by the item's interval from the completed date
+            currentD.setDate(currentD.getDate() + stepDays);
+          }
+        } else {
+          // Fixed count per item with forward day-shift fallback
+          const count = Math.max(1, params.recordsPerItem || 3);
+          const totalDays = Math.max(1, Math.round((endDate - startDate) / (24 * 60 * 60 * 1000)));
+          
+          for (let i = 0; i < count; i++) {
+            let randOffset = Math.floor(Math.random() * totalDays);
+            let d = new Date(startDate.getTime() + (randOffset * 24 * 60 * 60 * 1000));
+            
+            let shiftAttempts = 0;
+            while (excludedDays.includes(d.getDay()) && d <= endDate && shiftAttempts < 7) {
+              d.setDate(d.getDate() + 1);
+              shiftAttempts++;
+            }
+            if (d <= endDate && !excludedDays.includes(d.getDay())) {
+              targetDates.push(d);
+            }
+          }
+        }
+
+        targetDates.forEach(d => {
+          const timestampObj = getRandomTime(d);
+          const dateStr = Utilities.formatDate(timestampObj, tz, 'yyyy-MM-dd');
+          const timestampStr = Utilities.formatDate(timestampObj, tz, 'yyyy-MM-dd HH:mm:ss');
+          const logId = 'MNT-MOCK-' + timestampObj.getTime() + '-' + Math.floor(Math.random() * 1000);
+          const performers = pickRandomPerformers(isClean);
+          const assignedImages = pickRandomImages(item.id, task.type);
+
+          newRows.push([
+            logId,
+            timestampStr,
+            dateStr,
+            task.type,
+            item.id,
+            item.name,
+            item.category,
+            item.location,
+            JSON.stringify(performers),
+            params.recorderName || 'محاكي النظام (Generator)',
+            isClean ? 'تمت عملية النظافة والتطهير الدورية وفق التعليمات' : 'تم الفحص الفني والصيانة الدورية للقطعة',
+            JSON.stringify(assignedImages)
+          ]);
+        });
+      });
+    });
+
+    if (newRows.length === 0) {
+      return { success: false, message: 'لم يتم توليد أي سجلات مطابقة للشروط المحددة.' };
+    }
+
+    // Sort by timestamp chronologically
+    newRows.sort((a, b) => new Date(a[1]) - new Date(b[1]));
+
+    // Bulk append to spreadsheet
+    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+
+    return { 
+      success: true, 
+      count: newRows.length, 
+      message: `تم توليد وإدراج ${newRows.length} سجل بنجاح في قاعدة البيانات!` 
+    };
+  } catch (e) {
+    throw new Error('خطأ في توليد البيانات: ' + e.message);
+  }
+}
+
+// ============================================================================
+// --- PDF EXPORT ENGINE FOR MAINTENANCE & CLEANING LOGS ---
+// ============================================================================
+
+const AL_TAWOOS_LOGO_URI = "data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3MjAiIGhlaWdodD0iMzAwIiB2aWV3Qm94PSIwIDAgNzIwIDMwMCIgZmlsbD0ibm9uZSI+CiAgPGcgY2xpcC1wYXRoPSJ1cmwoI2NsaXAwXzFfMTUpIj4KICAgIDxwYXRoIGQ9Ik0zMDcuMDE5IDQ4LjY3MTlDMzA1LjA5IDQ2LjAzMTcgMzAxLjM2OSA0NS40NTkzIDI5OC43MjkgNDcuNDA3MkMyOTYuMDg5IDQ5LjMzNjUgMjk1LjUxNyA1My4wNTY4IDI5Ny40NjQgNTUuNjk3QzI5Ny44ODkgNTYuMjQxNyAyOTguMzc4IDU2LjczMSAyOTguOTIzIDU3LjEwMDJIMjk4Ljk1MUwzMTMuNjM4IDY4LjAzMDNMMzE0LjA2MyA2Ny43MjU3TDMwNy45MDUgNTAuNDYyOEMzMDcuNzMgNDkuODM1IDMwNy40MTYgNDkuMjI1OCAzMDcuMDEgNDguNjgxMUwzMDcuMDE5IDQ4LjY3MTlaIiBmaWxsPSIjMDE0RUE4Ij48L3BhdGg+CiAgICA8cGF0aCBkPSJNMzUzLjk0MyAzMC44OTIxTDM1OS4zMDYgNDguMzg1N0gzNTkuODE0TDM2NS4wOTQgMzAuODM2N0MzNjUuNzU5IDI4Ljk5OTYgMzY1LjUgMjYuODQ4NyAzNjQuMDYgMjQuNzA3QzM1OS4xNCAyMC43MjgyIDM1My41ODMgMjQuMTQzOCAzNTMuNTgzIDI4Ljg1MTlDMzUzLjU4MyAyOS41ODEyIDM1My43MjEgMzAuMjY0MyAzNTMuOTUyIDMwLjg2NDRWMzAuOTAxM0wzNTMuOTQzIDMwLjg5MjFaIiBmaWxsPSIjMDE0RUE4Ij48L3BhdGg+CiAgICA8cGF0aCBkPSJNMjY1LjMyIDExMC41NTFDMjY1Ljk3NiAxMTAuNzcyIDI2Ni42NjggMTEwLjg3NCAyNjcuMzMzIDExMC44MzdIMjY3LjM2MUwyODUuNjU3IDExMC45NTdMMjg1LjgyNCAxMTAuNDY3TDI3MC42MjkgMTAwLjE3NEMyNzAuMTIxIDk5Ljc2ODIgMjY5LjUzIDk5LjQ2MzUgMjY4Ljg4NCA5OS4yNjA0QzI2NS43NTQgOTguMjgxOSAyNjIuNDMxIDEwMC4wMDggMjYxLjQ1MiAxMDMuMTI4QzI2MC40NTUgMTA2LjI1OCAyNjIuMiAxMDkuNTgxIDI2NS4zMyAxMTAuNTZMMjY1LjMyIDExMC41NTFaIiBmaWxsPSIjMDE0RUE4Ij48L3BhdGg+CiAgICA8cGF0aCBkPSJNNTc1Ljg4NiAxMjcuMTk1QzU3Ni40NjggMTI3LjIyMyA1NzcuMTA1IDEyNy4yMzIgNTc3Ljc4OCAxMjcuMjMyQzU3Ny44OTggMTI2LjYyMyA1NzcuOTgxIDEyNi4wMTMgNTc3Ljk4MSAxMjUuMzk1QzU3Ny45ODEgMTI0LjE2NyA1NzcuNzg4IDEyMy4yNzEgNTc3LjQgMTIyLjY5QzU3Ny4wMTIgMTIyLjEwOCA1NzYuNDY4IDEyMS44MzEgNTc1Ljc3NSAxMjEuODMxQzU3NS4zMDQgMTIxLjgzMSA1NzQuODI0IDEyMS45NyA1NzQuMzM1IDEyMi4yMzhDNTczLjg0NiAxMjIuNTE1IDU3My4zMjkgMTIyLjkzOSA1NzIuNzg0IDEyMy41MjFDNTcyLjIzOSAxMjQuMTAyIDU3MS42NTggMTI0Ljg1OSA1NzEuMDM5IDEyNS44MDFDNTcxLjQ5MiAxMjYuMTI0IDU3MS45OTkgMTI2LjM5MiA1NzIuNTYzIDEyNi41OTVDNTczLjQ4NiAxMjYuOTI3IDU3NC42MDMgMTI3LjEyMSA1NzUuODk1IDEyNy4xODZMNTc1Ljg4NiAxMjcuMTk1WiIgZmlsbD0iIzAxNEVBOCI+PC9wYXRoPgogICAgPHBhdGggZD0iTTQyMC4zODIgNTcuMTAwMkg0MjAuNDE4QzQyMC45NjMgNTYuNzMxIDQyMS40OCA1Ni4yNDE3IDQyMS44NzcgNTUuNjk3QzQyMy44MjUgNTMuMDU2OCA0MjMuMjUzIDQ5LjMzNjUgNDIwLjYyMiA0Ny40MDcyQzQxNy45ODEgNDUuNDU5MyA0MTQuMjggNDYuMDMxNyA0MTIuMzMyIDQ4LjY3MTlDNDExLjkyNiA0OS4yMTY1IDQxMS42MzkgNDkuODI1OCA0MTEuNDM2IDUwLjQ1MzVMNDA1LjI5NyA2Ny43MTY0TDQwNS42ODUgNjguMDIxMUw0MjAuMzcyIDU3LjA5MUw0MjAuMzgyIDU3LjEwMDJaIiBmaWxsPSIjMDE0RUE4Ij48L3BhdGg+CiAgICA8cGF0aCBkPSJNMTYxLjI2MyAxMTguNjgzQzE2MS45IDExOC45MDUgMTYyLjY2NiAxMTkuMDA3IDE2My41NTMgMTE5LjAwN0MxNjQuMDc5IDExOS4wMDcgMTY0LjU4NyAxMTguOTc5IDE2NS4wNjcgMTE4LjkzM0MxNjUuMTk2IDExOC45MjQgMTY1LjM0NCAxMTguODg3IDE2NS40NzMgMTE4Ljg2OFYxMTMuNjhDMTY0LjkxOSAxMTMuNTk3IDE2NC4zNzQgMTEzLjU0MiAxNjMuODMgMTEzLjU0MkMxNjIuOTA2IDExMy41NDIgMTYyLjEwMyAxMTMuNjYyIDE2MS40MTEgMTEzLjg5MkMxNjAuNzE5IDExNC4xMzIgMTYwLjE4MyAxMTQuNDY1IDE1OS43OTUgMTE0Ljg5OUMxNTkuNDA4IDExNS4zMzIgMTU5LjIxNCAxMTUuODMxIDE1OS4yMTQgMTE2LjM5NEMxNTkuMjE0IDExNi45MDIgMTU5LjM4OSAxMTcuMzU0IDE1OS43NDkgMTE3Ljc1MUMxNjAuMTA5IDExOC4xNDggMTYwLjYwOCAxMTguNDUzIDE2MS4yNDUgMTE4LjY3NEwxNjEuMjYzIDExOC42ODNaIiBmaWxsPSIjMDE0RUE4Ij48L3BhdGg+CiAgICA8cGF0aCBkPSJNNDUxLjI0MiAxMDcuODA5SDQ1MS4yN0M0NTEuOTI2IDEwNy44MzYgNDUyLjYxOCAxMDcuNzUzIDQ1My4yODMgMTA3LjU1QzQ1Ni40MTIgMTA2LjU3MiA0NTguMTIgMTAzLjI0OCA0NTcuMTUxIDEwMC4xMTlDNDU2LjE3MiA5Ni45ODk1IDQ1Mi44NTggOTUuMjgxNyA0NDkuNzI4IDk2LjI1MUM0NDkuMDY0IDk2LjQ0NDggNDQ4LjQ3MyA5Ni43NTg3IDQ0Ny45NDcgOTcuMTY0OUw0MzIuNzc5IDEwNy40MjFMNDMyLjk1NSAxMDcuOTFMNDUxLjI1MiAxMDcuOEw0NTEuMjQyIDEwNy44MDlaIiBmaWxsPSIjMDE0RUE4Ij48L3BhdGg+CiAgICA8cGF0aCBkPSJNMTc4LjQyNCAxMTguNjgzQzE3OS4wNjEgMTE4LjkwNSAxNzkuODI4IDExOS4wMDcgMTgwLjcxNCAxMTkuMDA3QzE4MS4yNCAxMTkuMDA3IDE4MS43NDggMTE4Ljk3OSAxODIuMjI4IDExOC45MzNDMTgyLjM1NyAxMTguOTI0IDE4Mi41MDUgMTE4Ljg4NyAxODIuNjM0IDExOC44NjhWMTEzLjY4QzE4Mi4wOCAxMTMuNTk3IDE4MS41MzUgMTEzLjU0MiAxODAuOTkxIDExMy41NDJDMTgwLjA2OCAxMTMuNTQyIDE3OS4yNjUgMTEzLjY2MiAxNzguNTcyIDExMy44OTJDMTc3Ljg4IDExNC4xMzIgMTc3LjM0NCAxMTQuNDY1IDE3Ni45NTcgMTE0Ljg5OUMxNzYuNTY5IDExNS4zMzIgMTc2LjM3NSAxMTUuODMxIDE3Ni4zNzUgMTE2LjM5NEMxNzYuMzc1IDExNi45MDIgMTc2LjU1IDExNy4zNTQgMTc2LjkxMSAxMTcuNzUxQzE3Ny4yNzEgMTE4LjE0OCAxNzcuNzY5IDExOC40NTMgMTc4LjQwNiAxMTguNjc0TDE3OC40MjQgMTE4LjY4M1oiIGZpbGw9IiMwMTRFQTgiPjwvcGF0aD4KICAgIDxwYXRoIGQ9Ik0yOTAuMjE4IDE4NS41OTNDMjg3LjMxIDE3OS44NiAyODQuNDY3IDE3Ni44MzMgMjgxLjY3OSAxNzYuNTI4QzI3Ny42NjMgMTc2LjA5NCAyNzcuNjE3IDE4MC43MTkgMjc3LjYyNiAxODMuNTgxQzI3Ny42NTQgMTg3LjY4IDI3OC40MiAxOTEuNzMyIDI3OS4xODYgMTk1Ljc1N0MyNzkuOTI1IDE5OS42MDcgMjgwLjcxOSAyMDMuNTY3IDI4Mi44NiAyMDYuODYzQzI4NC4xMzQgMjA4Ljc4MyAyODUuODYgMjEwLjQzNSAyODcuOTI4IDIxMS40NkMyOTAuOTkzIDIxMi45NjUgMjk0Ljc4NyAyMTIuOTE4IDI5Ny44MTUgMjExLjQwNEgyOTcuODM0QzI5Ny42MDMgMjA5Ljc5OCAyOTcuMzE3IDIwOC4xMDkgMjk2LjkyOSAyMDYuMjI2QzI5NS4yOTUgMTk4LjExMSAyOTMuMDcgMTkxLjI0MyAyOTAuMjE4IDE4NS41OTNaIiBmaWxsPSIjMDE0RUE4Ij48L3BhdGg+CiAgICA8cGF0aCBkPSJNMzYzLjcxIDE4NS41OTNDMzYwLjgwMiAxNzkuODYgMzU3Ljk1OCAxNzYuODMzIDM1NS4xNyAxNzYuNTI4QzM1MS4xNTUgMTc2LjA5NCAzNTEuMTA5IDE4MC43MTkgMzUxLjExOCAxODMuNTgxQzM1MS4xNDUgMTg3LjY4IDM1MS45MTIgMTkxLjczMiAzNTIuNjc4IDE5NS43NTdDMzUzLjQxNiAxOTkuNjA3IDM1NC4yMSAyMDMuNTY3IDM1Ni4zNTIgMjA2Ljg2M0MzNTcuNjI2IDIwOC43ODMgMzU5LjM1MiAyMTAuNDM1IDM2MS40MiAyMTEuNDZDMzY0LjQ4NSAyMTIuOTY1IDM2OC4yNzkgMjEyLjkxOCAzNzEuMzA3IDIxMS40MDRIMzcxLjMyNUMzNzEuMDk1IDIwOS43OTggMzcwLjgwOSAyMDguMTA5IDM3MC40MjEgMjA2LjIyNkMzNjguNzg3IDE5OC4xMTEgMzY2LjU2MiAxOTEuMjQzIDM2My43MSAxODUuNTkzWiIgZmlsbD0iIzAxNEVBOCI+PC9wYXRoPgogICAgPHBhdGggZD0iTTUyNy43MjUgMjAwLjEwNUM1MjMuMDYzIDE5OS40MzEgNTEwLjQ5IDE5Ny40MzcgNDk4LjI0IDIwNC4wMjlDNDk2LjQ1OCAyMDQuOTg5IDQ5MS42MjEgMjA3Ljc2NyA0ODYuODY3IDIxMy4wMDFDNDgxLjcxNiAyMTguNjcgNDc5LjE1OCAyMjQuNDY3IDQ3Ny44OTQgMjI4LjA1OEM0OTIuNjM2IDIyOS41ODEgNTMxLjE5NiAyMjcuNzI2IDU0NS4zMiAyMjguMzI2QzU1MC44NzggMjI4LjQ3MyA1NTguMzM3IDIyOS41NjMgNTYyLjQzNiAyMzAuMjQ2QzU1OC45MzcgMjA4LjIyOSA1MzUuODc3IDIwMS4yOTYgNTI3LjcxNiAyMDAuMTE0TDUyNy43MjUgMjAwLjEwNVoiIGZpbGw9IiMwMTRFQTgiPjwvcGF0aD4KICAgIDxwYXRoIGQ9Ik02NzMuODY5IDExMi4xNzVDNjExLjI3IDkzLjkwNjIgNTQ3LjExMSA4MS4wOTI4IDQ4Mi4yNzkgNzQuMDk1NEM0NzMuMzI0IDczLjEyNjEgNDY0LjM1MSA3Mi4yNjc1IDQ1NS4zNzggNzEuNTEwNkM0NTQuMjI0IDcxLjM0NDQgNDUzLjA1MiA3MS4yNTIxIDQ1MS44NyA3MS4yMDU5QzQ0OS44MjEgNzEuMDQ5IDQ0Ny43NzEgNzAuODgyOCA0NDUuNzMxIDcwLjczNTFDNDUxLjc4NyA1Ni45ODk0IDQ0Ny43OTkgNDAuMzYzNiA0MzUuMjU0IDMxLjAyMTNDNDI5LjUxMiAyNi43NTY0IDQyMi43MDggMjQuNTAzOSA0MTUuNTcyIDI0LjUwMzlDNDA2LjgzOSAyNC41MDM5IDM5OC40NDggMjguMDExOCAzOTIuMzM2IDM0LjA2NzdDMzkwLjY2NiAxNy40NDE4IDM3Ni41ODggNC40MDY5MiAzNTkuNTE5IDQuNDA2OTJDMzQyLjQ0OSA0LjQwNjkyIDMyOC4zNzEgMTcuNDYwMiAzMjYuNzI4IDM0LjA5NTRDMzIwLjU4OSAyOC4wMjExIDMxMi4xOTggMjQuNTAzOSAzMDMuNDU2IDI0LjUwMzlDMjk2LjMyOSAyNC41MDM5IDI4OS41MzUgMjYuNzU2NCAyODMuODExIDMxLjAyMTNDMjc2Ljc0OSAzNi4yNzQgMjcyLjE1MiA0My45NTQ2IDI3MC44NjkgNTIuNjc4M0MyNjkuOTU1IDU4Ljg5MTEgMjcwLjgwNCA2NS4wODU1IDI3My4yNzggNzAuNjg5QzI3MC43MyA3MC44ODI4IDI2OC4xNjQgNzEuMDg1OSAyNjUuNjE2IDcxLjI5ODNDMjY1LjU3OSA3MS4yOTgzIDI2NS41NDIgNzEuMjk4MiAyNjUuNDk2IDcxLjMwNzVDMjA3LjMxIDc2LjA4MDEgMTQ5LjU0OCA4NS41MTQ3IDkyLjgzMDIgOTkuMzk4OUM3Ni44NTA1IDEwMy4zMTMgNjAuOTUzOSAxMDcuNTY5IDQ1LjE0OTYgMTEyLjE3NUMyNy4yNDA1IDExNy41NTcgMTIuODIwOSAxMzMuNTQ2IDEyLjgwMjUgMTQ3LjIzNlYyNjYuNTI2QzEyLjc4NCAyODAuMjE2IDI3LjU5MTMgMjkxLjQ1MSA0NS44Njk2IDI5MS42MDhINjczLjE3NkM2OTEuNDQ2IDI5MS40NTEgNzA2LjI1MyAyODAuMjE2IDcwNi4yNDQgMjY2LjUyNlYxNDcuMjM2QzcwNi4yMjUgMTMzLjU0NiA2OTEuODA2IDExNy41NTcgNjczLjg5NyAxMTIuMTc1SDY3My44NjlaTTU1NC41NDMgMTA5LjM2QzU1NS4wMTQgMTA4Ljg5OCA1NTUuNjA0IDEwOC42NjcgNTU2LjMyNCAxMDguNjY3QzU1Ny4wNDUgMTA4LjY2NyA1NTcuNjU0IDEwOC44OTggNTU4LjEyNSAxMDkuMzZDNTU4LjU4NiAxMDkuODIxIDU1OC44MTcgMTEwLjQyMSA1NTguODE3IDExMS4xNTFDNTU4LjgxNyAxMTEuODggNTU4LjU4NiAxMTIuNDYxIDU1OC4xMjUgMTEyLjkzMkM1NTcuNjYzIDExMy40MDMgNTU3LjA2MyAxMTMuNjQzIDU1Ni4zMjQgMTEzLjY0M0M1NTUuNTg2IDExMy42NDMgNTU1LjAxNCAxMTMuNDAzIDU1NC41NDMgMTEyLjkzMkM1NTQuMDcyIDExMi40NjEgNTUzLjgzMiAxMTEuODcxIDU1My44MzIgMTExLjE1MUM1NTMuODMyIDExMC40MyA1NTQuMDYzIDEwOS44MjEgNTU0LjU0MyAxMDkuMzZaTTUxOC4zNzQgMTA3LjY4OUM1MTguODQ1IDEwNy4yMjcgNTE5LjQzNSAxMDYuOTk2IDUyMC4xNTYgMTA2Ljk5NkM1MjAuODc2IDEwNi45OTYgNTIxLjQ4NSAxMDcuMjI3IDUyMS45NTYgMTA3LjY4OUM1MjIuNDE3IDEwOC4xNSA1MjIuNjQ4IDEwOC43NSA1MjIuNjQ4IDEwOS40ODlDNTIyLjY0OCAxMTAuMjI3IDUyMi40MTcgMTEwLjggNTIxLjk1NiAxMTEuMjcxQzUyMS40OTQgMTExLjc0MSA1MjAuODk0IDExMS45ODEgNTIwLjE1NiAxMTEuOTgxQzUxOS40MTcgMTExLjk4MSA1MTguODQ1IDExMS43NDEgNTE4LjM3NCAxMTEuMjcxQzUxNy45MDMgMTEwLjggNTE3LjY2MyAxMTAuMjA5IDUxNy42NjMgMTA5LjQ4OUM1MTcuNjYzIDEwOC43NjkgNTE3Ljg5NCAxMDguMTUgNTE4LjM3NCAxMDcuNjg5Wk01MTQuNDE0IDEyNi4zOTJINTI0LjIwOEM1MjQuMTcxIDEyNi4yOSA1MjQuMTM0IDEyNi4xNzkgNTI0LjA5NyAxMjYuMDc4QzUyMy40MzMgMTI0LjUxOCA1MjIuNDU0IDEyMy4yMTYgNTIxLjE4OSAxMjIuMTczQzUxOS45MTUgMTIxLjEzOSA1MTguMzY1IDEyMC4zOTEgNTE2LjUzNyAxMTkuOTM5TDUxNy40NjkgMTE1LjI0OUM1MTkuOTE1IDExNS43OTQgNTIyLjAzOSAxMTYuODE5IDUyMy44MiAxMTguMzMzQzUyNS42MDIgMTE5LjgzNyA1MjYuOTg3IDEyMS43MTEgNTI3Ljk3NSAxMjMuOTI3QzUyOC4zMjUgMTI0LjcxMiA1MjguNTg0IDEyNS41MzMgNTI4LjgxNSAxMjYuMzgySDU1MS42ODFDNTUyLjQzOCAxMjYuMzgyIDU1My4wMDEgMTI2LjMxOCA1NTMuMzggMTI2LjE4OUM1NTMuNzU4IDEyNi4wNTkgNTU0LjAxNyAxMjUuODE5IDU1NC4xNzMgMTI1LjQ2OUM1NTQuMzIxIDEyNS4xMTggNTU0LjQwNCAxMjQuNjQ3IDU1NC40MDQgMTI0LjAzOFYxMTYuOTExSDU1OC43MzRWMTI0LjAzOEM1NTguNzM0IDEyNC42MzggNTU4LjgwOCAxMjUuMTE4IDU1OC45NDYgMTI1LjQ2OUM1NTkuMDg1IDEyNS44MTkgNTU5LjM1MiAxMjYuMDU5IDU1OS43NDkgMTI2LjE4OUM1NjAuMTQ2IDEyNi4zMTggNTYwLjcwOSAxMjYuMzgyIDU2MS40NDggMTI2LjM4Mkg1NjIuNDYzQzU2My4yNTcgMTI2LjM4MiA1NjMuOTMxIDEyNi4yNjIgNTY0LjQ4NSAxMjYuMDEzQzU2NS4wMzkgMTI1Ljc2NCA1NjUuNTU2IDEyNS4zODUgNTY2LjAyNyAxMjQuODVDNTY2LjQ5OCAxMjQuMzI0IDU2Ni45ODcgMTIzLjY2OCA1NjcuNDk1IDEyMi45MDJDNTY3Ljk2NSAxMjIuMjAxIDU2OC40NzMgMTIxLjQ5OSA1NjkuMDE4IDEyMC43OTdDNTY5LjU2MiAxMjAuMDg3IDU3MC4xNjIgMTE5LjQ0IDU3MC44MjcgMTE4Ljg1QzU3MS40ODMgMTE4LjI1OSA1NzIuMjMgMTE3Ljc3OSA1NzMuMDQzIDExNy40MTlDNTczLjg2NCAxMTcuMDU5IDU3NC43ODcgMTE2Ljg4MyA1NzUuODMxIDExNi44ODNDNTc2Ljg3NCAxMTYuODgzIDU3Ny44MTUgMTE3LjEwNSA1NzguNjI4IDExNy41NDhDNTc5LjQ0IDExNy45OTEgNTgwLjExNCAxMTguNiA1ODAuNjY4IDExOS4zNzZDNTgxLjIxMiAxMjAuMTUxIDU4MS42MjggMTIxLjA0NyA1ODEuOTE0IDEyMi4wNzFDNTgyLjIgMTIzLjA5NiA1ODIuMzM5IDEyNC4yMDQgNTgyLjMzOSAxMjUuMzk1QzU4Mi4zMzkgMTI2LjQ0NyA1ODIuMjEgMTI3LjU4MyA1ODEuOTQyIDEyOC44MDFDNTgxLjY3NCAxMzAuMDIgNTgxLjI5NiAxMzEuMTQ2IDU4MC43NzkgMTMyLjE4QzU3OC45MTQgMTMyLjI5MSA1NzcuMjg5IDEzMi4yODEgNTc1LjkxNCAxMzIuMTUyQzU3NC41MzggMTMyLjAyMyA1NzMuMzM4IDEzMS43NzQgNTcyLjMwNCAxMzEuNDE0QzU3MS4yNzkgMTMxLjA1NCA1NzAuMzY2IDEzMC42MDEgNTY5LjU2MiAxMzAuMDU3QzU2OS4xMzggMTI5Ljc3IDU2OC43MzIgMTI5LjQ0NyA1NjguMzM1IDEyOS4xMTVDNTY3LjUzMSAxMjkuODcyIDU2Ni42ODIgMTMwLjQ0NCA1NjUuNzg3IDEzMC44MjNDNTY0Ljg0NSAxMzEuMjIgNTYzLjcyOCAxMzEuNDE0IDU2Mi40NTQgMTMxLjQxNEg1NjEuNDM5QzU1OS45MTUgMTMxLjQxNCA1NTguNjMyIDEzMS4xMjcgNTU3LjU4OSAxMzAuNTU1QzU1Ny4yMDEgMTMwLjM0MyA1NTYuODYgMTMwLjA3NSA1NTYuNTM3IDEyOS43ODlDNTU2LjIyMyAxMzAuMDY2IDU1NS44OTEgMTMwLjMyNCA1NTUuNTEyIDEzMC41MjdDNTU0LjQ2OSAxMzEuMSA1NTMuMTg2IDEzMS4zOTUgNTUxLjY4MSAxMzEuNDE0SDUxNC40MTRWMTI2LjM4MlYxMjYuMzkyWk0zOTIuOTA5IDQwLjY0MDVDNDAyLjE5NiAyOC4xMzE4IDQxOS44ODMgMjUuNTU2MyA0MzIuMzkyIDM0Ljg1MjRDNDQ0Ljg2NCA0NC4xMzkyIDQ0Ny40NDggNjEuODI2OCA0MzguMTYxIDc0LjI5ODVDNDM2LjE0OSA3Ni45OTQxIDQzMy43NzcgNzkuMjM3MyA0MzEuMTM2IDgwLjk4MjFMNDMxLjAxNiA4MS4wNzQ0TDM5Mi42NjkgMTA4LjE2OUw0MzQuMDM1IDgxLjQ2MjFDNDM2LjUxOCA3OS42MzQzIDQzOS4zNjIgNzguMTQ4IDQ0Mi40OTEgNzcuMTk3MkM0NTcuMzcyIDcyLjY0NiA0NzMuMTc3IDgxLjAwOTggNDc3LjcyOCA5NS45Mjc4QzQ4Mi4yOTcgMTEwLjgxOCA0NzMuOTE1IDEyNi41NzYgNDU4Ljk5NyAxMzEuMTQ2QzQ1NS44MjEgMTMyLjEyNCA0NTIuNTcyIDEzMi40OTQgNDQ5LjM4NyAxMzIuMzQ2SDM5Ny4xMThDMzc1LjYzNyAxMzIuMzI4IDM1OC4yMjYgMTE0LjkwOCAzNTguMjI2IDkzLjQzNTNDMzU4LjIyNiA5Mi44ODE0IDM1OC4zNzQgOTIuMzkyMiAzNTguMzc0IDkyLjM5MjJDMzU4LjM3NCA5Mi4zOTIyIDM1OC41NzcgOTEuNzkyMSAzNTguOTc0IDkxLjM1ODJDMzU5Ljg0MiA5MC40MDc0IDM2My4xNjUgOTIuMjcyMiAzNjcuNjc5IDkzLjIwNDVDMzcwLjc0NCA5My44MzIzIDM3Mi4yMzkgOTMuNDE2OSAzNzUuMzQxIDk0Ljc3MzlDMzc2LjA0MyA5NS4wNzg1IDM3Ni42MDYgOTUuMzgzMiAzNzYuOTY2IDk1LjU4NjNDMzc4LjM0MSA5Ni40NDQ4IDM3OS43MDggOTcuMjk0MSAzODEuMDgzIDk4LjE1MjZDMzgxLjE0OCA5Ny4xNjQ5IDM4MS4xMTEgOTUuNjg3OCAzODAuNTAyIDk0LjA5MDhDMzc5LjQ4NiA5MS40NDEzIDM3Ny42NjggOTAuNzc2NyAzNzYuNjA2IDg4LjA2MjZDMzc2LjExNyA4Ni44MjU2IDM3NS45OTcgODUuMjAwOSAzNzUuNzk0IDgzLjYzMTVMMzc2LjY2MSA4MS4yNjgyTDM4OC41ODggNDkuMDk2NUMzODkuNTAyIDQ2LjEzMzIgMzkwLjk0MiA0My4yNzE1IDM5Mi44OSA0MC42NjgyTDM5Mi45MDkgNDAuNjQwNVpNMzU5LjUgOS4xNzk2MUMzNzUuMDc0IDkuMTc5NjEgMzg3LjcxMSAyMS43OTkgMzg3LjcxMSAzNy4zOTFDMzg3LjcxMSAzOS4wMzQyIDM4Ny41NjQgNDAuNjQwNSAzODcuMjg3IDQyLjE4MjJDMzg3LjIzMSA0Mi41NTE0IDM4Ny4xNjcgNDIuOTI5OSAzODcuMDg0IDQzLjMzNjFDMzg2LjkxOCA0NC4wNzQ2IDM4Ni43MTQgNDQuODUwMSAzODYuNDc0IDQ1LjYxNjNDMzg2LjM2NCA0NS45OTQ4IDM4Ni4yMjUgNDYuMzQ1NSAzODYuMTA1IDQ2LjcwNTZMMzg2LjA1IDQ2LjkyNzFMMzc3LjU0OCA3NC4zODE2TDM3Ni44ODMgNzYuNTE0TDM3NS42MDkgODAuNjMxM0wzNzUuMzc4IDgxLjM2MDZDMzc0LjMxNyA3Ny42MzEgMzcxLjcwNCA3NC45MjYyIDM2OC40MjcgNzMuMzU2OUMzNjkuNjgyIDcyLjA5MjEgMzcxLjIyNCA2OS42MDg5IDM3Mi4yMjEgNjkuMzg3M0MzNzIuNTQ0IDY5LjMxMzUgMzczLjMwMSA2OS41OTk3IDM3My45NDcgNjkuNTYyN0MzNzkuODU1IDY5LjExMDQgMzc2Ljk2NiA2MC4xNzQzIDM3MS45ODEgNjMuMDU0NUMzNzAuMDI0IDY0LjE5OTIgMzcwLjY2MSA2NS45OTAyIDM2OS45OTYgNjcuNjMzNEMzNjkuNzc1IDY4LjIwNTcgMzY3LjU2OCA3MS4wMzA1IDM2Ni40OTcgNzIuNTkwN0MzNjUuNjIxIDcyLjMwNDUgMzY0LjcyNSA3Mi4wOTIyIDM2My44MDIgNzEuOTYyOUMzNjQuMjkxIDY5Ljc3NTEgMzY1LjA2NyA2NS4yNjA4IDM2NS45NjIgNjQuNTAzOUMzNjYuODc2IDYzLjcxOTIgMzY3Ljg1NCA2NC4wOTc3IDM2OC41MzggNjIuMzQzN0MzNzAuNzcyIDU2LjYyMDIgMzYyLjE4NiA1NS4wNjkzIDM2MS42NjkgNjAuNDUxM0MzNjEuNTEyIDYyLjA5NDUgMzYyLjUzNyA2Mi40NzI5IDM2Mi44NzkgNjMuNDk3NkMzNjMuNDA1IDY0Ljk1NjIgMzYyLjEyMiA2OC42NTggMzYxLjkxOSA3MC4zOTM2QzM2MS44ODIgNzAuNjE1MSAzNjEuODM2IDcxLjI1MjEgMzYxLjc4IDcxLjc5NjdDMzYwLjgzOSA3MS43NTk4IDM1OS45MDYgNzEuODI0NCAzNTguOTY1IDcxLjkzNTJDMzU4Ljk2NSA3MS42NTgzIDM1OC45NjUgNzEuMzYyOSAzNTguOTE4IDcxLjA2NzVDMzU4Ljc4IDY5LjM0MTIgMzU3LjUxNSA2NS4zODA5IDM1Ny42NzIgNjQuMDYwOEMzNTcuNzkyIDYyLjk5OTIgMzU5LjI5NyA2Mi41NjUzIDM1OC45MzcgNTkuOTgwNEMzNTguMTI1IDU0LjE2NDYgMzQ4LjU0MiA1OC4zODM0IDM1Mi43NDMgNjMuMjM5MkMzNTMuNTQ2IDY0LjE4MDggMzU0LjY4MSA2NC4wNjA4IDM1NS4xOCA2NC44OTE2QzM1NS45MTggNjYuMTE5NCAzNTYuNTgzIDcwLjQzOTcgMzU3LjEwOSA3Mi4zMTM3QzM1Ni4yNTEgNzIuNTUzNyAzNTUuNDIgNzIuODM5OSAzNTQuNjI2IDczLjIxODRDMzUzLjgxMyA3MS45ODE0IDM1MS42MDcgNjkuMDE4MSAzNTEuMjM4IDY4LjM4MTFDMzUwLjE5NSA2Ni40NzAyIDM1MC44NTkgNjMuOTUgMzQ4LjU1MiA2Mi45MzQ1QzM0NS4wNDQgNjEuMzc0NCAzNDEuODk2IDY1LjI4ODUgMzQ0LjI5NiA2OC4zMTY1QzM0NS42MjUgNzAuMDI0MyAzNDcuNTQ1IDY5LjQ0MjcgMzQ5LjQ0NyA2OS42MDg5QzM1MC4wOTMgNzAuMjE4MiAzNTIuMDQxIDczLjE2MyAzNTIuOTU1IDc0LjExMzhDMzUyLjUxMiA3NC40MDkyIDM1Mi4wNTkgNzQuNzMyNCAzNTEuNjM1IDc1LjA5MjRDMzQ3Ljk1MSA3OC4xNDggMzQ2LjM2NCA4Mi43NjM3IDM0NS43ODIgODguMjc0OUwzNDMuMDU5IDc5LjQ2ODFMMzMyLjk4NyA0Ni45MjcxQzMzMi45NSA0Ni44NDQxIDMzMi45MzIgNDYuNzYxIDMzMi44OTUgNDYuNzA1NkMzMzIuNzg0IDQ2LjMzNjMgMzMyLjY2NCA0NS45OTQ4IDMzMi41MjYgNDUuNjE2M0MzMzIuMjk1IDQ0Ljg0MDggMzMyLjEwMSA0NC4xMDIzIDMzMS45NTMgNDMuMzM2MUMzMzEuODcgNDIuOTI5OSAzMzEuNzc4IDQyLjU1MTQgMzMxLjcyMyA0Mi4xODIyQzMzMS40MjcgNDAuNjAzNiAzMzEuMzE2IDM5LjAzNDIgMzMxLjMxNiAzNy4zOTFDMzMxLjMxNiAyMS43ODk4IDM0My45MzYgOS4xNzk2MSAzNTkuNTA5IDkuMTc5NjFIMzU5LjVaTTI0MS4yNjMgOTUuOTI3OEMyNDUuODMzIDgxLjAxOSAyNjEuNTkxIDcyLjY0NiAyNzYuNTE4IDc3LjE5NzJDMjc5LjYyOSA3OC4xNDggMjgyLjQ3MyA3OS42MzQzIDI4NC45NzQgODEuNDYyMUwzMjYuMjY3IDEwOC4xMDRMMjg4LjAyMSA4MS4wNjUxTDI4Ny44ODIgODAuOTcyOEMyODUuMjQyIDc5LjIyODEgMjgyLjg2IDc2Ljk5NDEgMjgwLjg1NyA3NC4yODkyQzI3MS41NjEgNjEuODE3NSAyNzQuMTM3IDQ0LjEyMDggMjg2LjY0NSAzNC44NDMxQzI5OS4xMTcgMjUuNTQ3IDMxNi43ODYgMjguMTIyNiAzMjYuMTEgNDAuNjMxM0MzMjguMDU4IDQzLjIzNDYgMzI5LjQ4OCA0Ni4wOTYzIDMzMC4zNzUgNDkuMDU5NkwzNDUuNjE2IDkwLjE0ODlDMzQ1LjU3OSA5MC42ODQzIDM0NS41NyA5MS43NTUyIDM0NS41NyA5My4xOTUzQzM0NS42NTMgMTE0Ljc2IDMyOC4yNjEgMTMyLjMwOSAzMDYuNjk2IDEzMi4zMThIMjY5Ljc0MkwyNjkuNjA0IDEzMi4zMjhDMjY2LjQ1NiAxMzIuNDY2IDI2My4yMDYgMTMyLjEwNiAyNTkuOTc1IDEzMS4xMjdDMjQ1LjA5NCAxMjYuNTU4IDIzNi43MjEgMTEwLjggMjQxLjI3MiA5NS45MDk0TDI0MS4yNjMgOTUuOTI3OFpNMTg5LjE5OCAxMDguOTE3SDIwMy4xNjVWMTMxLjQyM0gxOTguODA4VjExMy45NDhIMTg5LjE5OFYxMDguOTE3Wk0xNzMuMDc5IDExMi41ODFDMTczLjc4MSAxMTEuNDU1IDE3NC43NSAxMTAuNTY5IDE3Ni4wMDYgMTA5LjkwNEMxNzcuMjYxIDEwOS4yNDkgMTc4LjczOCAxMDguOTE3IDE4MC40MjggMTA4LjkxN0MxODEuMDkyIDEwOC45MTcgMTgxLjgwMyAxMDguOTYzIDE4Mi41NzkgMTA5LjA1NUMxODMuMzU0IDEwOS4xNDcgMTg0LjEyIDEwOS4yOTUgMTg0Ljg4NyAxMDkuNDk4QzE4NS42NTMgMTA5LjY5MiAxODYuMzQ1IDEwOS45NDEgMTg2Ljk2NCAxMTAuMjQ2VjEzMS40MjNIMTgyLjYzNFYxMjMuNTY3QzE4Mi40NzcgMTIzLjU4NSAxODIuMzExIDEyMy41OTUgMTgyLjEyNiAxMjMuNjA0QzE4MS40NDMgMTIzLjY1IDE4MC43NiAxMjMuNjc4IDE4MC4wNTggMTIzLjY3OEMxNzguNDcxIDEyMy42NzggMTc3LjA4NiAxMjMuMzczIDE3NS44ODYgMTIyLjc1NUMxNzQuNjg2IDEyMi4xNDUgMTczLjc0NCAxMjEuMjg3IDE3My4wNjEgMTIwLjE3OUMxNzIuMzY5IDExOS4wOCAxNzIuMDI3IDExNy44MTYgMTcyLjAyNyAxMTYuNDAzQzE3Mi4wMjcgMTE0Ljk5MSAxNzIuMzc4IDExMy42OTggMTczLjA3IDExMi41NzJMMTczLjA3OSAxMTIuNTgxWk0xNTUuOTE4IDExMi41ODFDMTU2LjYyIDExMS40NTUgMTU3LjU4OSAxMTAuNTY5IDE1OC44NDUgMTA5LjkwNEMxNjAuMSAxMDkuMjQ5IDE2MS41NzcgMTA4LjkxNyAxNjMuMjY2IDEwOC45MTdDMTYzLjkzMSAxMDguOTE3IDE2NC42NDIgMTA4Ljk2MyAxNjUuNDE3IDEwOS4wNTVDMTY2LjE5MyAxMDkuMTQ3IDE2Ni45NTkgMTA5LjI5NSAxNjcuNzI1IDEwOS40OThDMTY4LjQ5MSAxMDkuNjkyIDE2OS4xODQgMTA5Ljk0MSAxNjkuODAyIDExMC4yNDZWMTMxLjQyM0gxNjUuNDczVjEyMy41NjdDMTY1LjMxNiAxMjMuNTg1IDE2NS4xNSAxMjMuNTk1IDE2NC45NjUgMTIzLjYwNEMxNjQuMjkxIDEyMy42NSAxNjMuNTk5IDEyMy42NzggMTYyLjg5NyAxMjMuNjc4QzE2MS4zMTkgMTIzLjY3OCAxNTkuOTI1IDEyMy4zNzMgMTU4LjcyNSAxMjIuNzU1QzE1Ny41MjQgMTIyLjE0NSAxNTYuNTgzIDEyMS4yODcgMTU1LjkgMTIwLjE3OUMxNTUuMjA3IDExOS4wOCAxNTQuODY2IDExNy44MTYgMTU0Ljg2NiAxMTYuNDAzQzE1NC44NjYgMTE0Ljk5MSAxNTUuMjE3IDExMy42OTggMTU1LjkwOSAxMTIuNTcyTDE1NS45MTggMTEyLjU4MVpNMTQ2LjQ3NCAxMDguOTQ0SDE1MC44MzJWMTMxLjQyM0gxNDYuNDc0VjEwOC45NDRaTTI0OS45NTkgMjI2LjcxQzI0OS42NTUgMjMxLjI5OCAyNDcuODkxIDIzNS4wNDYgMjQ0LjYyMyAyMzcuOTE3QzI0MS4zNTUgMjQwLjc5OCAyMzcuMjQ4IDI0Mi4xNTQgMjMyLjM0NiAyNDIuMDM0QzIyMy4zOTEgMjQxLjc2NyAyMTAuMzE5IDIzMy42ODkgMjA0LjgwOCAyMjQuODA5QzIwNS4xNzcgMjI1LjM4MSAyMDMuNjI2IDIyOC4yMTUgMjAzLjMyMiAyMjguODE1QzIwMi42ODUgMjMwLjAyNCAyMDEuOSAyMzEuMTk3IDIwMC45NTkgMjMyLjE5NEMxOTguOTkyIDIzNC4yNzEgMTk2LjQxNyAyMzUuNjM3IDE5My43MDMgMjM2LjQxM0MxODYuNzQyIDIzOC4zNzkgMTc3LjY4NiAyMzguNTczIDE3MC44NjQgMjM3LjAzMUMxNjcuMDk3IDIzNi4xODIgMTYyLjcyMiAyMzQuNjAzIDE1OC45NzQgMjMyLjM0MUMxNTcuOTQgMjM1LjAxOSAxNTYuMjIzIDIzOC43MTEgMTUzLjM2MSAyNDIuNjE2QzE0Ny41NDUgMjUwLjU0NiAxNDAuNjAzIDI1NC4zOTUgMTM2LjM2NiAyNTYuNjc2QzExOC4wODggMjY2LjU0NCA5OC41MzUyIDI2NC44MjcgOTYuOTE5NyAyNjQuNjdDOTMuOTM4IDI2NC4zNzUgNTYuMzkzNSAyNjAuMDU0IDQzLjgwMTggMjMwLjQ4NkM0My4xODMzIDIyOS4wMzcgMzQuNTI0MSAyMDcuODk2IDQ0LjE4MDMgMTkxLjExNEM0OC4zODk4IDE4My44MDIgNTQuNzk2NSAxNzkuNDgyIDU1LjQ3MDQgMTc5LjAzOUM1OC42MDkxIDE3Ni45NjIgNjMuNTIwMiAxNzMuODQyIDcwLjIwMzggMTczLjk3MUM3Mi4zNDU1IDE3NC4wMTcgODAuMTI3NyAxNzQuMzc3IDgzLjI3NTYgMTgwLjEzN0M4NS44Njk3IDE4NC44ODIgODMuNjcyNiAxOTAuMjgzIDgyLjk3MSAxOTEuNzg4QzgxLjMyNzggMTk1LjMxNCA3OC42OTY4IDE5Ny4yODkgNzcuMzk1MiAxOTguMTNDNzcuNDMyMSAxOTcuMjYyIDc3LjQ3ODIgMTkzLjk4NSA3NS4xNjExIDE5MS43ODhDNzIuMDk2MyAxODguODggNjYuNTExMiAxOTAuMzExIDYzLjc2OTUgMTkyLjAzN0M1Ni44NTUxIDE5Ni40MTMgNTUuMzg3MyAyMTAuODUxIDU5LjkxMDcgMjIwLjY0NUM2OS41MjA3IDI0MS40ODEgMTA3LjQ4MSAyNDQuMTc2IDEyMy45OTYgMjM1LjQxNkMxMzMuMDcgMjMwLjYwNiAxMzcuNjg2IDIyMy4zNDEgMTM3LjY4NiAyMjMuMzQxQzEzOC4yMTIgMjIyLjUxIDE0MC41NjYgMjE4LjY2IDE0Mi4wMjUgMjEyLjczNEMxNDMuNzc5IDIwNS42MTYgMTQzLjAyMiAxOTkuOTQ4IDE0MS45MzIgMTkyLjczOEMxNDAuMjg5IDE4MS44NzMgMTM4LjYyOCAxNzIuMyAxMzcuMTA0IDE2NC4yMDRDMTQwLjkyNiAxNjQuNDYyIDE1Ny45NDkgMTY1Ljk1OCAxNjEuNzg5IDE2Ni4yMjZDMTYyLjAxMSAxNjcuNTkyIDE2OC4zODEgMjA1LjYzNSAxNjguODk4IDIwOS45ODNDMTY5LjgwMiAyMTcuMzg2IDE3MS45OTkgMjE5LjU2NSAxNzQuOTM1IDIyMC41MzRDMTc4LjE1NyAyMjEuNTk2IDE4Mi45MzkgMjIwLjU2MiAxODMuNzcgMjE3LjIzOUMxODQuNiAyMTMuODk3IDE4My40NDYgMjA4LjU5OCAxODEuMTg1IDE5Ni42NTNDMTc5LjggMTg5LjMxNCAxNzcuMzgxIDE3Mi45MTggMTc2LjkwMSAxNzAuMjZMMjAxLjI2MyAxNzIuNzYxQzIwMy4xNDYgMTg1LjU1NiAyMDQuMzkzIDE5NC4xMjMgMjA2LjE2NSAyMDIuNDg3QzIwOC4wNDggMjExLjQ0MSAyMTAuMTQ0IDIyMC4wNTQgMjE1LjU4MSAyMjEuODM2QzIxNi4wNyAyMjEuOTkzIDIxOC4wMzcgMjIyLjYzOSAyMTkuNTIzIDIyMS42OThDMjIyLjI1NiAyMTkuOTYyIDIyMS41NDUgMjEzLjkyNSAyMjEuMjU5IDIxMS42MDhDMjIxLjEwMiAyMTAuMzQzIDIyMC44OCAyMDkuMzA5IDIyMC42OTUgMjA4LjU1MkMyMjAuNDQ2IDIwNy4xOTUgMjIwLjE5NyAyMDUuODM4IDIxOS45NDggMjA0LjQ4MUMyMTkuMzQ4IDIwMS4yMTMgMjE4Ljc0OCAxOTcuOTU0IDIxOC4xMjkgMTk0LjcwNUwyMTQuMjg5IDE3NS42MDVDMjEzLjQ3NiAxNzEuODM4IDIxMi40NTIgMTY2LjUxMiAyMTIuMTc1IDE2NC42ODRMMjQwLjUyNSAxNjguMDI2TDI0My41OSAxODMuNTA3QzI0NC45NjUgMTkwLjQ1OCAyNDYuMDU0IDE5Ni4zMjkgMjQ2LjgwMiAyMDEuMTQ4QzI0Ny41MzEgMjA0LjgxMyAyNDguMjg4IDIwOS41ODYgMjQ5LjA3MyAyMTUuNDQ4QzI0OS44MDIgMjIwLjc0NyAyNTAuMDc5IDIyNC41MDQgMjQ5Ljk1IDIyNi43MDFMMjQ5Ljk1OSAyMjYuNzFaTTMyMy40MzMgMjQyLjI1NkMzMjIuMDc2IDI0Ny42MjkgMzE5LjY0OCAyNTIuODM1IDMxNS43NTIgMjU2Ljc2OEMzMTEuODkzIDI2MC42NjQgMzA2LjcxNCAyNjMuMTQ3IDMwMS4zMjMgMjY0LjEzNUMyOTAuMjA5IDI2Ni4xNTYgMjc3Ljk1OCAyNjIuMzQ0IDI2OS4xNjEgMjU1LjQ2NkMyNjYuNjUgMjUzLjUgMjY0LjA5MyAyNTEuMDU0IDI2Mi4wNTMgMjQ4LjU5OEMyNTkuODU1IDI0NS45NDkgMjU4LjE2NiAyNDIuODc1IDI1Ny4xNDEgMjM5LjU4OEMyNTUuNDUyIDIzNC4xODggMjU1LjU1NCAyMjguMjQzIDI1Ny40MjggMjIyLjkwN0MyNTcuODE1IDIzMC4wMTUgMjYyLjMzOSAyMzYuNDU5IDI2OC4yMjggMjQwLjQ2NUMyNzIuMDIzIDI0My4wNSAyNzYuNDQ0IDI0NC43NzYgMjgxLjAzMiAyNDUuMDlDMjg3LjY3OSAyNDUuNTQyIDI5NC40OTIgMjQyLjkyMSAyOTguMjIxIDIzNy4yMTZDMzAwLjE3OSAyMzQuMjI1IDMwMS4xMiAyMzAuNTk3IDMwMC45NzIgMjI3LjAzM0MzMDAuOTQ1IDIyNi40MDYgMjk5LjQ0IDIxOC40NTcgMjk4LjU0NSAyMTguNzhDMjk4LjAyOCAyMTguOTY1IDI5Ny41MiAyMTkuMTY4IDI5Ny4wMTIgMjE5LjM0M0MyOTAuMjA5IDIyMS43MzQgMjgyLjUxOSAyMjIuODA1IDI3NS43MTUgMjE5LjgyNEMyNzAuMDc1IDIxNy4zNSAyNjUuNjE2IDIxMi42NzggMjYyLjc5MSAyMDcuMjZDMjU5LjggMjAxLjUwOCAyNTguNTM1IDE5NC45ODIgMjU4LjI2OCAxODguNTAxQzI1OC4wNTUgMTgzLjM0MSAyNTguNDcxIDE3OC4wMTQgMjYwLjQgMTczLjE3N0MyNjIuMTkxIDE2OC42ODEgMjY2LjI5OSAxNjUuOTMgMjcwLjg1OSAxNjQuNTczQzI3NS4wMDQgMTYzLjM0NSAyNzkuNDU0IDE2My40MTkgMjgzLjY5MSAxNjQuMjVMMjk2LjgzNyAxNjYuNzk4IDMwNy45MDUgMTc2LjM1MyAzMTQuNjM1IDE4Ny45MjlDMzE4LjgyNiAxOTUuMTM5IDMyMS45NjUgMjAzLjM0NSAzMjMuNzEgMjExLjgyOUMzMjUuNzk2IDIyMS45NzQgMzI1Ljg5NyAyMzIuNTE3IDMyMy40NDIgMjQyLjI3NUwzMjMuNDMzIDI0Mi4yNTZaTTM5Ni45MjQgMjQyLjI1NkMzOTUuNTY3IDI0Ny42MjkgMzkzLjE0IDI1Mi44MzUgMzg5LjI0NCAyNTYuNzY4QzM4NS4zODUgMjYwLjY2NCAzODAuMjA2IDI2My4xNDcgMzc0LjgxNSAyNjQuMTM1QzM2My43IDI2Ni4xNTYgMzUxLjQ1IDI2Mi4zNDQgMzQyLjY1MyAyNTUuNDY2QzM0MC4xNDIgMjUzLjUgMzM3LjU4NCAyNTEuMDU0IDMzNS41NDQgMjQ4LjU5OEMzMzMuMzQ3IDI0NS45NDkgMzMxLjY1OCAyNDIuODc1IDMzMC42MzMgMjM5LjU4OEMzMjguOTQ0IDIzNC4xODggMzI5LjA0NSAyMjguMjQzIDMzMC45MTkgMjIyLjkwN0MzMzEuMzA3IDIzMC4wMTUgMzM1LjgzMSAyMzYuNDU5IDM0MS43MTEgMjQwLjQ2NUMzNDUuNTA1IDI0My4wNSAzNDkuOTI3IDI0NC43NzYgMzU0LjUxNSAyNDUuMDlDMzYxLjE2MiAyNDUuNTQyIDM2Ny45NzUgMjQyLjkyMSAzNzEuNzA0IDIzNy4yMTZDMzczLjY2MSAyMzQuMjI1IDM3NC42MDMgMjMwLjU5NyAzNzQuNDU1IDIyNy4wMzNDMzc0LjQyNyAyMjYuNDA2IDM3Mi45MzIgMjE4LjQ1NyAzNzIuMDI3IDIxOC43OEMzNzEuNTEgMjE4Ljk2NSAzNzEuMDAyIDIxOS4xNjggMzcwLjQ5NSAyMTkuMzQzQzM2My42OTEgMjIxLjczNCAzNTYuMDAxIDIyMi44MDUgMzQ5LjE5OCAyMTkuODI0QzM0My41NTcgMjE3LjM1IDMzOS4wOTggMjEyLjY3OCAzMzYuMjc0IDIwNy4yNkMzMzMuMjgzIDIwMS41MDggMzMyLjAxOCAxOTQuOTgyIDMzMS43NSAxODguNTAxQzMzMS41MzggMTgzLjM0MSAzMzEuOTUzIDE3OC4wMTQgMzMzLjg4MyAxNzMuMTc3QzMzNS42NzQgMTY4LjY4MSAzMzkuNzgyIDE2NS45MyAzNDQuMzUxIDE2NC41NzNDMzQ4LjQ5NiAxNjMuMzQ1IDM1Mi45NDYgMTYzLjQxOSAzNTcuMTgzIDE2NC4yNUMzNzAuMzI5IDE2Ni43OTggMzgxLjM5NyAxNzYuMzUzIDM4OC4xMjcgMTg3LjkyOUMzOTIuMzE4IDE5NS4xMzkgMzk1LjQ1NyAyMDMuMzQ1IDM5Ny4yMDEgMjExLjgyOUMzOTkuMjg4IDIyMS45NzQgMzk5LjM4OSAyMzIuNTE3IDM5Ni45MzQgMjQyLjI3NUwzOTYuOTI0IDI0Mi4yNTZaTTYyNy4xMzkgMjQ4LjY2M0M2MjYuMDIyIDI1MC45MTUgNjI0LjAxIDI1NC44ODUgNjE5Ljc2MyAyNTguMjczQzYwOS45NjkgMjY2LjA5MiA1OTcuNDE0IDI2My41MjUgNTkzLjgwNCAyNjIuNzg3QzU4OC4xMDggMjYxLjYyNCA1ODQuNjI4IDI1OS40MzYgNTgzLjgxNiAyNTguOTFDNTc5LjcxNyAyNTYuMjYgNTc3LjIzNCAyNTMuMDExIDU3NS44OTUgMjUwLjk1MkM1NTIuMTYxIDI1MC41NzQgNTI4LjA1OCAyNTAuNDM1IDUwMy41OTQgMjUwLjU3NEM0OTEuNzY5IDI1MC42MzggNDgwLjAzNSAyNTAuNzY3IDQ2OC4zODUgMjUwLjk1MkM0NTQuNTk0IDI2Mi41MjggNDM3LjcgMjY2LjM5NiA0MjQuOTcgMjYwLjIzOUM0MjIuMDQzIDI1OC44MjcgNDE3Ljc2IDI1Ni4xMjIgNDEzLjggMjUwLjc1OEM0MDguNDY0IDI0My44NDQgNDA2LjMyMiAyMjkuNjgzIDQwNS43NSAyMjMuNTk5TDM5Mi4xNDMgMTQ2LjYxOEw0MjMuMzE3IDE0OS45MjNDNDIzLjMxNyAxNDkuOTIzIDQzNC40NDEgMjE3LjM1IDQzNy43MjggMjMzLjExN0M0MzguMDg4IDIzNC44MzQgNDM4Ljc3MSAyMzYuNDc3IDQzOS44MjMgMjM3Ljg4QzQ0Mi4yNiAyNDEuMTMgNDQ1LjI4OCAyNDEuNjU2IDQ0Ni42NjQgMjQxLjg1OUM0NTAuNjMzIDI0Mi40NSA0NTUuMTExIDI0MS4xMDIgNDU3LjUzOCAyMzguNjQ3QzQ2MS40OCAyMzQuNjY4IDQ2MC4xNzkgMjI3LjYyNCA0NTkuNDU5IDIyMy42MzZDNDU3LjI4OSAyMTEuNTggNDU1LjA3NCAxOTcuODI1IDQ1Mi40ODkgMTgxLjE5TDQ0Ni44OTQgMTQ2LjcxTDQ3Ny4zOTUgMTUwLjAxNUw0ODIuMzUzIDE4Mi4wOTRDNDgyLjU0NiAxODMuMjU4IDQ4Mi43MzEgMTg0LjM3NSA0ODIuOTE2IDE4NS41MDFDNDkwLjI4MiAxODEuMDYxIDQ5OC40OTggMTc4LjQzIDUwNi4yMTYgMTc3LjI1N0M1MDguNjE2IDE3Ni44ODggNTQyLjYwNiAxNzAuNjIgNTYxLjUyMiAxODkuODEyQzU2NC4zODQgMTkyLjcxMSA1NzIuMzUgMjAwLjc5NyA1NzQuOTQ0IDIxMS43NTVDNTc1LjI3NyAyMTMuMTQ5IDU3NS45NTEgMjE2LjQxNyA1NzcuMzE3IDIyMS4yNTRDNTc5LjI3NCAyMjguMjA2IDU4MC4yNjIgMjMxLjY4NiA1ODIuMzg1IDIzNC43MjNDNTgzLjcwNSAyMzYuNjI1IDU4Ni44ODEgMjQxLjE2NyA1OTIuMDMyIDI0MS43M0M1OTIuNzUyIDI0MS44MTMgNTk2LjA4NCAyNDIuMTczIDU5OC44NDUgMjQwLjAwNEM2MDAuNTg5IDIzOC42MjggNjAxLjI5MSAyMzYuODc0IDYwMS42MDUgMjM2LjA4QzYwMi44NyAyMzIuODAzIDYwMi4xODYgMjI5LjcyIDYwMS45OTMgMjI4Ljg2MUM1OTkuNTA5IDIxNy41NzEgNTk3LjcyOCAyMDYuMTQyIDU5NS41NCAxOTQuNzg4QzU5Mi4yMjYgMTc3LjU4IDU4OS44NjIgMTYzLjUzOSA1ODYuNDM4IDE0Ni42MjdMNjE2LjkzOCAxNDkuOTMyQzYxOC44OTUgMTU4Ljk1MSA2MjEuNTYzIDE3My41IDYyNC44MTMgMTkyLjk2OUM2MjYuODE2IDIwNC45NzkgNjI4LjMyMSAyMTUuNzE2IDYyOC41NzkgMjE3LjU0M0M2MjkuMjgxIDIyMi41NzUgNjI5Ljg0NCAyMjYuODk1IDYzMC4yNTkgMjMwLjI0NkM2MzAuNjM4IDIzMy42MDYgNjMwLjk3IDI0MC45MTcgNjI3LjEzIDI0OC42NzJMNjI3LjEzOSAyNDguNjYzWk02NDguMDg1IDI2My43ODRMNjI4LjM1OCAxNDYuNjI3TDY1OC44NTkgMTQ5LjkzMkw2NzcuMDA4IDI2My41MTZMNjQ4LjA4NSAyNjMuNzg0WiIgZmlsbD0iIzAxNEVBOCI+PC9wYXRoPgogIDwvZz4KICA8ZGVmcz4KICAgIDxjbGlwUGF0aCBpZD0iY2xpcDBfMV8xNSI+CiAgICAgIDxyZWN0IHdpZHRoPSI3MjAiIGhlaWdodD0iMzAwIiBmaWxsPSJ3aGl0ZSI+PC9yZWN0PgogICAgPC9jbGlwUGF0aD4KICA8L2RlZnM+Cjwvc3ZnPgo=";
+
+function exportMntLogsPDF(filters) {
+  try {
+    const tz = Session.getScriptTimeZone();
+    let logs = getMntLogsHistory(filters);
+
+    // Apply Live Search Filter if specified
+    if (filters.search) {
+      const s = filters.search.toLowerCase();
+      logs = logs.filter(log => {
+        const perfNames = (log.performers && Array.isArray(log.performers))
+          ? log.performers.map(p => p.name).join(' ')
+          : (log.performer || '');
+        return (log.itemId || '').toLowerCase().includes(s) ||
+               (log.itemName || '').toLowerCase().includes(s) ||
+               (log.notes || '').toLowerCase().includes(s) ||
+               (log.recorder || '').toLowerCase().includes(s) ||
+               perfNames.toLowerCase().includes(s);
+      });
+    }
+
+    const exportTimeStr = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm');
+    const groupLabels = {
+      none: 'بدون تجميع',
+      date: 'التاريخ',
+      location: 'الموقع',
+      category: 'التصنيف',
+      performer: 'القائم بالمهمة',
+      taskType: 'نوع المهمة'
+    };
+
+    const filterDesc = [
+      filters.startDate ? `من: ${filters.startDate}` : 'من البداية',
+      filters.endDate ? `إلى: ${filters.endDate}` : 'حتى اليوم',
+      filters.taskType && filters.taskType !== 'الكل' ? `النوع: ${filters.taskType}` : 'النوع: الكل',
+      filters.location && filters.location !== 'الكل' ? `الموقع: ${filters.location}` : 'المواقع: الكل',
+      filters.category && filters.category !== 'الكل' ? `التصنيف: ${filters.category}` : 'التصنيفات: الكل',
+      filters.performer && filters.performer !== 'الكل' ? `الفني: ${filters.performer}` : 'القائمون: الكل',
+      filters.groupBy && filters.groupBy !== 'none' ? `التجميع: ${groupLabels[filters.groupBy] || filters.groupBy}` : null
+    ].filter(Boolean).join(' | ');
+
+    // Helper: Render single row HTML
+    function buildRowHTML(log, index) {
+      let perfStr = '';
+      if (log.performers && Array.isArray(log.performers)) {
+        perfStr = log.performers.map(p => (p.rating !== null && p.rating !== undefined) ? `${p.name} (${p.rating}/10)` : p.name).join('، ');
+      } else {
+        perfStr = log.performer || '-';
+      }
+
+      const badgeStyle = log.taskType === 'نظافة' 
+        ? 'background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe;' 
+        : 'background:#fffbeb; color:#b45309; border:1px solid #fde68a;';
+
+      const rowBg = index % 2 === 0 ? '#ffffff' : '#f8fafc';
+
+      // Scannable QR Code cell for attached images
+      let qrCell = '<span style="color:#cbd5e1; font-size:7pt;">-</span>';
+      if (log.images && Array.isArray(log.images) && log.images.length > 0) {
+        const targetUrl = log.images[0];
+        const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=90x90&data=${encodeURIComponent(targetUrl)}`;
+        qrCell = `
+          <div style="text-align: center; line-height: 1;">
+            <img src="${qrApiUrl}" style="width: 32px; height: 32px; border: 1px solid #cbd5e1; border-radius: 3px; display: inline-block;">
+            <span style="display: block; font-size: 5.5pt; color: #2563eb; font-weight: 800; margin-top: 1px;">(${log.images.length} صور)</span>
+          </div>
+        `;
+      }
+
+      // Auto Timestamp formatting (HH:mm or Full)
+      let timeOnly = '';
+      if (log.timestamp && log.timestamp.length >= 16) {
+        timeOnly = log.timestamp.substring(11);
+      }
+
+      return `
+        <tr style="background-color: ${rowBg}; border-bottom: 1px solid #e2e8f0; font-size: 7.5pt;">
+          <td style="padding: 4px 3px; text-align: center; font-weight: bold; color: #64748b;">${index + 1}</td>
+          <td style="padding: 4px 3px; white-space: nowrap; font-weight: 600; color: #334155;">${log.date}</td>
+          <td style="padding: 4px 3px; text-align: center;">
+            <span style="${badgeStyle} padding: 1px 4px; border-radius: 4px; font-weight: 800; font-size: 6.5pt;">${log.taskType}</span>
+          </td>
+          <td style="padding: 4px 3px; font-weight: 900; color: #1e3a8a;">#${log.itemId}</td>
+          <td style="padding: 4px 3px; font-weight: 800; color: #0f172a;">${log.itemName}</td>
+          <td style="padding: 4px 3px; color: #475569;">${log.location} • ${log.category}</td>
+          <td style="padding: 4px 3px; font-weight: 700; color: #334155;">${perfStr}</td>
+          <td style="padding: 4px 3px; color: #64748b; font-size: 7pt;">${log.notes || '-'}</td>
+          <td style="padding: 4px 2px; text-align: center;">${qrCell}</td>
+          <td style="padding: 4px 3px; text-align: center; line-height: 1.2;">
+            <div style="font-weight: 800; color: #0f172a; font-size: 7pt;">${log.recorder || '-'}</div>
+            <div style="color: #94a3b8; font-size: 6pt; margin-top: 1px;">${timeOnly}</div>
+          </td>
+        </tr>
+      `;
+    }
+
+    const tableHeaderHtml = `
+      <thead>
+        <tr>
+          <th style="width: 3%; text-align: center;">#</th>
+          <th style="width: 9%;">التاريخ</th>
+          <th style="width: 7%; text-align: center;">النوع</th>
+          <th style="width: 7%;">الكود</th>
+          <th style="width: 19%;">اسم البند / المعدة</th>
+          <th style="width: 13%;">الموقع والتصنيف</th>
+          <th style="width: 17%;">القائمون والتقييم</th>
+          <th style="width: 11%;">الملاحظات</th>
+          <th style="width: 6%; text-align: center;">الصور (QR)</th>
+          <th style="width: 8%; text-align: center;">المسجل والوقت</th>
+        </tr>
+      </thead>
+    `;
+
+    let tablesContentHtml = '';
+
+    // WYSIWYG Grouping Switch
+    if (!filters.groupBy || filters.groupBy === 'none') {
+      let rows = logs.map((log, i) => buildRowHTML(log, i)).join('');
+      tablesContentHtml = `
+        <table class="data-table">
+          ${tableHeaderHtml}
+          <tbody>
+            ${rows || '<tr><td colspan="10" style="text-align:center; padding: 25px; color:#94a3b8; font-weight:bold;">لا توجد سجلات مطابقة</td></tr>'}
+          </tbody>
+        </table>
+      `;
+    } else {
+      const groups = {};
+      logs.forEach(log => {
+        let key = log[filters.groupBy] || 'غير محدد';
+        if (filters.groupBy === 'date') key = log.date;
+        if (filters.groupBy === 'performer') {
+          key = (log.performers && log.performers.length > 0) ? log.performers[0].name : (log.performer || 'غير محدد');
+        }
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(log);
+      });
+
+      for (const [groupTitle, groupLogs] of Object.entries(groups)) {
+        let rows = groupLogs.map((log, i) => buildRowHTML(log, i)).join('');
+        tablesContentHtml += `
+          <div class="group-header">
+            <span><strong style="color:#0284c7;">▪</strong> ${groupTitle}</span>
+            <span class="group-badge">${groupLogs.length} عملية</span>
+          </div>
+          <table class="data-table" style="margin-bottom: 12px;">
+            ${tableHeaderHtml}
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
+    }
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html dir="rtl" lang="ar">
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          @page { size: A4 portrait; margin: 8mm 7mm 10mm 7mm; }
+          body { font-family: 'Cairo', 'Arial', sans-serif; color: #0f172a; margin: 0; padding: 0; direction: rtl; }
+          table { width: 100%; border-collapse: collapse; }
+          .header-table td { vertical-align: middle; }
+          .filter-box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 5px; padding: 5px 8px; font-size: 7.5pt; margin-bottom: 8px; }
+          .data-table { width: 100%; page-break-inside: auto; }
+          .data-table tr { page-break-inside: avoid; page-break-after: auto; }
+          .data-table th { background: #1e293b; color: #ffffff; font-size: 7.5pt; padding: 5px 3px; text-align: right; border: 1px solid #1e293b; }
+          .group-header { background: #f1f5f9; border: 1px solid #cbd5e1; border-right: 4px solid #0284c7; padding: 4px 8px; border-radius: 4px; font-size: 8pt; font-weight: 800; color: #1e293b; margin-top: 8px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+          .group-badge { background: #ffffff; border: 1px solid #cbd5e1; padding: 1px 5px; border-radius: 4px; font-size: 7pt; font-weight: 700; color: #475569; }
+          .footer-text { margin-top: 6px; font-size: 6.5pt; color: #94a3b8; text-align: left; }
+        </style>
+      </head>
+      <body>
+        <table class="header-table" style="margin-bottom: 5px; border-bottom: 2px solid #0284c7; padding-bottom: 4px;">
+          <tr>
+            <td style="width: 26%; text-align: right;">
+              <img src="${AL_TAWOOS_LOGO_URI}" style="max-height: 46px; max-width: 155px; object-fit: contain;">
+            </td>
+            <td style="width: 46%; text-align: center;">
+              <h2 style="margin: 0; font-size: 12.5pt; color: #0f172a; font-weight: 900;">تقرير سجلات الصيانة والتطهير</h2>
+              <p style="margin: 1px 0 0 0; font-size: 7.5pt; color: #475569; font-weight: bold;">سجل توثيق ومطابقة العمليات الدورية (Audit Log)</p>
+            </td>
+            <td style="width: 28%; text-align: left; font-size: 7pt; color: #475569; line-height: 1.4;">
+              <div><strong>المستخدم:</strong> ${filters.exportedBy || 'مسؤول النظام'}</div>
+              <div><strong>تاريخ التصدير:</strong> ${exportTimeStr}</div>
+              <div><strong>إجمالي السجلات:</strong> ${logs.length} عملية</div>
+            </td>
+          </tr>
+        </table>
+
+        <div class="filter-box">
+          <strong style="color: #0369a1;">محددات التقرير:</strong> ${filterDesc}
+        </div>
+
+        ${tablesContentHtml}
+
+        <div class="footer-text">نظام إدارة ومتابعة الجودة والصيانة • شركة الطاووس لتعبئة وتجارة المواد الغذائية • مسح كود QR يفتح صور التوثيق الأصلية مباشرة</div>
+      </body>
+      </html>
+    `;
+
+    const blob = Utilities.newBlob(htmlContent, 'text/html', 'report.html').getAs('application/pdf');
+    blob.setName(`سجلات_الصيانة_والنظافة_${Utilities.formatDate(new Date(), tz, 'yyyyMMdd_HHmm')}.pdf`);
+    
+    const file = DriveApp.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+    return {
+      success: true,
+      url: file.getUrl()
+    };
+  } catch (e) {
+    throw new Error('فشل تصدير التقرير إلى PDF: ' + e.message);
+  }
+}
+
+// ============================================================================
+// --- SECRET RECORD UPDATE ENGINE ---
+// ============================================================================
+
+function verifyUserPasscode(username, passcode) {
+  if (!username || !passcode) return false;
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('App_Users');
+  if (!sheet || sheet.getLastRow() < 2) return false;
+
+  const lastCol = Math.max(sheet.getLastColumn(), 4);
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).getValues();
+  const targetUser = String(username).trim().toLowerCase();
+  const targetPin = String(passcode).trim();
+
+  return data.some(row => {
+    const col0 = String(row[0] || '').trim().toLowerCase();
+    const col1 = String(row[1] || '').trim();
+    const col2 = String(row[2] || '').trim();
+
+    // Supports standard App_Users layouts: (Col A = User, Col B = PIN) or (Col B = User, Col C = PIN)
+    if (col0 === targetUser && col1 === targetPin) return true;
+    if (String(row[1] || '').trim().toLowerCase() === targetUser && col2 === targetPin) return true;
+    return false;
+  });
+}
+
+function updateMntLog(payload) {
+  try {
+    // 1. Dynamic User Passcode Verification against App_Users
+    const isValid = verifyUserPasscode(payload.user, payload.passcode);
+    if (!isValid) {
+      throw new Error('رمز المرور الخاص بالمستخدم غير صحيح أو غير مصرح له بتعديل هذا السجل!');
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Maintenance_Cleaning_Logs');
+    if (!sheet || sheet.getLastRow() < 2) {
+      throw new Error('لم يتم العثور على شيت السجلات.');
+    }
+
+    const tz = Session.getScriptTimeZone();
+    const lastRow = sheet.getLastRow();
+    const logIds = sheet.getRange(2, 1, lastRow - 1, 1).getValues().map(r => String(r[0]).trim());
+    
+    const rowIndex = logIds.findIndex(id => id === String(payload.logId).trim());
+    if (rowIndex === -1) {
+      throw new Error('لم يتم العثور على السجل المطلوب تعديله.');
+    }
+
+    const targetRow = rowIndex + 2; // Accounting for 1-based index & Header row
+
+    // 2. Process newly uploaded images to Google Drive
+    const newImageUrls = [];
+    if (payload.newImages && Array.isArray(payload.newImages) && payload.newImages.length > 0) {
+      let folder;
+      const folders = DriveApp.getFoldersByName('Maintenance_Cleaning_Images');
+      if (folders.hasNext()) {
+        folder = folders.next();
+      } else {
+        folder = DriveApp.createFolder('Maintenance_Cleaning_Images');
+      }
+      folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+      payload.newImages.forEach((base64Data, idx) => {
+        try {
+          const splitData = base64Data.split(',');
+          const contentTypeMatch = splitData[0].match(/:(.*?);/);
+          const contentType = contentTypeMatch ? contentTypeMatch[1] : 'image/jpeg';
+          const bytes = Utilities.base64Decode(splitData[1]);
+          const blob = Utilities.newBlob(bytes, contentType, `${payload.itemId}_EDIT_${Date.now()}_${idx + 1}.jpg`);
+          
+          const file = folder.createFile(blob);
+          file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+          newImageUrls.push(file.getUrl());
+        } catch (err) {
+          console.error('Error saving edited image: ' + err.message);
+        }
+      });
+    }
+
+    // Combine retained existing images with new uploads
+    const finalImages = [...(payload.existingImages || []), ...newImageUrls];
+
+    // Format Performers JSON
+    let performersJSON = '';
+    if (payload.performers && Array.isArray(payload.performers)) {
+      performersJSON = JSON.stringify(payload.performers);
+    } else {
+      performersJSON = JSON.stringify([{ name: payload.performer || '', rating: null }]);
+    }
+
+    // 3. In-place Sheet Updates: Date (Col C), Performers (Col I), Notes (Col K), Images (Col L)
+    sheet.getRange(targetRow, 3).setValue(payload.date);
+    sheet.getRange(targetRow, 9).setValue(performersJSON);
+    sheet.getRange(targetRow, 11).setValue(payload.notes || '');
+    sheet.getRange(targetRow, 12).setValue(JSON.stringify(finalImages));
+
+    return {
+      success: true,
+      message: 'تم تحديث وتعديل السجل بنجاح!'
+    };
+  } catch (e) {
+    throw new Error('فشل تعديل السجل: ' + e.message);
+  }
+}

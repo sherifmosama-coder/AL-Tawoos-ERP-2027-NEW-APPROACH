@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore';
 import { APP_ARCHITECTURE } from '../config/appArchitecture';
 import TabAppearanceManager from './TabAppearanceManager';
+import OpeningStockSeederModal from './OpeningStockSeederModal';
 import {
   Plus,
   Shield,
@@ -83,21 +84,33 @@ import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearance
 // Base Registry for Standard Entity Descriptions & Categories
 export const STATIC_GRAPH_METADATA = {
   items: { labelAr: 'سجل الخامات ومستلزمات الإنتاج', labelEn: 'Item Master (Raw Materials)', category: 'Master Data', color: '#059669' },
-  suppliers: { labelAr: 'سجل الموردين المعتمدين', labelEn: 'Suppliers Master', category: 'Procurement', color: '#0d6cba' },
-  warehouses: { labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', category: 'Inventory', color: '#4f46e5' },
-  users: { labelAr: 'سجل المستخدمين والمشرفين', labelEn: 'User Accounts', category: 'Administration', color: '#0284c7' },
+  suppliers: { labelAr: 'سجل الموردين المعتمدين', labelEn: 'Suppliers Master', category: 'Master Data', color: '#0d6cba' },
+  warehouses: { labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', category: 'Master Data', color: '#4f46e5' },
+  users: { labelAr: 'سجل المستخدمين والمشرفين', labelEn: 'User Accounts', category: 'Master Data', color: '#0284c7' },
   categories: { labelAr: 'مجموعات وتصنيفات التكويد', labelEn: 'Category Groups', category: 'Master Data', color: '#6366f1' },
   finished_products: { labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Goods Master', category: 'Master Data', color: '#e11d48' },
-  intermediate_recipes: { labelAr: 'تركيبات الخامات الوسيطة (IBOM)', labelEn: 'Intermediate Recipes', category: 'Production', color: '#d97706' },
+  finished_product_categories: { labelAr: 'تصنيفات ومجموعات المنتج التام', labelEn: 'FG Categories', category: 'Master Data', color: '#6366f1' },
+  bom_recipes: { labelAr: 'شجرة وقوائم المكونات (BOM)', labelEn: 'Finished Goods BOM', category: 'Master Data', color: '#b45309' },
+  intermediate_recipes: { labelAr: 'تركيبات الخامات الوسيطة (IBOM)', labelEn: 'Intermediate Recipes', category: 'Master Data', color: '#d97706' },
+  production_processes: { labelAr: 'مسارات وعمليات التشغيل (SOPs)', labelEn: 'Production Processes & SOPs', category: 'Master Data', color: '#6366f1' },
+  production_workers: { labelAr: 'سجل عمالة الإنتاج والورديات', labelEn: 'Production Workers Master', category: 'Master Data', color: '#8b5cf6' },
+  system_config: { labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', category: 'Master Data', color: '#64748b' },
   liquid_tanks: { labelAr: 'تشغيل وتانكات الخامات (M)', labelEn: 'Bulk Liquid Tanks', category: 'Production', color: '#0891b2' },
+  floor_liquid_vessels: { labelAr: 'خزانات وتدفق السوائل بالصالة', labelEn: 'Floor Liquid Storage & Vessels', category: 'Production', color: '#0284c7' },
   production_transformations: { labelAr: 'حركات التحويل والتصنيع الداخلي', labelEn: 'Production Transformations', category: 'Inventory & Production', color: '#7c3aed' },
-  bom_recipes: { labelAr: 'شجرة وقوائم المكونات (BOM)', labelEn: 'Finished Goods BOM', category: 'Production', color: '#b45309' },
   work_orders: { labelAr: 'أوامر التشغيل والإنتاج (MO)', labelEn: 'Work Orders', category: 'Manufacturing', color: '#047857' },
+  production_breaks: { labelAr: 'سجل فترات الراحة والتوقف', labelEn: 'Production Breaks & Downtime', category: 'Production', color: '#f43f5e' },
+  staged_floor_materials: { labelAr: 'خامات ومستلزمات الصالة قيد التشغيل', labelEn: 'Staged Floor Materials', category: 'Production & Inventory', color: '#f59e0b' },
+  staged_floor_pallets: { labelAr: 'بالتات الصالة المشدودة والمرحلة', labelEn: 'Staged Floor Pallets', category: 'Production & Inventory', color: '#10b981' },
+  shift_handovers: { labelAr: 'تسليم واستلام الورديات وتتبع السيريال', labelEn: 'Shift Handovers & Serials', category: 'Production', color: '#06b6d4' },
+  faulty_fg_returns: { labelAr: 'مرتجعات ومعيب المنتج التام (RTN)', labelEn: 'Faulty FG Returns', category: 'Quality & Production', color: '#ef4444' },
+  fg_receipts: { labelAr: 'استلام وحفظ المنتج التام (FGR)', labelEn: 'FG Receipts', category: 'Finished Goods', color: '#10b981' },
   purchase_orders: { labelAr: 'أوامر الشراء (PO)', labelEn: 'Purchase Orders', category: 'Procurement', color: '#1d4ed8' },
   goods_receipts: { labelAr: 'أذون استلام المخزن (GRN/RTN)', labelEn: 'Goods Receipts & Returns', category: 'Inventory', color: '#0f766e' },
   stock_transfers: { labelAr: 'أذون التحويل المخزني (TRN)', labelEn: 'Stock Transfers', category: 'Inventory', color: '#6366f1' },
   stock_counts: { labelAr: 'الجرد الفعلي والتسويات', labelEn: 'Physical Stock Counts', category: 'Auditing', color: '#9333ea' },
   stock_ledger: { labelAr: 'سجل الحركات الدفتري العام', labelEn: 'Central Stock Ledger', category: 'Audit & Accounting', color: '#334155' },
+  spare_parts_issues: { labelAr: 'صرف واستهلاك قطع الغيار (XISS)', labelEn: 'Spare Parts Consumption', category: 'Maintenance & Spares', color: '#f59e0b' },
 };
 
 // Dynamic Foreign Key & Relationship Inference Engine (100% Zero-Hardcoding)
@@ -124,6 +137,13 @@ export function resolveDynamicEntityRelations(targetCollection, sampleDocs = [],
     { pattern: /(workOrderId|moId)/i, target: 'work_orders', labelAr: 'أمر الإنتاج', labelEn: 'Work Order' },
     { pattern: /(bomId|recipeId)/i, target: 'bom_recipes', labelAr: 'شجرة المكونات', labelEn: 'BOM Recipe' },
     { pattern: /(tankId)/i, target: 'liquid_tanks', labelAr: 'سجل التانك', labelEn: 'Liquid Tank' },
+    { pattern: /(vesselId|liquidVesselId)/i, target: 'floor_liquid_vessels', labelAr: 'خزان تدفق السوائل', labelEn: 'Floor Liquid Vessel' },
+    { pattern: /(processCode|processId)/i, target: 'production_processes', labelAr: 'مسار التشغيل', labelEn: 'Production Process' },
+    { pattern: /(palletId|palletCode|floorPalletId)/i, target: 'staged_floor_pallets', labelAr: 'بالتة الصالة', labelEn: 'Floor Pallet' },
+    { pattern: /(breakId)/i, target: 'production_breaks', labelAr: 'استراحة تشغيل', labelEn: 'Production Break' },
+    { pattern: /(workerId|technicianId)/i, target: 'production_workers', labelAr: 'عامل الإنتاج', labelEn: 'Production Worker' },
+    { pattern: /(returnId|faultyReturnId)/i, target: 'faulty_fg_returns', labelAr: 'إشعار المرتجع المعيب', labelEn: 'Faulty FG Return' },
+    { pattern: /(fgReceiptId|fgrId)/i, target: 'fg_receipts', labelAr: 'إذن استلام التام', labelEn: 'FG Receipt' },
     { pattern: /(transformationId|transformationDocId)/i, target: 'production_transformations', labelAr: 'حركة التحويل', labelEn: 'Transformation' },
     { pattern: /(categoryId)/i, target: 'categories', labelAr: 'مجموعة التكويد', labelEn: 'Category' },
     { pattern: /(userId|issuedById|verifiedById|responsibleUserId|createdById)/i, target: 'users', labelAr: 'المستخدم المسؤول', labelEn: 'User Account' },
@@ -235,7 +255,7 @@ const ICON_MAP = {
   LayoutDashboard
 };
 
-export const BACKUP_COLLECTIONS_REGISTRY = [
+export const MASTER_COLLECTIONS_REGISTRY = [
   'users',
   'system_config',
   'suppliers',
@@ -244,22 +264,67 @@ export const BACKUP_COLLECTIONS_REGISTRY = [
   'finished_products',
   'finished_product_categories',
   'warehouses',
-  'intermediate_recipes',
-  'production_transformations',
-  'liquid_tanks',
-  'shift_handovers',
   'bom_recipes',
-  'work_orders',
-  'material_issues',
-  'fg_receipts',
-  'yield_audits',
-  'spare_parts_issues',
+  'intermediate_recipes',
+  'production_processes',
+  'production_workers',
+];
+
+export const OPERATIONAL_COLLECTIONS_REGISTRY = [
   'purchase_orders',
   'goods_receipts',
   'stock_transfers',
-  'stock_counts',
   'stock_ledger',
+  'stock_counts',
+  'spare_parts_issues',
+  'work_orders',
+  'staged_floor_pallets',
+  'staged_floor_materials',
+  'production_breaks',
+  'liquid_tanks',
+  'floor_liquid_vessels',
+  'production_transformations',
+  'shift_handovers',
+  'faulty_fg_returns',
+  'fg_receipts',
 ];
+
+export const BACKUP_COLLECTIONS_REGISTRY = [
+  ...MASTER_COLLECTIONS_REGISTRY,
+  ...OPERATIONAL_COLLECTIONS_REGISTRY,
+];
+
+export const COLLECTION_DISPLAY_NAMES = {
+  users: { ar: 'المستخدمين والصلاحيات', en: 'Users & Roles' },
+  system_config: { ar: 'إعدادات النظام والتهيئة', en: 'System Config' },
+  suppliers: { ar: 'سجل الموردين المعتمدين', en: 'Suppliers Master' },
+  items: { ar: 'سجل الخامات ومستلزمات الإنتاج', en: 'Item Master (Raw Materials)' },
+  categories: { ar: 'مجموعات وتصنيفات التكويد', en: 'Category Groups' },
+  finished_products: { ar: 'سجل المنتجات التامة', en: 'Finished Goods Master' },
+  finished_product_categories: { ar: 'تصنيفات المنتج التام', en: 'FG Categories' },
+  warehouses: { ar: 'سجل المستودعات والصالات', en: 'Warehouses Master' },
+  bom_recipes: { ar: 'شجرة وقوائم المكونات (BOM)', en: 'BOM Recipes' },
+  intermediate_recipes: { ar: 'خلطات الخامات الوسيطة (IBOM)', en: 'Intermediate Recipes' },
+  production_processes: { ar: 'مسارات ومراحل التشغيل (SOP)', en: 'Production Processes' },
+  production_workers: { ar: 'سجل عمالة الإنتاج والورديات', en: 'Production Workers' },
+
+  purchase_orders: { ar: 'أوامر الشراء (PO)', en: 'Purchase Orders' },
+  goods_receipts: { ar: 'أذون استلام المخزن (GRN/RTN)', en: 'Goods Receipts' },
+  stock_transfers: { ar: 'أذون التحويل المخزني (TRN)', en: 'Stock Transfers' },
+  stock_ledger: { ar: 'سجل الحركات الدفتري (Ledger)', en: 'Stock Ledger' },
+  stock_counts: { ar: 'الجرد الفعلي والتسويات', en: 'Physical Stock Counts' },
+  spare_parts_issues: { ar: 'صرف قطع الغيار (XISS)', en: 'Spare Parts Issues' },
+  work_orders: { ar: 'أوامر التشغيل والإنتاج (MO)', en: 'Work Orders' },
+  staged_floor_pallets: { ar: 'بالتات الصالة المشدودة', en: 'Staged Floor Pallets' },
+  staged_floor_materials: { ar: 'خامات ومستلزمات الصالة', en: 'Staged Floor Materials' },
+  production_breaks: { ar: 'سجل فترات الراحة والتوقف', en: 'Production Breaks' },
+  liquid_tanks: { ar: 'تشغيل وتانكات الخامات (M)', en: 'Bulk Liquid Tanks' },
+  floor_liquid_vessels: { ar: 'خزانات وتدفق السوائل بالصالة', en: 'Floor Liquid Storage' },
+  production_transformations: { ar: 'حركات التحويل والتصنيع', en: 'Transformations' },
+  shift_handovers: { ar: 'تسليم واستلام الورديات', en: 'Shift Handovers' },
+  faulty_fg_returns: { ar: 'مرتجعات ومعيب المنتج التام', en: 'Faulty FG Returns' },
+  fg_receipts: { ar: 'استلام وحفظ المنتج التام', en: 'FG Receipts' },
+};
 
 export default function AdminControlPanel({ currentUser = {}, initialSubTab = null, initialTabFocus = null }) {
   const { i18n } = useTranslation();
@@ -334,7 +399,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
     code: '',
     nameAr: '',
     nameEn: '',
-    classification: 'raw_materials', // 'raw_materials' | 'factory_floor' | 'returns' | 'scrap'
+    classification: 'raw_materials', // 'raw_materials' | 'finished_goods' | 'factory_floor' | 'returns' | 'scrap'
     isActive: true,
     color: '#0d6cba',
     icon: 'Warehouse',
@@ -343,8 +408,8 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
 
   // --- SUB-TAB 2: HIERARCHICAL PERMISSIONS STATE ---
   const [selectedPermUserId, setSelectedPermUserId] = useState('');
-  const [selectedModuleId, setSelectedModuleId] = useState('procurement');
-  const [selectedTabId, setSelectedTabId] = useState('suppliers');
+  const [selectedModuleId, setSelectedModuleId] = useState('master_data');
+  const [selectedTabId, setSelectedTabId] = useState('items');
   const [permissionsState, setPermissionsState] = useState({});
   const [isSavingPerms, setIsSavingPerms] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -369,6 +434,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const [confirmationPhrase, setConfirmationPhrase] = useState('');
   const [isPurging, setIsPurging] = useState(false);
   const [purgeSuccessMsg, setPurgeSuccessMsg] = useState('');
+  const [isStockSeederOpen, setIsStockSeederOpen] = useState(false);
 
 // =========================================================================
   // 🔍 ZERO-HARDCODING DYNAMIC DATABASE SCANNER & LIVE CRUD ENGINE
@@ -725,7 +791,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
           isGeneralAdmin: isGeneralAdminUser,
           isPurchasingAdmin: isGeneralAdminUser || (userForm.allowedModules || []).includes('purchases'),
           allowedModules: isGeneralAdminUser
-            ? ['purchases', 'production', 'sales', 'finance', 'hr']
+            ? ['master_data', 'purchases', 'production', 'sales', 'finance', 'hr']
             : (userForm.allowedModules || ['purchases']),
           updatedAt: serverTimestamp(),
         },
@@ -892,6 +958,13 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const getClassificationBadge = (classification, isFactoryLinked) => {
     const key = classification || (isFactoryLinked ? 'factory_floor' : 'raw_materials');
     switch (key) {
+      case 'finished_goods':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-50 text-indigo-900 border border-indigo-300">
+            <Boxes className="h-3.5 w-3.5 text-indigo-700" />
+            <span>{isAr ? 'مستودع المنتجات التامة' : 'Finished Goods Warehouse'}</span>
+          </span>
+        );
       case 'factory_floor':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-300">
@@ -2145,58 +2218,18 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
             { merge: true }
           );
 
-          // Automatically generate approved Opening Balance vouchers for imported variants with starting stock
+          // Automatically record Opening Balance vouchers strictly in stock_ledger (SSOT)
           item.variations.forEach((v) => {
             if (v.openingQtySmall > 0 && v.openingWarehouse) {
               const obId = `OB-${todayCompact}-${item.code}-${v.suffix}`;
               const obLotNo = `${obId}-01`;
-              const ratio = Number(v.packagingRatio) || 1;
-
-              const receiptRef = doc(db, 'goods_receipts', obId);
-              batch.set(receiptRef, {
-                id: obId,
-                docType: 'opening_balance',
-                status: 'approved',
-                supplierId: v.supplierId || 'INITIAL_BALANCE',
-                supplierName: isAr ? 'رصيد افتتاحي مستورد' : 'Imported Opening Balance',
-                receiptDate: todayStr,
-                targetWarehouse: v.openingWarehouse,
-                lines: [
-                  {
-                    lotNumber: obLotNo,
-                    itemId: item.code,
-                    code: v.variantCode,
-                    variantCode: v.variantCode,
-                    variantSuffix: v.suffix,
-                    nameAr: item.nameAr,
-                    nameEn: item.nameEn,
-                    specs: v.mergedSpecs || '',
-                    targetWarehouse: v.openingWarehouse,
-                    largeUnitName: v.largeUnitName,
-                    receivedLargeUnits: Number((v.openingQtySmall / ratio).toFixed(2)),
-                    packagingRatio: ratio,
-                    smallUnit: v.smallUnit,
-                    receivedSmallUnits: v.openingQtySmall,
-                    unitPrice: Number(v.openingUnitCost) || 0,
-                    currency: 'EGP',
-                    hasBatchTracking: Boolean(v.openingBatchNo),
-                    supplierBatchNo: v.openingBatchNo || 'OB-LOT',
-                    productionDate: v.openingProdDate || '',
-                    expiryDate: v.openingExpDate || '',
-                    qcStatus: 'accepted',
-                  },
-                ],
-                receivedBy: isAr ? currentUser.nameAr : currentUser.name || 'General Admin',
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
 
               const ledgerRef = doc(collection(db, 'stock_ledger'));
               batch.set(ledgerRef, {
-                grnId: obId,
                 lotNumber: obLotNo,
-                action: 'opening_balance_imported',
+                action: 'opening_balance',
                 docType: 'opening_balance',
+                voucherId: obId,
                 itemId: item.code,
                 variantCode: v.variantCode,
                 materialNameAr: item.nameAr,
@@ -2908,12 +2941,24 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
         allTabsList.forEach((t) => {
           if (t.collection) collectionsToPurge.push(t.collection);
         });
-        collectionsToPurge.push('stock_ledger', 'transfers', 'stock_transfers', 'stock_counts');
+        collectionsToPurge.push(
+          ...OPERATIONAL_COLLECTIONS_REGISTRY,
+          'transfers'
+        );
+        shouldZeroStock = true;
+      } else if (selectedPurgeTargetKey === 'operational_only') {
+        collectionsToPurge.push(
+          ...OPERATIONAL_COLLECTIONS_REGISTRY,
+          'transfers'
+        );
         shouldZeroStock = true;
       } else {
         const targetTab = allTabsList.find((t) => t.id === selectedPurgeTargetKey);
         if (targetTab?.collection) {
           collectionsToPurge.push(targetTab.collection);
+          if (targetTab.collection === 'work_orders') {
+            collectionsToPurge.push('staged_floor_pallets', 'staged_floor_materials', 'production_breaks', 'production_workers');
+          }
           if (targetTab.collection === 'stock_transfers') {
             collectionsToPurge.push('stock_ledger');
             shouldZeroStock = true;
@@ -2942,7 +2987,14 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
           const resetBatch = writeBatch(db);
           itemsSnap.docs.forEach((itemDoc) => {
             const data = itemDoc.data();
-            const resetVariations = (data.variations || []).map((v) => ({ ...v, stock: 0 }));
+            const resetVariations = (data.variations || []).map((v) => ({
+              ...v,
+              stock: 0,
+              openingQtySmall: 0,
+              openingWarehouse: '',
+              openingUnitCost: 0,
+              openingBatchNo: '',
+            }));
             resetBatch.set(
               itemDoc.ref,
               { stock: 0, variations: resetVariations, updatedAt: serverTimestamp() },
@@ -2954,7 +3006,11 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       }
 
       setPurgeSuccessMsg(
-        isAr ? 'تم تصفير واستعادة ضبط المصنع بنجاح!' : 'Selected tables successfully purged to factory settings!'
+        selectedPurgeTargetKey === 'operational_only'
+          ? (isAr
+              ? 'تم مسح وتصفير كافة الحركات التشغيلية بنجاح مع الحفاظ الكامل على البيانات الأساسية!'
+              : 'Operational data successfully wiped! Master data has been fully preserved.')
+          : (isAr ? 'تم تصفير واستعادة ضبط المصنع بنجاح!' : 'Selected tables successfully purged to factory settings!')
       );
       setResetModalOpen(false);
       setConfirmationPhrase('');
@@ -3208,7 +3264,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                       <div className="flex flex-wrap items-center gap-1">
                         {u.role === 'general_admin' || u.isGeneralAdmin ? (
                           <span className="px-2 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded font-bold text-[10px]">
-                            {isAr ? 'كافة الوحدات (All Access)' : 'All 5 Modules'}
+                            {isAr ? 'كافة الوحدات (All Access)' : 'All Modules'}
                           </span>
                         ) : (
                           (u.allowedModules || ['purchases']).map((modKey) => (
@@ -3216,7 +3272,8 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                               key={modKey}
                               className="px-1.5 py-0.2 bg-slate-100 text-slate-700 border border-slate-200 rounded text-[10px] font-semibold"
                             >
-                              {modKey === 'purchases' ? (isAr ? 'المشتريات' : 'Purchases') :
+                              {modKey === 'master_data' ? (isAr ? 'البيانات الأساسية' : 'Master Data') :
+                               modKey === 'purchases' ? (isAr ? 'المشتريات' : 'Purchases') :
                                modKey === 'production' ? (isAr ? 'الإنتاج' : 'Production') :
                                modKey === 'sales' ? (isAr ? 'المبيعات' : 'Sales') :
                                modKey === 'finance' ? (isAr ? 'المالية' : 'Finance') :
@@ -3353,6 +3410,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                   </span>
                   <div className="grid grid-cols-2 gap-2">
                     {[
+                      { key: 'master_data', labelAr: 'قاعدة البيانات الأساسية', labelEn: 'Master Database' },
                       { key: 'purchases', labelAr: 'المشتريات والمخازن', labelEn: 'Purchases & Stock' },
                       { key: 'production', labelAr: 'الإنتاج والتشغيل', labelEn: 'Production' },
                       { key: 'sales', labelAr: 'المبيعات والتوزيع', labelEn: 'Sales' },
@@ -3622,6 +3680,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white font-semibold text-slate-900"
                 >
                   <option value="raw_materials">{isAr ? 'مستودع تخزين خامات' : 'Raw Materials Storage'}</option>
+                  <option value="finished_goods">{isAr ? 'مستودع المنتجات التامة' : 'Finished Goods Warehouse'}</option>
                   <option value="factory_floor">{isAr ? 'مخزن التشغيل والإنتاج (خاص بالصالة)' : 'Production Floor (مخزن التشغيل)'}</option>
                   <option value="returns">{isAr ? 'تحت حساب المرتجعات' : 'Returns & Quarantine'}</option>
                   <option value="scrap">{isAr ? 'الهوالك والمخلفات' : 'Scrap & Damaged'}</option>
@@ -4384,60 +4443,145 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                   </div>
                 </div>
 
-                {/* Interactive Collection Selector */}
-                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5">
-                  <div className="flex items-center justify-between text-xs">
+                {/* Categorized Interactive Collection Selector */}
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <span className="font-extrabold text-slate-800 flex items-center gap-1.5">
                       <Layers className="h-3.5 w-3.5 text-indigo-600" />
                       <span>{isAr ? 'اختر الجداول المراد تضمينها:' : 'Target Collections:'}</span>
                     </span>
 
-                    <div className="flex items-center gap-2 font-bold text-[11px]">
+                    {/* 1-Click Fast Presets */}
+                    <div className="flex items-center gap-1.5 flex-wrap font-bold text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBackupCollections([...MASTER_COLLECTIONS_REGISTRY])}
+                        className="px-2 py-0.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-md cursor-pointer transition"
+                      >
+                        {isAr ? 'البيانات الأساسية فقط (١٢)' : 'Master Only (12)'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBackupCollections([...OPERATIONAL_COLLECTIONS_REGISTRY])}
+                        className="px-2 py-0.5 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-md cursor-pointer transition"
+                      >
+                        {isAr ? 'الحركات التشغيلية فقط (١٦)' : 'Operational Only (16)'}
+                      </button>
                       <button
                         type="button"
                         onClick={() => setSelectedBackupCollections([...BACKUP_COLLECTIONS_REGISTRY])}
-                        className="text-indigo-600 hover:underline cursor-pointer"
+                        className="px-2 py-0.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 rounded-md cursor-pointer transition"
                       >
-                        {isAr ? 'تحديد الكل' : 'Select All'}
+                        {isAr ? 'تحديد الكل' : 'All (28)'}
                       </button>
-                      <span className="text-slate-300">•</span>
                       <button
                         type="button"
                         onClick={() => setSelectedBackupCollections([])}
-                        className="text-slate-500 hover:underline cursor-pointer"
+                        className="px-2 py-0.5 bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200 rounded-md cursor-pointer transition"
                       >
-                        {isAr ? 'إلغاء التحديد' : 'Deselect All'}
+                        {isAr ? 'إلغاء' : 'None'}
                       </button>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-48 overflow-y-auto p-1 text-xs">
-                    {BACKUP_COLLECTIONS_REGISTRY.map((collName) => {
-                      const isChecked = selectedBackupCollections.includes(collName);
-                      return (
-                        <label
-                          key={collName}
-                          className={`p-1.5 rounded-xl border flex items-center gap-1.5 cursor-pointer transition select-none ${
-                            isChecked
-                              ? 'bg-indigo-50/80 border-indigo-300 text-indigo-950 font-bold'
-                              : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-100'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => {
-                              const next = isChecked
-                                ? selectedBackupCollections.filter((c) => c !== collName)
-                                : [...selectedBackupCollections, collName];
-                              setSelectedBackupCollections(next);
-                            }}
-                            className="accent-indigo-600 rounded h-3.5 w-3.5 shrink-0"
-                          />
-                          <span className="font-mono text-[10px] truncate" title={collName}>{collName}</span>
-                        </label>
-                      );
-                    })}
+                  <div className="space-y-3 max-h-80 overflow-y-auto p-1 text-xs pe-1">
+                    {/* Category 1: Master Data */}
+                    <div className="p-2.5 bg-white border border-emerald-200/80 rounded-2xl space-y-2">
+                      <div className="flex items-center justify-between border-b border-emerald-100 pb-1.5">
+                        <span className="font-extrabold text-[11px] text-emerald-800 flex items-center gap-1.5">
+                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                          <span>{isAr ? 'البيانات الأساسية الثابتة (Master Data)' : 'Master Data Records'}</span>
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                          {selectedBackupCollections.filter((c) => MASTER_COLLECTIONS_REGISTRY.includes(c)).length} / {MASTER_COLLECTIONS_REGISTRY.length}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {MASTER_COLLECTIONS_REGISTRY.map((collName) => {
+                          const isChecked = selectedBackupCollections.includes(collName);
+                          const meta = COLLECTION_DISPLAY_NAMES[collName] || {};
+                          return (
+                            <label
+                              key={collName}
+                              className={`p-1.5 rounded-xl border flex items-center gap-2 cursor-pointer transition select-none ${
+                                isChecked
+                                  ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950 font-bold shadow-2xs'
+                                  : 'bg-slate-50/60 border-slate-200 text-slate-500 hover:bg-slate-100'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => {
+                                  const next = isChecked
+                                    ? selectedBackupCollections.filter((c) => c !== collName)
+                                    : [...selectedBackupCollections, collName];
+                                  setSelectedBackupCollections(next);
+                                }}
+                                className="accent-emerald-600 rounded h-3.5 w-3.5 shrink-0"
+                              />
+                              <div className="min-w-0 flex-1 leading-tight">
+                                <span className="block text-[11px] font-bold truncate">
+                                  {isAr ? meta.ar || collName : meta.en || collName}
+                                </span>
+                                <span className="block font-mono text-[9px] text-slate-400 truncate">
+                                  {collName}
+                                </span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Category 2: Operational Data */}
+                    <div className="p-2.5 bg-white border border-amber-200/80 rounded-2xl space-y-2">
+                      <div className="flex items-center justify-between border-b border-amber-100 pb-1.5">
+                        <span className="font-extrabold text-[11px] text-amber-800 flex items-center gap-1.5">
+                          <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
+                          <span>{isAr ? 'الحركات والبيانات التشغيلية والدفترية (Operational)' : 'Operational & Transactional'}</span>
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                          {selectedBackupCollections.filter((c) => OPERATIONAL_COLLECTIONS_REGISTRY.includes(c)).length} / {OPERATIONAL_COLLECTIONS_REGISTRY.length}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {OPERATIONAL_COLLECTIONS_REGISTRY.map((collName) => {
+                          const isChecked = selectedBackupCollections.includes(collName);
+                          const meta = COLLECTION_DISPLAY_NAMES[collName] || {};
+                          return (
+                            <label
+                              key={collName}
+                              className={`p-1.5 rounded-xl border flex items-center gap-2 cursor-pointer transition select-none ${
+                                isChecked
+                                  ? 'bg-amber-50/90 border-amber-300 text-amber-950 font-bold shadow-2xs'
+                                  : 'bg-slate-50/60 border-slate-200 text-slate-500 hover:bg-slate-100'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => {
+                                  const next = isChecked
+                                    ? selectedBackupCollections.filter((c) => c !== collName)
+                                    : [...selectedBackupCollections, collName];
+                                  setSelectedBackupCollections(next);
+                                }}
+                                className="accent-amber-600 rounded h-3.5 w-3.5 shrink-0"
+                              />
+                              <div className="min-w-0 flex-1 leading-tight">
+                                <span className="block text-[11px] font-bold truncate">
+                                  {isAr ? meta.ar || collName : meta.en || collName}
+                                </span>
+                                <span className="block font-mono text-[9px] text-slate-400 truncate">
+                                  {collName}
+                                </span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
 
                   <div className="flex justify-between items-center text-[11px] pt-1 text-slate-500 border-t border-slate-200/60 font-mono">
@@ -4564,24 +4708,44 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                   </span>
                 </div>
 
-                <div className="flex items-center gap-3 text-xs font-bold">
+                <div className="flex items-center gap-2 flex-wrap text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const available = Object.keys(restoreFilePayload.collections || {});
+                      setSelectedRestoreCollections(available.filter((c) => MASTER_COLLECTIONS_REGISTRY.includes(c)));
+                    }}
+                    className="px-2 py-0.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-md cursor-pointer transition text-[11px]"
+                  >
+                    {isAr ? 'البيانات الأساسية فقط' : 'Master Only'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const available = Object.keys(restoreFilePayload.collections || {});
+                      setSelectedRestoreCollections(available.filter((c) => OPERATIONAL_COLLECTIONS_REGISTRY.includes(c)));
+                    }}
+                    className="px-2 py-0.5 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-md cursor-pointer transition text-[11px]"
+                  >
+                    {isAr ? 'الحركات التشغيلية فقط' : 'Operational Only'}
+                  </button>
                   <button
                     type="button"
                     onClick={() => setSelectedRestoreCollections(Object.keys(restoreFilePayload.collections || {}))}
-                    className="text-emerald-700 hover:underline cursor-pointer"
+                    className="text-emerald-700 hover:underline cursor-pointer text-[11px]"
                   >
-                    {isAr ? 'تحديد كافة الجداول' : 'Select All'}
+                    {isAr ? 'تحديد الكل' : 'Select All'}
                   </button>
                   <span className="text-slate-300">•</span>
                   <button
                     type="button"
                     onClick={() => setSelectedRestoreCollections([])}
-                    className="text-slate-500 hover:underline cursor-pointer"
+                    className="text-slate-500 hover:underline cursor-pointer text-[11px]"
                   >
-                    {isAr ? 'إلغاء التحديد' : 'Deselect All'}
+                    {isAr ? 'إلغاء' : 'Deselect All'}
                   </button>
-                  <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-lg border border-emerald-200 ms-2">
-                    {selectedRestoreCollections.length} / {Object.keys(restoreFilePayload.collections || {}).length} {isAr ? 'جداول محددة' : 'Selected'}
+                  <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200 ms-1">
+                    {selectedRestoreCollections.length} / {Object.keys(restoreFilePayload.collections || {}).length} {isAr ? 'محدد' : 'Selected'}
                   </span>
                 </div>
               </div>
@@ -4590,12 +4754,16 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
                 {Object.entries(restoreFilePayload._backupHeader.collectionCounts || {}).map(([collName, count]) => {
                   const isSelected = selectedRestoreCollections.includes(collName);
+                  const isMaster = MASTER_COLLECTIONS_REGISTRY.includes(collName);
+                  const meta = COLLECTION_DISPLAY_NAMES[collName] || {};
                   return (
                     <label
                       key={collName}
-                      className={`p-3 rounded-2xl border transition-all cursor-pointer select-none space-y-1 ${
+                      className={`p-2.5 rounded-2xl border transition-all cursor-pointer select-none space-y-1.5 ${
                         isSelected
-                          ? 'bg-emerald-50/80 border-emerald-400 shadow-2xs ring-1 ring-emerald-400'
+                          ? isMaster
+                            ? 'bg-emerald-50/90 border-emerald-400 shadow-2xs ring-1 ring-emerald-400 text-emerald-950 font-bold'
+                            : 'bg-amber-50/90 border-amber-400 shadow-2xs ring-1 ring-amber-400 text-amber-950 font-bold'
                           : 'bg-slate-50/70 border-slate-200 opacity-60 hover:opacity-100'
                       }`}
                     >
@@ -4608,13 +4776,23 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                               prev.includes(collName) ? prev.filter((c) => c !== collName) : [...prev, collName]
                             );
                           }}
-                          className="accent-emerald-600 rounded h-4 w-4"
+                          className={`rounded h-4 w-4 ${isMaster ? 'accent-emerald-600' : 'accent-amber-600'}`}
                         />
-                        <span className="font-mono text-xs font-extrabold text-slate-900">{count} {isAr ? 'مستند' : 'docs'}</span>
+                        <span className="font-mono text-[11px] font-extrabold text-slate-800">{count} {isAr ? 'مستند' : 'docs'}</span>
                       </div>
-                      <span className="font-mono text-[11px] font-bold text-slate-700 block truncate" title={collName}>
-                        {collName}
-                      </span>
+                      <div className="min-w-0">
+                        <span className="text-[11px] font-bold block truncate" title={isAr ? meta.ar || collName : meta.en || collName}>
+                          {isAr ? meta.ar || collName : meta.en || collName}
+                        </span>
+                        <div className="flex items-center justify-between gap-1 mt-0.5">
+                          <span className="font-mono text-[9px] text-slate-400 block truncate" title={collName}>
+                            {collName}
+                          </span>
+                          <span className={`text-[8px] font-bold px-1 rounded uppercase shrink-0 ${isMaster ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                            {isMaster ? 'Master' : 'Ops'}
+                          </span>
+                        </div>
+                      </div>
                     </label>
                   );
                 })}
@@ -4629,6 +4807,41 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       {/* ========================================================================= */}
       {activeSubTab === 'factory_reset' && (
         <div className="space-y-5 animate-in fade-in duration-200">
+          {/* Quick Tool: Opening Stock Balances Seeder (Fast-Auto & Manual Matrix) */}
+          <div className="p-5 bg-gradient-to-r from-emerald-50 via-teal-50 to-white border border-emerald-200 rounded-3xl shadow-sm space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-start gap-3.5">
+                <div className="p-3 bg-emerald-600 text-white rounded-2xl shadow-xs shrink-0">
+                  <Boxes className="h-6 w-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-extrabold text-sm text-emerald-950">
+                      {isAr ? 'أداة ضخ وتوليد الأرصدة الافتتاحية للمخزون' : 'Opening Stock Balances Seeder Tool'}
+                    </h3>
+                    <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-300">
+                      {isAr ? 'توليد سريع + مصفوفة يدوية' : 'Fast-Auto + Manual Matrix'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-emerald-800 mt-1 leading-relaxed max-w-2xl">
+                    {isAr
+                      ? 'أداة متقدمة لتسهيل مرحلة التطوير والتأسيس: إضافة وتوزيع أرصدة واقعية لكافة الخامات دفعة واحدة على المستودعات مع تسعيرها، أو تعديلها يدوياً عبر جدول مصفوفة تفاعلية، وتوثيق كافة العمليات في سجل الحركات الدفتري العام (Stock Ledger) كمرجع وحيد للرصيد.'
+                      : 'Developer & onboarding utility: seed realistic stock balances across warehouses with prices in 1-click Fast-Auto mode or via interactive Manual Matrix, with SSOT audit logging in Stock Ledger.'}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsStockSeederOpen(true)}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-bold shadow-xs transition flex items-center justify-center gap-2 cursor-pointer shrink-0"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span>{isAr ? 'فتح أداة ضخ الأرصدة الافتتاحية' : 'Launch Stock Seeder'}</span>
+              </button>
+            </div>
+          </div>
+
           {/* 1-Click Diagnostic & Historical Lot Number Patcher */}
           <div className="p-5 bg-indigo-50/70 border border-indigo-200 rounded-2xl space-y-3">
             <div className="flex items-center justify-between">
@@ -4689,6 +4902,9 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                 onChange={(e) => setSelectedPurgeTargetKey(e.target.value)}
                 className="w-full p-2.5 border border-slate-300 rounded-xl text-xs bg-slate-50 font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-rose-500 focus:outline-none"
               >
+                <option value="operational_only">
+                  ⚡ {isAr ? 'مسح وتصفير كافة الحركات التشغيلية مع الحفاظ الكامل على البيانات الأساسية (Wipe Operational Only - Keep Master Data)' : 'Wipe Operational Data Only (Keep Master Data Intact)'}
+                </option>
                 <option value="all">⚠️ {isAr ? 'استعادة ضبط المصنع الشامل لكامل النظام (Full Master Reset)' : 'Master Full Factory Reset (All Tables)'}</option>
                 {allTabsList.map((t) => (
                   <option key={t.id} value={t.id}>
@@ -4705,7 +4921,11 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                 <span>{isAr ? 'بيان الأثر والتأثير التلقائي:' : 'Cascade Effect & Scope:'}</span>
               </div>
               <p className="text-slate-600">
-                {selectedPurgeTargetKey === 'all'
+                {selectedPurgeTargetKey === 'operational_only'
+                  ? (isAr
+                      ? 'سيتم مسح وتصفير كافة الحركات التشغيلية والدفترية (16 جدول: أوامر التشغيل، أذون الاستلام والتحويل، السجل الدفتري العام، سجل الورديات والتوقفات) وتصفير رصيد الخامات، مع الحفاظ التام والكامل على كافة البيانات الأساسية (الموردين، المستودعات، شجرة المنتجات BOM، تركيبات IBOM، مسارات التشغيل SOP، مستخدمي النظام).'
+                      : 'Wipes all 16 operational/transactional collections (Work Orders, GRNs, Transfers, Stock Ledger, Breaks, Shifts, etc.) and zeroes item stock, while completely preserving all Master Data (Items, Suppliers, Warehouses, BOMs, Users).')
+                  : selectedPurgeTargetKey === 'all'
                   ? (isAr ? 'سيتم مسح وتفريغ كافة الجداول التشغيلية وسجل الحركات وتصفير أرصدة الخامات إلى الصفر (0).' : 'Purges all transactional collections, movement ledgers, and resets stock to 0.')
                   : selectedPurgeTargetKey === 'goods_receipts'
                   ? (isAr ? 'سيتم مسح أذون الاستلام وسجل حركة المخزن، وإعادة تعيين رصيد الخامات في Item Master إلى الصفر (0).' : 'Purges GRNs, stock ledger, and zeroes out physical stock in Item Master.')
@@ -5545,6 +5765,14 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
         </div>
       )}
 
+      {/* Opening Stock Seeder Modal */}
+      <OpeningStockSeederModal
+        isOpen={isStockSeederOpen}
+        onClose={() => setIsStockSeederOpen(false)}
+        currentUser={currentUser}
+        warehousesList={warehousesList}
+      />
+
       {/* High-Security Confirmation Modal */}
       {resetModalOpen && (
         <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 z-[90] animate-in fade-in duration-200">
@@ -5563,8 +5791,8 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
 
             <p className="text-xs text-slate-700 leading-relaxed">
               {isAr
-                ? `أنت على وشك مسح (${selectedPurgeTargetKey === 'all' ? 'كافة جداول النظام بالكامل' : selectedPurgeTargetKey}) نهائياً من قاعدة البيانات السحابية. لا يمكن التراجع عن هذا الإجراء.`
-                : `Permanently purging (${selectedPurgeTargetKey}) from Firestore cloud.`}
+                ? `أنت على وشك مسح (${selectedPurgeTargetKey === 'all' ? 'كافة جداول النظام بالكامل' : selectedPurgeTargetKey === 'operational_only' ? 'كافة الحركات التشغيلية مع الحفاظ الكامل على البيانات الأساسية' : selectedPurgeTargetKey}) نهائياً من قاعدة البيانات السحابية. لا يمكن التراجع عن هذا الإجراء.`
+                : `Permanently purging (${selectedPurgeTargetKey === 'operational_only' ? 'Operational Data Only (Keeping Master Data)' : selectedPurgeTargetKey}) from Firestore cloud.`}
             </p>
 
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-1.5">

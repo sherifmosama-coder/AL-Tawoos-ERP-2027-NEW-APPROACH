@@ -39,7 +39,19 @@ export const getRawStorageWarehouses = (warehouses = []) => {
         w.operationalClassification !== 'factory_floor' &&
         w.classification !== 'returns' &&
         w.classification !== 'scrap' &&
-        w.classification !== 'quarantine')
+        w.classification !== 'quarantine' &&
+        w.classification !== 'finished_goods' &&
+        w.operationalClassification !== 'finished_goods')
+  );
+};
+
+// Returns all warehouses designated for finished goods
+export const getFinishedGoodsWarehouses = (warehouses = []) => {
+  if (!Array.isArray(warehouses)) return [];
+  return warehouses.filter(
+    (w) =>
+      w.operationalClassification === 'finished_goods' ||
+      w.classification === 'finished_goods'
   );
 };
 

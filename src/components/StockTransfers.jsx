@@ -45,26 +45,22 @@ import {
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
-import { buildLiveStockMatrix, StockOriginBadge, matchWarehouse, getFactoryFloorWarehouse, getRawStorageWarehouses } from '../utils/stockResolver';
-import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
+import VariantComboBox from './VariantComboBox';
+import VariantIdentifierChip from './VariantIdentifierChip';
+import { 
+  buildLiveStockMatrix, 
+  StockOriginBadge, 
+  matchWarehouse, 
+  getFactoryFloorWarehouse, 
+  getRawStorageWarehouses,
+  formatLotLabel,
+  formatVariantLabel,
+  resolveItemAllowFractions
+} from '../utils/stockResolver';
 
 export default function StockTransfers({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
-
-  // In-app configured tab appearance (respecting user-configured icon and color)
-  const [tabConfig, setTabConfig] = useState(() => getTabConfig('transfers'));
-  useEffect(() => {
-    const handleConfigUpdate = () => {
-      setTabConfig(getTabConfig('transfers'));
-    };
-    window.addEventListener('app_tab_config_updated', handleConfigUpdate);
-    return () => window.removeEventListener('app_tab_config_updated', handleConfigUpdate);
-  }, []);
-
-  const TabConfigIcon = getIconComponent(tabConfig?.iconName);
-  const tabColor = tabConfig?.color || '#059669';
-  const { r, g, b } = hexToRgb(tabColor);
 
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
   const currentUserId = currentUser?.id || currentUser?.uid || '';
@@ -509,6 +505,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
         smallUnit: item?.smallUnit || 'قطعة',
         largeUnitName: item?.largeUnitName || 'رابطة / كرتونة',
         packagingRatio: Number(item?.packagingRatio || 1),
+        allowFractions: resolveItemAllowFractions(item),
         qtySmallUnits: '',
         qtyLargeUnits: '',
         lotNumber: '',
@@ -542,6 +539,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
         code: selectedVariantCode,
         specs: variant?.resolvedSpecs || '',
         packagingRatio: Number(variant?.packagingRatio || item?.packagingRatio || 1),
+        allowFractions: resolveItemAllowFractions(variant || item),
         qtySmallUnits: '',
         qtyLargeUnits: '',
         // FIFO Auto-suggestion populated as default recommendation
@@ -598,10 +596,13 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
 
       if (field === 'qtyLargeUnits') {
         line.qtyLargeUnits = val;
-        line.qtySmallUnits = val === '' ? '' : Math.round(val * ratio);
+        line.qtySmallUnits = val === '' 
+          ? '' 
+          : (line.allowFractions ? Math.round(val * ratio * 1000) / 1000 : Math.round(val * ratio));
       } else {
-        line.qtySmallUnits = val;
-        line.qtyLargeUnits = val === '' ? '' : Number((val / ratio).toFixed(2));
+        const cleanVal = (val !== '' && !line.allowFractions) ? Math.round(val) : val;
+        line.qtySmallUnits = cleanVal;
+        line.qtyLargeUnits = cleanVal === '' ? '' : Number((cleanVal / ratio).toFixed(2));
       }
       return updated;
     });
@@ -929,32 +930,11 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
         />
       )}
 
-      {/* Top Action & Filter Bar */}
-      <div className="flex flex-col md:flex-row justify-between items-stretch md:items-center gap-3">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="p-2 border rounded-xl shadow-2xs flex items-center justify-center shrink-0 transition-all duration-200"
-            style={{
-              backgroundColor: `rgba(${r}, ${g}, ${b}, 0.1)`,
-              borderColor: `rgba(${r}, ${g}, ${b}, 0.25)`,
-              color: tabColor,
-            }}
-          >
-            <TabConfigIcon className="h-5 w-5" />
-          </div>
-          <div>
-            <h3 className="text-base font-extrabold text-slate-900">
-              {isAr ? (tabConfig?.labelAr || 'التحويلات وحركات المخازن (Stock Transfers)') : (tabConfig?.labelEn || 'Internal Stock Transfers')}
-            </h3>
-            <span className="text-xs text-slate-500 font-medium">
-              {isAr ? 'إدارة ونقل الخامات ومستلزمات الإنتاج باعتماد أمناء العهدة المعتمدين' : 'Manage inventory handovers verified by designated warehouse custodians'}
-            </span>
-          </div>
-        </div>
-
+      {/* Top Action Bar */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <button
           onClick={handleOpenCreateModal}
-          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-xs transition cursor-pointer"
+          className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-xs transition cursor-pointer"
         >
           <Plus className="h-4 w-4" />
           <span>{isAr ? 'إذن تحويل مخزني جديد (TRN)' : 'New Transfer Order (TRN)'}</span>
@@ -1457,22 +1437,17 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                             <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
                               {isAr ? 'التنوع والمواصفة: *' : 'Variant / Specs: *'}
                             </label>
-                            <select
+                            <VariantComboBox
+                              variations={variations}
                               value={line.variantCode}
                               disabled={!line.itemId}
-                              onChange={(e) => handleVariantSelect(idx, e.target.value)}
-                              className={`w-full p-1.5 bg-white border rounded-xl font-bold text-slate-800 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-50 ${
-                                line.itemId && !line.variantCode ? 'border-amber-400 bg-amber-50/40' : 'border-slate-300'
-                              }`}
-                              required
-                            >
-                              <option value="">{isAr ? '-- اختر التنوع والمواصفة --' : '-- Select Variant --'}</option>
-                              {variations.map((v) => (
-                                <option key={v.resolvedCode} value={v.resolvedCode}>
-                                  {v.resolvedCode} {v.resolvedSpecs ? `(${v.resolvedSpecs})` : ''}
-                                </option>
-                              ))}
-                            </select>
+                              onChange={(val) => handleVariantSelect(idx, val)}
+                              placeholder={isAr ? '-- اختر التنوع والمواصفة --' : '-- Select Variant --'}
+                              returnKey="variantCode"
+                              isAr={isAr}
+                              size="sm"
+                              className={line.itemId && !line.variantCode ? 'border-amber-400 bg-amber-50/40 rounded-xl' : ''}
+                            />
                           </div>
 
                           {/* Source Available Stock Badge with Origin Indicator */}
@@ -1499,7 +1474,8 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                             </label>
                             <input
                               type="number"
-                              min="1"
+                              min={line.allowFractions ? "0.001" : "1"}
+                              step={line.allowFractions ? "0.001" : "1"}
                               placeholder="0"
                               value={line.qtySmallUnits}
                               onChange={(e) => handleQtyChange(idx, 'qtySmallUnits', e.target.value)}
@@ -1514,7 +1490,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                             </label>
                             <input
                               type="number"
-                              step="0.01"
+                              step="any"
                               min="0"
                               placeholder="0"
                               value={line.qtyLargeUnits}
@@ -1542,7 +1518,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                               <option value="">{isAr ? '-- اختر رقم اللوط --' : '-- Select Lot --'}</option>
                               {activeLots.map((l, lIdx) => (
                                 <option key={l.lotNumber} value={l.lotNumber}>
-                                  {lIdx === 0 ? '⭐ ' : ''}{l.lotNumber} • [{l.availableQty.toLocaleString()} {l.smallUnit}] {l.receivedDate ? `(${l.receivedDate})` : ''}
+                                  {lIdx === 0 ? '⭐ FIFO: ' : ''}{formatLotLabel(l, isAr)}
                                 </option>
                               ))}
                             </select>
@@ -1992,7 +1968,14 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                     <td className="p-2.5 font-mono border-e border-slate-100 text-slate-500">{idx + 1}</td>
                     <td className="p-2.5 font-mono font-bold text-slate-800 border-e border-slate-100">{line.code || line.variantCode || line.itemId}</td>
                     <td className="p-2.5 border-e border-slate-100">
-                      <div className="font-bold text-slate-900">{line.nameAr}</div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-slate-900">{line.nameAr}</span>
+                        {(() => {
+                          const itemDoc = itemsMaster.find(i => i.code === line.itemId || i.id === line.itemId);
+                          const vDoc = itemDoc?.variations?.find(v => v.variantCode === line.variantCode || v.suffix === line.variantCode || (v.suffix && line.variantCode?.endsWith(`-${v.suffix}`)));
+                          return vDoc ? <VariantIdentifierChip variant={vDoc} size="sm" /> : null;
+                        })()}
+                      </div>
                       {line.specs && <div className="text-[10px] text-slate-500 mt-0.5">{line.specs}</div>}
                       {line.packagingRatio > 1 && (
                         <div className="text-[10px] text-indigo-800 font-medium mt-0.5">

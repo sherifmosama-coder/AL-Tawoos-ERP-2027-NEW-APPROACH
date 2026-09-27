@@ -33,12 +33,14 @@ import {
   Lock,
   Ban,
   Eye,
-  AlertTriangle,
   SlidersHorizontal,
   Sparkles
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
+import VariantComboBox from './VariantComboBox';
+import VariantIdentifierChip from './VariantIdentifierChip';
+import { formatVariantLabel, resolveItemAllowFractions } from '../utils/stockResolver';
 
 export default function POCreation({ currentUser = {}, permissions = null }) {
   const canViewPrices = permissions ? permissions.sensitive?.canViewPrices !== false : true;
@@ -290,6 +292,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
         initialMasterSpecs: activeSpecs,
         isSpecsModified: false,
         smallUnit: activeUnit || '',
+        allowFractions: resolveItemAllowFractions(selectedItem),
         vatPercent: selectedItem.vatRate === '0%' ? 0 : 14,
         whtPercent: whtRate,
       };
@@ -305,6 +308,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
         initialMasterSpecs: '',
         isSpecsModified: false,
         smallUnit: '',
+        allowFractions: true,
       };
     }
     setPoLines(updated);
@@ -327,6 +331,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
           initialMasterSpecs: variant.mergedSpecs || '',
           isSpecsModified: false,
           smallUnit: variant.smallUnit || selectedItem.smallUnit || '',
+          allowFractions: variant.allowFractions !== undefined ? variant.allowFractions : resolveItemAllowFractions(selectedItem),
         };
       }
     } else {
@@ -338,6 +343,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
         initialMasterSpecs: selectedItem.mergedSpecs || '',
         isSpecsModified: false,
         smallUnit: selectedItem.smallUnit || '',
+        allowFractions: resolveItemAllowFractions(selectedItem),
       };
     }
 
@@ -346,10 +352,17 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
 
   const handleLineChange = (index, field, value) => {
     const updated = [...poLines];
-    updated[index][field] = value;
+    let val = value;
+    if (field === 'qty' && updated[index]?.allowFractions === false && val !== '') {
+      const num = Number(val);
+      if (!isNaN(num) && num % 1 !== 0) {
+        val = String(Math.round(num));
+      }
+    }
+    updated[index][field] = val;
 
     if (field === 'specs') {
-      updated[index].isSpecsModified = value !== updated[index].initialMasterSpecs;
+      updated[index].isSpecsModified = val !== updated[index].initialMasterSpecs;
     }
 
     setPoLines(updated);
@@ -1096,19 +1109,26 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
 
                     {/* Order Lines */}
                     <td className="p-3 align-top text-xs space-y-1">
-                      {po.lines?.map((line, idx) => (
-                        <div key={idx} className="flex items-center gap-1.5 text-slate-700">
-                          <span className="font-mono text-[10px] bg-slate-100 border border-slate-200 px-1 rounded font-semibold">
-                            {line.code}
-                          </span>
-                          <span className="font-medium truncate max-w-[140px]" title={line.nameAr}>
-                            {line.nameAr}
-                          </span>
-                          <span className="font-bold text-slate-900 font-mono">
-                            {Number(line.qty).toLocaleString()} {line.smallUnit}
-                          </span>
-                        </div>
-                      ))}
+                      {po.lines?.map((line, idx) => {
+                        const itemDoc = itemsMaster.find((i) => i.code === (line.itemId || line.code?.split('-')[0]));
+                        const variantDoc = itemDoc?.variations?.find((v) => v.variantCode === line.variantCode || v.variantCode === line.code);
+                        return (
+                          <div key={idx} className="flex items-center gap-1.5 text-slate-700 flex-wrap">
+                            <span className="font-mono text-[10px] bg-slate-100 border border-slate-200 px-1 rounded font-semibold">
+                              {line.code}
+                            </span>
+                            {variantDoc && (
+                              <VariantIdentifierChip variant={variantDoc} size="sm" />
+                            )}
+                            <span className="font-medium truncate max-w-[140px]" title={line.nameAr}>
+                              {line.nameAr}
+                            </span>
+                            <span className="font-bold text-slate-900 font-mono">
+                              {Number(line.qty).toLocaleString()} {line.smallUnit}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </td>
 
                     {/* Delivery Date */}
@@ -1478,32 +1498,28 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
                               <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                                 {isAr ? 'تنوع الخامة (اختياري)' : 'Variation (Optional)'}
                               </label>
-                              <select
-                                disabled={isReadOnly || !line.itemId || supplierVariants.length === 0}
+                              <VariantComboBox
+                                variants={supplierVariants}
                                 value={line.variantCode || ''}
-                                onChange={(e) => handleVariantSelect(index, e.target.value)}
-                                className="w-full p-2 border border-slate-300 rounded-lg bg-white font-medium disabled:bg-slate-100 disabled:text-slate-400 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                              >
-                                <option value="">
-                                  {isAr ? '-- عام (المواصفات الأساسية للخامة) --' : '-- Generic (Master Specs) --'}
-                                </option>
-                                {supplierVariants.map((v) => (
-                                  <option key={v.variantCode} value={v.variantCode}>
-                                    [{v.variantCode}] {isAr ? `تنوع (${v.suffix})` : `Var (${v.suffix})`} • {isAr ? 'شدة:' : 'Pack:'} {v.packagingRatio}
-                                  </option>
-                                ))}
-                              </select>
+                                onChange={(val) => handleVariantSelect(index, val)}
+                                disabled={isReadOnly || !line.itemId || supplierVariants.length === 0}
+                                allowGeneric={true}
+                                genericLabel={isAr ? '-- عام (المواصفات الأساسية للخامة) --' : '-- Generic (Master Specs) --'}
+                                returnKey="variantCode"
+                                isAr={isAr}
+                                size="sm"
+                              />
                             </div>
 
-                            {/* Quantity (Step 1000) */}
+                            {/* Quantity */}
                             <div className="sm:col-span-2">
                               <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                                 {isAr ? `الكمية (${line.smallUnit || 'الوحدة'}) *` : `Qty (${line.smallUnit || 'Unit'}) *`}
                               </label>
                               <input
                                 type="number"
-                                step="1000"
-                                min="1"
+                                step={line.allowFractions ? "0.001" : "1"}
+                                min={line.allowFractions ? "0.001" : "1"}
                                 disabled={isReadOnly}
                                 value={line.qty}
                                 onChange={(e) => handleLineChange(index, 'qty', e.target.value)}

@@ -7,6 +7,9 @@ import {
   doc,
   setDoc,
   writeBatch,
+  getDocs,
+  query,
+  where,
   serverTimestamp
 } from 'firebase/firestore';
 import {
@@ -52,7 +55,17 @@ import {
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
-import { buildLiveStockMatrix, StockOriginBadge, matchWarehouse } from '../utils/stockResolver';
+import VariantComboBox from './VariantComboBox';
+import VariantIdentifierChip from './VariantIdentifierChip';
+import {
+  buildLiveStockMatrix,
+  StockOriginBadge,
+  matchWarehouse,
+  formatVariantLabel,
+  formatLotLabel,
+  formatLotDate,
+  resolveItemAllowFractions
+} from '../utils/stockResolver';
 
 export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
@@ -323,15 +336,72 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
     return list;
   }, [receipts, itemsMaster, supplierFilter, docTypeFilter]);
 
-  // Filter items linked to selected supplier in Return (RTV) mode (typically 3-5 relevant items)
+  // Helper: Strictly check if a variation belongs to the specified supplier (coercing types and checking name/code fallbacks)
+  const isVariantOfSupplier = (v, supId, supObj) => {
+    if (!supId || !v) return false;
+    const sIdStr = String(supId).trim();
+    if (v.supplierId && String(v.supplierId).trim() === sIdStr) return true;
+    if (supObj?.id && v.supplierId && String(v.supplierId).trim() === String(supObj.id).trim()) return true;
+    if (supObj?.name && v.supplierName && v.supplierName.trim().toLowerCase() === supObj.name.trim().toLowerCase()) return true;
+    if (supObj?.code && v.supplierCode && v.supplierCode.trim() === supObj.code.trim()) return true;
+    return false;
+  };
+
+  // Prioritize and partition items based on whether the selected supplier is linked to at least one of their variants
   const availableItemsForDirectGrn = useMemo(() => {
-    if (docType === 'return' && selectedSupplierId) {
-      return itemsMaster.filter((item) =>
-        (item.variations || []).some((v) => v.supplierId === selectedSupplierId)
-      );
+    if (!selectedSupplierId) {
+      return itemsMaster.map((item) => ({
+        ...item,
+        isLinkedSupplier: false,
+        groupName: isAr ? 'كافة الخامات' : 'All Materials',
+      }));
     }
-    return itemsMaster;
-  }, [itemsMaster, docType, selectedSupplierId]);
+
+    if (docType === 'return') {
+      return itemsMaster
+        .filter((item) =>
+          (item.variations || []).some((v) => isVariantOfSupplier(v, selectedSupplierId, selectedSupplier))
+        )
+        .map((item) => ({
+          ...item,
+          isLinkedSupplier: true,
+          groupName: isAr ? 'خامات مرتبطة بالمورد' : 'Materials Linked to Supplier',
+        }));
+    }
+
+    // Direct Receipt Mode:
+    // Partition items into:
+    // 1. Linked to selected supplier (supplier is registered on at least one variant) -> Prioritized at top
+    // 2. Other materials (supplier has not supplied this material before) -> Follows after
+    const linkedItems = [];
+    const otherItems = [];
+
+    itemsMaster.forEach((item) => {
+      const isLinked = (item.variations || []).some((v) =>
+        isVariantOfSupplier(v, selectedSupplierId, selectedSupplier)
+      );
+
+      if (isLinked) {
+        linkedItems.push({
+          ...item,
+          isLinkedSupplier: true,
+          groupName: isAr ? 'خامات مرتبطة بالمورد المختار' : 'Materials Linked to Selected Supplier',
+        });
+      } else {
+        otherItems.push({
+          ...item,
+          isLinkedSupplier: false,
+          groupName: isAr ? 'باقي الخامات المتاحة' : 'Other Available Materials',
+        });
+      }
+    });
+
+    // Alphabetical sort within each group
+    linkedItems.sort((a, b) => (a.nameAr || a.code || '').localeCompare(b.nameAr || b.code || '', 'ar'));
+    otherItems.sort((a, b) => (a.nameAr || a.code || '').localeCompare(b.nameAr || b.code || '', 'ar'));
+
+    return [...linkedItems, ...otherItems];
+  }, [itemsMaster, docType, selectedSupplierId, selectedSupplier, isAr]);
 
   // Active warehouses for selection dropdown
   const activeWarehouses = useMemo(() => {
@@ -651,14 +721,84 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
     return String.fromCharCode(nextCharCode);
   };
 
+  // Handle supplier change in modal: re-evaluate lines so NO variants of any other supplier persist
+  const handleSupplierChange = (newSupplierId) => {
+    setSelectedSupplierId(newSupplierId);
+    const newSupObj = suppliersMaster.find((s) => s.id === newSupplierId) || null;
+
+    if (receivingType === 'direct') {
+      const updatedLines = grnLines.map((line) => {
+        if (!line.itemId) return line;
+        const itemObj = itemsMaster.find((i) => i.code === line.itemId);
+        if (!itemObj) return line;
+
+        const supVariants = (itemObj.variations || []).filter((v) =>
+          isVariantOfSupplier(v, newSupplierId, newSupObj)
+        );
+
+        if (supVariants.length > 0) {
+          // If the line's current variant already belongs to this supplier, keep it
+          const currentValid = supVariants.some((v) => v.variantCode === line.variantCode);
+          if (currentValid && !line.isNewVariant) return line;
+
+          const defVar = supVariants[0];
+          const ratio = defVar.packagingRatio !== undefined && defVar.packagingRatio !== null ? defVar.packagingRatio : '';
+          const ratioNum = parseFloat(ratio) || 0;
+          return {
+            ...line,
+            code: defVar.variantCode,
+            variantCode: defVar.variantCode,
+            variantSuffix: defVar.suffix || '',
+            isNewVariant: false,
+            supplierId: newSupplierId,
+            supplierName: newSupObj?.name || defVar.supplierName || '',
+            specs: defVar.mergedSpecs || itemObj.mergedSpecs || '',
+            specsList: Array.isArray(defVar.specs) ? defVar.specs.map((s) => ({ ...s })) : [],
+            largeUnitName: defVar.largeUnitName || itemObj.largeUnitName || 'كرتونة',
+            smallUnit: defVar.smallUnit || itemObj.smallUnit || 'عبوة',
+            packagingRatio: ratio,
+            receivedSmallUnits: (parseFloat(line.receivedLargeUnits) || 0) * ratioNum,
+          };
+        } else {
+          // New supplier has never supplied this material: strictly switch to New Variation mode for this supplier
+          const nextSuffix = getNextVariantSuffix(itemObj);
+          const baseMasterSpecs = Array.isArray(itemObj.masterSpecs) && itemObj.masterSpecs.length > 0
+            ? itemObj.masterSpecs.map((s) => ({ label: s.label || '', value: s.value || '' }))
+            : (Array.isArray(itemObj.specs) && itemObj.specs.length > 0
+                ? itemObj.specs.map((s) => ({ label: s.label || '', value: s.value || '' }))
+                : [{ label: '', value: '' }]);
+
+          const mergedSpecsStr = baseMasterSpecs.filter((s) => s.label.trim() && s.value.trim()).map((s) => `${s.label.trim()}: ${s.value.trim()}`).join(' | ');
+
+          return {
+            ...line,
+            code: `${itemObj.code}-${nextSuffix}`,
+            variantCode: `${itemObj.code}-${nextSuffix}`,
+            variantSuffix: nextSuffix,
+            isNewVariant: true,
+            supplierId: newSupplierId,
+            supplierName: newSupObj?.name || '',
+            specs: mergedSpecsStr || itemObj.mergedSpecs || '',
+            specsList: baseMasterSpecs,
+            largeUnitName: itemObj.largeUnitName || 'كرتونة',
+            smallUnit: itemObj.smallUnit || 'عبوة',
+            packagingRatio: '',
+            receivedSmallUnits: 0,
+          };
+        }
+      });
+      setGrnLines(updatedLines);
+    }
+  };
+
   // Direct Mode Item Select
   const handleDirectItemSelect = (index, itemCode) => {
     const selectedItem = itemsMaster.find((i) => i.code === itemCode);
     const updated = [...grnLines];
 
     if (selectedItem) {
-      const supplierVariants = (selectedItem.variations || []).filter(
-        (v) => v.supplierId === selectedSupplierId
+      const supplierVariants = (selectedItem.variations || []).filter((v) =>
+        isVariantOfSupplier(v, selectedSupplierId, selectedSupplier)
       );
 
       let whtRate = selectedItem.whtRate === '3%' ? 3 : 1;
@@ -678,6 +818,8 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
           variantCode: defVar.variantCode,
           variantSuffix: defVar.suffix || '',
           isNewVariant: false,
+          supplierId: selectedSupplierId,
+          supplierName: selectedSupplier?.name || defVar.supplierName || '',
           nameAr: selectedItem.nameAr,
           nameEn: selectedItem.nameEn,
           specs: defVar.mergedSpecs || selectedItem.mergedSpecs || '',
@@ -686,6 +828,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
           smallUnit: defVar.smallUnit || selectedItem.smallUnit || 'عبوة',
           packagingRatio: ratio,
           receivedSmallUnits: (parseFloat(updated[index].receivedLargeUnits) || 0) * ratioNum,
+          allowFractions: resolveItemAllowFractions(selectedItem),
           vatPercent: selectedItem.vatRate === '0%' ? 0 : 14,
           whtPercent: whtRate,
         };
@@ -705,9 +848,10 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
           specsList: [],
           packagingRatio: '',
           receivedSmallUnits: 0,
+          allowFractions: resolveItemAllowFractions(selectedItem),
         };
       } else {
-        // GRN Direct Receipt: Auto-initialize New Variation setup
+        // GRN Direct Receipt: Supplier has NEVER supplied this material -> Auto-initialize New Variation setup for this supplier
         const nextSuffix = getNextVariantSuffix(selectedItem);
         const baseMasterSpecs = Array.isArray(selectedItem.masterSpecs) && selectedItem.masterSpecs.length > 0
           ? selectedItem.masterSpecs.map((s) => ({ label: s.label || '', value: s.value || '' }))
@@ -724,6 +868,8 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
           variantCode: `${selectedItem.code}-${nextSuffix}`,
           variantSuffix: nextSuffix,
           isNewVariant: true,
+          supplierId: selectedSupplierId,
+          supplierName: selectedSupplier?.name || '',
           nameAr: selectedItem.nameAr,
           nameEn: selectedItem.nameEn,
           specs: mergedSpecsStr || selectedItem.mergedSpecs || '',
@@ -732,6 +878,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
           smallUnit: selectedItem.smallUnit || 'عبوة',
           packagingRatio: '',
           receivedSmallUnits: 0,
+          allowFractions: resolveItemAllowFractions(selectedItem),
           vatPercent: selectedItem.vatRate === '0%' ? 0 : 14,
           whtPercent: whtRate,
         };
@@ -790,6 +937,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         smallUnit: selectedItem.smallUnit || 'عبوة',
         packagingRatio: currentRatio,
         receivedSmallUnits: largeUnits * ratioNum,
+        allowFractions: resolveItemAllowFractions(selectedItem),
       };
     } else {
       // Pick Existing Variation
@@ -811,6 +959,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
           smallUnit: variant.smallUnit || selectedItem.smallUnit || 'عبوة',
           packagingRatio: ratio,
           receivedSmallUnits: largeUnits * ratioNum,
+          allowFractions: variant.allowFractions !== undefined ? variant.allowFractions : resolveItemAllowFractions(selectedItem),
         };
       }
     }
@@ -893,11 +1042,13 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
     if (field === 'receivedLargeUnits') {
       const largeUnits = parseFloat(value) || 0;
       const ratio = parseFloat(updated[index].packagingRatio) || 0;
-      updated[index].receivedSmallUnits = largeUnits * ratio;
+      const raw = largeUnits * ratio;
+      updated[index].receivedSmallUnits = updated[index].allowFractions ? Math.round(raw * 1000) / 1000 : Math.round(raw);
     } else if (field === 'packagingRatio') {
       const ratio = parseFloat(value) || 0;
       const largeUnits = parseFloat(updated[index].receivedLargeUnits) || 0;
-      updated[index].receivedSmallUnits = largeUnits * ratio;
+      const raw = largeUnits * ratio;
+      updated[index].receivedSmallUnits = updated[index].allowFractions ? Math.round(raw * 1000) / 1000 : Math.round(raw);
     }
 
     setGrnLines(updated);
@@ -1505,6 +1656,43 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         return '';
       };
 
+      // 1. Resolve unified LOT numbers across lines:
+      // Lines with the same item, variant, price, supplier batch, and dates share the same auto-generated LOT number across warehouses
+      const batchLotMap = new Map();
+      let nextLotSeq = 1;
+
+      const preparedGrnLines = grnLines.map((l, lIdx) => {
+        const parentId = getParentItemId(l);
+        const vCode = getVariantCode(l);
+        const priceVal = l.unitPrice !== '' && l.unitPrice !== undefined ? Number(l.unitPrice) : '';
+        const supBatch = (l.supplierBatchNo || '').trim();
+        const pDate = l.productionDate || '';
+        const eDate = l.expiryDate || '';
+
+        // Batch identity key (excluding warehouse so identical items going to different warehouses share the same lot)
+        const batchKey = `${parentId}_${vCode}_${priceVal}_${supBatch}_${pDate}_${eDate}`;
+
+        let autoLotNo = l.lotNumber;
+        if (!autoLotNo) {
+          if (isReturn) {
+            autoLotNo = l.linkedGrnId ? `${l.linkedGrnId}-${String(lIdx + 1).padStart(2, '0')}` : '';
+          } else {
+            if (!batchLotMap.has(batchKey)) {
+              batchLotMap.set(batchKey, `${grnId}-${String(nextLotSeq).padStart(2, '0')}`);
+              nextLotSeq++;
+            }
+            autoLotNo = batchLotMap.get(batchKey);
+          }
+        }
+
+        return {
+          ...l,
+          assignedLotNo: autoLotNo,
+          parentId,
+          vCode,
+        };
+      });
+
       // 1. Build & Save Document Payload
       const grnPayload = {
         id: grnId,
@@ -1526,39 +1714,33 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         status: statusToSet,
         version: nextVersion,
         auditTrail: [...existingAudit, newAuditEntry],
-        lines: grnLines.map((l, lIdx) => {
-          const autoLotNo = isReturn
-            ? (l.lotNumber || (l.linkedGrnId ? `${l.linkedGrnId}-${String(lIdx + 1).padStart(2, '0')}` : ''))
-            : (l.lotNumber || `${grnId}-${String(lIdx + 1).padStart(2, '0')}`);
-
-          return {
-            lotNumber: autoLotNo,
-            linkedGrnId: l.linkedGrnId || '',
-            itemId: getParentItemId(l),
-            code: getVariantCode(l) || getParentItemId(l),
-            variantCode: getVariantCode(l),
-            variantSuffix: l.variantSuffix || '',
-            nameAr: l.nameAr,
-            nameEn: l.nameEn || '',
-            specs: l.specs || '',
-            targetWarehouse: l.targetWarehouse.trim(),
-            largeUnitName: l.largeUnitName || 'كرتونة',
-            receivedLargeUnits: Number(l.receivedLargeUnits) || 0,
-            packagingRatio: Number(l.packagingRatio) || 0,
-            smallUnit: l.smallUnit || 'عبوة',
-            receivedSmallUnits: Number(l.receivedSmallUnits) || 0,
-            unitPrice: l.unitPrice !== '' ? Number(l.unitPrice) : '',
-            currency: l.currency || 'EGP',
-            vatPercent: Number(l.vatPercent) || 0,
-            whtPercent: Number(l.whtPercent) || 0,
-            hasBatchTracking: Boolean(l.hasBatchTracking),
-            supplierBatchNo: l.supplierBatchNo || '',
-            productionDate: l.productionDate || '',
-            expiryDate: l.expiryDate || '',
-            qcStatus: isReturn ? 'rejected' : (l.qcStatus || 'accepted'),
-            rejectionReason: l.rejectionReason || '',
-          };
-        }),
+        lines: preparedGrnLines.map((l) => ({
+          lotNumber: l.assignedLotNo,
+          linkedGrnId: l.linkedGrnId || '',
+          itemId: l.parentId,
+          code: l.vCode || l.parentId,
+          variantCode: l.vCode,
+          variantSuffix: l.variantSuffix || '',
+          nameAr: l.nameAr,
+          nameEn: l.nameEn || '',
+          specs: l.specs || '',
+          targetWarehouse: l.targetWarehouse.trim(),
+          largeUnitName: l.largeUnitName || 'كرتونة',
+          receivedLargeUnits: Number(l.receivedLargeUnits) || 0,
+          packagingRatio: Number(l.packagingRatio) || 0,
+          smallUnit: l.smallUnit || 'عبوة',
+          receivedSmallUnits: Number(l.receivedSmallUnits) || 0,
+          unitPrice: l.unitPrice !== '' ? Number(l.unitPrice) : '',
+          currency: l.currency || 'EGP',
+          vatPercent: Number(l.vatPercent) || 0,
+          whtPercent: Number(l.whtPercent) || 0,
+          hasBatchTracking: Boolean(l.hasBatchTracking),
+          supplierBatchNo: l.supplierBatchNo || '',
+          productionDate: l.productionDate || '',
+          expiryDate: l.expiryDate || '',
+          qcStatus: isReturn ? 'rejected' : (l.qcStatus || 'accepted'),
+          rejectionReason: l.rejectionReason || '',
+        })),
         financials: computedTotals,
         receivedBy: editingGrn?.receivedBy || currentUserName,
         updatedAt: serverTimestamp(),
@@ -1597,11 +1779,11 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         if (isNowApproved) {
           const newSign = isReturn ? -1 : 1; // Returns deduct stock from warehouse
 
-          grnLines.forEach((l) => {
+          preparedGrnLines.forEach((l) => {
             const rawQty = Number(l.receivedSmallUnits) || 0;
             const qty = rawQty * newSign;
-            const parentId = getParentItemId(l);
-            const vCode = getVariantCode(l);
+            const parentId = l.parentId;
+            const vCode = l.vCode;
 
             if (parentId) {
               if (!newIncrements[parentId]) newIncrements[parentId] = { total: 0, variants: {} };
@@ -1611,15 +1793,11 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
               }
             }
 
-            const assignedLotNo = isReturn
-              ? (l.lotNumber || (l.linkedGrnId ? `${l.linkedGrnId}-${String(newIncrements[parentId]?.count || 1).padStart(2, '0')}` : ''))
-              : (l.lotNumber || `${grnId}-${String(Object.keys(newIncrements).indexOf(parentId) + 1).padStart(2, '0')}`);
-
             // Write stock movement ledger with full Lot Passport
             const ledgerRef = doc(collection(db, 'stock_ledger'));
             batch.set(ledgerRef, {
               grnId,
-              lotNumber: assignedLotNo,
+              lotNumber: l.assignedLotNo,
               linkedGrnId: l.linkedGrnId || null,
               action: isReturn ? 'supplier_return' : (isNew ? 'initial_receipt' : 'receipt_modified'),
               docType: docType,
@@ -1795,6 +1973,103 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
               { merge: true }
             );
           }
+        }
+      }
+
+      // 3. Auto-Bind Newly Received LOTs to Awaiting Complementary Work Orders (Option 1 Engine)
+      if (isNowApproved && !isReturn && preparedGrnLines.length > 0) {
+        try {
+          const woQuery = query(
+            collection(db, 'work_orders'),
+            where('status', 'in', ['scheduled', 'in_progress'])
+          );
+          const woSnap = await getDocs(woQuery);
+          const activeOrders = [];
+          woSnap.forEach((d) => activeOrders.push({ id: d.id, ...d.data() }));
+
+          // Prioritize demand: sort by planDate ascending, then importanceRank ascending (FIFO demand queue)
+          activeOrders.sort((a, b) => {
+            const dateA = a.planDate || '';
+            const dateB = b.planDate || '';
+            if (dateA !== dateB) return dateA.localeCompare(dateB);
+            return (Number(a.importanceRank) || 1) - (Number(b.importanceRank) || 1);
+          });
+
+          preparedGrnLines.forEach((grnLine) => {
+            const parentItemId = grnLine.parentId;
+            const grnLotNo = grnLine.assignedLotNo;
+            const grnVariantSuffix = grnLine.variantSuffix || '';
+            if (!parentItemId || !grnLotNo) return;
+
+            // Find complementary work orders awaiting this item or waiting for LOT assignment
+            const candidateOrders = activeOrders.filter((ord) => {
+              const compSel = ord.componentSelections?.[parentItemId];
+              const isComplementaryOrAwaiting = ord.isComplementary || ord.awaitingReplenishment || (compSel && !compSel.selectedLot);
+              if (!isComplementaryOrAwaiting) return false;
+
+              // Check if order actually requires this component item
+              const usesItem = ord.awaitingComponentItemId?.includes(parentItemId) || compSel !== undefined;
+              if (!usesItem) return false;
+
+              // If a LOT is already assigned, skip
+              if (compSel?.selectedLot) return false;
+
+              // Variant check: if order has a specific variant, verify match or allow generic
+              const ordVarSuffix = compSel?.variantCode;
+              if (ordVarSuffix && grnVariantSuffix && ordVarSuffix !== grnVariantSuffix) {
+                return false;
+              }
+
+              return true;
+            });
+
+            // Bind incoming lot to the candidate orders
+            candidateOrders.forEach((targetOrder) => {
+              const existingSelections = targetOrder.componentSelections || {};
+              const updatedSelections = {
+                ...existingSelections,
+                [parentItemId]: {
+                  ...(existingSelections[parentItemId] || {}),
+                  selectedLot: grnLotNo,
+                  variantCode: existingSelections[parentItemId]?.variantCode || grnVariantSuffix,
+                },
+              };
+
+              const autoBindAuditEntry = {
+                action: 'lot_auto_bound_from_grn',
+                actionLabelAr: 'ربط لوط توريد تلقائياً',
+                actionLabelEn: 'LOT Auto-Bound from GRN',
+                timestamp: new Date().toISOString(),
+                user: currentUserName || 'System GRN Auto-Bind',
+                summary: isAr
+                  ? `تم ربط اللوط الجديد (${grnLotNo}) تلقائياً من إذن التوريد (${grnId}) لتغطية متطلبات أمر التشغيل المكمل (${targetOrder.orderNumber || targetOrder.id}).`
+                  : `Auto-bound newly received LOT (${grnLotNo}) from GRN (${grnId}) to complementary work order (${targetOrder.orderNumber || targetOrder.id}).`,
+              };
+
+              const existingAudit = Array.isArray(targetOrder.auditTrail) ? targetOrder.auditTrail : [];
+              const woRef = doc(db, 'work_orders', targetOrder.id);
+
+              batch.update(woRef, {
+                componentSelections: updatedSelections,
+                lotAutoBound: true,
+                autoBoundLotNo: grnLotNo,
+                autoBoundGrnId: grnId,
+                autoBoundAt: new Date().toISOString(),
+                awaitingReplenishment: false,
+                auditTrail: [autoBindAuditEntry, ...existingAudit].slice(0, 30),
+                updatedAt: serverTimestamp(),
+              });
+
+              // Mark in memory to avoid duplicate binding in this iteration
+              if (!targetOrder.componentSelections) targetOrder.componentSelections = {};
+              targetOrder.componentSelections[parentItemId] = {
+                ...(targetOrder.componentSelections[parentItemId] || {}),
+                selectedLot: grnLotNo,
+              };
+            });
+          });
+        } catch (woBindErr) {
+          console.warn('Error during complementary work order auto-binding from GRN:', woBindErr);
         }
       }
 
@@ -2501,7 +2776,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                   <SearchableSelect
                     disabled={isReadOnly || receivingType === 'po_linked'}
                     value={selectedSupplierId}
-                    onChange={(val) => setSelectedSupplierId(val)}
+                    onChange={(val) => handleSupplierChange(val)}
                     options={suppliersMaster.map((s) => ({ value: s.id, label: s.name, sublabel: s.id }))}
                     placeholder={isAr ? '-- اختر المورد المعتمد --' : '-- Select Supplier --'}
                     isAr={isAr}
@@ -2578,9 +2853,9 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
               <div className="space-y-4">
                 {grnLines.map((line, index) => {
                   const selectedItem = itemsMaster.find((i) => i.code === line.itemId);
-                  // In return mode, strictly filter variants belonging to the selected supplier
-                  const supplierVariants = selectedItem
-                    ? (selectedItem.variations || []).filter((v) => !selectedSupplierId || v.supplierId === selectedSupplierId)
+                  // Strictly filter variants belonging to BOTH the selected item AND the selected supplier
+                  const supplierVariants = selectedItem && selectedSupplierId
+                    ? (selectedItem.variations || []).filter((v) => isVariantOfSupplier(v, selectedSupplierId, selectedSupplier))
                     : [];
 
                   const pastGrnsList = docType === 'return' ? getVariantPastGrns(selectedSupplierId, line.variantCode) : [];
@@ -2641,46 +2916,71 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                       {receivingType === 'direct' && !isReadOnly && (
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
-                            <label className="block text-[11px] font-extrabold text-slate-700 mb-1">
-                              {docType === 'return' ? (isAr ? 'الخامة المرتجعة *' : 'Return Material *') : (isAr ? 'الخامة المستلمة *' : 'Material Item *')}
+                            <label className="block text-[11px] font-extrabold text-slate-700 mb-1 flex items-center justify-between">
+                              <span>
+                                {docType === 'return' ? (isAr ? 'الخامة المرتجعة *' : 'Return Material *') : (isAr ? 'الخامة المستلمة *' : 'Material Item *')}
+                              </span>
+                              {!selectedSupplierId && (
+                                <span className="text-[10px] text-amber-600 font-bold">
+                                  {isAr ? '(اختر المورد أولاً)' : '(Select supplier first)'}
+                                </span>
+                              )}
                             </label>
                             <SearchableSelect
-                              disabled={isReadOnly}
+                              disabled={isReadOnly || !selectedSupplierId}
                               value={line.itemId}
                               onChange={(val) => handleDirectItemSelect(index, val)}
                               options={availableItemsForDirectGrn.map((item) => ({
                                 value: item.code,
                                 label: item.nameAr,
                                 sublabel: item.code,
+                                group: item.groupName,
+                                isLinked: item.isLinkedSupplier,
+                                badgeText: item.isLinkedSupplier ? (isAr ? 'مورد مسجل' : 'Linked Supplier') : '',
                               }))}
-                              placeholder={isAr ? '-- اختر الخامة الأساسية --' : '-- Select Material --'}
+                              placeholder={
+                                !selectedSupplierId
+                                  ? (isAr ? '-- يرجى اختيار المورد أولاً --' : '-- Please select supplier first --')
+                                  : (isAr ? '-- اختر الخامة الأساسية --' : '-- Select Material --')
+                              }
                               isAr={isAr}
                               required
                             />
                           </div>
 
                           <div>
-                            <label className="block text-[11px] font-extrabold text-slate-700 mb-1">
-                              {isAr ? 'تنوع الخامة المعتمد للمورد *' : 'Certified Supplier Variation *'}
-                            </label>
-                            <select
-                              value={line.isNewVariant ? '__NEW_VARIANT__' : (line.variantCode || '')}
-                              onChange={(e) => handleDirectVariantSelect(index, e.target.value)}
-                              disabled={!line.itemId}
-                              className="w-full p-2 border border-slate-300 rounded-xl bg-white font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100"
-                            >
-                              <option value="">{isAr ? '-- اختر التنوع --' : '-- Select Variation --'}</option>
-                              {supplierVariants.map((v) => (
-                                <option key={v.variantCode} value={v.variantCode}>
-                                  [{v.variantCode}] {isAr ? `تنوع (${v.suffix})` : `Var (${v.suffix})`} • {isAr ? 'شدة:' : 'Pack:'} {v.packagingRatio} • {v.mergedSpecs || ''}
-                                </option>
-                              ))}
-                              {docType !== 'return' && (
-                                <option value="__NEW_VARIANT__" className="text-emerald-700 font-bold bg-emerald-50">
-                                  ➕ {isAr ? 'إضافة تنوع جديد وتحديد الشدة والمواصفات...' : '+ Add New Variation...'}
-                                </option>
+                            <label className="block text-[11px] font-extrabold text-slate-700 mb-1 flex items-center justify-between">
+                              <span>{isAr ? 'تنوع الخامة المعتمد للمورد *' : 'Certified Supplier Variation *'}</span>
+                              {line.itemId && supplierVariants.length > 0 && (
+                                <span className="text-[10px] text-indigo-700 font-bold">
+                                  {supplierVariants.length} {isAr ? 'تنوع مسجل لهذا المورد' : 'variant(s) for this supplier'}
+                                </span>
                               )}
-                            </select>
+                              {line.itemId && supplierVariants.length === 0 && (
+                                <span className="text-[10px] text-indigo-600 font-bold">
+                                  {isAr ? 'توريد أول مرة (تنوع جديد)' : 'First supply (New Variant)'}
+                                </span>
+                              )}
+                            </label>
+                            <VariantComboBox
+                              variants={supplierVariants}
+                              value={line.isNewVariant ? '__NEW_VARIANT__' : (line.variantCode || '')}
+                              onChange={(val) => handleDirectVariantSelect(index, val)}
+                              disabled={!line.itemId || !selectedSupplierId}
+                              returnKey="variantCode"
+                              isAr={isAr}
+                              extraOptions={
+                                docType !== 'return'
+                                  ? [
+                                      {
+                                        value: '__NEW_VARIANT__',
+                                        label: isAr ? '+ إضافة وتكويد تنوع جديد خاص بهذا المورد...' : '+ Add New Variation for this Supplier...',
+                                        className: 'text-indigo-700 bg-indigo-50 hover:bg-indigo-100 font-bold border border-indigo-200',
+                                      },
+                                    ]
+                                  : []
+                              }
+                            />
                           </div>
                         </div>
                       )}
@@ -2704,7 +3004,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                                 <option value="">{isAr ? '-- بدون ربط (تسوية سعرية يدوية) --' : '-- No Link (Manual Cost) --'}</option>
                                 {pastGrnsList.map((g, gIdx) => (
                                   <option key={gIdx} value={g.lotNumber}>
-                                    [لوط: {g.lotNumber}] • {g.receiptDate} • {g.unitPrice ? `${g.unitPrice} ${g.currency}` : (isAr ? 'غير مسعر' : 'Unpriced')} {g.isTaxOfficial ? '(ضريبي)' : ''}
+                                    [لوط: {g.lotNumber}] • {formatLotDate(g.receiptDate)} • {g.unitPrice ? `${g.unitPrice} ${g.currency}` : (isAr ? 'غير مسعر' : 'Unpriced')} {g.isTaxOfficial ? '(ضريبي)' : ''}
                                   </option>
                                 ))}
                               </select>
@@ -2899,8 +3199,14 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                       {/* Display Info Banner when using existing variation */}
                       {!line.isNewVariant && line.variantCode && (
                         <div className="p-2 bg-white border border-slate-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                          <div className="flex items-center gap-1.5 text-slate-700">
-                            <Info className="h-3.5 w-3.5 text-blue-600" />
+                          <div className="flex items-center gap-1.5 text-slate-700 flex-wrap">
+                            {supplierVariants.find((v) => v.variantCode === line.variantCode) && (
+                              <VariantIdentifierChip
+                                variant={supplierVariants.find((v) => v.variantCode === line.variantCode)}
+                                size="sm"
+                              />
+                            )}
+                            <Info className="h-3.5 w-3.5 text-blue-600 shrink-0" />
                             <span className="font-bold text-slate-900">{isAr ? 'المواصفات:' : 'Specs:'}</span>
                             <span className="text-slate-600 font-medium">{line.specs || '—'}</span>
                           </div>

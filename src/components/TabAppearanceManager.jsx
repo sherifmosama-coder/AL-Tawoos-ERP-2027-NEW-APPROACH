@@ -8,17 +8,21 @@ import {
   Sparkles,
   Sliders,
   Eye,
+  ChevronUp,
   ChevronDown,
   X,
   Layers,
   ArrowRight,
-  Filter
+  Filter,
+  Cloud,
+  ArrowUpDown
 } from 'lucide-react';
 import {
   DEFAULT_TABS_CONFIG,
   getStoredTabConfigs,
   saveTabConfig,
   saveAllTabConfigs,
+  reorderTabInModule,
   resetTabConfig,
   resetAllTabConfigs,
   ICON_REGISTRY,
@@ -54,9 +58,23 @@ export default function TabAppearanceManager({
     return () => window.removeEventListener('app_tab_config_updated', handleUpdate);
   }, []);
 
-  // Filter tabs
+  // Compute ordered siblings map per module to accurately determine first/last positions
+  const moduleTabsMap = useMemo(() => {
+    const map = {};
+    Object.values(tabConfigs).forEach((t) => {
+      const mod = t.moduleKey || 'purchases';
+      if (!map[mod]) map[mod] = [];
+      map[mod].push(t);
+    });
+    Object.keys(map).forEach((k) => {
+      map[k].sort((a, b) => (Number(a.order) || 99) - (Number(b.order) || 99));
+    });
+    return map;
+  }, [tabConfigs]);
+
+  // Filter tabs and sort strictly by module and order sequence
   const tabList = useMemo(() => {
-    return Object.values(tabConfigs).filter((tab) => {
+    const list = Object.values(tabConfigs).filter((tab) => {
       if (selectedModuleFilter !== 'all' && tab.moduleKey !== selectedModuleFilter) {
         return false;
       }
@@ -70,6 +88,14 @@ export default function TabAppearanceManager({
         (tab.categoryEn && tab.categoryEn.toLowerCase().includes(q))
       );
     });
+
+    const moduleOrder = { master_data: 1, purchases: 2, production: 3, settings: 4 };
+    return list.sort((a, b) => {
+      if (a.moduleKey !== b.moduleKey) {
+        return (moduleOrder[a.moduleKey] || 99) - (moduleOrder[b.moduleKey] || 99);
+      }
+      return (Number(a.order) || 99) - (Number(b.order) || 99);
+    });
   }, [tabConfigs, searchQuery, selectedModuleFilter]);
 
   const handleUpdateTab = (tabId, field, value) => {
@@ -82,26 +108,35 @@ export default function TabAppearanceManager({
       [tabId]: updated
     };
     setTabConfigs(newMap);
-    saveTabConfig(tabId, { [field]: value });
-    showSaveToast(isAr ? 'تم حفظ التعديل فورياً وتطبيقه على النظام' : 'Changes saved & applied immediately');
+    const isImmediate = field === 'iconName' || field === 'color';
+    saveTabConfig(tabId, { [field]: value }, isImmediate);
+    showSaveToast(isAr ? 'تم حفظ التعديل سحابياً لكافة المستخدمين' : 'Changes saved globally to Cloud Firestore');
+  };
+
+  const handleReorderTab = (moduleKey, tabId, direction) => {
+    const updated = reorderTabInModule(moduleKey, tabId, direction);
+    if (updated) {
+      setTabConfigs(updated);
+      showSaveToast(isAr ? 'تم تحديث ترتيب التبويبات وحفظه سحابياً' : 'Tab order updated & saved globally to cloud');
+    }
   };
 
   const handleResetSingleTab = (tabId) => {
     const res = resetTabConfig(tabId);
     if (res) {
       setTabConfigs(res);
-      showSaveToast(isAr ? 'تمت استعادة الإعدادات الأصلية لهذا التبويب' : 'Tab restored to original defaults');
+      showSaveToast(isAr ? 'تمت استعادة الإعدادات الأصلية وحفظها سحابياً' : 'Tab restored to defaults & synced to cloud');
     }
   };
 
   const handleResetAll = () => {
     const confirmMsg = isAr
-      ? 'هل أنت متأكد من رغبتك في استعادة الإعدادات الأصلية لجميع التبويبات والمسميات والألوان؟'
-      : 'Are you sure you want to reset all tab names, icons, and colors to factory defaults?';
+      ? 'هل أنت متأكد من رغبتك في استعادة الإعدادات الأصلية لجميع التبويبات والمسميات والألوان والترتيب سحابياً؟'
+      : 'Are you sure you want to reset all tab names, icons, order, and colors to factory defaults in Cloud Firestore?';
     if (window.confirm(confirmMsg)) {
       const res = resetAllTabConfigs();
       setTabConfigs(res);
-      showSaveToast(isAr ? 'تمت استعادة إعدادات المصنع لجميع التبويبات' : 'All tabs reset to factory defaults');
+      showSaveToast(isAr ? 'تمت استعادة إعدادات المصنع لجميع التبويبات سحابياً' : 'All tabs reset to factory defaults globally');
     }
   };
 
@@ -141,15 +176,16 @@ export default function TabAppearanceManager({
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <span>{isAr ? 'تخصيص مظهر ومسميات التبويبات وألوانها' : 'Tab Styling, Icons & Color Manager'}</span>
-                <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-200">
-                  {isAr ? 'مباشر وتلقائي' : 'Live Engine'}
+                <span>{isAr ? 'تخصيص مظهر ومسميات وترتيب التبويبات' : 'Tab Styling, Icons, Sorting & Color Manager'}</span>
+                <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-200 flex items-center gap-1">
+                  <Cloud className="h-3 w-3" />
+                  <span>{isAr ? 'مزامنة سحابية عامة' : 'Global Cloud Sync'}</span>
                 </span>
               </h3>
               <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
                 {isAr
-                  ? 'تحكم كامل في مسميات التبويبات بالعربية والإنجليزية، وتغيير أيقوناتها من مكتبة الأيقونات، وتعيين أكواد لونية خاصة تنعكس بتوهج مائي فني على خلفيات وبنرات شاشات النظام.'
-                  : 'Customize tab display names (AR/EN), select from modern icons, and assign color codes that dynamically tint sidebar tabs, navbar pills, and header banners.'}
+                  ? 'تحكم مركزي سحابي ينعكس فورياً على كافة مستخدمي النظام: مسميات التبويبات (عربي/إنجليزي)، اختيار الأيقونات، ترتيب تسلسل التبويبات داخل كل وحدة، وتعيين الألوان والتوهج المائي عبر التطبيق بالكامل.'
+                  : 'Central global configuration synced via Cloud Firestore across all users: tab display names (AR/EN), modern icons, tab ordering sequence within modules, and dynamic watercolor glow colors throughout the ERP.'}
               </p>
             </div>
           </div>
@@ -176,6 +212,7 @@ export default function TabAppearanceManager({
             </span>
             {[
               { id: 'all', labelAr: 'الكل', labelEn: 'All' },
+              { id: 'master_data', labelAr: 'قاعدة البيانات الأساسية', labelEn: 'Master Database' },
               { id: 'purchases', labelAr: 'الخامات والمخازن', labelEn: 'Materials & Stock' },
               { id: 'production', labelAr: 'الإنتاج والتشغيل', labelEn: 'Production' },
               { id: 'settings', labelAr: 'الإدارة', labelEn: 'Admin' }
@@ -216,6 +253,12 @@ export default function TabAppearanceManager({
           const { r, g, b } = hexToRgb(color);
           const isFocused = focusedTabId === tab.id;
 
+          const siblings = moduleTabsMap[tab.moduleKey] || [];
+          const tabIndexInModule = siblings.findIndex((t) => t.id === tab.id);
+          const isFirstInModule = tabIndexInModule <= 0;
+          const isLastInModule = tabIndexInModule === -1 || tabIndexInModule >= siblings.length - 1;
+          const currentOrderDisplay = tab.order || (tabIndexInModule >= 0 ? tabIndexInModule + 1 : 1);
+
           return (
             <div
               key={tab.id}
@@ -227,7 +270,7 @@ export default function TabAppearanceManager({
               }`}
             >
               <div className="space-y-4">
-                {/* Tab Header Row: Icon Button + Identifier + Reset Button */}
+                {/* Tab Header Row: Icon Button + Identifier + Order controls + Reset Button */}
                 <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-100">
                   <div className="flex items-center gap-3">
                     <button
@@ -268,14 +311,56 @@ export default function TabAppearanceManager({
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleResetSingleTab(tab.id)}
-                    className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
-                    title={isAr ? 'استعادة إعدادات هذا التبويب الأصلية' : 'Reset this tab to default'}
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {/* In-module sorting controls */}
+                    <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <span
+                        className="text-[11px] font-mono font-black text-slate-700 px-2 min-w-[32px] text-center"
+                        title={
+                          isAr
+                            ? `الترتيب بالوحدة (${tab.moduleKey}): رقم ${currentOrderDisplay}`
+                            : `Order in ${tab.moduleKey}: #${currentOrderDisplay}`
+                        }
+                      >
+                        #{currentOrderDisplay}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isFirstInModule}
+                        onClick={() => handleReorderTab(tab.moduleKey, tab.id, 'up')}
+                        className={`p-1 rounded-lg transition ${
+                          isFirstInModule
+                            ? 'text-slate-300 cursor-not-allowed'
+                            : 'text-slate-600 hover:text-indigo-600 hover:bg-white cursor-pointer shadow-2xs'
+                        }`}
+                        title={isAr ? 'تقديم التبويب لأعلى في الترتيب' : 'Move tab up in sequence'}
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isLastInModule}
+                        onClick={() => handleReorderTab(tab.moduleKey, tab.id, 'down')}
+                        className={`p-1 rounded-lg transition ${
+                          isLastInModule
+                            ? 'text-slate-300 cursor-not-allowed'
+                            : 'text-slate-600 hover:text-indigo-600 hover:bg-white cursor-pointer shadow-2xs'
+                        }`}
+                        title={isAr ? 'تأخير التبويب لأسفل في الترتيب' : 'Move tab down in sequence'}
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleResetSingleTab(tab.id)}
+                      className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                      title={isAr ? 'استعادة إعدادات هذا التبويب الأصلية' : 'Reset this tab to default'}
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Editable Display Names (Arabic and English) */}

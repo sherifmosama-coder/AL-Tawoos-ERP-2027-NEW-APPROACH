@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { db } from '../firebase';
 import {
@@ -42,9 +43,10 @@ import {
   Sparkles
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
+import VariantIdentifierChip from './VariantIdentifierChip';
+import StockLifecycleSubTab from './StockLifecycleSubTab';
 import { buildLiveStockMatrix } from '../utils/stockResolver';
 import { matchWarehouse, getWarehouseDisplayName } from '../utils/warehouseClassifier';
-import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
 
 const CATEGORIES = [
   { id: 1, base: 100, nameAr: '١- عبوات بلاستيكية', nameEn: '1- Primary Containers (Plastic)' },
@@ -74,20 +76,6 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
 
-  // In-app configured tab appearance (respecting user-configured icon and color)
-  const [tabConfig, setTabConfig] = useState(() => getTabConfig('stock_balances'));
-  useEffect(() => {
-    const handleConfigUpdate = () => {
-      setTabConfig(getTabConfig('stock_balances'));
-    };
-    window.addEventListener('app_tab_config_updated', handleConfigUpdate);
-    return () => window.removeEventListener('app_tab_config_updated', handleConfigUpdate);
-  }, []);
-
-  const TabConfigIcon = getIconComponent(tabConfig?.iconName);
-  const tabColor = tabConfig?.color || '#059669';
-  const { r, g, b } = hexToRgb(tabColor);
-
   const canViewPrices = permissions ? permissions.sensitive?.canViewPrices !== false : true;
   const canViewTotals = permissions ? permissions.sensitive?.canViewTotals !== false : true;
 
@@ -99,11 +87,13 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
   const [transfers, setTransfers] = useState([]);
   const [transformations, setTransformations] = useState([]);
   const [sparePartsIssues, setSparePartsIssues] = useState([]);
+  const [workOrders, setWorkOrders] = useState([]);
   const [usersList, setUsersList] = useState([]);
+  const [intermediateRecipes, setIntermediateRecipes] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // View & Filter States
-  const [viewMode, setViewMode] = useState('consolidated'); // 'consolidated' | 'warehouse' | 'lots'
+  const [viewMode, setViewMode] = useState('consolidated'); // 'consolidated' | 'warehouse' | 'lots' | 'lifecycle'
   const [selectedWarehouseFilter, setSelectedWarehouseFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -167,12 +157,20 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
       setUsersList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
+    const unsubOrders = onSnapshot(collection(db, 'work_orders'), (snap) => {
+      setWorkOrders(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
     const unsubCategories = onSnapshot(collection(db, 'categories'), (snap) => {
       if (!snap.empty) {
         const list = snap.docs.map((d) => ({ ...d.data(), id: Number(d.id) || d.data().id }));
         list.sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
         setCategories(list);
       }
+    });
+
+    const unsubRecipes = onSnapshot(collection(db, 'intermediate_recipes'), (snap) => {
+      setIntermediateRecipes(snap.docs.map((d) => ({ ...d.data(), id: d.id, code: d.id })));
     });
 
     return () => {
@@ -183,7 +181,9 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
       unsubTransformations();
       unsubSpareParts();
       unsubUsers();
+      unsubOrders();
       unsubCategories();
+      unsubRecipes();
     };
   }, []);
 
@@ -252,8 +252,9 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
       transfers,
       transformations,
       sparePartsIssues,
+      intermediateRecipes,
     });
-  }, [itemsMaster, warehouses, goodsReceipts, transfers, transformations, sparePartsIssues]);
+  }, [itemsMaster, warehouses, goodsReceipts, transfers, transformations, sparePartsIssues, intermediateRecipes]);
 
   // Compute Chronological Kardex Lifecycle for Slide-Over Drawer (9-Stream Unified Ledger)
   const kardexLedger = useMemo(() => {
@@ -487,7 +488,13 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
       }
 
       // 4B. Consumed Components (Tank mixing R-deductions OR Work Order ISS)
-      (trans.consumedComponents || []).forEach((c) => {
+      const consumedList = Array.isArray(trans.consumedComponents) && trans.consumedComponents.length > 0
+        ? trans.consumedComponents
+        : (Array.isArray(trans.consumedLines) && trans.consumedLines.length > 0
+            ? trans.consumedLines
+            : (Array.isArray(trans.consumedMaterials) ? trans.consumedMaterials : (Array.isArray(trans.inputs) ? trans.inputs : [])));
+
+      consumedList.forEach((c) => {
         const cItemId = c.itemId || (c.code ? c.code.split('-')[0] : '');
         const cVariantCode = c.variantCode || c.code || cItemId;
 
@@ -507,7 +514,7 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
               ? 'bg-amber-50 text-amber-900 border-amber-300'
               : 'bg-blue-50 text-blue-900 border-blue-200',
             docId: trans.orderNumber || trans.id,
-            lotNumber: c.lotNumber || trans.lotNumber,
+            lotNumber: c.lotNumber || trans.lotNumber || (isAr ? 'تلقائي (FIFO)' : 'Auto (FIFO)'),
             warehouse: getWarehouseName(trans.warehouseId),
             qtyIn: 0,
             qtyOut: Number(c.qtySmallUnits),
@@ -657,7 +664,7 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
     };
   }, [kardexLedger]);
 
-  // Robust Kardex Print Handler (Direct Browser Print + Iframe Fallback for Sandbox Previews)
+  // Kardex Print Handler (Direct Browser Print)
   const handlePrintKardex = () => {
     if (!kardexTarget) return;
     setIsPrintingKardex(true);
@@ -667,76 +674,18 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
     const itemName = kardexTarget.nameAr || kardexTarget.variantCode || 'Kardex';
     document.title = `${isAr ? 'كارت-حركة' : 'Kardex'}-${kardexTarget.variantCode || kardexTarget.itemId}-${itemName}`;
 
-    // 1. Direct browser window.print()
-    let printOpened = false;
+    // Direct browser window.print() (single print trigger)
     try {
-      printOpened = true;
       window.print();
     } catch (e) {
       console.warn('Direct window.print() failed:', e);
-      printOpened = false;
-    }
-
-    // 2. Invisible iframe print fallback: executes cleanly if parent iframe suppresses direct window.print
-    try {
-      const slipEl = document.getElementById('printable-kardex-slip');
-      if (slipEl) {
-        const pIframe = document.createElement('iframe');
-        pIframe.style.position = 'fixed';
-        pIframe.style.right = '0';
-        pIframe.style.bottom = '0';
-        pIframe.style.width = '0';
-        pIframe.style.height = '0';
-        pIframe.style.border = '0';
-        pIframe.setAttribute('title', 'Kardex Print Frame');
-        document.body.appendChild(pIframe);
-
-        const pDoc = pIframe.contentWindow.document;
-        pDoc.open();
-        pDoc.write(`
-          <!DOCTYPE html>
-          <html dir="${isAr ? 'rtl' : 'ltr'}">
-          <head>
-            <title>${document.title}</title>
-            <style>
-              body { font-family: system-ui, -apple-system, sans-serif; padding: 15px; margin: 0; background: white; color: #0f172a; font-size: 11px; }
-              table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-              th, td { border: 1px solid #cbd5e1; padding: 5px 7px; font-size: 10px; }
-              th { background-color: #f1f5f9; font-weight: bold; }
-              @page { size: A4 portrait; margin: 8mm; }
-            </style>
-          </head>
-          <body>
-            ${slipEl.innerHTML}
-          </body>
-          </html>
-        `);
-        pDoc.close();
-
-        setTimeout(() => {
-          try {
-            pIframe.contentWindow.focus();
-            pIframe.contentWindow.print();
-          } catch (err) {
-            console.warn('Iframe print warning:', err);
-          } finally {
-            setTimeout(() => {
-              if (document.body.contains(pIframe)) {
-                document.body.removeChild(pIframe);
-              }
-            }, 2500);
-          }
-        }, 250);
-      }
-    } catch (err) {
-      console.warn('Fallback iframe print failed:', err);
     }
 
     setTimeout(() => {
       document.title = prevTitle;
       setIsPrintingKardex(false);
       setPrintFeedback('');
-    }, 1800);
+    }, 1000);
   };
 
   // Filtered Kardex Lifecycle with Opening/Closing Balances for Period & Multi-Filters
@@ -839,7 +788,7 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
         return sum + (variantBalancesMap[varKey]?.totalQty || 0);
       }, 0);
 
-      const minStock = Number(item.minStockLevel || item.safetyStock || 0);
+      const minStock = Number(item.reorderLevel || item.minStockLevel || item.safetyStock || 0);
       let matchesStatus = true;
       if (stockStatusFilter === 'in_stock') matchesStatus = totalItemQty > 0;
       if (stockStatusFilter === 'out_of_stock') matchesStatus = totalItemQty === 0;
@@ -875,66 +824,53 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
       {/* Scoped Print CSS Styles for Kardex Slip */}
       <style>{`
         @media screen {
-          .kardex-print-only {
+          .kardex-print-only,
+          #printable-kardex-slip {
             display: none !important;
           }
         }
         @media print {
-          body * {
-            visibility: hidden !important;
+          html, body {
+            background: white !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            height: auto !important;
+            min-height: auto !important;
+            overflow: visible !important;
           }
-          #printable-kardex-slip, #printable-kardex-slip * {
-            visibility: visible !important;
+          #root {
+            display: none !important;
           }
           #printable-kardex-slip {
-            position: absolute !important;
-            left: 0 !important;
-            top: 0 !important;
+            display: block !important;
+            position: static !important;
             width: 100% !important;
             margin: 0 !important;
-            padding: 16px 20px !important;
+            padding: 10mm 12mm !important;
             background: white !important;
             color: #0f172a !important;
             font-size: 11px !important;
             box-sizing: border-box !important;
-            display: block !important;
-            z-index: 999999 !important;
+          }
+          #printable-kardex-slip * {
+            visibility: visible !important;
           }
           @page {
             size: A4 portrait;
-            margin: 8mm 10mm;
+            margin: 0;
           }
         }
       `}</style>
 
-      {/* Top Header & 3-Mode Tab Switcher */}
-      <div className="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="p-2.5 border rounded-2xl shadow-2xs flex items-center justify-center shrink-0 transition-all duration-200"
-            style={{
-              backgroundColor: `rgba(${r}, ${g}, ${b}, 0.1)`,
-              borderColor: `rgba(${r}, ${g}, ${b}, 0.25)`,
-              color: tabColor,
-            }}
-          >
-            <TabConfigIcon className="h-6 w-6" />
-          </div>
-          <div>
-            <h3 className="text-base font-extrabold text-slate-900">
-              {isAr ? (tabConfig?.labelAr || 'أرصدة ومصفوفة المخازن والتشغيلات (Stock Balances & Matrix)') : (tabConfig?.labelEn || 'Warehouse Stock Balances & FIFO Matrix')}
-            </h3>
-            <span className="text-xs text-slate-500 font-medium">
-              {isAr ? 'متابعة حية لأرصدة الخامات، تقييم المخزون المالي، وتتبع اللوطات (FIFO)' : 'Live stock balances, FIFO financial valuation, and active lot tracking'}
-            </span>
-          </div>
-        </div>
-
-        {/* 3 Unified Viewing Modes Switcher */}
-        <div className="flex items-center p-1 bg-slate-200/80 rounded-2xl text-xs font-extrabold self-start lg:self-auto">
+      {/* Top Viewing Mode Switcher Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-2.5 sm:p-3 rounded-2xl border border-slate-200 shadow-2xs">
+        <span className="text-xs font-bold text-slate-500 ps-1">
+          {isAr ? 'نمط استعراض الأرصدة والمخزون:' : 'Stock Inventory View Mode:'}
+        </span>
+        <div className="flex items-center p-1 bg-slate-100 rounded-xl text-xs font-extrabold">
           <button
             onClick={() => setViewMode('consolidated')}
-            className={`px-3.5 py-1.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
               viewMode === 'consolidated' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -944,7 +880,7 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
 
           <button
             onClick={() => setViewMode('warehouse')}
-            className={`px-3.5 py-1.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
               viewMode === 'warehouse' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -954,137 +890,152 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
 
           <button
             onClick={() => setViewMode('lots')}
-            className={`px-3.5 py-1.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
               viewMode === 'lots' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Tag className="h-3.5 w-3.5 text-purple-600" />
             <span>{isAr ? 'سجل اللوطات والتشغيلات' : 'Active Lots (FIFO)'}</span>
           </button>
+
+          <button
+            onClick={() => setViewMode('lifecycle')}
+            className={`px-3.5 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+              viewMode === 'lifecycle' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <History className="h-3.5 w-3.5 text-cyan-600" />
+            <span>{isAr ? 'دورة حياة وسجل حركة الخامة' : 'Material Lifecycle & Ledger'}</span>
+          </button>
         </div>
       </div>
 
-      {/* Executive KPI Dashboard Bar */}
-      <div className={`grid grid-cols-1 sm:grid-cols-2 ${canViewTotals ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3`}>
-        {/* KPI 1: Total Valuation (Only Rendered if User is Permitted) */}
-        {canViewTotals && (
-          <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs flex items-center justify-between">
+      {/* Executive KPI Dashboard Bar & Filter Bar (Only for Subtabs 1, 2, and 3) */}
+      {viewMode !== 'lifecycle' && (
+        <>
+          {/* Executive KPI Dashboard Bar */}
+          <div className={`grid grid-cols-1 sm:grid-cols-2 ${canViewTotals ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3`}>
+            {/* KPI 1: Total Valuation (Only Rendered if User is Permitted) */}
+            {canViewTotals && (
+              <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] font-bold text-slate-500 block mb-0.5">
+                    {isAr ? 'إجمالي قيمة المخزون (تقييم FIFO):' : 'Total Inventory Valuation (FIFO):'}
+                  </span>
+                  <span className="text-lg font-mono font-extrabold text-emerald-700 block">
+                    {`${kpiSummary.totalValuation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP`}
+                  </span>
+                </div>
+                <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl border border-emerald-100">
+                  <DollarSign className="h-5 w-5" />
+                </div>
+              </div>
+            )}
+
+            {/* KPI 2: Active SKUs */}
+            <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs flex items-center justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'الأصناف والتنوعات المتاحة:' : 'Active SKUs & Variants:'}
+                </span>
+                <span className="text-lg font-mono font-extrabold text-slate-900 block">
+                  {kpiSummary.activeSkusCount} {isAr ? 'تنوع متاح' : 'Active SKUs'}
+                </span>
+              </div>
+              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl border border-indigo-100">
+                <Boxes className="h-5 w-5" />
+              </div>
+            </div>
+
+            {/* KPI 3: Low Stock Alerts */}
+            <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs flex items-center justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'تنبيهات حد الطلب والأمان:' : 'Reorder Threshold Alerts:'}
+                </span>
+                <span className={`text-lg font-mono font-extrabold block ${kpiSummary.lowStockCount > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                  {kpiSummary.lowStockCount} {isAr ? 'أصناف بحاجة للشراء' : 'Low Stock'}
+                </span>
+              </div>
+              <div className={`p-3 rounded-2xl border ${kpiSummary.lowStockCount > 0 ? 'bg-amber-50 text-amber-600 border-amber-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+            </div>
+
+            {/* KPI 4: Active Inward Lots */}
+            <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs flex items-center justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-slate-500 block mb-0.5">
+                  {isAr ? 'تشغيلات ولوطات المخزن النشطة:' : 'Active Inward Lots (FIFO):'}
+                </span>
+                <span className="text-lg font-mono font-extrabold text-purple-700 block">
+                  {kpiSummary.activeLotsCount} {isAr ? 'لوط نشط' : 'Active Lots'}
+                </span>
+              </div>
+              <div className="p-3 bg-purple-50 text-purple-600 rounded-2xl border border-purple-100">
+                <Tag className="h-5 w-5" />
+              </div>
+            </div>
+          </div>
+
+          {/* Global Filter Bar */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 bg-slate-50 p-3 rounded-2xl border border-slate-200 text-xs">
+            <div className="relative">
+              <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+              <input
+                type="text"
+                placeholder={isAr ? 'بحث بكود الخامة، الاسم، اللوط، أو المورد...' : 'Search item, code, lot, supplier...'}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full ps-8 pe-3 py-1.5 bg-white border border-slate-300 rounded-xl font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+              />
+            </div>
+
             <div>
-              <span className="text-[11px] font-bold text-slate-500 block mb-0.5">
-                {isAr ? 'إجمالي قيمة المخزون (تقييم FIFO):' : 'Total Inventory Valuation (FIFO):'}
-              </span>
-              <span className="text-lg font-mono font-extrabold text-emerald-700 block">
-                {`${kpiSummary.totalValuation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP`}
-              </span>
+              <select
+                value={selectedWarehouseFilter}
+                onChange={(e) => setSelectedWarehouseFilter(e.target.value)}
+                className="w-full p-1.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+              >
+                <option value="all">{isAr ? '📍 جميع المستودعات' : '📍 All Warehouses'}</option>
+                {warehouses.map((w) => (
+                  <option key={w.id || w.code} value={w.id || w.code}>
+                    {w.code ? `${w.code} - ` : ''}{isAr ? w.nameAr : w.nameEn || w.nameAr}
+                  </option>
+                ))}
+              </select>
             </div>
-            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl border border-emerald-100">
-              <DollarSign className="h-5 w-5" />
+
+            <div>
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="w-full p-1.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+              >
+                <option value="all">{isAr ? `📂 جميع تصنيفات الخامات (${categories.length} مجموعات)` : `📂 All ${categories.length} Categories`}</option>
+                {categories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {isAr ? cat.nameAr : cat.nameEn || cat.nameAr} ({cat.base} Series)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <select
+                value={stockStatusFilter}
+                onChange={(e) => setStockStatusFilter(e.target.value)}
+                className="w-full p-1.5 bg-white border border-slate-300 rounded-xl font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+              >
+                <option value="all">{isAr ? '⚡ جميع حالات الرصيد' : '⚡ All Stock States'}</option>
+                <option value="in_stock">{isAr ? '🟢 متوفر بالمخزن فقط' : 'In Stock Only'}</option>
+                <option value="low_stock">{isAr ? '⚠️ واصل لحد الطلب (منخفض)' : 'Low Stock Alert'}</option>
+                <option value="out_of_stock">{isAr ? '⚪ منتهي الرصيد (صفر)' : 'Out of Stock'}</option>
+              </select>
             </div>
           </div>
-        )}
-
-        {/* KPI 2: Active SKUs */}
-        <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold text-slate-500 block mb-0.5">
-              {isAr ? 'الأصناف والتنوعات المتاحة:' : 'Active SKUs & Variants:'}
-            </span>
-            <span className="text-lg font-mono font-extrabold text-slate-900 block">
-              {kpiSummary.activeSkusCount} {isAr ? 'تنوع متاح' : 'Active SKUs'}
-            </span>
-          </div>
-          <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl border border-indigo-100">
-            <Boxes className="h-5 w-5" />
-          </div>
-        </div>
-
-        {/* KPI 3: Low Stock Alerts */}
-        <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold text-slate-500 block mb-0.5">
-              {isAr ? 'تنبيهات حد الطلب والأمان:' : 'Reorder Threshold Alerts:'}
-            </span>
-            <span className={`text-lg font-mono font-extrabold block ${kpiSummary.lowStockCount > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
-              {kpiSummary.lowStockCount} {isAr ? 'أصناف بحاجة للشراء' : 'Low Stock'}
-            </span>
-          </div>
-          <div className={`p-3 rounded-2xl border ${kpiSummary.lowStockCount > 0 ? 'bg-amber-50 text-amber-600 border-amber-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>
-            <AlertTriangle className="h-5 w-5" />
-          </div>
-        </div>
-
-        {/* KPI 4: Active Inward Lots */}
-        <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold text-slate-500 block mb-0.5">
-              {isAr ? 'تشغيلات ولوطات المخزن النشطة:' : 'Active Inward Lots (FIFO):'}
-            </span>
-            <span className="text-lg font-mono font-extrabold text-purple-700 block">
-              {kpiSummary.activeLotsCount} {isAr ? 'لوط نشط' : 'Active Lots'}
-            </span>
-          </div>
-          <div className="p-3 bg-purple-50 text-purple-600 rounded-2xl border border-purple-100">
-            <Tag className="h-5 w-5" />
-          </div>
-        </div>
-      </div>
-
-      {/* Global Filter Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 bg-slate-50 p-3 rounded-2xl border border-slate-200 text-xs">
-        <div className="relative">
-          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-          <input
-            type="text"
-            placeholder={isAr ? 'بحث بكود الخامة، الاسم، اللوط، أو المورد...' : 'Search item, code, lot, supplier...'}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full ps-8 pe-3 py-1.5 bg-white border border-slate-300 rounded-xl font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-          />
-        </div>
-
-        <div>
-          <select
-            value={selectedWarehouseFilter}
-            onChange={(e) => setSelectedWarehouseFilter(e.target.value)}
-            className="w-full p-1.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
-          >
-            <option value="all">{isAr ? '📍 جميع المستودعات' : '📍 All Warehouses'}</option>
-            {warehouses.map((w) => (
-              <option key={w.id || w.code} value={w.id || w.code}>
-                {w.code ? `${w.code} - ` : ''}{isAr ? w.nameAr : w.nameEn || w.nameAr}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="w-full p-1.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
-          >
-            <option value="all">{isAr ? `📂 جميع تصنيفات الخامات (${categories.length} مجموعات)` : `📂 All ${categories.length} Categories`}</option>
-            {categories.map((cat) => (
-              <option key={cat.id} value={cat.id}>
-                {isAr ? cat.nameAr : cat.nameEn || cat.nameAr} ({cat.base} Series)
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <select
-            value={stockStatusFilter}
-            onChange={(e) => setStockStatusFilter(e.target.value)}
-            className="w-full p-1.5 bg-white border border-slate-300 rounded-xl font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
-          >
-            <option value="all">{isAr ? '⚡ جميع حالات الرصيد' : '⚡ All Stock States'}</option>
-            <option value="in_stock">{isAr ? '🟢 متوفر بالمخزن فقط' : 'In Stock Only'}</option>
-            <option value="low_stock">{isAr ? '⚠️ واصل لحد الطلب (منخفض)' : 'Low Stock Alert'}</option>
-            <option value="out_of_stock">{isAr ? '⚪ منتهي الرصيد (صفر)' : 'Out of Stock'}</option>
-          </select>
-        </div>
-      </div>
+        </>
+      )}
 
       {/* VIEW MODE A: CONSOLIDATED ITEM GRID */}
       {viewMode === 'consolidated' && (
@@ -1132,9 +1083,9 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
                                 <span className="font-mono font-extrabold text-slate-900 block text-xs">{item.code}</span>
                                 <span className="font-bold text-slate-800 block mt-0.5">{item.nameAr}</span>
                                 {item.nameEn && <span className="text-[10px] text-slate-400 block">{item.nameEn}</span>}
-                                {item.minStockLevel && (
-                                  <span className="text-[10px] text-slate-500 block mt-1">
-                                    {isAr ? 'حد الأمان:' : 'Safety:'} {Number(item.minStockLevel).toLocaleString()} {item.smallUnit}
+                                {(item.reorderLevel || item.minStockLevel) && (
+                                  <span className="text-[10px] text-amber-700 block mt-1 font-semibold">
+                                    {isAr ? 'حد الطلب:' : 'Reorder:'} {Number(item.reorderLevel || item.minStockLevel).toLocaleString()} {item.smallUnit}
                                   </span>
                                 )}
                               </td>
@@ -1142,7 +1093,10 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
 
                             {/* Variant Code & Specs */}
                             <td className="p-3 align-top">
-                              <span className="font-mono font-extrabold text-indigo-700 block text-xs">{v.resolvedCode}</span>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-mono font-extrabold text-indigo-700 text-xs">{v.resolvedCode}</span>
+                                <VariantIdentifierChip variant={v} size="sm" />
+                              </div>
                               {v.resolvedSpecs && <span className="text-[11px] text-slate-600 block mt-0.5">{v.resolvedSpecs}</span>}
                               {v.packagingRatio > 1 && (
                                 <span className="text-[10px] text-slate-400 block mt-0.5">
@@ -1325,7 +1279,15 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
                       <td className="p-2.5 font-mono font-extrabold text-indigo-700">{lot.lotNumber}</td>
                       <td className="p-2.5">
                         <span className="font-bold text-slate-900 block">{lot.nameAr}</span>
-                        <span className="text-[10px] text-slate-500 font-mono">{lot.variantCode} {lot.specs ? `(${lot.specs})` : ''}</span>
+                        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                          <span className="text-[10px] text-slate-500 font-mono">{lot.variantCode}</span>
+                          {(() => {
+                            const item = itemsMaster.find((i) => i.code === lot.itemId || i.id === lot.itemId);
+                            const vObj = item?.variations?.find((v) => v.variantCode === lot.variantCode || v.suffix === lot.variantCode || (v.suffix && lot.variantCode?.endsWith(`-${v.suffix}`)));
+                            return vObj ? <VariantIdentifierChip variant={vObj} size="sm" /> : null;
+                          })()}
+                          {lot.specs && <span className="text-[10px] text-slate-500 font-mono">({lot.specs})</span>}
+                        </div>
                       </td>
                       <td className="p-2.5 text-center font-mono font-bold text-slate-900">
                         {lot.availableQty.toLocaleString()} {lot.smallUnit}
@@ -1418,7 +1380,15 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
 
                     <td className="p-3 align-top">
                       <span className="font-bold text-slate-900 block">{lot.nameAr}</span>
-                      <span className="text-[10px] text-slate-500 font-mono">{lot.variantCode} {lot.specs ? `(${lot.specs})` : ''}</span>
+                      <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                        <span className="text-[10px] text-slate-500 font-mono">{lot.variantCode}</span>
+                        {(() => {
+                          const item = itemsMaster.find((i) => i.code === lot.itemId || i.id === lot.itemId);
+                          const vObj = item?.variations?.find((v) => v.variantCode === lot.variantCode || v.suffix === lot.variantCode || (v.suffix && lot.variantCode?.endsWith(`-${v.suffix}`)));
+                          return vObj ? <VariantIdentifierChip variant={vObj} size="sm" /> : null;
+                        })()}
+                        {lot.specs && <span className="text-[10px] text-slate-500 font-mono">({lot.specs})</span>}
+                      </div>
                     </td>
 
                     <td className="p-3 align-top">
@@ -1477,6 +1447,25 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
         </div>
       )}
 
+      {/* SUBTAB 4: MATERIAL LIFECYCLE & MULTI-WAREHOUSE LEDGER */}
+      {viewMode === 'lifecycle' && (
+        <StockLifecycleSubTab
+          itemsMaster={itemsMaster}
+          warehouses={warehouses}
+          goodsReceipts={goodsReceipts}
+          transfers={transfers}
+          transformations={transformations}
+          sparePartsIssues={sparePartsIssues}
+          workOrders={workOrders}
+          usersList={usersList}
+          currentUser={currentUser}
+          canViewPrices={canViewPrices}
+          canViewTotals={canViewTotals}
+          isAr={isAr}
+          intermediateRecipes={intermediateRecipes}
+        />
+      )}
+
       {/* INTERACTIVE STOCK CARD (KARDEX POPUP MODAL) */}
       {kardexTarget && (
         <div
@@ -1505,6 +1494,11 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
                     <span className="text-[11px] font-mono text-slate-300 bg-slate-800 px-2.5 py-0.5 rounded-lg border border-slate-700">
                       {kardexTarget.variantCode || kardexTarget.itemId}
                     </span>
+                    {(() => {
+                      const item = itemsMaster.find(i => i.code === kardexTarget.itemId || i.id === kardexTarget.itemId);
+                      const vObj = item?.variations?.find(v => v.variantCode === kardexTarget.variantCode || v.suffix === kardexTarget.variantCode || (v.suffix && kardexTarget.variantCode?.endsWith(`-${v.suffix}`)));
+                      return vObj ? <VariantIdentifierChip variant={vObj} size="sm" /> : null;
+                    })()}
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300 mt-1">
                     <span className="font-bold text-white text-sm">{kardexTarget.nameAr}</span>
@@ -2086,7 +2080,9 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
                       <div>
                         <span className="text-slate-500 text-[10px] block">{isAr ? 'اسم الصنف والخامة:' : 'Item Name:'}</span>
                         <span className="font-bold text-slate-900 text-xs block">{kardexTarget.nameAr}</span>
-                        {kardexTarget.nameEn && <span className="text-[10px] text-slate-500 block">{kardexTarget.nameEn}</span>}
+                        {kardexTarget.nameEn && kardexTarget.nameEn.trim() !== (kardexTarget.nameAr || '').trim() && (
+                          <span className="text-[10px] text-slate-500 block">{kardexTarget.nameEn}</span>
+                        )}
                       </div>
                       <div>
                         <span className="text-slate-500 text-[10px] block">{isAr ? 'المواصفة / الوحدة:' : 'Specs & Unit:'}</span>
@@ -2303,7 +2299,7 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
       )}
 
       {/* DEDICATED PRINTABLE KARDEX SLIP (A4 REPORT) */}
-      {kardexTarget && (
+      {kardexTarget && typeof document !== 'undefined' && createPortal(
         <div
           id="printable-kardex-slip"
           className="fixed inset-0 bg-white p-6 z-[99999] hidden print:block text-slate-800"
@@ -2359,7 +2355,9 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
             <div>
               <span className="text-slate-500 text-[10px] block">{isAr ? 'اسم الصنف والخامة:' : 'Item Name:'}</span>
               <span className="font-bold text-slate-900 text-xs block">{kardexTarget.nameAr}</span>
-              {kardexTarget.nameEn && <span className="text-[10px] text-slate-500 block">{kardexTarget.nameEn}</span>}
+              {kardexTarget.nameEn && kardexTarget.nameEn.trim() !== (kardexTarget.nameAr || '').trim() && (
+                <span className="text-[10px] text-slate-500 block">{kardexTarget.nameEn}</span>
+              )}
             </div>
             <div>
               <span className="text-slate-500 text-[10px] block">{isAr ? 'المواصفات والوحدة:' : 'Specs & Small Unit:'}</span>
@@ -2523,7 +2521,8 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

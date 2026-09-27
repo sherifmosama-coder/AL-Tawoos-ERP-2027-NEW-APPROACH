@@ -11,6 +11,8 @@ import {
   serverTimestamp
 } from 'firebase/firestore';
 import PeacockLoader from './PeacockLoader';
+import VariantComboBox from './VariantComboBox';
+import VariantIdentifierChip from './VariantIdentifierChip';
 import {
   Plus,
   Search,
@@ -36,26 +38,11 @@ import {
   Check,
   Package
 } from 'lucide-react';
-import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
 
 export default function SparePartsConsumption({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
-
-  // In-app configured tab appearance (respecting user-configured icon and color)
-  const [tabConfig, setTabConfig] = useState(() => getTabConfig('spare_parts'));
-  useEffect(() => {
-    const handleConfigUpdate = () => {
-      setTabConfig(getTabConfig('spare_parts'));
-    };
-    window.addEventListener('app_tab_config_updated', handleConfigUpdate);
-    return () => window.removeEventListener('app_tab_config_updated', handleConfigUpdate);
-  }, []);
-
-  const TabConfigIcon = getIconComponent(tabConfig?.iconName);
-  const tabColor = tabConfig?.color || '#ea580c';
-  const { r, g, b } = hexToRgb(tabColor);
 
   // Dynamic Permissions Resolver
   const canCreate = isGeneralAdmin || (
@@ -362,6 +349,7 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
 
       const processedLines = formLines.map((line, lIdx) => {
         const itemObj = itemsList.find((i) => i.code === line.itemId);
+        const vObj = (itemObj?.variations || []).find((v) => v.variantCode === line.variantCode || v.suffix === line.variantCode);
         const whObj = warehousesList.find((w) => matchWh(line.targetWarehouse, w));
         const whCode = whObj?.code || line.targetWarehouse;
         const lineLotNo = `XISS-LOT-${voucherId}-${String(lIdx + 1).padStart(2, '0')}`;
@@ -375,6 +363,8 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
           docType: 'spare_parts_issue',
           itemId: line.itemId,
           variantCode: line.variantCode || line.itemId,
+          variantColorCode: vObj?.colorCode || '',
+          identifierBadgeText: vObj?.identifierBadgeText || '',
           materialNameAr: itemObj?.nameAr || line.itemId,
           materialNameEn: itemObj?.nameEn || '',
           qty: -Math.abs(Number(line.qty)),
@@ -389,6 +379,8 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
         return {
           itemId: line.itemId,
           variantCode: line.variantCode || line.itemId,
+          variantColorCode: vObj?.colorCode || '',
+          identifierBadgeText: vObj?.identifierBadgeText || '',
           materialNameAr: itemObj?.nameAr || line.itemId,
           materialNameEn: itemObj?.nameEn || '',
           targetWarehouse: whCode,
@@ -503,29 +495,8 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
         />
       )}
 
-      {/* Top Action Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="p-2.5 border rounded-2xl shadow-2xs flex items-center justify-center shrink-0 transition-all duration-200"
-            style={{
-              backgroundColor: `rgba(${r}, ${g}, ${b}, 0.1)`,
-              borderColor: `rgba(${r}, ${g}, ${b}, 0.25)`,
-              color: tabColor,
-            }}
-          >
-            <TabConfigIcon className="h-6 w-6" />
-          </div>
-          <div>
-            <h3 className="text-base font-extrabold text-slate-900">
-              {isAr ? (tabConfig?.labelAr || 'صرف واستهلاك قطع الغيار والمستهلكات (X-Items)') : (tabConfig?.labelEn || 'Spare Parts & Maintenance Consumption')}
-            </h3>
-            <span className="text-xs text-slate-500 font-medium">
-              {isAr ? 'تسجيل استهلاك قطع الغيار للمعدات وخصمها فورياً من أرصدة المخازن وسجل الحركات (Kardex)' : 'Log non-production consumption against machines and auto-deduct from inventory'}
-            </span>
-          </div>
-        </div>
-
+      {/* Top Action Bar */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
         {canCreate ? (
           <button
             type="button"
@@ -680,8 +651,26 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
                                     <tr key={lIdx} className="hover:bg-slate-50/70">
                                       <td className="p-2.5 font-mono text-slate-600">{line.issueDate || '—'}</td>
                                       <td className="p-2.5 font-medium text-slate-900">
-                                        <div>{line.materialNameAr}</div>
-                                        <span className="font-mono text-[10px] text-slate-400">[{line.variantCode || line.itemId}]</span>
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <span>{line.materialNameAr}</span>
+                                          {(() => {
+                                            const itemObj = itemsList.find((i) => i.code === line.itemId);
+                                            const vObj = (itemObj?.variations || []).find((v) => v.variantCode === line.variantCode || v.suffix === line.variantCode);
+                                            return (
+                                              <>
+                                                {(vObj || line.identifierBadgeText) && (
+                                                  <VariantIdentifierChip
+                                                    variant={vObj}
+                                                    fallbackText={line.identifierBadgeText}
+                                                    colorCode={line.variantColorCode || vObj?.colorCode}
+                                                    size="xs"
+                                                  />
+                                                )}
+                                                <span className="font-mono text-[10px] text-slate-400">[{line.variantCode || line.itemId}]</span>
+                                              </>
+                                            );
+                                          })()}
+                                        </div>
                                       </td>
                                       <td className="p-2.5 font-bold text-slate-700">{line.targetWarehouse}</td>
                                       <td className="p-2.5 text-end font-mono font-extrabold text-blue-900">
@@ -813,32 +802,18 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
                           <label className="block font-bold text-slate-700 mb-1 truncate">
                             {isAr ? 'تنوع الصنف / المورد (Item Variance) *' : 'Item Variance / Vendor *'}
                           </label>
-                          <select
-                            required
-                            disabled={!line.itemId || variationsList.length <= 1}
+                          <VariantComboBox
+                            variations={variationsList}
                             value={line.variantCode}
-                            onChange={(e) => handleLineFieldChange(idx, 'variantCode', e.target.value)}
-                            className="w-full p-2 border border-slate-300 rounded-xl font-semibold text-slate-900 bg-white disabled:bg-slate-100 disabled:text-slate-500 focus:ring-2 focus:ring-blue-500 focus:outline-none text-xs truncate"
-                          >
-                            {!line.itemId ? (
-                              <option value="">{isAr ? '-- حدد الصنف أولاً --' : '-- Select Item First --'}</option>
-                            ) : variationsList.length === 0 ? (
-                              <option value={line.itemId}>{isAr ? 'صنف عام بدون تنوعات' : 'Generic Item'}</option>
-                            ) : variationsList.length === 1 ? (
-                              <option value={variationsList[0].variantCode || `${line.itemId}-${variationsList[0].suffix}`}>
-                                [{variationsList[0].suffix}] {variationsList[0].supplierName || 'التنوع الوحيد المعتمد'}
-                              </option>
-                            ) : (
-                              <>
-                                <option value="">{isAr ? '-- اختر التنوع المعتمد --' : '-- Select Variance --'}</option>
-                                {variationsList.map((v) => (
-                                  <option key={v.variantCode || v.suffix} value={v.variantCode || `${line.itemId}-${v.suffix}`}>
-                                    [{v.suffix}] {v.supplierName || 'تنوع'} {v.packagingRatio ? `[شدة: ${v.packagingRatio}]` : ''}
-                                  </option>
-                                ))}
-                              </>
-                            )}
-                          </select>
+                            disabled={!line.itemId || variationsList.length <= 1}
+                            onChange={(val) => handleLineFieldChange(idx, 'variantCode', val)}
+                            placeholder={!line.itemId ? (isAr ? '-- حدد الصنف أولاً --' : '-- Select Item First --') : (isAr ? '-- اختر التنوع المعتمد --' : '-- Select Variance --')}
+                            allowGeneric={variationsList.length === 0}
+                            genericLabel={isAr ? 'صنف عام بدون تنوعات' : 'Generic Item'}
+                            returnKey="variantCode"
+                            isAr={isAr}
+                            size="sm"
+                          />
                         </div>
                       </div>
 

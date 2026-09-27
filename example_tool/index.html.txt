@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>واجهة التشغيل اليومي</title>
+  
+  <!-- PWA Meta Tags -->
+  <meta name="application-name" content="واجهة التشغيل اليومي">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="إدارة العينات">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#1e40af">
+  
+  <!-- App Icons - Replace FILE_ID with your actual Google Drive file IDs -->
+  <link rel="icon" href="https://drive.google.com/uc?export=view&id=15pR4LNmPS2_RNvcPPER0hfrFsradBxVM" type="image/x-icon">
+  <link rel="shortcut icon" href="https://drive.google.com/uc?export=view&id=15pR4LNmPS2_RNvcPPER0hfrFsradBxVM" type="image/x-icon">
+  
+  <!-- Apple Touch Icons -->
+  <link rel="apple-touch-icon" href="https://drive.google.com/uc?export=view&id=14nCTBH2QjcDeOAATsm6uHar9BN-FBfKc">
+  <link rel="apple-touch-icon" sizes="180x180" href="https://drive.google.com/uc?export=view&id=14nCTBH2QjcDeOAATsm6uHar9BN-FBfKc">
+  
+  <!-- Android/Chrome Icons -->
+  <link rel="icon" type="image/png" sizes="192x192" href="https://drive.google.com/uc?export=view&id=1COktSr1FHOmiyPVrN8ylmbQnlIRKCz_n">
+  <link rel="icon" type="image/png" sizes="512x512" href="https://drive.google.com/uc?export=view&id=1XAS21mdkEHslH7_DhFRBWKO7U5nLw8D3">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+      tailwind.config = {
+        corePlugins: { preflight: false } // Prevents Tailwind from breaking your old portal styles
+      }
+    </script>
+  <?!= include('STYLE'); ?>
+</head>
+<body class="bg-slate-50 font-sans text-slate-800 antialiased selection:bg-blue-200">
+  
+  <div id="loginOverlay" class="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-md transition-opacity duration-300">
+    <div class="bg-white/95 backdrop-blur-xl border border-white/50 p-8 rounded-[2rem] shadow-2xl max-w-sm w-[90%] text-center transform transition-all scale-100">
+      <div class="w-20 h-20 mx-auto bg-gradient-to-br from-blue-600 to-indigo-600 rounded-full flex items-center justify-center shadow-lg shadow-blue-500/30 mb-6">
+        <i class="fa-solid fa-unlock-keyhole text-4xl text-white"></i>
+      </div>
+      <h2 class="text-2xl font-black text-slate-800 mb-1 tracking-tight">واجهة التشغيل اليومي</h2>
+      <p class="text-sm text-slate-500 font-semibold mb-8">يرجى إدخال رمز المرور الآمن الخاص بك</p>
+      
+      <input type="password" id="globalPinInput" class="w-full text-center text-3xl tracking-[0.5em] font-black text-slate-700 bg-slate-100/50 focus:bg-white rounded-2xl py-4 mb-4 outline-none transition-all shadow-inner" inputmode="numeric" onkeyup="if(event.key === 'Enter') attemptLogin()">
+      
+      <div id="loginErrorMsg" class="hidden items-center justify-center gap-2 text-red-600 bg-red-50 px-4 py-3 rounded-xl font-bold text-sm mb-4 transition-all shadow-sm">
+        <i class="fas fa-exclamation-circle"></i> <span id="loginErrorText">رمز غير صحيح</span>
+      </div>
+
+      <button id="btnLoginSubmit" onclick="attemptLogin()" class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-blue-500/30 transition-all hover:-translate-y-1 active:scale-95 flex items-center justify-center gap-3 text-lg">
+        <span>دخول النظام</span> <i class="fas fa-arrow-left mt-1"></i>
+      </button>
+    </div>
+  </div>
+
+  <div id="mainAppWrapper" class="hidden min-h-screen bg-slate-50">
+    
+    <header class="sticky top-0 z-40 bg-white/80 backdrop-blur-lg border-b border-slate-200/80 shadow-sm">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        
+        <div class="flex items-center gap-3 sm:gap-5">
+          <button onclick="logout()" class="w-10 h-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-600 transition-colors shadow-sm" title="تسجيل الخروج">
+            <i class="fas fa-power-off text-lg"></i>
+          </button>
+          <div class="flex flex-col">
+            <span class="text-[10px] text-slate-400 font-bold tracking-wider uppercase leading-none mb-1">مرحباً بك</span>
+            <span id="headerUserName" class="text-sm font-black text-slate-700 leading-none">--</span>
+          </div>
+        </div>
+        
+        <div class="flex-1 flex justify-center px-4">
+          <div id="globalOnlineBadges" class="flex flex-row-reverse items-center justify-center"></div>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <button onclick="syncGlobalApp()" class="h-9 px-4 hidden sm:flex items-center justify-center gap-2 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 font-bold text-xs transition-colors shadow-sm">
+            <i class="fas fa-sync-alt"></i> <span>تحديث</span>
+          </button>
+          <button onclick="syncGlobalApp()" class="w-9 h-9 sm:hidden flex items-center justify-center rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors shadow-sm">
+            <i class="fas fa-sync-alt"></i>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-4 sm:p-6 pb-24">
+      
+      <div id="homeView">
+        <div class="mb-8 text-center mt-4">
+          <h1 class="text-3xl font-black text-slate-800 mb-2 tracking-tight">البوابات المتاحة</h1>
+          <p class="text-slate-500 font-medium">تم تخصيص هذه الصلاحيات لحسابك الشخصي</p>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3 mb-10">
+          
+          <button id="btnPortalA" onclick="openPortal('A')" class="hidden flex-col items-center justify-center gap-2 p-4 bg-white rounded-2xl shadow-sm hover:shadow-[0_10px_25px_-5px_rgba(59,130,246,0.3)] transition-all hover:-translate-y-1 group relative overflow-hidden">
+            <div class="absolute top-0 right-0 w-16 h-16 bg-blue-50 rounded-full blur-2xl -mr-4 -mt-4 transition-transform group-hover:scale-150"></div>
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-md shadow-blue-500/20 group-hover:scale-110 transition-transform relative z-10">
+              <i class="fas fa-cogs text-xl text-white"></i>
+            </div>
+            <div class="text-center relative z-10">
+              <h3 class="font-black text-sm text-slate-800">ارسال تانك</h3>
+              <p class="text-[10px] text-slate-500 font-bold mt-0.5">تسجيل تانكات التشغيل</p>
+            </div>
+          </button>
+
+          <button id="btnPortalB" onclick="openPortal('B')" class="hidden flex-col items-center justify-center gap-2 p-4 bg-white rounded-2xl shadow-sm hover:shadow-[0_10px_25px_-5px_rgba(16,185,129,0.3)] transition-all hover:-translate-y-1 group relative overflow-hidden">
+            <div class="absolute top-0 right-0 w-16 h-16 bg-emerald-50 rounded-full blur-2xl -mr-4 -mt-4 transition-transform group-hover:scale-150"></div>
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-md shadow-emerald-500/20 group-hover:scale-110 transition-transform relative z-10">
+              <i class="fas fa-flask text-xl text-white"></i>
+            </div>
+            <div class="text-center relative z-10">
+              <h3 class="font-black text-sm text-slate-800">تحليل عينة</h3>
+              <p class="text-[10px] text-slate-500 font-bold mt-0.5">نتائج المعمل والجودة</p>
+            </div>
+          </button>
+
+          <button id="btnPortalPROD" onclick="openPortal('PROD')" class="hidden flex-col items-center justify-center gap-2 p-4 bg-white rounded-2xl shadow-sm hover:shadow-[0_10px_25px_-5px_rgba(245,158,11,0.3)] transition-all hover:-translate-y-1 group relative overflow-hidden">
+            <div class="absolute top-0 right-0 w-16 h-16 bg-amber-50 rounded-full blur-2xl -mr-4 -mt-4 transition-transform group-hover:scale-150"></div>
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-md shadow-amber-500/20 group-hover:scale-110 transition-transform relative z-10">
+              <i class="fas fa-gears text-xl text-white"></i>
+            </div>
+            <div class="text-center relative z-10">
+              <h3 class="font-black text-sm text-slate-800">متابعة الإنتاج</h3>
+              <p class="text-[10px] text-slate-500 font-bold mt-0.5">التشغيل المباشر</p>
+            </div>
+          </button>
+
+          <button id="btnPortalTDS" onclick="openPortal('TDS')" class="hidden flex-col items-center justify-center gap-2 p-4 bg-white rounded-2xl shadow-sm hover:shadow-[0_10px_25px_-5px_rgba(139,92,246,0.3)] transition-all hover:-translate-y-1 group relative overflow-hidden">
+            <div class="absolute top-0 right-0 w-16 h-16 bg-purple-50 rounded-full blur-2xl -mr-4 -mt-4 transition-transform group-hover:scale-150"></div>
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center shadow-md shadow-purple-500/20 group-hover:scale-110 transition-transform relative z-10">
+              <i class="fas fa-file-contract text-xl text-white"></i>
+            </div>
+            <div class="text-center relative z-10">
+              <h3 class="font-black text-sm text-slate-800">شهادات TDS</h3>
+              <p class="text-[10px] text-slate-500 font-bold mt-0.5">إصدار المواصفات الفنية</p>
+            </div>
+          </button>
+
+          <button id="btnPortalMNT" onclick="openPortal('MNT')" class="hidden flex-col items-center justify-center gap-2 p-4 bg-white rounded-2xl shadow-sm hover:shadow-[0_10px_25px_-5px_rgba(234,88,12,0.3)] transition-all hover:-translate-y-1 group relative overflow-hidden">
+            <div class="absolute top-0 right-0 w-16 h-16 bg-amber-50 rounded-full blur-2xl -mr-4 -mt-4 transition-transform group-hover:scale-150"></div>
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-md shadow-amber-500/20 group-hover:scale-110 transition-transform relative z-10">
+              <i class="fas fa-broom-ball text-xl text-white"></i>
+            </div>
+            <div class="text-center relative z-10">
+              <h3 class="font-black text-sm text-slate-800">الصيانة والنظافة</h3>
+              <p class="text-[10px] text-slate-500 font-bold mt-0.5">متابعة صيانة ومرافق المصنع</p>
+            </div>
+          </button>
+
+          <button id="btnPortalC" onclick="openPortal('C')" class="hidden flex-col items-center justify-center gap-2 p-4 bg-white rounded-2xl shadow-sm hover:shadow-[0_10px_25px_-5px_rgba(71,85,105,0.3)] transition-all hover:-translate-y-1 group relative overflow-hidden">
+            <div class="absolute top-0 right-0 w-16 h-16 bg-slate-50 rounded-full blur-2xl -mr-4 -mt-4 transition-transform group-hover:scale-150"></div>
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-slate-600 to-slate-800 flex items-center justify-center shadow-md shadow-slate-500/20 group-hover:scale-110 transition-transform relative z-10">
+              <i class="fas fa-chart-pie text-xl text-white"></i>
+            </div>
+            <div class="text-center relative z-10">
+              <h3 class="font-black text-sm text-slate-800">التقارير والإدارة</h3>
+              <p class="text-[10px] text-slate-500 font-bold mt-0.5">تحليل الأداء الشامل للأنظمة</p>
+            </div>
+          </button>
+        </div>
+          
+          <!-- Tanks Dashboard -->
+          <div id="tanksDashboard" class="dashboard-section">
+            <div class="dashboard-header">
+              <div class="dashboard-title">
+                <i class="fas fa-fill-drip"></i>
+                <span id="tanksDashboardTitle">لوحة التانكات - اليوم</span>
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="date" id="tanksDatePicker" class="form-control" style="padding: 4px 8px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 0.85rem; outline: none; color: #475569; background: #f8fafc;" onchange="refreshTanksDashboard()">
+                <button id="tanksClearDateBtn" class="btn-refresh" style="display: none; color: #ef4444; background: #fee2e2; border-color: #fca5a5;" onclick="resetTanksDate()" title="إلغاء التحديد (العودة لليوم)">
+                  <i class="fas fa-times"></i>
+                </button>
+                <button class="btn-refresh" onclick="refreshTanksDashboard()" title="تحديث">
+                  <i class="fas fa-sync-alt"></i>
+                </button>
+              </div>
+            </div>
+            <div class="dashboard-cards-container w-full">
+              <div class="dashboard-cards w-full" id="tanksDashboardCards">
+                <div class="flex flex-col items-center justify-center py-16 gap-4">
+                  <i class="fas fa-circle-notch fa-spin text-4xl text-blue-500"></i>
+                  <span class="text-slate-400 font-bold tracking-wide">جاري تحميل البيانات...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div> <div id="portalPage" style="display: none;" class="animate-fadeIn"></div>
+    </main>
+  </div> <div id="loadingOverlay" style="display: none; position: fixed; inset: 0; z-index: 99999; align-items: center; justify-content: center; background-color: rgba(15, 23, 42, 0.7); backdrop-filter: blur(4px);">
+    <div style="background-color: white; padding: 2rem 3rem; border-radius: 1.5rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); display: flex; flex-direction: column; align-items: center; gap: 1rem;">
+      <i class="fas fa-circle-notch fa-spin" style="font-size: 3.5rem; color: #3b82f6;"></i>
+      <p id="loadingText" style="color: #334155; font-weight: 800; font-size: 1.1rem; margin: 0;">جاري التحميل...</p>
+    </div>
+  </div>
+
+  <?!= include('INTERFACE'); ?>
+
+  <script>
+    // --- GLOBAL NUMERAL NORMALIZER (Arabic to English) ---
+    function convertArabicToEnglishNums(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/[٠۰]/g, '0')
+        .replace(/[١۱]/g, '1')
+        .replace(/[٢۲]/g, '2')
+        .replace(/[٣۳]/g, '3')
+        .replace(/[٤۴]/g, '4')
+        .replace(/[٥۵]/g, '5')
+        .replace(/[٦۶]/g, '6')
+        .replace(/[٧۷]/g, '7')
+        .replace(/[٨۸]/g, '8')
+        .replace(/[٩۹]/g, '9');
+    }
+
+    // Live input interceptor: converts numerals instantly as the operator types
+    document.addEventListener('input', function(e) {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+        let original = e.target.value;
+        let converted = convertArabicToEnglishNums(original);
+        if (original !== converted) {
+          e.target.value = converted;
+        }
+      }
+    });
+
+    // --- AUTHENTICATION & STATE ENGINE ---
+    var currentUser = '';
+    var userPermissions = {};
+    var currentPortal = '';
+    var heartbeatInterval = null;
+    var tanksRefreshInterval = null;
+
+    function attemptLogin() {
+      const rawPin = document.getElementById('globalPinInput').value.trim();
+      const pin = convertArabicToEnglishNums(rawPin);
+      const errorMsg = document.getElementById('loginErrorMsg');
+      const btn = document.getElementById('btnLoginSubmit');
+      
+      if (!pin) {
+        errorMsg.classList.remove('hidden'); errorMsg.classList.add('flex');
+        document.getElementById('loginErrorText').textContent = 'يرجى إدخال رمز المرور';
+        return;
+      }
+      
+      errorMsg.classList.add('hidden'); errorMsg.classList.remove('flex');
+      
+      const oldHtml = btn.innerHTML;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري التحقق...';
+      btn.disabled = true;
+      
+      google.script.run
+        .withSuccessHandler(function(result) {
+          btn.innerHTML = oldHtml;
+          btn.disabled = false;
+          
+          if (result.valid) {
+            currentUser = result.userName;
+            userPermissions = result.permissions;
+            document.getElementById('headerUserName').textContent = currentUser;
+            document.getElementById('loginOverlay').style.opacity = '0';
+            
+            setTimeout(() => {
+              document.getElementById('loginOverlay').style.display = 'none';
+              document.getElementById('mainAppWrapper').classList.remove('hidden');
+              document.getElementById('mainAppWrapper').classList.add('block');
+              
+              // Map Permissions to UI Buttons
+              document.getElementById('btnPortalA').classList.toggle('hidden', !userPermissions['A']);
+              document.getElementById('btnPortalA').classList.toggle('flex', userPermissions['A']);
+              document.getElementById('btnPortalB').classList.toggle('hidden', !userPermissions['B']);
+              document.getElementById('btnPortalB').classList.toggle('flex', userPermissions['B']);
+              document.getElementById('btnPortalPROD').classList.toggle('hidden', !userPermissions['PROD']);
+              document.getElementById('btnPortalPROD').classList.toggle('flex', userPermissions['PROD']);
+              document.getElementById('btnPortalTDS').classList.toggle('hidden', !userPermissions['TDS']);
+              document.getElementById('btnPortalTDS').classList.toggle('flex', userPermissions['TDS']);
+              document.getElementById('btnPortalMNT').classList.toggle('hidden', !userPermissions['MNT']);
+              document.getElementById('btnPortalMNT').classList.toggle('flex', userPermissions['MNT']);
+              document.getElementById('btnPortalC').classList.toggle('hidden', !userPermissions['C']);
+              document.getElementById('btnPortalC').classList.toggle('flex', userPermissions['C']);
+              
+              startHeartbeat('الرئيسية (Dashboard)');
+              initializeDashboards();
+            }, 300);
+          } else {
+            errorMsg.classList.remove('hidden'); errorMsg.classList.add('flex');
+            document.getElementById('loginErrorText').textContent = result.message || 'رمز المرور غير صحيح';
+            document.getElementById('globalPinInput').value = '';
+          }
+        })
+        .withFailureHandler(function(error) { 
+          btn.innerHTML = oldHtml; btn.disabled = false;
+          alert('حدث خطأ في الاتصال: ' + error.message); 
+        })
+        .globalLogin(pin);
+    }
+
+    function logout() {
+      if(heartbeatInterval) clearInterval(heartbeatInterval);
+      if(currentUser) google.script.run.updateHeartbeat(currentUser, 'Offline');
+      currentUser = ''; userPermissions = {}; currentPortal = '';
+      document.getElementById('globalPinInput').value = '';
+      document.getElementById('mainAppWrapper').classList.add('hidden');
+      document.getElementById('mainAppWrapper').classList.remove('block');
+      const loginOverlay = document.getElementById('loginOverlay');
+      loginOverlay.style.display = 'flex';
+      setTimeout(() => loginOverlay.style.opacity = '1', 50);
+    }
+
+    function openPortal(portalCode) {
+      if(!userPermissions[portalCode]) return alert("غير مصرح لك بدخول هذه البوابة!");
+      currentPortal = portalCode;
+      document.getElementById('homeView').style.display = 'none';
+      const portalPage = document.getElementById('portalPage');
+      portalPage.style.display = 'block';
+      const portalNames = { 'A': 'بوابة التانكات', 'B': 'بوابة المعمل', 'TDS': 'شهادات TDS', 'PROD': 'متابعة الإنتاج', 'C': 'التقارير', 'MNT': 'الصيانة والنظافة' };
+      startHeartbeat(portalNames[portalCode]);
+
+      if (portalCode === 'A') { portalPage.innerHTML = document.getElementById('portalATemplate').innerHTML; initPortalA(); }
+      else if (portalCode === 'B') { portalPage.innerHTML = document.getElementById('portalBTemplate').innerHTML; initPortalB(); }
+      else if (portalCode === 'C') { portalPage.innerHTML = document.getElementById('portalCTemplate').innerHTML; initPortalC(); }
+      else if (portalCode === 'TDS') { portalPage.innerHTML = document.getElementById('portalTDSTemplate').innerHTML; initPortalTDS(); }
+      else if (portalCode === 'PROD') { portalPage.innerHTML = document.getElementById('portalProdTemplate').innerHTML; initPortalProd(); }
+      else if (portalCode === 'MNT') { portalPage.innerHTML = document.getElementById('portalMNTTemplate').innerHTML; initPortalMNT(); }
+    }
+
+    function goHome() {
+      document.getElementById('portalPage').style.display = 'none';
+      document.getElementById('portalPage').innerHTML = '';
+      document.getElementById('homeView').style.display = 'block';
+      currentPortal = '';
+      startHeartbeat('الرئيسية (Dashboard)');
+      refreshTanksDashboard(); 
+    }
+
+    function syncGlobalApp() {
+      fetchOnlineUsers();
+      if (!currentPortal) { refreshTanksDashboard(); } 
+      else if (currentPortal === 'PROD' && typeof loadProdSessions === 'function') { loadProdSessions(); } 
+      else if (currentPortal === 'C') {
+        if(document.getElementById('filtersSection') && document.getElementById('filtersSection').style.display !== 'none') {
+           if(typeof loadReportData === 'function') loadReportData();
+        } else if(typeof loadExecutiveReport === 'function') { loadExecutiveReport(); }
+      }
+    }
+
+    function startHeartbeat(locationName) {
+      if (!currentUser) return;
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      google.script.run.updateHeartbeat(currentUser, locationName);
+      heartbeatInterval = setInterval(function() {
+        if (currentUser) google.script.run.updateHeartbeat(currentUser, locationName);
+      }, 30000); 
+    }
+
+    function showLoading() { document.getElementById('loadingOverlay').style.display = 'flex'; }
+    function hideLoading() { document.getElementById('loadingOverlay').style.display = 'none'; }
+
+    // --- ONLINE BADGES LOGIC (Global Scope) ---
+    function getColorForName(name) {
+       let hash = 0;
+       for (let i = 0; i < name.length; i++) { hash = name.charCodeAt(i) + ((hash << 5) - hash); }
+       // Use a 360-degree HSL color wheel to guarantee a mathematically unique color for every name
+       const hue = Math.abs(hash) % 360;
+       return `hsl(${hue}, 70%, 45%)`; 
+    }
+
+    function renderOnlineBadges(onlineUsers) {
+       const container = document.getElementById('globalOnlineBadges');
+       if (!container) return;
+       container.innerHTML = '';
+       if(!onlineUsers) return;
+       
+       onlineUsers.forEach((user, index) => {
+          // 1. Hide Offline Users completely
+          if (user.location === 'Offline') return;
+          
+          // 2. Detect Idle Users
+          const isIdle = user.location.includes('Idle');
+          
+          // 3. Apply low opacity and grayscale to Idle users, keep Active users bright
+          const stateClasses = isIdle ? 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0' : 'opacity-100';
+          
+          const badge = document.createElement('div');
+          badge.className = `w-9 h-9 rounded-full text-white text-[11px] font-black flex items-center justify-center shadow-sm -ml-2 relative group cursor-pointer transition-all hover:scale-110 hover:z-50 ${stateClasses}`;
+          badge.style.backgroundColor = getColorForName(user.name);
+          badge.style.zIndex = 100 - index;
+          badge.textContent = user.initials;
+          
+          const tooltip = document.createElement('div');
+          tooltip.className = 'absolute top-full mt-2 w-max max-w-[150px] bg-slate-800 text-white text-[10px] font-bold py-1.5 px-3 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all text-center border border-slate-600';
+          
+          // Color code the location text in the tooltip based on state
+          const locationColor = isIdle ? 'text-slate-400' : 'text-blue-300';
+          tooltip.innerHTML = `${user.name} <br><span class="${locationColor}">${user.location}</span>`;
+          
+          badge.appendChild(tooltip);
+          container.appendChild(badge);
+       });
+    }
+
+    function fetchOnlineUsers() {
+       google.script.run.withSuccessHandler(renderOnlineBadges).getOnlineUsers();
+    }
+
+    // --- DASHBOARDS INITIALIZATION ---
+    function initializeDashboards() {
+      loadTanksDashboard();
+      
+      // Start polling for online users every 15 seconds
+      fetchOnlineUsers();
+      setInterval(fetchOnlineUsers, 15000); 
+    }
+
+    function resetTanksDate() {
+      const datePicker = document.getElementById('tanksDatePicker');
+      if (datePicker) datePicker.value = '';
+      refreshTanksDashboard();
+    }
+
+    function refreshTanksDashboard() {
+      const btn = event ? (event.target.closest ? event.target.closest('.btn-refresh') : null) : null;
+      if (btn) btn.classList.add('rotating');
+      
+      loadTanksDashboard(function() {
+        if (btn) btn.classList.remove('rotating');
+      });
+    }
+
+    function loadTanksDashboard(callback) {
+      const datePicker = document.getElementById('tanksDatePicker');
+      const selectedDate = datePicker ? datePicker.value : '';
+      
+      // Toggle Clear Button Visibility dynamically
+      const clearBtn = document.getElementById('tanksClearDateBtn');
+      if (clearBtn) {
+         clearBtn.style.display = selectedDate ? 'flex' : 'none';
+      }
+      
+      // Update the Dashboard Title Dynamically
+      const titleEl = document.getElementById('tanksDashboardTitle');
+      if (titleEl) {
+         if (selectedDate) {
+             const d = new Date(selectedDate);
+             titleEl.textContent = 'لوحة التانكات - ' + d.toLocaleDateString('ar-EG', { day: 'numeric', month: 'short', year: 'numeric' });
+         } else {
+             titleEl.textContent = 'لوحة التانكات - اليوم';
+         }
+      }
+
+      const container = document.getElementById('tanksDashboardCards');
+      if (container) {
+         // Show modern loading state while fetching the new date
+         container.innerHTML = '<div class="flex flex-col items-center justify-center py-16 gap-4"><i class="fas fa-circle-notch fa-spin text-4xl text-blue-500"></i><span class="text-slate-400 font-bold tracking-wide">جاري تحميل البيانات...</span></div>';
+      }
+
+      google.script.run
+        .withSuccessHandler(function(data) {
+          renderTanksDashboard(data);
+          if (callback) callback();
+        })
+        .withFailureHandler(function(error) {
+          console.error('Error loading tanks dashboard:', error);
+          if (container) {
+            container.innerHTML = '<div class="flex flex-col items-center justify-center py-16 gap-4 text-red-500"><i class="fas fa-exclamation-circle text-4xl"></i><span class="font-bold tracking-wide">خطأ في تحميل البيانات</span></div>';
+          }
+          if (callback) callback();
+        })
+        .getTodayTanksDashboardData(selectedDate);
+    }
+
+    function showTooltipImage(event, url) {
+      event.stopPropagation();
+      if(!url || url.length < 5) return;
+      
+      const existing = document.getElementById('imgTooltip');
+      if(existing) existing.remove();
+
+      let directUrl = url;
+      const idMatch = url.match(/[-\w]{25,}/);
+      if (idMatch && idMatch[0]) {
+        directUrl = 'https://lh3.googleusercontent.com/d/' + idMatch[0];
+      }
+      
+      const btnRect = event.currentTarget.getBoundingClientRect();
+      const tooltip = document.createElement('div');
+      tooltip.id = 'imgTooltip';
+      tooltip.style.position = 'fixed';
+      tooltip.style.zIndex = '100000';
+      tooltip.style.backgroundColor = 'white';
+      tooltip.style.padding = '5px';
+      tooltip.style.borderRadius = '8px';
+      tooltip.style.boxShadow = '0 10px 25px rgba(0,0,0,0.2)';
+      tooltip.style.border = '1px solid #e2e8f0';
+      
+      const imgSize = 180;
+      let topPos = btnRect.top - imgSize - 15;
+      if (topPos < 10) topPos = btnRect.bottom + 15;
+      
+      let leftPos = btnRect.left - (imgSize / 2) + (btnRect.width / 2);
+      if (leftPos < 10) leftPos = 10;
+      if (leftPos + imgSize > window.innerWidth - 10) leftPos = window.innerWidth - imgSize - 10;
+
+      tooltip.style.top = topPos + 'px';
+      tooltip.style.left = leftPos + 'px';
+      tooltip.style.transform = 'scale(0.9)';
+      tooltip.style.opacity = '0';
+      tooltip.style.transition = 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+      
+      tooltip.innerHTML = `<img src="${directUrl}" style="max-width: ${imgSize}px; max-height: ${imgSize}px; border-radius: 4px; display: block;">`;
+      
+      document.body.appendChild(tooltip);
+      
+      requestAnimationFrame(() => {
+        tooltip.style.transform = 'scale(1)';
+        tooltip.style.opacity = '1';
+      });
+
+      const closeTooltip = function() {
+        if (tooltip && tooltip.parentNode) {
+            tooltip.style.transform = 'scale(0.9)';
+            tooltip.style.opacity = '0';
+            setTimeout(() => tooltip.remove(), 200);
+        }
+        document.removeEventListener('click', closeTooltip);
+      };
+      
+      setTimeout(() => document.addEventListener('click', closeTooltip), 50);
+    }
+
+    function showTankTooltip(event, isMissing) {
+      event.stopPropagation();
+      const existing = document.getElementById('tankDataTooltip');
+      if(existing) existing.remove();
+      
+      const targetEl = event.currentTarget;
+      const btnRect = targetEl.getBoundingClientRect();
+      const time = targetEl.getAttribute('data-time') || '';
+      const labResult = targetEl.getAttribute('data-result') || '';
+      const productType = targetEl.getAttribute('data-product') || '';
+      
+      const tooltip = document.createElement('div');
+      tooltip.id = 'tankDataTooltip';
+      tooltip.style.position = 'fixed';
+      tooltip.style.zIndex = '100000';
+      tooltip.style.backgroundColor = '#1e293b';
+      tooltip.style.color = 'white';
+      tooltip.style.padding = '10px 15px';
+      tooltip.style.borderRadius = '8px';
+      tooltip.style.boxShadow = '0 10px 25px rgba(0,0,0,0.3)';
+      tooltip.style.border = '1px solid #475569';
+      tooltip.style.fontSize = '0.85rem';
+      tooltip.style.fontWeight = 'bold';
+      tooltip.style.minWidth = '120px';
+      tooltip.style.pointerEvents = 'none';
+
+      if (isMissing) {
+        tooltip.innerHTML = '<div style="display:flex; align-items:center; gap:8px; margin-bottom:5px; color:#fca5a5;"><i class="fas fa-exclamation-triangle"></i><span>مفقود</span></div>' +
+                            '<div style="display:flex; align-items:center; gap:8px; color:#34d399;"><i class="fas fa-flask"></i><span style="direction:ltr;">-</span></div>';
+      } else {
+        tooltip.innerHTML = '<div style="display:flex; align-items:center; gap:8px; margin-bottom:5px; color:#cbd5e1;"><i class="far fa-clock"></i><span style="direction:ltr;">' + time + '</span></div>' +
+                            '<div style="display:flex; align-items:center; gap:8px; margin-bottom:5px; color:#fbbf24;"><i class="fas fa-box"></i><span>' + productType + '</span></div>' +
+                            '<div style="display:flex; align-items:center; gap:8px; color:#34d399;"><i class="fas fa-flask"></i><span style="direction:ltr;">' + labResult + '</span></div>';
+      }
+
+      document.body.appendChild(tooltip);
+
+      let topPos = btnRect.top - tooltip.offsetHeight - 10;
+      if (topPos < 10) topPos = btnRect.bottom + 10;
+      
+      let leftPos = btnRect.left + (btnRect.width / 2) - (tooltip.offsetWidth / 2);
+      if (leftPos < 10) leftPos = 10;
+      if (leftPos + tooltip.offsetWidth > window.innerWidth - 10) leftPos = window.innerWidth - tooltip.offsetWidth - 10;
+
+      tooltip.style.top = topPos + 'px';
+      tooltip.style.left = leftPos + 'px';
+      tooltip.style.transform = 'scale(0.9)';
+      tooltip.style.opacity = '0';
+      tooltip.style.transition = 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+      
+      requestAnimationFrame(() => {
+        tooltip.style.transform = 'scale(1)';
+        tooltip.style.opacity = '1';
+      });
+
+      const closeTooltip = function() {
+        if (tooltip && tooltip.parentNode) {
+            tooltip.style.transform = 'scale(0.9)';
+            tooltip.style.opacity = '0';
+            setTimeout(() => tooltip.remove(), 200);
+        }
+        document.removeEventListener('click', closeTooltip);
+      };
+      setTimeout(() => document.addEventListener('click', closeTooltip), 50);
+    }
+
+    function renderTanksDashboard(data) {
+  const container = document.getElementById('tanksDashboardCards');
+  if (!container) return;
+
+  const ho = data.handover || {};
+  const prevTank = data.prevShiftLastTank || {};
+
+  // Build the chips HTML using standard data attributes to bypass Maestro HTML parser errors
+  let chipsHTML = '';
+  let maxReg = data.maxRegisteredSerial || 0;
+  
+  if (data.startSerial > 0 && data.endSerial >= data.startSerial) {
+    for (let i = data.startSerial; i <= data.endSerial; i++) {
+      let tankData = data.tanksMap ? data.tanksMap[i] : null;
+      
+      if (tankData) {
+        let specialClass = '';
+        let isMissing = false;
+        
+        if (!tankData.isRegistered) {
+            if (i < maxReg) {
+                // Rule 1: Not registered AND smaller than the highest registered tank -> Missing
+                isMissing = true;
+                specialClass += ' missing';
+            } else {
+                // Rule 4: Not registered BUT is the latest active tank -> Early Lab / In-Progress
+                specialClass += ' chip-early-lab';
+            }
+        } else {
+            if (tankData.productType && tankData.productType !== 'خل') {
+                // Rule 2: Registered AND Not "خل" -> Yellow Border
+                specialClass += ' chip-special';
+            }
+            
+            if (tankData.labResult === '-') {
+               // Rule 3: Recorded but NOT analyzed (no lab result) -> Glowing red border
+               specialClass += ' chip-untested';
+            }
+        }
+        
+        let hasImage = (tankData.portalAImage && tankData.portalAImage.length > 5) || (tankData.labImage && tankData.labImage.length > 5);
+        let badgeHTML = hasImage ? '<button onclick="openDualImageModal(event, \'' + (tankData.portalAImage || '') + '\', \'' + (tankData.labImage || '') + '\', ' + i + ')" style="position: absolute; top: -6px; left: -6px; background: #3b82f6; color: white; border: 1px solid white; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 8px; cursor: pointer; z-index: 20; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" title="عرض الصور"><i class="fas fa-camera"></i></button>' : '';
+
+        chipsHTML += '<div class="chip-tank' + specialClass + '" style="position: relative;" data-time="' + tankData.time + '" data-result="' + tankData.labResult + '" data-product="' + tankData.productType + '" onclick="showTankTooltip(event, ' + isMissing + ')">' + badgeHTML + i + '</div>';
+      } else {
+        // Rule 5: Completely absent from sheet -> Missing
+        chipsHTML += '<div class="chip-tank missing" onclick="showTankTooltip(event, true)">' + i + '</div>';
+      }
+    }
+  }
+
+  container.innerHTML = `
+    <style>
+      @keyframes popIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    </style>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; direction: rtl;">
+       
+       <div style="grid-column: span 2; background: linear-gradient(135deg, #2563eb, #1e3a8a); border-radius: 16px; padding: 25px 20px; color: white; display: flex; flex-direction: column; box-shadow: 0 8px 20px rgba(37, 99, 235, 0.25); border: 1px solid #3b82f6; position: relative; overflow: hidden;">
+          <i class="bi bi-droplet-half" style="position: absolute; left: -10px; top: -10px; font-size: 8rem; opacity: 0.1;"></i>
+          
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; z-index: 10;">
+             <div style="font-size: 3.8rem; font-weight: 900; line-height: 1; color: #ffffff; text-shadow: 0px 2px 4px rgba(0,0,0,0.2);">
+                <span style="font-size: 2.5rem; opacity: 0.8; margin-left: 5px;">#</span>${data.totalCount || 0}
+             </div>
+          </div>
+          
+          <div class="tank-chips-container">
+             ${chipsHTML}
+          </div>
+
+          ${(data.unserializedItems && data.unserializedItems.length > 0) ? `
+            <div style="margin-top: 15px; padding-top: 12px; border-top: 1px dashed rgba(255,255,255,0.25); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; z-index: 10;">
+               <span style="font-size: 0.72rem; font-weight: 800; color: rgba(255,255,255,0.8);"><i class="fas fa-boxes ml-1"></i> خامات خاصة:</span>
+               ${data.unserializedItems.map(item => `
+                 <div style="background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3); backdrop-filter: blur(4px); padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 800; color: white; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" title="وقت التسجيل: ${item.time}">
+                   <i class="fas fa-leaf" style="color: #fde68a; font-size: 0.7rem;"></i>
+                   <span>${item.material}</span>
+                   <span style="background: rgba(0,0,0,0.2); padding: 1px 6px; border-radius: 10px; font-size: 0.65rem; color: #f8fafc;">${item.quantity}</span>
+                 </div>
+               `).join('')}
+            </div>
+          ` : ''}
+       </div>
+
+       <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 15px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); display: flex; flex-direction: column; justify-content: space-between;">
+          <div style="font-size: 0.75rem; color: #64748b; font-weight: bold; margin-bottom: 10px; display: flex; align-items: center; gap: 5px;"><i class="bi bi-arrow-return-right text-slate-400"></i> نهاية الوردية السابقة</div>
+          
+          <div style="display: flex; justify-content: space-between; align-items: center; background: white; padding: 8px 10px; border-radius: 8px; border: 1px solid #f1f5f9; margin-bottom: 10px;">
+             <div>
+                <div style="font-size: 1.1rem; font-weight: 900; color: #334155;">T-${ho.lastTankNum || '-'}</div>
+                <div style="font-size: 0.65rem; color: #94a3b8; font-weight: bold;">${prevTank.time || '--:--'}</div>
+             </div>
+             <button onclick="showTooltipImage(event, '${prevTank.image}')" style="background: ${prevTank.image ? '#eff6ff' : '#f1f5f9'}; border: 1px solid ${prevTank.image ? '#bfdbfe' : '#e2e8f0'}; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; color: ${prevTank.image ? '#3b82f6' : '#cbd5e1'}; cursor: ${prevTank.image ? 'pointer' : 'default'}; transition: 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'"><i class="bi bi-camera-fill"></i></button>
+          </div>
+
+          <div style="height: 1px; background: #e2e8f0; margin: 5px 0 10px 0;"></div>
+
+          <div style="font-size: 0.75rem; color: #64748b; font-weight: bold; margin-bottom: 10px; display: flex; align-items: center; gap: 5px;"><i class="bi bi-box-arrow-in-right text-slate-400"></i> بداية الوردية الجديدة</div>
+          
+          <div style="display: flex; justify-content: space-between; align-items: center; background: white; padding: 8px 10px; border-radius: 8px; border: 1px solid #f1f5f9;">
+             <div>
+                <div style="font-size: 1.1rem; font-weight: 900; color: #334155;">T-${ho.expectedNext || '-'}</div>
+                <div style="font-size: 0.65rem; color: #94a3b8; font-weight: bold;">بكرة الملصقات</div>
+             </div>
+             <button onclick="showTooltipImage(event, '${ho.image}')" style="background: ${ho.image ? '#fffbeb' : '#f1f5f9'}; border: 1px solid ${ho.image ? '#fde68a' : '#e2e8f0'}; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; color: ${ho.image ? '#d97706' : '#cbd5e1'}; cursor: ${ho.image ? 'pointer' : 'default'}; transition: 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'"><i class="bi bi-upc-scan"></i></button>
+          </div>
+       </div>
+
+       <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); display: flex; flex-direction: column;">
+          
+          <div style="display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto auto; align-items: center; gap: 1px 6px; margin-bottom: 7px;">   
+   
+            <div style="grid-column: 1; grid-row: 1; font-size: 0.75rem; color: #64748b; font-weight: bold;">التحليل المعملي</div>
+            <div style="grid-column: 1; grid-row: 2; font-size: 1.6rem; font-weight: 900; color: #10b981;">${data.hasConcentrationData ? data.avgConc + '%' : '-'}</div>
+            <div style="grid-column: 1; grid-row: 3; font-size: 0.7rem; color: #94a3b8; font-weight: bold;">المتوسط العام</div>
+
+            <i class="fas fa-flask" style="grid-column: 2; grid-row: 1 / 4; font-size: 2rem; color: #10b981; align-self: center; justify-self: center; padding: 0 10px;"></i>
+          </div>
+          
+          <div style="margin-top: auto; padding-top: 10px; border-top: 1px solid #f1f5f9; font-size: 0.7rem; color: #64748b; font-weight: bold; display: flex; flex-direction: column; gap: 6px;">
+             <div style="display: flex; justify-content: space-between; align-items: center; background: #fef2f2; padding: 6px; border-radius: 6px;">
+               <span class="text-rose-600" style="display:flex; align-items:center;">
+                 <i class="bi bi-arrow-down-short text-lg" style="margin-left:4px;"></i> أقل تركيز: ${data.hasConcentrationData ? data.lowestConc + '%' : '-'}
+               </span>
+               ${data.lowestSerialUnique ? `<span style="color:#f87171; font-size: 0.65rem;">(T${data.lowestSerialUnique})</span>` : ''}
+             </div>
+             <div style="display: flex; justify-content: space-between; align-items: center; background: #ecfdf5; padding: 6px; border-radius: 6px;">
+               <span class="text-emerald-600" style="display:flex; align-items:center;">
+                 <i class="bi bi-arrow-up-short text-lg" style="margin-left:4px;"></i>أعلي تركيز: ${data.hasConcentrationData ? data.highestConc + '%' : '-'}
+               </span>
+               ${data.highestSerialUnique ? `<span style="color:#34d399; font-size: 0.65rem;">(T${data.highestSerialUnique})</span>` : ''}
+             </div>
+          </div>
+       </div>
+
+    </div>
+  `;
+}
+
+
+    function openDualImageModal(event, portalAUrl, labUrl, tankSerial) {
+      if (event) event.stopPropagation();
+
+      const existing = document.getElementById('dualImageModal');
+      if (existing) existing.remove();
+
+      function getDirectUrl(url) {
+        if (!url || url.length < 5) return null;
+        const idMatch = url.match(/[-\w]{25,}/);
+        return idMatch && idMatch[0] ? 'https://lh3.googleusercontent.com/d/' + idMatch[0] : url;
+      }
+
+      const imgA = getDirectUrl(portalAUrl);
+      const imgB = getDirectUrl(labUrl);
+
+      const modal = document.createElement('div');
+      modal.id = 'dualImageModal';
+      modal.style.position = 'fixed';
+      modal.style.inset = '0';
+      modal.style.zIndex = '100000';
+      modal.style.backgroundColor = 'rgba(15, 23, 42, 0.75)';
+      modal.style.backdropFilter = 'blur(6px)';
+      modal.style.display = 'flex';
+      modal.style.alignItems = 'center';
+      modal.style.justifyContent = 'center';
+      modal.style.padding = '20px';
+      modal.style.direction = 'rtl';
+
+      let contentA = imgA 
+        ? `<img src="${imgA}" style="max-width: 100%; max-height: 380px; border-radius: 12px; border: 2px solid #3b82f6; display: block; margin: 0 auto; box-shadow: 0 4px 15px rgba(0,0,0,0.15);">`
+        : `<div style="padding: 40px 20px; background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #94a3b8; font-weight: bold;"><i class="fas fa-camera-slash text-3xl mb-2 block"></i>لم يتم رفع صورة الإنتاج بعد</div>`;
+
+      let contentB = imgB 
+        ? `<img src="${imgB}" style="max-width: 100%; max-height: 380px; border-radius: 12px; border: 2px solid #10b981; display: block; margin: 0 auto; box-shadow: 0 4px 15px rgba(0,0,0,0.15);">`
+        : `<div style="padding: 40px 20px; background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #94a3b8; font-weight: bold;"><i class="fas fa-flask-vial text-3xl mb-2 block"></i>لم يتم رفع صورة المعمل بعد</div>`;
+
+      modal.innerHTML = `
+        <div style="background: white; border-radius: 24px; max-width: 850px; width: 100%; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.3); animation: popIn 0.25s ease-out;">
+          <div style="background: linear-gradient(135deg, #1e293b, #0f172a); padding: 18px 24px; color: white; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0; font-size: 1.15rem; font-weight: 800; display: flex; align-items: center; gap: 8px;">
+              <i class="fas fa-images text-blue-400"></i> معاينة صور التانك (#${tankSerial})
+            </h3>
+            <button onclick="document.getElementById('dualImageModal').remove()" style="background: rgba(255,255,255,0.1); border: none; color: #cbd5e1; width: 32px; height: 32px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; transition: all 0.2s;" onmouseover="this.style.background='#ef4444'; this.style.color='white';" onmouseout="this.style.background='rgba(255,255,255,0.1)'; this.style.color='#cbd5e1';">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+          <div style="padding: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <span style="font-size: 0.85rem; font-weight: 800; color: #1e3a8a; display: flex; align-items: center; gap: 6px;"><i class="fas fa-cogs text-blue-500"></i> صورة الإنتاج (Portal A)</span>
+              ${contentA}
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <span style="font-size: 0.85rem; font-weight: 800; color: #065f46; display: flex; align-items: center; gap: 6px;"><i class="fas fa-flask text-emerald-500"></i> صورة المعمل (Portal B)</span>
+              ${contentB}
+            </div>
+          </div>
+          <div style="padding: 12px 24px; background: #f8fafc; border-top: 1px solid #f1f5f9; text-align: left;">
+            <button onclick="document.getElementById('dualImageModal').remove()" class="btn btn-secondary btn-sm" style="font-weight: bold; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; padding: 8px 20px; border-radius: 8px;">إغلاق</button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(modal);
+    }
+
+    function navigateToTanksReport() {
+      showPortal('C');
+      setTimeout(function() {
+        var reportBtn = document.querySelector('[onclick*="selectReportTypeC(\'tank\')"]');
+        if (reportBtn) {
+          reportBtn.click();
+        }
+      }, 800);
+    }
+
+    function navigateToSerial(serial) {
+      if (serial === 0) return;
+      
+      showPortal('C');
+      setTimeout(function() {
+        var reportBtn = document.querySelector('[onclick*="selectReportTypeC(\'tank\')"]');
+        if (reportBtn) {
+          reportBtn.click();
+          setTimeout(function() {
+            var searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+              searchInput.value = serial;
+              if (typeof filterTable === 'function') {
+                filterTable();
+              }
+            }
+          }, 1000);
+        }
+      }, 800);
+    }
+
+    function navigateToTankConcentration(type, serial) {
+      if (serial === 0) return;
+      navigateToSerial(serial);
+    }
+
+    function navigateToAnalysisReport(method) {
+      showPortal('C');
+      setTimeout(function() {
+        var reportBtn = document.querySelector('[onclick*="selectReportTypeC(\'analysis\')"]');
+        if (reportBtn) {
+          reportBtn.click();
+          setTimeout(function() {
+            var searchTerm = method === 'device' ? 'الجهاز' : 'معملي';
+            var searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+              searchInput.value = searchTerm;
+              if (typeof filterTable === 'function') {
+                filterTable();
+              }
+            }
+          }, 1000);
+        }
+      }, 800);
+    }
+
+    function navigateToAnalysisConcentration(type, id) {
+      if (!id || id === '0') return;
+      
+      showPortal('C');
+      setTimeout(function() {
+        var reportBtn = document.querySelector('[onclick*="selectReportTypeC(\'analysis\')"]');
+        if (reportBtn) {
+          reportBtn.click();
+          setTimeout(function() {
+            var searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+              searchInput.value = id;
+              if (typeof filterTable === 'function') {
+                filterTable();
+              }
+            }
+          }, 1000);
+        }
+      }, 800);
+    }
+
+    // Initialize on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      // Dashboards initialize AFTER login now
+      
+      document.addEventListener('keypress', function(e) {
+        const loginOverlay = document.getElementById('loginOverlay');
+        if (e.key === 'Enter' && loginOverlay && loginOverlay.style.display !== 'none') {
+          attemptLogin();
+        }
+      });
+    });
+  </script>
+</body>
+</html>

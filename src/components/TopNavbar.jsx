@@ -25,7 +25,16 @@ import {
   CheckCircle2,
   Scale,
   FileText,
-  PanelLeft
+  PanelLeft,
+  Workflow,
+  AlertOctagon,
+  Activity,
+  BarChart3,
+  Database,
+  FolderKanban,
+  PackageCheck,
+  Warehouse,
+  Settings
 } from 'lucide-react';
 import { HeaderPresencePill } from './UIUXComponents';
 import {
@@ -92,15 +101,35 @@ export default function TopNavbar({
 
   const RAW_ERP_STRUCTURE = [
     {
-      id: 'purchases',
-      labelAr: 'الخامات',
-      labelEn: 'Materials',
-      icon: ShoppingCart,
-      defaultTab: 'orders',
+      id: 'master_data',
+      labelAr: 'قاعدة البيانات الأساسية',
+      labelEn: 'Master Database',
+      icon: Database,
+      defaultTab: 'items',
       status: 'active',
       tabs: [
         { id: 'items', moduleKey: 'items', labelAr: 'كارت الأصناف والخامات', labelEn: 'Item Master', icon: Package },
         { id: 'suppliers', moduleKey: 'suppliers', labelAr: 'سجل الموردين المعتمدين', labelEn: 'Supplier Master', icon: Building2 },
+        { id: 'categories', moduleKey: 'categories', labelAr: 'مجموعات وتصنيفات التكويد', labelEn: 'Raw Material Categories', icon: FolderKanban },
+        { id: 'finished_products', moduleKey: 'finished_products', labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Goods Master', icon: PackageCheck },
+        { id: 'finished_product_categories', moduleKey: 'finished_product_categories', labelAr: 'تصنيفات ومجموعات المنتج التام', labelEn: 'FG Categories', icon: Boxes },
+        { id: 'bom', moduleKey: 'bom', labelAr: 'تعبئة وتغليف المنتج التام (BOM)', labelEn: 'Packing & Filling BOM', icon: Layers },
+        { id: 'intermediate_bom', moduleKey: 'intermediate_bom', labelAr: 'تصنيع الخامات الوسيطة (M)', labelEn: 'Intermediate BOM (M)', icon: FlaskConical },
+        { id: 'production_processes', moduleKey: 'production_processes', labelAr: 'مسارات ومراحل التشغيل (SOP)', labelEn: 'Production Processes & SOPs', icon: Workflow },
+        { id: 'warehouses', moduleKey: 'warehouses', labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', icon: Warehouse },
+        { id: 'production_workers', moduleKey: 'production_workers', labelAr: 'سجل عمالة وفنيي الإنتاج', labelEn: 'Production Workers', icon: Users },
+        { id: 'users', moduleKey: 'users', labelAr: 'المستخدمين والصلاحيات', labelEn: 'Users & Roles', icon: ShieldCheck },
+        { id: 'system_config', moduleKey: 'system_config', labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', icon: Settings },
+      ]
+    },
+    {
+      id: 'purchases',
+      labelAr: 'الخامات والمشتريات',
+      labelEn: 'Materials & Procurement',
+      icon: ShoppingCart,
+      defaultTab: 'orders',
+      status: 'active',
+      tabs: [
         { id: 'orders', moduleKey: 'purchase_orders', labelAr: 'أوامر الشراء (PO)', labelEn: 'Purchase Orders', icon: ShoppingCart },
         { id: 'receipts', moduleKey: 'goods_receipts', labelAr: 'إذن استلام خامات (GRN)', labelEn: 'Goods Receipt', icon: ArrowDownLeft },
         { id: 'transfers', moduleKey: 'transfers', labelAr: 'تحويلات المخازن (TRN)', labelEn: 'Stock Transfers', icon: ArrowLeftRight },
@@ -134,13 +163,9 @@ export default function TopNavbar({
       labelAr: 'الإنتاج والتشغيل',
       labelEn: 'Production & Manufacturing',
       icon: Factory,
-      defaultTab: 'finished_products',
+      defaultTab: 'work_orders',
       status: 'active',
       tabs: [
-        { id: 'finished_products', moduleKey: 'finished_products', labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Products Master', icon: Package },
-        { id: 'intermediate_bom', moduleKey: 'intermediate_bom', labelAr: 'تصنيع الخامات الوسيطة (M)', labelEn: 'Intermediate BOM (M)', icon: FlaskConical },
-        { id: 'liquid_tanks', moduleKey: 'liquid_tanks', labelAr: 'تشغيل وتانكات الخامات (M)', labelEn: 'Bulk Liquid Tanks (M)', icon: Cog },
-        { id: 'bom', moduleKey: 'bom', labelAr: 'تعبئة وتغليف المنتج التام (BOM)', labelEn: 'Packing & Filling BOM', icon: Layers },
         {
           id: 'work_orders',
           moduleKey: 'work_orders',
@@ -153,9 +178,11 @@ export default function TopNavbar({
             { id: 'live_tracking', labelAr: '٣- المتابعة الحية للورديات (Live Tracking)', labelEn: '3. Live Shift Timeline' },
           ]
         },
-        { id: 'material_issue', moduleKey: 'material_issue', labelAr: 'صرف خامات للتشغيل', labelEn: 'Material Issue', icon: ArrowDownLeft },
+        { id: 'liquid_tanks', moduleKey: 'liquid_tanks', labelAr: 'تشغيل وتانكات الخامات (M)', labelEn: 'Bulk Liquid Tanks (M)', icon: Cog },
+        { id: 'liquid_storage', moduleKey: 'liquid_storage', labelAr: 'خزانات وتدفق السوائل (M)', labelEn: 'Floor Liquid Storage (M)', icon: Activity },
+        { id: 'faulty_fg', moduleKey: 'faulty_fg', labelAr: 'مرتجعات ومعيب المنتج التام', labelEn: 'Faulty FG & Returns', icon: AlertOctagon },
         { id: 'fg_inward', moduleKey: 'fg_inward', labelAr: 'استلام المنتج التام', labelEn: 'Finished Goods Inward', icon: CheckCircle2 },
-        { id: 'yield_recon', moduleKey: 'yield_recon', labelAr: 'تدقيق الهالك والإنتاجية', labelEn: 'Yield & Scrap Audit', icon: Scale },
+        { id: 'production_reports', moduleKey: 'production_reports', labelAr: 'تقارير الإنتاجية والأداء التنفيذي', labelEn: 'Production & Performance Reports', icon: BarChart3 },
       ]
     },
     {
@@ -216,11 +243,13 @@ export default function TopNavbar({
               labelEn: customConfig.labelEn || tab.labelEn,
               icon: customConfig.iconName ? getIconComponent(customConfig.iconName) : tab.icon,
               color: customConfig.color || '#059669',
+              order: typeof customConfig.order === 'number' ? customConfig.order : 99,
             };
           }
-          return { ...tab, color: '#059669' };
+          return { ...tab, color: '#059669', order: 99 };
         })
-        .filter(isTabPermitted),
+        .filter(isTabPermitted)
+        .sort((a, b) => (Number(a.order) || 99) - (Number(b.order) || 99)),
     }))
     .filter((mod) => isGeneralAdmin || mod.status === 'upcoming' || mod.tabs.length > 0);
 
@@ -626,7 +655,11 @@ export default function TopNavbar({
 
         {/* Right Side: Online Teammates Header Presence Pill */}
         <div className="flex items-center gap-2.5 shrink-0">
-          <HeaderPresencePill onlineUsers={testUsers.filter((u) => u.id !== currentUser.id)} isAr={isAr} />
+          <HeaderPresencePill 
+            onlineUsers={testUsers.filter((u) => u.id !== currentUser.id)} 
+            currentUser={currentUser} 
+            isAr={isAr} 
+          />
         </div>
       </div>
     </header>

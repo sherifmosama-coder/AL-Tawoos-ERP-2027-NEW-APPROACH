@@ -55,8 +55,17 @@ import {
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
-import { buildLiveStockMatrix, matchWarehouse } from '../utils/stockResolver';
-import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
+import VariantComboBox from './VariantComboBox';
+import VariantIdentifierChip from './VariantIdentifierChip';
+import {
+  buildLiveStockMatrix,
+  matchWarehouse,
+  formatLotLabel,
+  formatVariantLabel,
+  formatLotDate,
+  formatQuantity,
+  resolveItemAllowFractions
+} from '../utils/stockResolver';
 import * as XLSX from 'xlsx';
 
 // 5-Priority Hierarchical Sorting Helper: Warehouse -> Category -> Item -> Variant -> Lot
@@ -95,20 +104,6 @@ const sortStockCountLines = (lines = []) => {
 export default function StockCount({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
-
-  // In-app configured tab appearance (respecting user-configured icon and color)
-  const [tabConfig, setTabConfig] = useState(() => getTabConfig('stock_count'));
-  useEffect(() => {
-    const handleConfigUpdate = () => {
-      setTabConfig(getTabConfig('stock_count'));
-    };
-    window.addEventListener('app_tab_config_updated', handleConfigUpdate);
-    return () => window.removeEventListener('app_tab_config_updated', handleConfigUpdate);
-  }, []);
-
-  const TabConfigIcon = getIconComponent(tabConfig?.iconName);
-  const tabColor = tabConfig?.color || '#6366f1';
-  const { r, g, b } = hexToRgb(tabColor);
 
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
   const currentUserId = currentUser?.id || currentUser?.uid || '';
@@ -353,8 +348,16 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
       return;
     }
 
+    const itemObj = itemsMaster.find((i) => i.code === itemId || i.id === itemId);
+    const allowFractions = resolveItemAllowFractions(itemObj);
+
     if (actualSmallQty === '' || actualSmallQty === null || isNaN(Number(actualSmallQty))) {
       alert(isAr ? 'يرجى إدخال الرصيد الفعلي بعد التسوية.' : 'Please enter actual count.');
+      return;
+    }
+
+    if (!allowFractions && !Number.isInteger(Number(actualSmallQty))) {
+      alert(isAr ? 'هذا البند وحداته غير قابلة للكسور (أعداد صحيحة فقط).' : 'This item does not accept decimal fractions (whole integers only).');
       return;
     }
 
@@ -368,7 +371,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
       return;
     }
 
-    const actualCount = Number(actualSmallQty);
+    const actualCount = allowFractions ? Number(actualSmallQty) : Math.round(Number(actualSmallQty));
     const bookCount = lotMode === 'existing' ? Number(bookSmallQty || 0) : 0;
     const varianceDelta = actualCount - bookCount;
 
@@ -692,6 +695,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
         smallUnit: lot.smallUnit || 'قطعة',
         largeUnitName: lot.largeUnitName || 'كرتونة',
         packagingRatio: ratio,
+        allowFractions: lot.allowFractions !== undefined ? lot.allowFractions : resolveItemAllowFractions(itemObj),
         // Book Balances
         bookLargeQty: Number((bookQty / ratio).toFixed(2)),
         bookSmallQty: bookQty,
@@ -1098,13 +1102,17 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
     const { session, lineIndex, line: editedLine } = showEditLineModal;
 
     const ratio = Number(editedLine.packagingRatio || 1);
+    const allowFractions = editedLine.allowFractions !== undefined
+      ? editedLine.allowFractions
+      : resolveItemAllowFractions(itemsMaster.find(i => i.code === editedLine.itemId || i.id === editedLine.itemId));
     let totalActual = editedLine.actualSmallQty;
 
     // If user filled Large Units or Loose Small Units
     if (editedLine.actualLargeQty !== '' || editedLine.actualSmallRemainingQty !== '') {
       const lQty = Number(editedLine.actualLargeQty || 0);
       const sQty = Number(editedLine.actualSmallRemainingQty || 0);
-      totalActual = (lQty * ratio) + sQty;
+      const rawTotal = (lQty * ratio) + sQty;
+      totalActual = allowFractions ? Math.round(rawTotal * 1000) / 1000 : Math.round(rawTotal);
     }
 
     if (totalActual === null || totalActual === '' || isNaN(Number(totalActual))) {
@@ -1112,7 +1120,12 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
       return;
     }
 
-    totalActual = Number(totalActual);
+    if (!allowFractions && !Number.isInteger(Number(totalActual))) {
+      alert(isAr ? 'هذا البند وحداته غير قابلة للكسور (أعداد صحيحة فقط).' : 'This item does not accept decimal fractions (whole integers only).');
+      return;
+    }
+
+    totalActual = allowFractions ? Number(totalActual) : Math.round(Number(totalActual));
     const prevCount = session.lines[lineIndex]?.actualSmallQty;
     const now = new Date();
 
@@ -1411,50 +1424,27 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
 
   return (
     <div className="space-y-5 select-none">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="p-2.5 border rounded-2xl shadow-2xs flex items-center justify-center shrink-0 transition-all duration-200"
-            style={{
-              backgroundColor: `rgba(${r}, ${g}, ${b}, 0.1)`,
-              borderColor: `rgba(${r}, ${g}, ${b}, 0.25)`,
-              color: tabColor,
-            }}
-          >
-            <TabConfigIcon className="h-6 w-6" />
-          </div>
-          <div>
-            <h3 className="text-base font-extrabold text-slate-900">
-              {isAr ? (tabConfig?.labelAr || 'الجرد المخزني الفعلي وتسوية الفروق (Stock Count & Reconciliation)') : (tabConfig?.labelEn || 'Physical Stock Count & Inventory Audit')}
-            </h3>
-            <span className="text-xs text-slate-500 font-medium">
-              {isAr ? 'تحديد نطاق الجرد، استخراج الشيتات، إدخال الفعلي، اعتماد التسويات، وسجل التدقيق' : 'Define scope, export multi-tab sheets, enter actual findings, and reconcile'}
-            </span>
-          </div>
-        </div>
+      {/* Top Action Bar */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {/* Direct Stock & Lot Adjustment Button */}
+        <button
+          type="button"
+          onClick={handleOpenDirectAdjustment}
+          className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+          title={isAr ? 'إجراء تسوية فورية على مستوى التنوع ورقم اللوط بمستودع محدد' : 'Apply Direct Stock Adjustment on Variant & Lot'}
+        >
+          <Sliders className="h-4 w-4" />
+          <span>{isAr ? 'تسوية مخزنية مباشرة (Direct Adjustment)' : 'Direct Stock Adjustment'}</span>
+        </button>
 
-        <div className="flex items-center gap-2">
-          {/* Direct Stock & Lot Adjustment Button */}
-          <button
-            type="button"
-            onClick={handleOpenDirectAdjustment}
-            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-            title={isAr ? 'إجراء تسوية فورية على مستوى التنوع ورقم اللوط بمستودع محدد' : 'Apply Direct Stock Adjustment on Variant & Lot'}
-          >
-            <Sliders className="h-4 w-4" />
-            <span>{isAr ? 'تسوية مخزنية مباشرة (Direct Adjustment)' : 'Direct Stock Adjustment'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleOpenCreateSession}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-          >
-            <Plus className="h-4 w-4" />
-            <span>{isAr ? 'بدء دورة جرد جديدة (Define Scope)' : 'Start New Stock Count'}</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={handleOpenCreateSession}
+          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+        >
+          <Plus className="h-4 w-4" />
+          <span>{isAr ? 'بدء دورة جرد جديدة (Define Scope)' : 'Start New Stock Count'}</span>
+        </button>
       </div>
 
       {/* Main Sessions Table */}
@@ -1830,6 +1820,11 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                           <span className="font-bold text-slate-900 block">{line.itemNameAr}</span>
                           <div className="flex flex-wrap items-center gap-1 mt-0.5">
                             <span className="font-mono text-slate-600 font-semibold">{line.variantCode}</span>
+                            {(() => {
+                              const itm = itemsMaster.find((i) => i.code === line.itemId || i.id === line.itemId);
+                              const vr = itm?.variations?.find((v) => v.variantCode === line.variantCode || v.suffix === line.variantCode);
+                              return vr ? <VariantIdentifierChip variant={vr} size="sm" /> : null;
+                            })()}
                             <span className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1 py-0.2 rounded border border-indigo-200">
                               Lot: {line.lotNumber}
                             </span>
@@ -1838,7 +1833,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
 
                         {/* Book Qty */}
                         <td className="p-3 align-top text-center font-mono font-bold text-slate-700 bg-slate-50/40">
-                          <div>{line.bookSmallQty.toLocaleString()} {line.smallUnit}</div>
+                          <div>{formatQuantity(line.bookSmallQty, line.allowFractions)} {line.smallUnit}</div>
                           {line.packagingRatio > 1 && (
                             <span className="text-[10px] text-slate-400 block font-normal">
                               ({line.bookLargeQty} {line.largeUnitName})
@@ -1852,7 +1847,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                             <span className="text-slate-400 font-normal italic">{isAr ? 'لم يحدد بعد' : 'Not entered'}</span>
                           ) : (
                             <>
-                              <div>{Number(line.actualSmallQty).toLocaleString()} {line.smallUnit}</div>
+                              <div>{formatQuantity(line.actualSmallQty, line.allowFractions)} {line.smallUnit}</div>
                               {line.packagingRatio > 1 && (
                                 <span className="text-[10px] text-slate-500 block font-normal">
                                   ({(line.actualSmallQty / line.packagingRatio).toFixed(2)} {line.largeUnitName})
@@ -2284,10 +2279,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                             className="rounded text-emerald-600"
                           />
                           <div className="truncate text-start font-mono text-[11px]">
-                            <span className="font-bold text-indigo-900 block">{lot.lotNumber}</span>
-                            <span className="text-[10px] text-slate-500 block">
-                              {getWarehouseName(lot.warehouseId)} • {lot.availableQty.toLocaleString()} {lot.smallUnit}
-                            </span>
+                            <span className="font-bold text-indigo-900 block">{formatLotLabel(lot, isAr)}</span>
                           </div>
                         </label>
                       );
@@ -2380,84 +2372,104 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
-                    {isAr ? `الفعلي بالوحدة الكبرى (${showEditLineModal.line.largeUnitName}):` : `Found Large Units:`}
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="0"
-                    value={showEditLineModal.line.actualLargeQty !== undefined ? showEditLineModal.line.actualLargeQty : ''}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      const ratio = Number(showEditLineModal.line.packagingRatio || 1);
-                      const rem = Number(showEditLineModal.line.actualSmallRemainingQty || 0);
-                      const lQty = val === '' ? 0 : Number(val);
-                      const hasInputs = val !== '' || showEditLineModal.line.actualSmallRemainingQty !== '';
-                      const updatedLine = {
-                        ...showEditLineModal.line,
-                        actualLargeQty: val,
-                        actualSmallQty: hasInputs ? (lQty * ratio) + rem : null,
-                      };
-                      setShowEditLineModal({ ...showEditLineModal, line: updatedLine });
-                    }}
-                    className="w-full p-2 border border-slate-300 rounded-xl font-mono font-bold text-slate-900"
-                  />
-                </div>
+              {(() => {
+                const lineAllowFractions = showEditLineModal.line.allowFractions !== undefined
+                  ? showEditLineModal.line.allowFractions
+                  : resolveItemAllowFractions(itemsMaster.find((i) => i.code === showEditLineModal.line.itemId || i.id === showEditLineModal.line.itemId));
 
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
-                    {isAr ? `المتبقي فرط (${showEditLineModal.line.smallUnit}):` : `Remaining Loose Small:`}
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="0"
-                    value={showEditLineModal.line.actualSmallRemainingQty !== undefined ? showEditLineModal.line.actualSmallRemainingQty : ''}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      const ratio = Number(showEditLineModal.line.packagingRatio || 1);
-                      const lQty = Number(showEditLineModal.line.actualLargeQty || 0);
-                      const rem = val === '' ? 0 : Number(val);
-                      const hasInputs = showEditLineModal.line.actualLargeQty !== '' || val !== '';
-                      const updatedLine = {
-                        ...showEditLineModal.line,
-                        actualSmallRemainingQty: val,
-                        actualSmallQty: hasInputs ? (lQty * ratio) + rem : null,
-                      };
-                      setShowEditLineModal({ ...showEditLineModal, line: updatedLine });
-                    }}
-                    className="w-full p-2 border border-slate-300 rounded-xl font-mono font-bold text-slate-900"
-                  />
-                </div>
-              </div>
+                return (
+                  <>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                          {isAr ? `الفعلي بالوحدة الكبرى (${showEditLineModal.line.largeUnitName}):` : `Found Large Units:`}
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          min="0"
+                          placeholder="0"
+                          value={showEditLineModal.line.actualLargeQty !== undefined ? showEditLineModal.line.actualLargeQty : ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const ratio = Number(showEditLineModal.line.packagingRatio || 1);
+                            const rem = Number(showEditLineModal.line.actualSmallRemainingQty || 0);
+                            const lQty = val === '' ? 0 : Number(val);
+                            const hasInputs = val !== '' || showEditLineModal.line.actualSmallRemainingQty !== '';
+                            const rawTotal = (lQty * ratio) + rem;
+                            const calculatedSmall = hasInputs ? (lineAllowFractions ? Math.round(rawTotal * 1000) / 1000 : Math.round(rawTotal)) : null;
+                            const updatedLine = {
+                              ...showEditLineModal.line,
+                              actualLargeQty: val,
+                              actualSmallQty: calculatedSmall,
+                            };
+                            setShowEditLineModal({ ...showEditLineModal, line: updatedLine });
+                          }}
+                          className="w-full p-2 border border-slate-300 rounded-xl font-mono font-bold text-slate-900"
+                        />
+                      </div>
 
-              <div>
-                <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
-                  {isAr ? `إجمالي الفعلي بالوحدة الصغرى (${showEditLineModal.line.smallUnit}): *` : `Total Found (${showEditLineModal.line.smallUnit}): *`}
-                </label>
-                <input
-                  type="number"
-                  required
-                  min="0"
-                  placeholder="0"
-                  value={showEditLineModal.line.actualSmallQty !== null && showEditLineModal.line.actualSmallQty !== undefined ? showEditLineModal.line.actualSmallQty : ''}
-                  onChange={(e) => {
-                    const val = e.target.value === '' ? null : Number(e.target.value);
-                    const ratio = Number(showEditLineModal.line.packagingRatio || 1);
-                    const updatedLine = {
-                      ...showEditLineModal.line,
-                      actualSmallQty: val,
-                      actualLargeQty: val !== null && ratio > 1 ? Number((val / ratio).toFixed(2)) : '',
-                      actualSmallRemainingQty: '',
-                    };
-                    setShowEditLineModal({ ...showEditLineModal, line: updatedLine });
-                  }}
-                  className="w-full p-2 bg-indigo-50/50 border border-indigo-300 rounded-xl font-mono font-extrabold text-sm text-indigo-900"
-                />
-              </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                          {isAr ? `المتبقي فرط (${showEditLineModal.line.smallUnit}):` : `Remaining Loose Small:`}
+                        </label>
+                        <input
+                          type="number"
+                          step={lineAllowFractions ? "0.001" : "1"}
+                          min="0"
+                          placeholder="0"
+                          value={showEditLineModal.line.actualSmallRemainingQty !== undefined ? showEditLineModal.line.actualSmallRemainingQty : ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const ratio = Number(showEditLineModal.line.packagingRatio || 1);
+                            const lQty = Number(showEditLineModal.line.actualLargeQty || 0);
+                            const rem = val === '' ? 0 : Number(val);
+                            const hasInputs = showEditLineModal.line.actualLargeQty !== '' || val !== '';
+                            const rawTotal = (lQty * ratio) + rem;
+                            const calculatedSmall = hasInputs ? (lineAllowFractions ? Math.round(rawTotal * 1000) / 1000 : Math.round(rawTotal)) : null;
+                            const updatedLine = {
+                              ...showEditLineModal.line,
+                              actualSmallRemainingQty: val,
+                              actualSmallQty: calculatedSmall,
+                            };
+                            setShowEditLineModal({ ...showEditLineModal, line: updatedLine });
+                          }}
+                          className="w-full p-2 border border-slate-300 rounded-xl font-mono font-bold text-slate-900"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                        {isAr ? `إجمالي الفعلي بالوحدة الصغرى (${showEditLineModal.line.smallUnit}): *` : `Total Found (${showEditLineModal.line.smallUnit}): *`}
+                      </label>
+                      <input
+                        type="number"
+                        step={lineAllowFractions ? "0.001" : "1"}
+                        required
+                        min="0"
+                        placeholder="0"
+                        value={showEditLineModal.line.actualSmallQty !== null && showEditLineModal.line.actualSmallQty !== undefined ? showEditLineModal.line.actualSmallQty : ''}
+                        onChange={(e) => {
+                          let val = e.target.value === '' ? null : Number(e.target.value);
+                          if (val !== null && !lineAllowFractions) {
+                            val = Math.round(val);
+                          }
+                          const ratio = Number(showEditLineModal.line.packagingRatio || 1);
+                          const updatedLine = {
+                            ...showEditLineModal.line,
+                            actualSmallQty: val,
+                            actualLargeQty: val !== null && ratio > 1 ? Number((val / ratio).toFixed(2)) : '',
+                            actualSmallRemainingQty: '',
+                          };
+                          setShowEditLineModal({ ...showEditLineModal, line: updatedLine });
+                        }}
+                        className="w-full p-2 bg-indigo-50/50 border border-indigo-300 rounded-xl font-mono font-extrabold text-sm text-indigo-900"
+                      />
+                    </div>
+                  </>
+                );
+              })()}
 
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
@@ -2904,17 +2916,35 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
         } = directAdjForm;
 
         const selectedItem = itemsMaster.find((i) => i.code === itemId || i.id === itemId);
+        const itemAllowFractions = resolveItemAllowFractions(selectedItem);
         const variations = selectedItem?.variations || [];
         const selectedVariant = variations.find((v) => v.variantCode === variantCode) || {};
         const ratio = Number(selectedVariant.packagingRatio || selectedItem?.packagingRatio || 1);
 
-        // Filter active lots for selected warehouse, item & variant
-        const activeLotsForSelection = Object.values(liveStockMatrix.lotMap).filter((l) => {
-          const matchWh = l.warehouseId === warehouseId || matchWarehouse(warehouseId, l.warehouseObj);
+        // All company lots of this item & variant (so users can select an existing lot to adjust/add into this warehouse)
+        const allMatchingCompanyLots = Object.values(liveStockMatrix.lotMap).filter((l) => {
           const matchItem = l.itemId === itemId;
           const matchVar = l.variantCode === variantCode;
-          return matchWh && matchItem && matchVar && l.availableQty > 0;
+          return matchItem && matchVar && l.availableQty > 0;
         });
+
+        // Group by unique lotNumber: prioritize local warehouse entry if present
+        const uniqueLotsMap = new Map();
+        allMatchingCompanyLots.forEach((l) => {
+          const isLocal = l.warehouseId === warehouseId || matchWarehouse(warehouseId, l.warehouseObj);
+          const existing = uniqueLotsMap.get(l.lotNumber);
+          if (!existing || isLocal) {
+            uniqueLotsMap.set(l.lotNumber, {
+              ...l,
+              isLocal,
+              localQty: isLocal ? l.availableQty : 0,
+              whName: getWarehouseName(l.warehouseId),
+              warehouseName: getWarehouseName(l.warehouseId),
+              allowFractions: itemAllowFractions,
+            });
+          }
+        });
+        const activeLotsForSelection = Array.from(uniqueLotsMap.values());
 
         const actualNum = actualSmallQty === '' || actualSmallQty === null ? 0 : Number(actualSmallQty);
         const bookNum = lotMode === 'existing' ? Number(bookSmallQty || 0) : 0;
@@ -3027,14 +3057,13 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                       <label className="block text-[10px] font-bold text-slate-700 mb-1">
                         {isAr ? 'تنوع الخامة والمواصفة: *' : 'Variation & Specs: *'}
                       </label>
-                      <select
+                      <VariantComboBox
+                        variations={variations}
                         value={variantCode}
                         disabled={!itemId}
-                        onChange={(e) => {
-                          const vCode = e.target.value;
-                          const vObj = variations.find((v) => v.variantCode === vCode);
-                          const supId = vObj?.supplierId || prev.supplierId || '';
-                          const resolvedSupName = vObj?.supplierName || suppliersList.find((s) => s.id === supId)?.name || prev.supplierName || '';
+                        onChange={(vCode, vObj) => {
+                          const supId = vObj?.supplierId || '';
+                          const resolvedSupName = vObj?.supplierName || suppliersList.find((s) => s.id === supId)?.name || '';
 
                           setDirectAdjForm((prev) => ({
                             ...prev,
@@ -3045,20 +3074,14 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                             actualLargeQty: '',
                             actualSmallRemainingQty: '',
                             unitCost: vObj?.openingUnitCost || prev.unitCost,
-                            supplierId: supId,
-                            supplierName: resolvedSupName,
+                            supplierId: supId || prev.supplierId,
+                            supplierName: resolvedSupName || prev.supplierName,
                           }));
                         }}
-                        className="w-full p-2 border border-slate-300 rounded-xl bg-white font-bold text-slate-800 text-xs focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100"
-                        required
-                      >
-                        <option value="">{isAr ? '-- اختر التنوع --' : '-- Select Variant --'}</option>
-                        {variations.map((v) => (
-                          <option key={v.variantCode} value={v.variantCode}>
-                            [{v.variantCode}] {v.supplierName ? `${v.supplierName} • ` : ''}{v.mergedSpecs || ''}
-                          </option>
-                        ))}
-                      </select>
+                        returnKey="variantCode"
+                        isAr={isAr}
+                        size="md"
+                      />
                     </div>
                   </div>
                 </div>
@@ -3122,7 +3145,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                         onChange={(e) => {
                           const lotNo = e.target.value;
                           const targetLotObj = activeLotsForSelection.find((l) => l.lotNumber === lotNo);
-                          const bookQty = targetLotObj ? targetLotObj.availableQty : 0;
+                          const bookQty = targetLotObj ? (targetLotObj.isLocal ? targetLotObj.localQty : 0) : 0;
                           const supId = targetLotObj?.supplierId || selectedVariant.supplierId || prev.supplierId || '';
                           const resolvedSupName = targetLotObj?.supplierName || selectedVariant.supplierName || suppliersList.find((s) => s.id === supId)?.name || prev.supplierName || '';
 
@@ -3144,7 +3167,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                         <option value="">{variantCode ? (isAr ? '-- اختر رقم اللوط --' : '-- Select Lot --') : (isAr ? '-- حدد التنوع أولاً --' : '-- Select Variant First --')}</option>
                         {activeLotsForSelection.map((lot) => (
                           <option key={lot.lotNumber} value={lot.lotNumber}>
-                            [{lot.lotNumber}] • {isAr ? 'الرصيد الدفتري:' : 'Book:'} {lot.availableQty.toLocaleString()} {lot.smallUnit} • {isAr ? 'السعر:' : 'Cost:'} {lot.unitPrice || 0} EGP {lot.supplierName ? `(${lot.supplierName})` : ''}
+                            {formatLotLabel(lot, isAr)}
                           </option>
                         ))}
                       </select>
@@ -3247,6 +3270,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                       </label>
                       <input
                         type="number"
+                        step="any"
                         min="0"
                         placeholder="0"
                         value={actualLargeQty}
@@ -3254,7 +3278,8 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                           const val = e.target.value;
                           const lQty = val === '' ? 0 : Number(val);
                           const rem = Number(actualSmallRemainingQty || 0);
-                          const total = val === '' && !actualSmallRemainingQty ? '' : (lQty * ratio) + rem;
+                          const rawTotal = (lQty * ratio) + rem;
+                          const total = val === '' && !actualSmallRemainingQty ? '' : (itemAllowFractions ? Math.round(rawTotal * 1000) / 1000 : Math.round(rawTotal));
                           setDirectAdjForm((prev) => ({
                             ...prev,
                             actualLargeQty: val,
@@ -3271,6 +3296,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                       </label>
                       <input
                         type="number"
+                        step={itemAllowFractions ? "0.001" : "1"}
                         min="0"
                         placeholder="0"
                         value={actualSmallRemainingQty}
@@ -3278,7 +3304,8 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                           const val = e.target.value;
                           const lQty = Number(actualLargeQty || 0);
                           const rem = val === '' ? 0 : Number(val);
-                          const total = !actualLargeQty && val === '' ? '' : (lQty * ratio) + rem;
+                          const rawTotal = (lQty * ratio) + rem;
+                          const total = !actualLargeQty && val === '' ? '' : (itemAllowFractions ? Math.round(rawTotal * 1000) / 1000 : Math.round(rawTotal));
                           setDirectAdjForm((prev) => ({
                             ...prev,
                             actualSmallRemainingQty: val,
@@ -3295,16 +3322,20 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                       </label>
                       <input
                         type="number"
+                        step={itemAllowFractions ? "0.001" : "1"}
                         required
                         min="0"
                         placeholder="0"
                         value={actualSmallQty}
                         onChange={(e) => {
                           const val = e.target.value;
-                          const sNum = val === '' ? '' : Number(val);
+                          let sNum = val === '' ? '' : Number(val);
+                          if (sNum !== '' && !itemAllowFractions) {
+                            sNum = Math.round(sNum);
+                          }
                           setDirectAdjForm((prev) => ({
                             ...prev,
-                            actualSmallQty: val,
+                            actualSmallQty: sNum !== '' ? sNum : '',
                             actualLargeQty: sNum !== '' && ratio > 1 ? Number((sNum / ratio).toFixed(2)) : '',
                             actualSmallRemainingQty: '',
                           }));

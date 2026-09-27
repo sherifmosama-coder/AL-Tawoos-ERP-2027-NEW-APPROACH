@@ -19,12 +19,21 @@ import {
   Wrench,
   FlaskConical,
   Cog,
+  Activity,
   Layers,
   CheckCircle2,
   Scale,
   Sparkles,
   SlidersHorizontal,
-  Bookmark
+  Bookmark,
+  Workflow,
+  AlertOctagon,
+  BarChart3,
+  Database,
+  FolderKanban,
+  PackageCheck,
+  Warehouse,
+  Settings
 } from 'lucide-react';
 import {
   getStoredTabConfigs,
@@ -57,22 +66,44 @@ export default function LandingPage({
     return () => window.removeEventListener('app_tab_config_updated', handleTabConfigUpdated);
   }, []);
 
-  // Mobile tap-to-expand chip tracking
-  const [tappedChipKey, setTappedChipKey] = useState(null);
+  // Hovered tab preview state per module card
+  const [hoveredTabByModule, setHoveredTabByModule] = useState({});
 
   const MODULE_CARDS = [
     {
+      id: 'master_data',
+      defaultTab: 'items',
+      titleAr: 'قاعدة البيانات الأساسية',
+      titleEn: 'Master Database',
+      icon: Database,
+      color: 'indigo',
+      status: 'active',
+      permissionModuleKey: 'master_data',
+      tabs: [
+        { id: 'items', moduleKey: 'items', labelAr: 'كارت الأصناف والخامات', labelEn: 'Item Master', icon: Package },
+        { id: 'suppliers', moduleKey: 'suppliers', labelAr: 'سجل الموردين المعتمدين', labelEn: 'Supplier Master', icon: Building2 },
+        { id: 'categories', moduleKey: 'categories', labelAr: 'مجموعات وتصنيفات التكويد', labelEn: 'Raw Material Categories', icon: FolderKanban },
+        { id: 'finished_products', moduleKey: 'finished_products', labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Goods Master', icon: PackageCheck },
+        { id: 'finished_product_categories', moduleKey: 'finished_product_categories', labelAr: 'تصنيفات ومجموعات المنتج التام', labelEn: 'FG Categories', icon: Boxes },
+        { id: 'bom', moduleKey: 'bom', labelAr: 'تعبئة وتغليف المنتج التام (BOM)', labelEn: 'Packing & Filling BOM', icon: Layers },
+        { id: 'intermediate_bom', moduleKey: 'intermediate_bom', labelAr: 'تصنيع الخامات الوسيطة (M)', labelEn: 'Intermediate BOM (M)', icon: FlaskConical },
+        { id: 'production_processes', moduleKey: 'production_processes', labelAr: 'مسارات وعمليات التشغيل (SOP)', labelEn: 'Production Processes & SOPs', icon: Workflow },
+        { id: 'warehouses', moduleKey: 'warehouses', labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', icon: Warehouse },
+        { id: 'production_workers', moduleKey: 'production_workers', labelAr: 'سجل عمالة وفنيي الإنتاج', labelEn: 'Production Workers', icon: Users },
+        { id: 'users', moduleKey: 'users', labelAr: 'المستخدمين والصلاحيات', labelEn: 'Users & Roles', icon: ShieldCheck },
+        { id: 'system_config', moduleKey: 'system_config', labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', icon: Settings },
+      ]
+    },
+    {
       id: 'purchases',
       defaultTab: 'orders',
-      titleAr: 'الخامات',
-      titleEn: 'Materials',
+      titleAr: 'الخامات والمشتريات',
+      titleEn: 'Materials & Procurement',
       icon: ShoppingCart,
       color: 'emerald',
       status: 'active',
       permissionModuleKey: 'purchases',
       tabs: [
-        { id: 'items', moduleKey: 'items', labelAr: 'كارت الأصناف', labelEn: 'Item Master', icon: Package },
-        { id: 'suppliers', moduleKey: 'suppliers', labelAr: 'الموردين المعتمدين', labelEn: 'Suppliers', icon: Building2 },
         { id: 'orders', moduleKey: 'purchase_orders', labelAr: 'أوامر الشراء (PO)', labelEn: 'Purchase Orders', icon: ShoppingCart },
         { id: 'receipts', moduleKey: 'goods_receipts', labelAr: 'أذون الاستلام (GRN)', labelEn: 'Goods Receipt', icon: ArrowDownLeft },
         { id: 'transfers', moduleKey: 'transfers', labelAr: 'التحويلات المخزنية', labelEn: 'Stock Transfers', icon: ArrowLeftRight },
@@ -83,7 +114,7 @@ export default function LandingPage({
     },
     {
       id: 'production',
-      defaultTab: 'finished_products',
+      defaultTab: 'work_orders',
       titleAr: 'الإنتاج والتشغيل',
       titleEn: 'Production & Manufacturing',
       icon: Factory,
@@ -91,14 +122,12 @@ export default function LandingPage({
       status: 'active',
       permissionModuleKey: 'production',
       tabs: [
-        { id: 'finished_products', moduleKey: 'finished_products', labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Products', icon: Package },
-        { id: 'intermediate_bom', moduleKey: 'intermediate_bom', labelAr: 'تصنيع الخامات الوسيطة (M)', labelEn: 'Intermediate BOM', icon: FlaskConical },
-        { id: 'liquid_tanks', moduleKey: 'liquid_tanks', labelAr: 'تانكات وتشغيل الخامات (M)', labelEn: 'Bulk Liquid Tanks', icon: Cog },
-        { id: 'bom', moduleKey: 'bom', labelAr: 'تعبئة وتغليف المنتج التام (BOM)', labelEn: 'Packing BOM', icon: Layers },
         { id: 'work_orders', moduleKey: 'work_orders', labelAr: 'أوامر التشغيل والإنتاج', labelEn: 'Work Orders', icon: Factory },
-        { id: 'material_issue', moduleKey: 'material_issue', labelAr: 'صرف خامات للتشغيل', labelEn: 'Material Issue', icon: ArrowDownLeft },
+        { id: 'liquid_tanks', moduleKey: 'liquid_tanks', labelAr: 'تانكات وتشغيل الخامات (M)', labelEn: 'Bulk Liquid Tanks', icon: Cog },
+        { id: 'liquid_storage', moduleKey: 'liquid_storage', labelAr: 'خزانات وتدفق السوائل (M)', labelEn: 'Floor Liquid Storage (M)', icon: Activity },
+        { id: 'faulty_fg', moduleKey: 'faulty_fg', labelAr: 'مرتجعات ومعيب المنتج التام', labelEn: 'Faulty FG & Returns', icon: AlertOctagon },
         { id: 'fg_inward', moduleKey: 'fg_inward', labelAr: 'استلام المنتج التام', labelEn: 'FG Inward', icon: CheckCircle2 },
-        { id: 'yield_recon', moduleKey: 'yield_recon', labelAr: 'تدقيق الهالك والإنتاجية', labelEn: 'Yield Audit', icon: Scale },
+        { id: 'production_reports', moduleKey: 'production_reports', labelAr: 'تقارير الإنتاجية والأداء التنفيذي', labelEn: 'Production & Performance Reports', icon: BarChart3 },
       ]
     },
     {
@@ -138,6 +167,12 @@ export default function LandingPage({
 
   const getColorClasses = (color) => {
     switch (color) {
+      case 'indigo':
+        return {
+          cardBorder: 'hover:border-indigo-400 hover:shadow-indigo-500/10',
+          iconBg: 'bg-indigo-50 text-indigo-600 border-indigo-200',
+          chipActive: 'bg-indigo-50 text-indigo-800 border-indigo-300 font-bold',
+        };
       case 'emerald':
         return {
           cardBorder: 'hover:border-emerald-400 hover:shadow-emerald-500/10',
@@ -173,11 +208,20 @@ export default function LandingPage({
 
   const getPermittedTabs = (card) => {
     if (!card.tabs) return [];
-    return card.tabs.filter((tab) => {
-      if (isGeneralAdmin) return true;
-      const key = tab.moduleKey || tab.id;
-      return effectivePermissions?.modules?.[key] !== false;
-    });
+    return card.tabs
+      .map((tab) => {
+        const customConf = tabConfigs[tab.id];
+        return {
+          ...tab,
+          order: typeof customConf?.order === 'number' ? customConf.order : 99,
+        };
+      })
+      .filter((tab) => {
+        if (isGeneralAdmin) return true;
+        const key = tab.moduleKey || tab.id;
+        return effectivePermissions?.modules?.[key] !== false;
+      })
+      .sort((a, b) => (Number(a.order) || 99) - (Number(b.order) || 99));
   };
 
   return (
@@ -268,6 +312,28 @@ export default function LandingPage({
             permittedTabs[0]?.id ||
             card.defaultTab;
 
+          // Dedicated preview resolution: hovered tab or active default
+          const activeHoveredTabId = hoveredTabByModule[card.id];
+          const activeHoveredTab = activeHoveredTabId
+            ? permittedTabs.find((t) => t.id === activeHoveredTabId)
+            : null;
+          const displayTab = activeHoveredTab || permittedTabs.find((t) => t.id === effectiveDefaultTab) || permittedTabs[0];
+
+          let displayTabLabel = '';
+          let DisplayTabIcon = Package;
+          let displayTabColor = '#059669';
+
+          if (displayTab) {
+            const displayConf = tabConfigs[displayTab.id];
+            displayTabLabel = isAr
+              ? (displayConf?.labelAr || displayTab.labelAr)
+              : (displayConf?.labelEn || displayTab.labelEn);
+            DisplayTabIcon = displayConf?.iconName
+              ? getIconComponent(displayConf.iconName)
+              : (displayTab.icon || Package);
+            displayTabColor = displayConf?.color || '#059669';
+          }
+
           return (
             <div
               key={card.id}
@@ -307,10 +373,35 @@ export default function LandingPage({
                   {isAr ? card.titleAr : card.titleEn}
                 </h3>
 
-                {/* Expandable Tab Chips */}
+                {/* Tab Chips with Dedicated Preview Header (Option 2) */}
                 {isAccessible && permittedTabs.length > 0 && (
-                  <div className="pt-2 border-t border-slate-100">
-                    <div className="flex flex-wrap gap-1.5">
+                  <div className="pt-2.5 border-t border-slate-100 space-y-2">
+                    {/* Dedicated Preview Slot */}
+                    <div className="flex items-center justify-between min-h-[22px] px-0.5">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <DisplayTabIcon
+                          className="h-3.5 w-3.5 shrink-0 transition-colors"
+                          style={{ color: displayTabColor }}
+                        />
+                        <span className="text-xs font-semibold text-slate-800 truncate">
+                          {displayTabLabel}
+                        </span>
+                        {!activeHoveredTab && (
+                          <span className="text-[10px] text-slate-400 font-normal shrink-0">
+                            ({isAr ? 'الافتراضي' : 'Default'})
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-medium shrink-0 ms-1.5">
+                        {permittedTabs.length} {isAr ? 'شاشات' : 'tabs'}
+                      </span>
+                    </div>
+
+                    {/* Chips Grid (Fixed dimensions to prevent any card shaking) */}
+                    <div
+                      className="flex flex-wrap gap-1.5"
+                      onMouseLeave={() => setHoveredTabByModule((prev) => ({ ...prev, [card.id]: null }))}
+                    >
                       {permittedTabs.map((tab) => {
                         const customConf = tabConfigs[tab.id];
                         const tabLabel = isAr ? (customConf?.labelAr || tab.labelAr) : (customConf?.labelEn || tab.labelEn);
@@ -318,9 +409,8 @@ export default function LandingPage({
                         const tabColor = customConf?.color || '#059669';
                         const { r, g, b } = hexToRgb(tabColor);
 
-                        const chipKey = `${card.id}_${tab.id}`;
-                        const isTapped = tappedChipKey === chipKey;
                         const isDefault = effectiveDefaultTab === tab.id;
+                        const isHovered = activeHoveredTabId === tab.id;
 
                         return (
                           <button
@@ -330,35 +420,30 @@ export default function LandingPage({
                               e.stopPropagation();
                               onSelectModule(card.id, tab.id);
                             }}
-                            onTouchStart={(e) => {
-                              e.stopPropagation();
-                              setTappedChipKey(isTapped ? null : chipKey);
+                            onMouseEnter={() => {
+                              setHoveredTabByModule((prev) => ({ ...prev, [card.id]: tab.id }));
                             }}
                             style={isDefault ? {
                               background: `linear-gradient(135deg, rgba(${r}, ${g}, ${b}, 0.16) 0%, rgba(${r}, ${g}, ${b}, 0.05) 100%)`,
                               borderColor: `rgba(${r}, ${g}, ${b}, 0.4)`,
                               color: tabColor
+                            } : isHovered ? {
+                              borderColor: tabColor,
+                              backgroundColor: `rgba(${r}, ${g}, ${b}, 0.08)`,
+                              color: tabColor
                             } : undefined}
-                            className={`group/chip relative inline-flex items-center p-1.5 rounded-xl border transition-all duration-200 cursor-pointer ${
+                            className={`w-7 h-7 flex items-center justify-center rounded-xl border transition-all duration-150 cursor-pointer ${
                               isDefault
                                 ? 'shadow-2xs font-bold'
                                 : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200 hover:border-slate-300'
-                            }`}
+                            } ${isHovered ? 'scale-105 shadow-2xs' : ''}`}
                             title={tabLabel}
+                            aria-label={tabLabel}
                           >
                             <TabIcon
                               className="h-3.5 w-3.5 shrink-0 transition-colors"
-                              style={isDefault ? { color: tabColor } : undefined}
+                              style={(isDefault || isHovered) ? { color: tabColor } : undefined}
                             />
-                            <span
-                              className={`text-[11px] truncate whitespace-nowrap transition-all duration-200 overflow-hidden ${
-                                isTapped
-                                  ? 'max-w-44 opacity-100 ms-1.5'
-                                  : 'max-w-0 opacity-0 group-hover/chip:max-w-44 group-hover/chip:opacity-100 group-hover/chip:ms-1.5'
-                              }`}
-                            >
-                              {tabLabel}
-                            </span>
                           </button>
                         );
                       })}

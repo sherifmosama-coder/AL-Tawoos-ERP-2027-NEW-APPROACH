@@ -11,6 +11,8 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import SearchableSelect from './SearchableSelect';
+import VariantIdentifierChip, { VARIANT_PALETTE, DEFAULT_VARIANT_COLOR, getVariantIdentifierText } from './VariantIdentifierChip';
+import { isFractionalUnit, resolveItemAllowFractions } from '../utils/stockResolver';
 import { 
   Plus, 
   Search, 
@@ -151,6 +153,7 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
     shortName: '',
     smallUnit: '',
     largeUnitName: '',
+    allowFractions: false,
     vatRate: '14%',
     whtRate: '1%',
     reorderLevel: '',
@@ -166,6 +169,7 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
 
   // Form State - Child Variations List (Configured in Step 2)
   const [variations, setVariations] = useState([]);
+  const [activeColorPickerIndex, setActiveColorPickerIndex] = useState(null);
 
   // Subscribe to live Firestore updates (Items, Suppliers, Warehouses, GRNs, Transfers, Categories)
   useEffect(() => {
@@ -401,7 +405,12 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
   // Dynamic Parent Unit Handlers that sync down to child variations
   const handleParentSmallUnitChange = (newUnit) => {
     const oldUnit = formData.smallUnit;
-    setFormData((prev) => ({ ...prev, smallUnit: newUnit }));
+    const autoFractions = isFractionalUnit(newUnit);
+    setFormData((prev) => ({ 
+      ...prev, 
+      smallUnit: newUnit,
+      allowFractions: autoFractions 
+    }));
     setVariations((prevVars) =>
       prevVars.map((v) => {
         // If variation unit is empty or matches previous parent unit, sync with new parent unit
@@ -449,12 +458,13 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
     const newVariant = {
       suffix: nextSuffix,
       variantCode: `${parentCode}-${nextSuffix}`,
+      colorCode: DEFAULT_VARIANT_COLOR,
       supplierId: targetSupplierId,
       supplierName: targetSupplierName,
       packagingRatio: lastVar?.packagingRatio !== undefined ? lastVar.packagingRatio : '',
       smallUnit: formData.smallUnit || lastVar?.smallUnit || '',
       largeUnitName: formData.largeUnitName || lastVar?.largeUnitName || '',
-      specs: inheritedSpecs,
+      specs: inheritedSpecs.map((s) => ({ ...s, isIdentifier: Boolean(s.isIdentifier) })),
       stock: 0,
       isActive: true,
       // Opening Balance (OB) Attributes
@@ -499,7 +509,7 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
   // Variation Spec Handlers
   const handleAddVariantSpec = (varIndex) => {
     const updated = [...variations];
-    updated[varIndex].specs.push({ label: '', value: '' });
+    updated[varIndex].specs.push({ label: '', value: '', isIdentifier: false });
     setVariations(updated);
   };
 
@@ -544,6 +554,7 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
       shortName: '',
       smallUnit: '',
       largeUnitName: '',
+      allowFractions: false,
       vatRate: '14%',
       whtRate: '1%',
       reorderLevel: '',
@@ -572,6 +583,7 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
       shortName: item.shortName || '',
       smallUnit: item.smallUnit || '',
       largeUnitName: item.largeUnitName || '',
+      allowFractions: resolveItemAllowFractions(item),
       vatRate: item.vatRate || '14%',
       whtRate: item.whtRate || '1%',
       reorderLevel: item.reorderLevel || '',
@@ -622,8 +634,9 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
 
           return {
             ...v,
+            colorCode: v.colorCode || DEFAULT_VARIANT_COLOR,
             supplierName: v.supplierName || suppliersList.find((s) => s.id === v.supplierId)?.name || '',
-            specs: v.specs ? v.specs.map((s) => ({ ...s })) : [{ label: '', value: '' }],
+            specs: v.specs ? v.specs.map((s) => ({ ...s, isIdentifier: Boolean(s.isIdentifier) })) : [{ label: '', value: '', isIdentifier: false }],
             imageFile: v.imageFile || '',
             openingWarehouse: openWarehouse,
             openingQtySmall: openQty > 0 ? openQty : '',
@@ -837,6 +850,9 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
     const processedVariations = variationsListToSave.map((v, idx) => {
       const validSpecs = (v.specs || []).filter((s) => s.label?.trim() && s.value?.trim());
       const merged = validSpecs.map((s) => `${s.label.trim()}: ${s.value.trim()}`).join(' | ');
+      const identifierSpecs = validSpecs.filter((s) => Boolean(s.isIdentifier));
+      const identifierBadgeText = identifierSpecs.map((s) => s.value.trim()).join(' • ');
+      const colorCode = v.colorCode || DEFAULT_VARIANT_COLOR;
       const suffix = v.suffix || String.fromCharCode(65 + idx);
       const isSelfMade = v.supplierId === 'IN_HOUSE';
       const sup = isSelfMade ? { name: isAr ? 'إنتاج داخلي' : 'In-House Production' } : suppliersList.find((s) => s.id === v.supplierId);
@@ -846,6 +862,8 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
       return {
         suffix,
         variantCode: `${targetCode}-${suffix}`,
+        colorCode,
+        identifierBadgeText,
         supplierId: v.supplierId || '',
         supplierName: supplierNameResolved,
         packagingRatio: Number(v.packagingRatio) || 1,
@@ -880,6 +898,7 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
       shortName: formData.shortName.trim(),
       smallUnit: formData.smallUnit.trim(),
       largeUnitName: formData.largeUnitName.trim(),
+      allowFractions: Boolean(formData.allowFractions),
       vatRate: formData.vatRate,
       whtRate: formData.whtRate,
       reorderLevel: Number(formData.reorderLevel) || 0,
@@ -1503,9 +1522,12 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
                                           </div>
                                         )}
                                         <div>
-                                          <span className="font-mono font-bold text-slate-900 bg-white border border-slate-300 px-2 py-0.5 rounded text-xs">
-                                            {vCode}
-                                          </span>
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            <span className="font-mono font-bold text-slate-900 bg-white border border-slate-300 px-2 py-0.5 rounded text-xs">
+                                              {vCode}
+                                            </span>
+                                            <VariantIdentifierChip variant={v} size="sm" />
+                                          </div>
                                           <div className="mt-1">
                                             {v.supplierId === 'IN_HOUSE' || v.supplierName === 'إنتاج داخلي' || v.supplierName === 'In-House Production' ? (
                                               <span className="inline-flex items-center gap-1 font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded text-[10px]">
@@ -1870,6 +1892,45 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
                         className="w-full p-2 border border-slate-300 rounded-lg text-xs bg-white font-medium"
                       />
                     </div>
+
+                    {/* Fraction Acceptance Toggle */}
+                    <div className="sm:col-span-2 p-3 bg-white border border-slate-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-800">
+                            {isAr ? 'قابلية التجزئة والكسور العشرية (Fractional Quantities)' : 'Accepts Fractional Decimals'}
+                          </span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            formData.allowFractions 
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                              : 'bg-blue-100 text-blue-800 border border-blue-300'
+                          }`}>
+                            {formData.allowFractions 
+                              ? (isAr ? '🟢 يقبل كسور عشرية' : '🟢 Decimals Allowed')
+                              : (isAr ? '🔵 أعداد صحيحة فقط' : '🔵 Whole Integers Only')}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          {formData.allowFractions
+                            ? (isAr 
+                                ? 'الخامة تقبل مقادير عشرية في الصرف والجرد والتحويل (سوائل، أوزان، أطوال كاللتر والكجم).' 
+                                : 'Material allows decimal quantities (liquids, weights, lengths such as Liters and Kg).')
+                            : (isAr 
+                                ? 'الخامة غير قابلة للتجزئة وتُقيد كأعداد صحيحة فقط (عبوات، كراتين، أغطية، قطع، زجاجات).' 
+                                : 'Material is indivisible and strictly restricted to whole integer numbers (bottles, cartons, caps).')}
+                        </p>
+                      </div>
+
+                      <label className="relative inline-flex items-center cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(formData.allowFractions)}
+                          onChange={(e) => setFormData({ ...formData, allowFractions: e.target.checked })}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                      </label>
+                    </div>
                   </div>
                 </div>
 
@@ -2084,13 +2145,72 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
                           <div key={vIdx} className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-3 relative shadow-2xs">
                             {/* Variation Header */}
                             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <span className="font-mono text-xs font-bold text-slate-800 bg-white border border-slate-300 px-2.5 py-0.5 rounded">
                                   {variantCode}
                                 </span>
                                 <span className="text-xs font-bold text-emerald-900">
                                   {isAr ? `تنوع (${variant.suffix})` : `Variation (${variant.suffix})`}
                                 </span>
+
+                                {/* Live Identifier Badge */}
+                                <VariantIdentifierChip variant={variant} size="sm" />
+
+                                {/* Color Picker Dropdown */}
+                                <div className="relative">
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveColorPickerIndex(activeColorPickerIndex === vIdx ? null : vIdx)}
+                                    className="flex items-center gap-1.5 px-2 py-0.5 bg-white border border-slate-300 rounded-md text-[11px] font-bold text-slate-700 hover:bg-slate-50 shadow-2xs cursor-pointer"
+                                    title={isAr ? 'تخصيص لون التمييز البصري' : 'Customize Variant Color'}
+                                  >
+                                    <span
+                                      className="w-3 h-3 rounded-full border border-black/15 shrink-0 shadow-2xs"
+                                      style={{ backgroundColor: variant.colorCode || DEFAULT_VARIANT_COLOR }}
+                                    />
+                                    <span>{isAr ? 'لون التمييز' : 'Color'}</span>
+                                  </button>
+
+                                  {activeColorPickerIndex === vIdx && (
+                                    <div className="absolute z-30 mt-1 start-0 p-2.5 bg-white border border-slate-200 rounded-xl shadow-xl w-64 space-y-2 animate-in fade-in duration-100">
+                                      <div className="text-[11px] font-bold text-slate-800 border-b border-slate-100 pb-1 flex items-center justify-between">
+                                        <span>{isAr ? 'اختر لون التمييز البصري' : 'Variant Color Palette'}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setActiveColorPickerIndex(null)}
+                                          className="text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                                        >
+                                          <X className="h-3 w-3" />
+                                        </button>
+                                      </div>
+
+                                      <div className="grid grid-cols-4 gap-1.5">
+                                        {VARIANT_PALETTE.map((p) => {
+                                          const isSelected = (variant.colorCode || DEFAULT_VARIANT_COLOR).toLowerCase() === p.color.toLowerCase();
+                                          return (
+                                            <button
+                                              key={p.id}
+                                              type="button"
+                                              onClick={() => {
+                                                handleVariationChange(vIdx, 'colorCode', p.color);
+                                                setActiveColorPickerIndex(null);
+                                              }}
+                                              className={`p-1 rounded-lg border flex flex-col items-center gap-1 transition cursor-pointer ${
+                                                isSelected ? 'ring-2 ring-indigo-500 border-indigo-400 bg-slate-50' : 'border-slate-200 hover:bg-slate-100'
+                                              }`}
+                                              title={isAr ? p.labelAr : p.labelEn}
+                                            >
+                                              <span className="w-5 h-5 rounded-full border border-black/10 shadow-2xs" style={{ backgroundColor: p.color }} />
+                                              <span className="text-[9px] font-bold text-slate-600 truncate max-w-full">
+                                                {isAr ? p.labelAr.split(' ')[0] : p.labelEn.split(' ')[0]}
+                                              </span>
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
 
                               <div className="flex items-center gap-2">
@@ -2400,34 +2520,74 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
 
                             {/* Variation Specs Table */}
                             <div className="space-y-1.5 pt-1">
-                              {variant.specs?.map((spec, sIdx) => (
-                                <div key={sIdx} className="flex items-center gap-2 bg-white p-1.5 rounded-lg border border-slate-200">
-                                  <input
-                                    type="text"
-                                    list="category-spec-suggestions"
-                                    placeholder={isAr ? 'اسم الخاصية (مثال: اللون / الجراماج)' : 'Spec Label (e.g. Color / Weight)'}
-                                    value={spec.label}
-                                    onChange={(e) => handleVariantSpecChange(vIdx, sIdx, 'label', e.target.value)}
-                                    className="w-1/2 p-1.5 border border-slate-300 rounded text-xs bg-white font-medium"
-                                  />
-                                  <input
-                                    type="text"
-                                    placeholder={isAr ? 'القيمة (مثال: شفاف / 24 جرام)' : 'Value (e.g. Clear / 24g)'}
-                                    value={spec.value}
-                                    onChange={(e) => handleVariantSpecChange(vIdx, sIdx, 'value', e.target.value)}
-                                    className="w-1/2 p-1.5 border border-slate-300 rounded text-xs bg-white font-medium"
-                                  />
-                                  {variant.specs.length > 1 && (
+                              {variant.specs?.map((spec, sIdx) => {
+                                const isIdentifier = Boolean(spec.isIdentifier);
+                                const vColor = variant.colorCode || DEFAULT_VARIANT_COLOR;
+                                return (
+                                  <div
+                                    key={sIdx}
+                                    style={
+                                      isIdentifier && vColor.toLowerCase() !== DEFAULT_VARIANT_COLOR.toLowerCase()
+                                        ? { borderColor: `${vColor}70`, backgroundColor: `${vColor}0d` }
+                                        : undefined
+                                    }
+                                    className={`flex items-center gap-2 p-1.5 rounded-lg border transition ${
+                                      isIdentifier
+                                        ? 'bg-slate-100/80 border-slate-400 shadow-2xs'
+                                        : 'bg-white border-slate-200'
+                                    }`}
+                                  >
+                                    <input
+                                      type="text"
+                                      list="category-spec-suggestions"
+                                      placeholder={isAr ? 'اسم الخاصية (مثال: اللون / الجراماج)' : 'Spec Label (e.g. Color / Weight)'}
+                                      value={spec.label}
+                                      onChange={(e) => handleVariantSpecChange(vIdx, sIdx, 'label', e.target.value)}
+                                      className="w-5/12 p-1.5 border border-slate-300 rounded text-xs bg-white font-medium"
+                                    />
+                                    <input
+                                      type="text"
+                                      placeholder={isAr ? 'القيمة (مثال: شفاف / 24 جرام)' : 'Value (e.g. Clear / 24g)'}
+                                      value={spec.value}
+                                      onChange={(e) => handleVariantSpecChange(vIdx, sIdx, 'value', e.target.value)}
+                                      className="w-5/12 p-1.5 border border-slate-300 rounded text-xs bg-white font-medium"
+                                    />
+
+                                    {/* Pure Text Identifier Mark Toggle Button (No Emojis) */}
                                     <button
                                       type="button"
-                                      onClick={() => handleRemoveVariantSpec(vIdx, sIdx)}
-                                      className="p-1 text-slate-400 hover:text-red-600 rounded cursor-pointer"
+                                      onClick={() => {
+                                        const updated = [...variations];
+                                        updated[vIdx].specs[sIdx].isIdentifier = !isIdentifier;
+                                        setVariations(updated);
+                                      }}
+                                      style={
+                                        isIdentifier && vColor.toLowerCase() !== DEFAULT_VARIANT_COLOR.toLowerCase()
+                                          ? { backgroundColor: vColor, borderColor: vColor, color: '#ffffff' }
+                                          : undefined
+                                      }
+                                      className={`px-2 py-1.5 rounded text-[10px] font-bold border transition cursor-pointer select-none shrink-0 ${
+                                        isIdentifier
+                                          ? 'bg-slate-800 text-white border-slate-800 shadow-2xs'
+                                          : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200 hover:text-slate-800'
+                                      }`}
+                                      title={isAr ? 'تحديد كعلامة تمييز فارقة للتنوع' : 'Toggle Unique Identifier Spec'}
                                     >
-                                      <XCircle className="h-3.5 w-3.5" />
+                                      {isAr ? (isIdentifier ? 'علامة فارقة' : 'تمييز') : (isIdentifier ? 'Identifier' : 'Mark ID')}
                                     </button>
-                                  )}
-                                </div>
-                              ))}
+
+                                    {variant.specs.length > 1 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveVariantSpec(vIdx, sIdx)}
+                                        className="p-1 text-slate-400 hover:text-red-600 rounded cursor-pointer"
+                                      >
+                                        <XCircle className="h-3.5 w-3.5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         );

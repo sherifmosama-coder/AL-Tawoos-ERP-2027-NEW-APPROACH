@@ -50,11 +50,87 @@ export const getPremiumStyle = (name = '') => {
   return PREMIUM_PALETTES[index];
 };
 
+const ARABIC_TO_LATIN = {
+  'ا': 'A', 'أ': 'A', 'إ': 'A', 'آ': 'A', 'ء': 'A', 'ئ': 'Y', 'ؤ': 'W',
+  'ب': 'B', 'پ': 'P',
+  'ت': 'T', 'ة': 'T', 'ط': 'T',
+  'ث': 'S', 'س': 'S', 'ص': 'S',
+  'ج': 'J', 'چ': 'C',
+  'ح': 'H', 'ه': 'H', 'هـ': 'H',
+  'خ': 'K',
+  'د': 'D', 'ض': 'D',
+  'ذ': 'Z', 'ز': 'Z', 'ظ': 'Z', 'ژ': 'Z',
+  'ر': 'R',
+  'ش': 'S',
+  'ع': 'A',
+  'غ': 'G', 'گ': 'G',
+  'ف': 'F',
+  'ق': 'Q', 'ك': 'K',
+  'ل': 'L',
+  'م': 'M',
+  'ن': 'N',
+  'و': 'W',
+  'ي': 'Y', 'ى': 'Y'
+};
+
+const getCharLatin = (ch) => {
+  if (!ch) return '';
+  if (/[a-zA-Z]/.test(ch)) return ch.toUpperCase();
+  return ARABIC_TO_LATIN[ch] || '';
+};
+
 export const getInitials = (name = '') => {
   if (!name) return 'U';
-  const parts = name.trim().split(/\s+/);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  // Strip Arabic diacritics & tatweel
+  const clean = String(name)
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+    .trim();
+  if (!clean) return 'U';
+
+  const rawParts = clean.split(/\s+/).filter(Boolean);
+  if (rawParts.length === 0) return 'U';
+
+  const getWordInitial = (w) => {
+    let word = w;
+    // Strip Arabic definite article "ال" if word is longer than 3 chars
+    if ((word.startsWith('ال') || word.startsWith('أل') || word.startsWith('إل')) && word.length > 3) {
+      word = word.slice(2);
+    }
+    for (let i = 0; i < word.length; i++) {
+      const latin = getCharLatin(word[i]);
+      if (latin) return latin;
+    }
+    return '';
+  };
+
+  if (rawParts.length === 1) {
+    const word = rawParts[0];
+    const latinChars = word.replace(/[^a-zA-Z]/g, '');
+    if (latinChars.length >= 2) {
+      return latinChars.slice(0, 2).toUpperCase();
+    }
+    if (latinChars.length === 1) {
+      return latinChars.toUpperCase();
+    }
+    let initials = '';
+    let w = word;
+    if ((w.startsWith('ال') || w.startsWith('أل') || w.startsWith('إل')) && w.length > 3) {
+      w = w.slice(2);
+    }
+    for (let i = 0; i < w.length; i++) {
+      const latin = getCharLatin(w[i]);
+      if (latin) {
+        initials += latin;
+        if (initials.length === 2) break;
+      }
+    }
+    return initials || 'U';
+  }
+
+  const first = getWordInitial(rawParts[0]);
+  const last = getWordInitial(rawParts[rawParts.length - 1]);
+  const res = (first + last).trim();
+  return res ? `\u200E${res}\u200E` : 'U';
 };
 
 // ==========================================
@@ -65,6 +141,10 @@ export const UserAvatar = ({
   src = null,
   size = 'md',
   status = null,
+  isCurrentUser = false,
+  bgColor = null,
+  textColor = null,
+  borderColor = null,
   className = '',
 }) => {
   const uniqueId = useId().replace(/:/g, '');
@@ -72,6 +152,11 @@ export const UserAvatar = ({
   const dim = sizeMap[size] || sizeMap.md;
   const palette = getPremiumStyle(name);
   const initials = getInitials(name);
+
+  // Current user styling override: white background, dark grey letters, green border
+  const effectiveBg = bgColor || (isCurrentUser ? '#ffffff' : null);
+  const effectiveTextColor = textColor || (isCurrentUser ? '#334155' : palette.text);
+  const effectiveBorderColor = borderColor || (isCurrentUser ? '#10b981' : null);
 
   const statusColor =
     status === 'active'
@@ -106,11 +191,11 @@ export const UserAvatar = ({
           )}
         </defs>
 
-        {status && (
+        {(status || effectiveBorderColor) && (
           <path
             d="M480 120C480 53.7 372.6 0 240 0S0 53.7 0 120v240c0 66.3 107.5 120 240 120s240-53.7 240-120V120Z"
             fill="none"
-            stroke={statusColor}
+            stroke={effectiveBorderColor || statusColor}
             strokeWidth="56"
             strokeLinejoin="round"
           />
@@ -118,9 +203,9 @@ export const UserAvatar = ({
 
         <path
           d="M480 120C480 53.7 372.6 0 240 0S0 53.7 0 120v240c0 66.3 107.5 120 240 120s240-53.7 240-120V120Z"
-          fill={src ? `url(#pat-${uniqueId})` : `url(#premium-grad-${uniqueId})`}
-          stroke="#ffffff"
-          strokeWidth="32"
+          fill={src ? `url(#pat-${uniqueId})` : (effectiveBg || `url(#premium-grad-${uniqueId})`)}
+          stroke={effectiveBorderColor || '#ffffff'}
+          strokeWidth={effectiveBorderColor ? '36' : '32'}
           strokeLinejoin="round"
         />
 
@@ -129,10 +214,13 @@ export const UserAvatar = ({
             x="240"
             y="285"
             textAnchor="middle"
-            fill={palette.text}
+            direction="ltr"
+            unicodeBidi="bidi-override"
+            style={{ direction: 'ltr', unicodeBidi: 'bidi-override' }}
+            fill={effectiveTextColor}
             fontSize="180"
             fontWeight="900"
-            fontFamily="'Cairo', -apple-system, sans-serif"
+            fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
             className="select-none pointer-events-none"
           >
             {initials}
@@ -218,11 +306,12 @@ export const RowAuthorAvatar = ({
 // ==========================================
 export const HeaderPresencePill = ({
   onlineUsers = [],
+  currentUser = null,
   isAr = true,
   className = '',
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [activeTooltipUser, setActiveTooltipUser] = useState(null);
+  const [activeTooltip, setActiveTooltip] = useState(null);
   const pillRef = useRef(null);
 
   const activeUsers = onlineUsers.filter((u) => u.status !== 'offline');
@@ -231,32 +320,96 @@ export const HeaderPresencePill = ({
     const handleOutsideClick = (e) => {
       if (pillRef.current && !pillRef.current.contains(e.target)) {
         setIsExpanded(false);
-        setActiveTooltipUser(null);
+        setActiveTooltip(null);
       }
     };
-    if (isExpanded) document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
+    const handleScrollOrResize = () => {
+      setActiveTooltip(null);
+    };
+
+    if (isExpanded) {
+      document.addEventListener('mousedown', handleOutsideClick);
+      window.addEventListener('scroll', handleScrollOrResize, { capture: true, passive: true });
+      window.addEventListener('resize', handleScrollOrResize);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      window.removeEventListener('scroll', handleScrollOrResize, { capture: true });
+      window.removeEventListener('resize', handleScrollOrResize);
+    };
   }, [isExpanded]);
 
-  if (activeUsers.length === 0) return null;
+  const handleAvatarHover = (user, targetEl) => {
+    if (!targetEl || !user) {
+      setActiveTooltip(null);
+      return;
+    }
+    const rect = targetEl.getBoundingClientRect();
+    const tooltipWidth = 224; // w-56
+    const margin = 12;
+
+    const avatarCenterX = rect.left + rect.width / 2;
+    let tooltipLeft = avatarCenterX - tooltipWidth / 2;
+    const maxLeft = window.innerWidth - tooltipWidth - margin;
+    tooltipLeft = Math.max(margin, Math.min(tooltipLeft, maxLeft));
+
+    // Pointer arrow offset relative to the tooltip card
+    const arrowLeft = Math.max(16, Math.min(avatarCenterX - tooltipLeft, tooltipWidth - 16));
+
+    // Check vertical headroom (flip below if within 130px of top of screen)
+    const spaceAbove = rect.top;
+    const isFlipped = spaceAbove < 130;
+
+    const tooltipTop = isFlipped ? rect.bottom + 8 : rect.top - 8;
+
+    setActiveTooltip({
+      user,
+      left: tooltipLeft,
+      top: tooltipTop,
+      isFlipped,
+      arrowLeft,
+    });
+  };
+
+  if (activeUsers.length === 0 && !currentUser) return null;
 
   return (
     <div ref={pillRef} className={`relative flex items-center ${className}`}>
-      {/* Icon + Count Only (No Text Label) */}
+      {/* Collapsed Pill Button */}
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className={`flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200/90 dark:bg-slate-800/90 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-300/80 dark:border-slate-700 rounded-full transition-all duration-200 cursor-pointer shadow-xs ${
+        className={`flex items-center gap-2 ps-1.5 pe-2.5 py-1 bg-slate-100 hover:bg-slate-200/90 dark:bg-slate-800/90 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-300/80 dark:border-slate-700 rounded-full transition-all duration-200 cursor-pointer shadow-xs ${
           isExpanded ? 'ring-2 ring-emerald-500/50 bg-slate-200 dark:bg-slate-800' : ''
         }`}
-        title={isAr ? `المتواجدون الآن: ${activeUsers.length}` : `${activeUsers.length} Online Users`}
+        title={isAr ? `المستخدم وفريق العمل المتواجد (${activeUsers.length})` : `User & Online Teammates (${activeUsers.length})`}
       >
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-        </span>
-        <span className="text-xs font-black font-mono tracking-tight">{activeUsers.length}</span>
-        <ChevronDown className={`w-3 h-3 text-slate-500 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
+        {/* Current User Avatar */}
+        {currentUser && (
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="relative flex items-center justify-center">
+              <UserAvatar
+                name={currentUser.name || currentUser.nameAr || currentUser.email || 'User'}
+                src={currentUser.photoURL || currentUser.avatar || null}
+                size="xs"
+                isCurrentUser={true}
+                className="w-5.5 h-5.5 rounded-full overflow-hidden shadow-2xs"
+              />
+            </div>
+            {/* Thin Vertical Line Separator */}
+            <span className="h-3.5 w-px bg-slate-300 dark:bg-slate-600 shrink-0" aria-hidden="true" />
+          </div>
+        )}
+
+        {/* Online Count Section */}
+        <div className="flex items-center gap-1.5">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+          </span>
+          <span className="text-xs font-black font-mono tracking-tight">{activeUsers.length}</span>
+          <ChevronDown className={`w-3 h-3 text-slate-500 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
+        </div>
       </button>
 
       {/* Expanded Grid Popover (Strictly Anchored Inward to Prevent Cutoff) */}
@@ -279,27 +432,22 @@ export const HeaderPresencePill = ({
           </div>
 
           <div className="grid grid-cols-4 gap-3 py-1 place-items-center">
-            {activeUsers.map((u, idx) => {
-              const isHovered = (activeTooltipUser?.id || activeTooltipUser?.name) === (u.id || u.name);
-              const colIndex = idx % 4;
-
-              let tooltipAlignClass = 'start-1/2 -translate-x-1/2';
-              let arrowAlignClass = 'start-1/2 -translate-x-1/2';
-              if (colIndex === 0) {
-                tooltipAlignClass = isAr ? 'end-0 translate-x-2' : 'start-0 -translate-x-2';
-                arrowAlignClass = isAr ? 'end-4' : 'start-4';
-              } else if (colIndex === 3) {
-                tooltipAlignClass = isAr ? 'start-0 -translate-x-2' : 'end-0 translate-x-2';
-                arrowAlignClass = isAr ? 'start-4' : 'end-4';
-              }
+            {activeUsers.map((u) => {
+              const isHovered = activeTooltip?.user && (activeTooltip.user.id || activeTooltip.user.name) === (u.id || u.name);
 
               return (
                 <div
                   key={u.id || u.name}
                   className="relative flex flex-col items-center gap-1 group"
-                  onMouseEnter={() => setActiveTooltipUser(u)}
-                  onMouseLeave={() => setActiveTooltipUser(null)}
-                  onClick={() => setActiveTooltipUser(isHovered ? null : u)}
+                  onMouseEnter={(e) => handleAvatarHover(u, e.currentTarget)}
+                  onMouseLeave={() => setActiveTooltip(null)}
+                  onClick={(e) => {
+                    if (isHovered) {
+                      setActiveTooltip(null);
+                    } else {
+                      handleAvatarHover(u, e.currentTarget);
+                    }
+                  }}
                 >
                   <UserAvatar
                     name={u.name}
@@ -311,53 +459,70 @@ export const HeaderPresencePill = ({
                   <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 truncate max-w-[60px] text-center block">
                     {u.name.split(' ')[0]}
                   </span>
-
-                  {isHovered && (
-                    <div className={`absolute bottom-full mb-2 z-60 w-56 p-3 bg-slate-900 text-white rounded-2xl shadow-2xl border border-slate-700 text-start space-y-2 pointer-events-none animate-in fade-in zoom-in-95 duration-150 ${tooltipAlignClass}`}>
-                      <div>
-                        <div className="flex items-center justify-between gap-1">
-                          <h5 className="text-xs font-black text-white truncate">{u.name}</h5>
-                          <span
-                            className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full flex items-center gap-1 ${
-                              u.status === 'active'
-                                ? 'bg-emerald-950 text-emerald-400 border border-emerald-700'
-                                : 'bg-amber-950 text-amber-400 border border-amber-700'
-                            }`}
-                          >
-                            <Circle className="w-1.5 h-1.5 fill-current" />
-                            <span>{u.status === 'active' ? (isAr ? 'نشط' : 'Active') : (isAr ? 'خامل' : 'Idle')}</span>
-                          </span>
-                        </div>
-                        <span className="text-[10px] text-slate-400 block truncate font-medium">
-                          {u.role || u.department || 'Staff Member'}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-1.5 pt-1.5 border-t border-slate-800 text-[10px]">
-                        <div className="flex items-center gap-1 text-slate-300">
-                          <Timer className="w-3 h-3 text-blue-400 shrink-0" />
-                          <div className="truncate">
-                            <span className="block text-[8px] text-slate-500">{isAr ? 'الجلسة' : 'Session'}</span>
-                            <span className="font-mono font-bold">{u.sessionDuration || '45m'}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-1 text-slate-300">
-                          <MapPin className="w-3 h-3 text-emerald-400 shrink-0" />
-                          <div className="truncate">
-                            <span className="block text-[8px] text-slate-500">{isAr ? 'الموقع' : 'Location'}</span>
-                            <span className="font-bold truncate block">{u.currentActivity || (isAr ? 'الرئيسية' : 'Main')}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className={`w-2 h-2 bg-slate-900 rotate-45 absolute -bottom-1 border-r border-b border-slate-700 ${arrowAlignClass}`} />
-                    </div>
-                  )}
                 </div>
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* Screen Boundary-Aware Tooltip (Fixed Viewport Layer, Clamped Horizontally & Vertically) */}
+      {isExpanded && activeTooltip && (
+        <div
+          style={{
+            position: 'fixed',
+            left: `${activeTooltip.left}px`,
+            top: activeTooltip.isFlipped ? `${activeTooltip.top}px` : undefined,
+            bottom: !activeTooltip.isFlipped ? `${window.innerHeight - activeTooltip.top}px` : undefined,
+          }}
+          className="z-[9999] w-56 p-3 bg-slate-900 text-white rounded-2xl shadow-2xl border border-slate-700 text-start space-y-2 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+        >
+          <div>
+            <div className="flex items-center justify-between gap-1">
+              <h5 className="text-xs font-black text-white truncate">{activeTooltip.user.name}</h5>
+              <span
+                className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full flex items-center gap-1 ${
+                  activeTooltip.user.status === 'active'
+                    ? 'bg-emerald-950 text-emerald-400 border border-emerald-700'
+                    : 'bg-amber-950 text-amber-400 border border-amber-700'
+                }`}
+              >
+                <Circle className="w-1.5 h-1.5 fill-current" />
+                <span>{activeTooltip.user.status === 'active' ? (isAr ? 'نشط' : 'Active') : (isAr ? 'خامل' : 'Idle')}</span>
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400 block truncate font-medium">
+              {activeTooltip.user.role || activeTooltip.user.department || 'Staff Member'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5 pt-1.5 border-t border-slate-800 text-[10px]">
+            <div className="flex items-center gap-1 text-slate-300">
+              <Timer className="w-3 h-3 text-blue-400 shrink-0" />
+              <div className="truncate">
+                <span className="block text-[8px] text-slate-500">{isAr ? 'الجلسة' : 'Session'}</span>
+                <span className="font-mono font-bold">{activeTooltip.user.sessionDuration || '45m'}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 text-slate-300">
+              <MapPin className="w-3 h-3 text-emerald-400 shrink-0" />
+              <div className="truncate">
+                <span className="block text-[8px] text-slate-500">{isAr ? 'الموقع' : 'Location'}</span>
+                <span className="font-bold truncate block">{activeTooltip.user.currentActivity || (isAr ? 'الرئيسية' : 'Main')}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Dynamic Pointer Arrow Centered on Hovered Avatar */}
+          <div
+            style={{ left: `${activeTooltip.arrowLeft}px` }}
+            className={`w-2.5 h-2.5 bg-slate-900 rotate-45 absolute border-slate-700 -translate-x-1/2 ${
+              activeTooltip.isFlipped
+                ? '-top-1.25 border-l border-t'
+                : '-bottom-1.25 border-r border-b'
+            }`}
+          />
         </div>
       )}
     </div>

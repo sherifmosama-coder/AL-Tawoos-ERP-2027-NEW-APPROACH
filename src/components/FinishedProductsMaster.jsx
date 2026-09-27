@@ -10,6 +10,7 @@ import {
   writeBatch,
   serverTimestamp
 } from 'firebase/firestore';
+import { isFractionalUnit, resolveItemAllowFractions } from '../utils/stockResolver';
 import {
   Plus,
   Search,
@@ -41,7 +42,6 @@ import {
   ArrowUpDown
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
-import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
 
 // Lightweight Client-Side Image Compression Helper (<80KB Web-Ready Payloads)
 const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.7) => {
@@ -93,20 +93,6 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
-
-  // In-app configured tab appearance (respecting user-configured icon and color)
-  const [tabConfig, setTabConfig] = useState(() => getTabConfig('finished_products'));
-  useEffect(() => {
-    const handleConfigUpdate = () => {
-      setTabConfig(getTabConfig('finished_products'));
-    };
-    window.addEventListener('app_tab_config_updated', handleConfigUpdate);
-    return () => window.removeEventListener('app_tab_config_updated', handleConfigUpdate);
-  }, []);
-
-  const TabConfigIcon = getIconComponent(tabConfig?.iconName);
-  const tabColor = tabConfig?.color || '#0d6cba';
-  const { r, g, b } = hexToRgb(tabColor);
 
   // Dynamic Authority Resolvers
   const canCreate = isGeneralAdmin || (
@@ -181,6 +167,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
     smallUnit: 'زجاجة',
     largeUnitName: 'كرتونة',
     packagingRatio: 12,
+    allowFractions: false,
     shelfLifeMonths: 24,
     vatRate: '14%',
     isBonusEligible: true,
@@ -457,6 +444,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
       smallUnit: product.smallUnit || 'زجاجة',
       largeUnitName: product.largeUnitName || 'كرتونة',
       packagingRatio: Number(product.packagingRatio) || 12,
+      allowFractions: resolveItemAllowFractions(product),
       shelfLifeMonths: Number(product.shelfLifeMonths) || 24,
       vatRate: product.vatRate || '14%',
       isBonusEligible: product.isBonusEligible !== false,
@@ -641,6 +629,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
         smallUnit: formData.smallUnit.trim(),
         largeUnitName: formData.largeUnitName.trim(),
         packagingRatio: Number(formData.packagingRatio) || 1,
+        allowFractions: Boolean(formData.allowFractions),
         shelfLifeMonths: Number(formData.shelfLifeMonths) || 24,
         vatRate: formData.vatRate,
         isBonusEligible: Boolean(formData.isBonusEligible),
@@ -835,62 +824,39 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
         />
       )}
 
-      {/* Top Header & Quick Action Bar */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="p-2.5 border rounded-2xl shadow-2xs flex items-center justify-center shrink-0 transition-all duration-200"
-            style={{
-              backgroundColor: `rgba(${r}, ${g}, ${b}, 0.1)`,
-              borderColor: `rgba(${r}, ${g}, ${b}, 0.25)`,
-              color: tabColor,
+      {/* Top Action Bar */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {/* Discrete Category Manager Trigger Button (General Admin Only) */}
+        {isGeneralAdmin && (
+          <button
+            type="button"
+            onClick={() => {
+              handleStartAddCategory();
+              setShowCategoryModal(true);
             }}
+            className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title={isAr ? 'إدارة تصنيفات وخطوط إنتاج المنتجات التامة وترتيبها' : 'Manage Product Categories & Ordering'}
           >
-            <TabConfigIcon className="h-6 w-6" />
-          </div>
-          <div>
-            <h3 className="text-base font-extrabold text-slate-900">
-              {isAr ? (tabConfig?.labelAr || 'سجل المنتجات التامة (Finished Products Master)') : (tabConfig?.labelEn || 'Finished Products Master List')}
-            </h3>
-            <span className="text-xs text-slate-500 font-medium">
-              {isAr ? 'عرض مجمع ومبوب حسب خطوط الإنتاج والتصنيفات، مع الرصيد الافتتاحي والباركود' : 'Grouped by production lines, dual packaging, barcodes, and gross weights'}
-            </span>
-          </div>
-        </div>
+            <FolderCog className="h-4 w-4 text-slate-600" />
+            <span>{isAr ? 'إدارة التصنيفات' : 'Categories'}</span>
+          </button>
+        )}
 
-        <div className="flex items-center gap-2">
-          {/* Discrete Category Manager Trigger Button (General Admin Only) */}
-          {isGeneralAdmin && (
-            <button
-              type="button"
-              onClick={() => {
-                handleStartAddCategory();
-                setShowCategoryModal(true);
-              }}
-              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
-              title={isAr ? 'إدارة تصنيفات وخطوط إنتاج المنتجات التامة وترتيبها' : 'Manage Product Categories & Ordering'}
-            >
-              <FolderCog className="h-4 w-4 text-slate-600" />
-              <span className="hidden md:inline">{isAr ? 'إدارة التصنيفات' : 'Categories'}</span>
-            </button>
-          )}
-
-          {canCreate ? (
-            <button
-              type="button"
-              onClick={handleOpenCreate}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="h-4 w-4" />
-              <span>{isAr ? 'تعريف منتج تام جديد' : 'Add New Product'}</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs text-slate-500 font-medium">
-              <Lock className="h-3.5 w-3.5" />
-              <span>{isAr ? 'وضع القراءة فقط' : 'Read-Only Mode'}</span>
-            </div>
-          )}
-        </div>
+        {canCreate ? (
+          <button
+            type="button"
+            onClick={handleOpenCreate}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+          >
+            <Plus className="h-4 w-4" />
+            <span>{isAr ? 'تعريف منتج تام جديد' : 'Add New Product'}</span>
+          </button>
+        ) : (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs text-slate-500 font-medium">
+            <Lock className="h-3.5 w-3.5" />
+            <span>{isAr ? 'وضع القراءة فقط' : 'Read-Only Mode'}</span>
+          </div>
+        )}
       </div>
 
       {/* Multi-Criteria Filter Bar */}
@@ -1649,7 +1615,14 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
                       required
                       placeholder={isAr ? 'زجاجة / عبوة / برطمان' : 'Bottle / Jar'}
                       value={formData.smallUnit}
-                      onChange={(e) => setFormData({ ...formData, smallUnit: e.target.value })}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setFormData({ 
+                          ...formData, 
+                          smallUnit: val,
+                          allowFractions: isFractionalUnit(val)
+                        });
+                      }}
                       className="w-full p-2 border border-slate-300 rounded-xl bg-white font-semibold"
                     />
                   </div>
@@ -1677,6 +1650,45 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
                       className="w-full p-2 border-2 border-blue-400 rounded-xl bg-white font-mono font-extrabold text-center text-sm"
                     />
                   </div>
+                </div>
+
+                {/* Fraction Acceptance Toggle */}
+                <div className="p-3 bg-white border border-slate-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-800">
+                        {isAr ? 'قابلية تجزئة الوحدة الصغرى للمنتج (Small Unit Fractions)' : 'Product Small Unit Fractions'}
+                      </span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        formData.allowFractions 
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-blue-100 text-blue-800 border border-blue-300'
+                      }`}>
+                        {formData.allowFractions 
+                          ? (isAr ? '🟢 يقبل كسور عشرية' : '🟢 Decimals Allowed')
+                          : (isAr ? '🔵 أعداد صحيحة فقط (غير قابل للتجزئة)' : '🔵 Whole Integers Only (Indivisible)')}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      {formData.allowFractions
+                        ? (isAr 
+                            ? 'الوحدة الصغرى تقبل كسوراً عشرية (سوائل فلكية، أوزان بالكجم، صب بدون تعبئة محددة).' 
+                            : 'Small unit accepts decimal fractions (bulk liquid, weights in kg, unmetered bulk).')
+                        : (isAr 
+                            ? 'الوحدة الصغرى (زجاجة، برطمان، عبوة) غير قابلة للتجزئة وتُقيد كأعداد صحيحة فقط. يمكن للوحدة الكبرى (كرتونة) أن تكون كسراً (مثل 1.5 كرتونة = 18 زجاجة).' 
+                            : 'Small base unit (bottle, jar, unit) is indivisible and strictly integer. Large units can be entered in fractions (e.g. 1.5 cartons = 18 bottles).')}
+                    </p>
+                  </div>
+
+                  <label className="relative inline-flex items-center cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(formData.allowFractions)}
+                      onChange={(e) => setFormData({ ...formData, allowFractions: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                  </label>
                 </div>
 
                 {/* Master Product Image Upload */}
@@ -1980,10 +1992,12 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
                               <input
                                 type="number"
                                 min="0"
+                                step={formData.allowFractions ? "0.001" : "1"}
                                 placeholder="0"
                                 value={opt.openingQtySmall || ''}
                                 onChange={(e) => {
-                                  const val = e.target.value === '' ? '' : Math.max(0, Number(e.target.value));
+                                  const rawVal = e.target.value === '' ? '' : Math.max(0, Number(e.target.value));
+                                  const val = (rawVal !== '' && !formData.allowFractions) ? Math.round(rawVal) : rawVal;
                                   const ratio = Number(opt.packagingRatio || formData.packagingRatio || 1);
                                   const updated = [...formData.packagingOptions];
                                   updated[optIdx].openingQtySmall = val;
@@ -2001,7 +2015,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
                               <input
                                 type="number"
                                 min="0"
-                                step="0.01"
+                                step="any"
                                 placeholder="0"
                                 value={opt.openingQtyLarge || ''}
                                 onChange={(e) => {
@@ -2009,7 +2023,9 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
                                   const ratio = Number(opt.packagingRatio || formData.packagingRatio || 1);
                                   const updated = [...formData.packagingOptions];
                                   updated[optIdx].openingQtyLarge = val;
-                                  updated[optIdx].openingQtySmall = val === '' ? '' : Math.round(val * ratio);
+                                  updated[optIdx].openingQtySmall = val === '' 
+                                    ? '' 
+                                    : (formData.allowFractions ? Math.round(val * ratio * 1000) / 1000 : Math.round(val * ratio));
                                   setFormData({ ...formData, packagingOptions: updated });
                                 }}
                                 className="w-full p-1.5 border border-slate-300 rounded-lg bg-white font-mono font-bold text-slate-900 text-xs"

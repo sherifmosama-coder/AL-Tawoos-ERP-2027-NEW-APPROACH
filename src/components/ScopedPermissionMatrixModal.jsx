@@ -94,7 +94,8 @@ export default function ScopedPermissionMatrixModal({
     };
 
     if (scopeType === 'module') {
-      if (targetKey === 'purchases' || targetKey === 'procurement') {
+      if (targetKey === 'purchases' || targetKey === 'procurement' || targetKey === 'materials') {
+        collectModuleTabs(APP_ARCHITECTURE.modules.materials);
         collectModuleTabs(APP_ARCHITECTURE.modules.procurement);
         collectModuleTabs(APP_ARCHITECTURE.modules.inventory);
       } else if (targetKey === 'production') {

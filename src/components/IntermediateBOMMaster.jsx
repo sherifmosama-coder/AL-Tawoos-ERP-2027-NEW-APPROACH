@@ -42,26 +42,12 @@ import {
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import PeacockLoader from './PeacockLoader';
-import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
-
+import VariantComboBox from './VariantComboBox';
+import VariantIdentifierChip from './VariantIdentifierChip';
 export default function IntermediateBOMMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
-
-  // In-app configured tab appearance (respecting user-configured icon and color)
-  const [tabConfig, setTabConfig] = useState(() => getTabConfig('intermediate_bom'));
-  useEffect(() => {
-    const handleConfigUpdate = () => {
-      setTabConfig(getTabConfig('intermediate_bom'));
-    };
-    window.addEventListener('app_tab_config_updated', handleConfigUpdate);
-    return () => window.removeEventListener('app_tab_config_updated', handleConfigUpdate);
-  }, []);
-
-  const TabConfigIcon = getIconComponent(tabConfig?.iconName);
-  const tabColor = tabConfig?.color || '#d97706';
-  const { r, g, b } = hexToRgb(tabColor);
 
   // Dynamic Authority Resolvers
   const canCreate = isGeneralAdmin || (
@@ -905,65 +891,42 @@ export default function IntermediateBOMMaster({ currentUser = {}, permissions = 
         />
       )}
 
-      {/* Top Header & Launch Action Bar */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="p-2.5 border rounded-2xl shadow-2xs flex items-center justify-center shrink-0 transition-all duration-200"
-            style={{
-              backgroundColor: `rgba(${r}, ${g}, ${b}, 0.1)`,
-              borderColor: `rgba(${r}, ${g}, ${b}, 0.25)`,
-              color: tabColor,
-            }}
-          >
-            <TabConfigIcon className="h-6 w-6" />
-          </div>
-          <div>
-            <h3 className="text-base font-extrabold text-slate-900">
-              {isAr ? (tabConfig?.labelAr || 'تركيبات وتصنيع الخامات الوسيطة (Intermediate BOM)') : (tabConfig?.labelEn || 'Intermediate Manufacturing BOM')}
-            </h3>
-            <span className="text-xs text-slate-500 font-medium">
-              {isAr ? 'خلط وتصنيع الخامات المصنعة داخلياً (Flag M) من مدخلات الإنتاج (Flag R)' : 'Process formulations for M-items built from R-ingredients'}
+      {/* Top Action Bar: M-Items Coverage KPI & New Formula Trigger */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs">
+        {/* M-Items Recipe Coverage KPI */}
+        <div className="flex items-center gap-2.5 px-3.5 py-1.5 bg-amber-50/80 border border-amber-200 rounded-2xl shadow-2xs">
+          <div className="flex flex-col items-start">
+            <span className="text-[10px] font-bold text-amber-900 flex items-center gap-1">
+              <CheckCheck className="h-3.5 w-3.5 text-amber-700" />
+              <span>{isAr ? 'تغطية الخامات الوسيطة:' : 'M-Items Coverage:'}</span>
+            </span>
+            <span className="text-xs font-mono font-extrabold text-amber-950">
+              {coverageMetrics.configuredCount} / {coverageMetrics.totalM} {isAr ? 'خامة (M)' : 'M-Items'} ({coverageMetrics.percent}%)
             </span>
           </div>
-        </div>
-
-        <div className="flex items-center gap-2.5">
-          {/* M-Items Recipe Coverage KPI */}
-          <div className="flex items-center gap-2 px-3.5 py-1.5 bg-amber-50/80 border border-amber-200 rounded-2xl shadow-2xs">
-            <div className="flex flex-col items-start">
-              <span className="text-[10px] font-bold text-amber-900 flex items-center gap-1">
-                <CheckCheck className="h-3.5 w-3.5 text-amber-700" />
-                <span>{isAr ? 'تغطية الخامات الوسيطة:' : 'M-Items Coverage:'}</span>
-              </span>
-              <span className="text-xs font-mono font-extrabold text-amber-950">
-                {coverageMetrics.configuredCount} / {coverageMetrics.totalM} {isAr ? 'خامة (M)' : 'M-Items'} ({coverageMetrics.percent}%)
-              </span>
-            </div>
-            <div className="w-12 bg-amber-200 h-2 rounded-full overflow-hidden shrink-0">
-              <div
-                className="bg-amber-600 h-full rounded-full transition-all duration-300"
-                style={{ width: `${coverageMetrics.percent}%` }}
-              />
-            </div>
+          <div className="w-16 bg-amber-200 h-2 rounded-full overflow-hidden shrink-0">
+            <div
+              className="bg-amber-600 h-full rounded-full transition-all duration-300"
+              style={{ width: `${coverageMetrics.percent}%` }}
+            />
           </div>
-
-          {canCreate ? (
-            <button
-              type="button"
-              onClick={handleOpenCreate}
-              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="h-4 w-4" />
-              <span>{isAr ? 'تعريف تركيبة خامة وسيطة جديدة' : 'New Intermediate Recipe'}</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs text-slate-500 font-medium">
-              <Lock className="h-3.5 w-3.5" />
-              <span>{isAr ? 'وضع القراءة فقط' : 'Read-Only Mode'}</span>
-            </div>
-          )}
         </div>
+
+        {canCreate ? (
+          <button
+            type="button"
+            onClick={handleOpenCreate}
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+          >
+            <Plus className="h-4 w-4" />
+            <span>{isAr ? 'تعريف تركيبة خامة وسيطة جديدة' : 'New Intermediate Recipe'}</span>
+          </button>
+        ) : (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs text-slate-500 font-medium">
+            <Lock className="h-3.5 w-3.5" />
+            <span>{isAr ? 'وضع القراءة فقط' : 'Read-Only Mode'}</span>
+          </div>
+        )}
       </div>
 
       {/* Multi-Criteria Filter Bar */}
@@ -1322,19 +1285,16 @@ export default function IntermediateBOMMaster({ currentUser = {}, permissions = 
 
                                               {/* Variant Selector */}
                                               <td className="p-2">
-                                                <select
-                                                  disabled={!canEdit}
+                                                <VariantComboBox
+                                                  variations={variationsList}
                                                   value={cleanSuffix}
-                                                  onChange={(e) => handleBreakdownChangeComponent(recipe.code, compIdx, 'variantCode', e.target.value)}
-                                                  className="w-full p-1.5 border border-slate-300 rounded-xl bg-white text-slate-800 text-[11px] font-semibold"
-                                                >
-                                                  <option value="">{isAr ? '🏷️ عام للخامة (أي مورد متاح)' : '🏷️ Generic (Any)'}</option>
-                                                  {variationsList.map((v) => (
-                                                    <option key={v.suffix} value={v.suffix}>
-                                                      [{v.suffix}] {v.supplierName || 'تنوع'} {v.packagingRatio ? `[شدة: ${v.packagingRatio}]` : ''}
-                                                    </option>
-                                                  ))}
-                                                </select>
+                                                  onChange={(val) => handleBreakdownChangeComponent(recipe.code, compIdx, 'variantCode', val)}
+                                                  disabled={!canEdit}
+                                                  allowGeneric={true}
+                                                  genericLabel={isAr ? 'عام للخامة (أي مورد متاح)' : 'Generic (Any)'}
+                                                  isAr={isAr}
+                                                  size="sm"
+                                                />
                                               </td>
 
                                               {/* Policy Selector */}
@@ -1548,18 +1508,16 @@ export default function IntermediateBOMMaster({ currentUser = {}, permissions = 
                       );
 
                       return (
-                        <select
+                        <VariantComboBox
+                          variations={inHouseVariants}
                           value={formData.targetVariantSuffix || ''}
-                          onChange={(e) => handleTargetVariantChange(e.target.value)}
-                          className="w-full p-2 border border-amber-300 rounded-xl bg-white font-bold text-slate-900 text-xs focus:ring-2 focus:ring-amber-500"
-                        >
-                          <option value="">{isAr ? '-- عام لكافة تنوعات الخامة --' : '-- Generic (All Variants) --'}</option>
-                          {inHouseVariants.map((v) => (
-                            <option key={v.suffix} value={v.suffix}>
-                              [{v.suffix}] {v.supplierName || 'إنتاج داخلي'} {v.specs?.length ? `(${v.specs.map(s => s.value).join(' - ')})` : ''}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={(val) => handleTargetVariantChange(val)}
+                          allowGeneric={true}
+                          genericLabel={isAr ? '-- عام لكافة تنوعات الخامة --' : '-- Generic (All Variants) --'}
+                          returnKey="suffix"
+                          isAr={isAr}
+                          size="md"
+                        />
                       );
                     })()}
                   </div>
@@ -1791,18 +1749,15 @@ export default function IntermediateBOMMaster({ currentUser = {}, permissions = 
 
                           <div className="sm:col-span-4">
                             <label className="block text-[10px] font-bold text-slate-600 mb-0.5">{isAr ? 'تنوع المورد المعتمد:' : 'Variant Specification:'}</label>
-                            <select
+                            <VariantComboBox
+                              variations={variationsList}
                               value={comp.variantCode ? comp.variantCode.replace(`${comp.itemId}-`, '') : ''}
-                              onChange={(e) => handleModalComponentChange(idx, 'variantCode', e.target.value)}
-                              className="w-full p-1.5 border border-slate-300 rounded-lg font-semibold text-slate-900 bg-white"
-                            >
-                              <option value="">{isAr ? '-- أي تنوع متاح للخامة (عام) --' : '-- Any Available Variant --'}</option>
-                              {variationsList.map((v) => (
-                                <option key={v.suffix} value={v.suffix}>
-                                  [{v.suffix}] {v.supplierName || 'تنوع'}
-                                </option>
-                              ))}
-                            </select>
+                              onChange={(val) => handleModalComponentChange(idx, 'variantCode', val)}
+                              allowGeneric={true}
+                              genericLabel={isAr ? '-- أي تنوع متاح للخامة (عام) --' : '-- Any Available Variant --'}
+                              isAr={isAr}
+                              size="sm"
+                            />
                           </div>
 
                           <div className="sm:col-span-3">
