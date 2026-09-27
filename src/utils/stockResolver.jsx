@@ -405,7 +405,7 @@ export function buildLiveStockMatrix({
   // 4. INGEST PRODUCTION TRANSFORMATIONS (TANK MIXING & WO CONSUMPTIONS)
   // =========================================================================
   transformations.forEach((trans) => {
-    if (trans.status === 'cancelled' || trans.status === 'rejected') return;
+    if (trans.status === 'cancelled' || trans.status === 'rejected' || trans.status === 'reversed' || trans.isReversed) return;
     const whObj = warehouses.find((w) => matchWarehouse(trans.warehouseId, w)) || {
       id: trans.warehouseId,
       code: trans.warehouseId,

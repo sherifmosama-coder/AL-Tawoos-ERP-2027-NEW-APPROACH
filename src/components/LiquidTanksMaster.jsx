@@ -57,11 +57,18 @@ import {
   Calendar,
   TrendingDown,
   TrendingUp,
-  BarChart3
+  BarChart3,
+  ShieldAlert,
+  GitBranch,
+  CornerDownRight,
+  ExternalLink,
+  RotateCcw,
+  QrCode
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
 import { buildLiveStockMatrix, matchWarehouse, getFactoryFloorWarehouse, resolveItemOrLotCost } from '../utils/stockResolver';
 import SearchableSelect from './SearchableSelect';
+import { useNotification } from '../context/NotificationContext';
 
 // Helper: Normalize Arabic-Indic digits to standard digits
 const normalizeArabicNumerals = (str) => {
@@ -114,6 +121,7 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
   const isAr = i18n.language === 'ar';
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
   const currentUserName = isAr ? (currentUser?.nameAr || 'المسؤول') : (currentUser?.name || 'Authorized User');
+  const { toast, showAlert, showConfirm } = useNotification();
 
   // Dynamic Authority Resolvers
   const canCreate = isGeneralAdmin || (
@@ -201,6 +209,28 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
   const [goodsReceipts, setGoodsReceipts] = useState([]);
   const [transfers, setTransfers] = useState([]);
   const [transformations, setTransformations] = useState([]);
+  const [floorLiquidVessels, setFloorLiquidVessels] = useState([]);
+  const [workOrders, setWorkOrders] = useState([]);
+  const [stagedFloorPallets, setStagedFloorPallets] = useState([]);
+
+  // --- GENERAL ADMIN INTERLINKED TANK REVERSAL STATE (Phase 2) ---
+  const [adminDependencyModal, setAdminDependencyModal] = useState({
+    open: false,
+    tank: null,
+    blockers: [],
+    details: '',
+  });
+
+  const [adminReversalModal, setAdminReversalModal] = useState({
+    open: false,
+    tank: null,
+    reason: '',
+    isSubmitting: false,
+    rawMaterialsToRestore: [],
+    unconsumedVolume: 0,
+    vesselName: '',
+  });
+
   const [systemSerialConfig, setSystemSerialConfig] = useState({
     startingSerialNumber: 1,
     mItemsOrder: [],
@@ -364,6 +394,18 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
       setTransformations(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
+    const unsubVessels = onSnapshot(collection(db, 'floor_liquid_vessels'), (snap) => {
+      setFloorLiquidVessels(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
+    const unsubWorkOrders = onSnapshot(collection(db, 'work_orders'), (snap) => {
+      setWorkOrders(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
+    const unsubStagedPallets = onSnapshot(collection(db, 'staged_floor_pallets'), (snap) => {
+      setStagedFloorPallets(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
     const unsubConfig = onSnapshot(doc(db, 'system_config', 'tanks_config'), (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -383,6 +425,9 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
       unsubGrns();
       unsubTransfers();
       unsubTransformations();
+      unsubVessels();
+      unsubWorkOrders();
+      unsubStagedPallets();
       unsubConfig();
     };
   }, []);
@@ -1322,46 +1367,290 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
     }
   };
 
-  // Delete Tank Record & Roll Back All Internal Transformations and Pipeline Transfers
-  const handleDeleteTank = async (tank) => {
-    if (!canDelete) {
-      alert(isAr ? 'ليس لديك صلاحية حذف سجلات التانكات.' : 'Permission denied.');
+  // --- GENERAL ADMIN INTERLINKED TANK REVERSAL & INTEGRITY FRAMEWORK (Phase 2) ---
+  const checkTankDownstreamDependencies = (tank) => {
+    if (!tank) return { hasBlockers: false, blockers: [] };
+    const blockers = [];
+    const tId = String(tank.id || '').trim();
+    const tNum = String(tank.tankNumber || '').replace('#', '').trim();
+    const tLot = String(tank.lotNumber || '').trim();
+
+    // 1. Check floor_liquid_vessels for consumed records by pallets
+    let matchedVessel = null;
+    let tankEntryInVessel = null;
+
+    for (const v of floorLiquidVessels) {
+      const allTanks = [
+        ...(Array.isArray(v.activeTanks) ? v.activeTanks : []),
+        ...(Array.isArray(v.historyTanks) ? v.historyTanks : []),
+      ];
+
+      const found = allTanks.find((t) => {
+        const numMatch = tNum && String(t.tankNumber || '').replace('#', '').trim() === tNum;
+        const idMatch = tId && String(t.tankId || t.id || '').trim() === tId;
+        const lotMatch = tLot && String(t.lotNumber || '').trim() === tLot;
+        return numMatch || idMatch || lotMatch;
+      });
+
+      if (found) {
+        matchedVessel = v;
+        tankEntryInVessel = found;
+
+        // Check consumedByPallets
+        if (Array.isArray(found.consumedByPallets)) {
+          found.consumedByPallets.forEach((cp) => {
+            const consumedLiters = Number(cp.consumedLiters || 0);
+            if (consumedLiters > 0) {
+              const oNum = String(cp.orderNumber || cp.workOrderId || '').trim();
+              const pNum = cp.palletNumber !== undefined ? cp.palletNumber : '';
+              const pId = cp.palletId || '';
+
+              // Verify if pallet is not reversed in workOrders
+              const linkedOrder = workOrders.find((w) => String(w.orderNumber) === oNum || w.id === cp.workOrderId);
+              const linkedPallet = linkedOrder?.pallets?.find((p) => p.palletId === pId || Number(p.palletNumber) === Number(pNum));
+
+              if (!linkedPallet || (linkedPallet.status !== 'reversed' && linkedPallet.stagingStatus !== 'reversed')) {
+                blockers.push({
+                  type: 'pallet_consumption',
+                  orderNumber: oNum,
+                  workOrderId: cp.workOrderId || linkedOrder?.id || oNum,
+                  palletNumber: pNum,
+                  palletId: pId,
+                  consumedLiters,
+                  timestamp: cp.timestamp || '',
+                  materialNameAr: v.materialNameAr || tank.itemNameAr,
+                  titleAr: `مستهلك في باليتة إنتاج تام #${pNum || ''}`,
+                  titleEn: `Consumed in FG Pallet #${pNum || ''}`,
+                  messageAr: `تم استهلاك (${consumedLiters.toLocaleString()} لتر) من هذا التانك في تعبئة الباليتة رقم #${pNum} لأمر التشغيل #${oNum}.`,
+                  messageEn: `Consumed (${consumedLiters.toLocaleString()} L) for Pallet #${pNum} in Work Order #${oNum}.`,
+                  actionType: 'navigate_work_orders',
+                  actionTextAr: 'الانتقال لأمر التشغيل لإلغاء الباليتة أولاً',
+                  actionTextEn: 'Go to Work Order to reverse pallet first',
+                });
+              }
+            }
+          });
+        }
+      }
+    }
+
+    // 2. Cross-verify against stagedFloorPallets and workOrders for any active pallet referencing this tank
+    (stagedFloorPallets || []).forEach((sp) => {
+      if (sp.status === 'reversed' || sp.stagingStatus === 'reversed') return;
+      const hasTank = (Array.isArray(sp.intermediateLiquidTanks) && sp.intermediateLiquidTanks.some((ilt) => {
+        const numMatch = tNum && String(ilt.tankNumber || '').replace('#', '').trim() === tNum;
+        const idMatch = tId && String(ilt.tankId || '').trim() === tId;
+        return numMatch || idMatch;
+      })) || (sp.intermediateLiquidTanksDisplay && String(sp.intermediateLiquidTanksDisplay).includes(tNum));
+
+      if (hasTank) {
+        const oNum = String(sp.orderNumber || sp.workOrderId || '').trim();
+        const pNum = sp.palletNumber || '';
+        const alreadyListed = blockers.some((b) => b.orderNumber === oNum && Number(b.palletNumber) === Number(pNum));
+        if (!alreadyListed) {
+          blockers.push({
+            type: 'staged_pallet',
+            orderNumber: oNum,
+            workOrderId: sp.workOrderId || oNum,
+            palletNumber: pNum,
+            palletId: sp.id || sp.palletId,
+            consumedLiters: 0,
+            materialNameAr: tank.itemNameAr,
+            titleAr: `مرتبط بباليتة بصالة الإنتاج #${pNum}`,
+            titleEn: `Linked to Staged Floor Pallet #${pNum}`,
+            messageAr: `الباليتة رقم #${pNum} لأمر التشغيل #${oNum} مرتبطة بهذا التانك كأصل تغذية بالصالة.`,
+            messageEn: `Pallet #${pNum} in Order #${oNum} references this feeding tank.`,
+            actionType: 'navigate_work_orders',
+            actionTextAr: 'الانتقال لأمر التشغيل لإلغاء الباليتة أولاً',
+            actionTextEn: 'Go to Work Order to reverse pallet first',
+          });
+        }
+      }
+    });
+
+    return {
+      hasBlockers: blockers.length > 0,
+      blockers,
+      matchedVessel,
+      tankEntryInVessel,
+    };
+  };
+
+  const handleOpenAdminTankReversal = (tank) => {
+    if (!isGeneralAdmin) {
+      showAlert({
+        title: isAr ? 'صلاحية غير كافية' : 'Permission Denied',
+        message: isAr ? 'إلغاء وعكس حركات التانكات محصور بالمسؤول العام للنظام.' : 'Restricted to General Admin.',
+        variant: 'error',
+      });
       return;
     }
 
-    const tankIdentifier = tank.tankNumber ? `#${tank.tankNumber}` : (tank.shortLotNumber || tank.lotNumber || tank.id);
-    const confirmMsg = isAr
-      ? `هل أنت متأكد من حذف وإلغاء التانك (${tankIdentifier})؟\n\n⚠️ سيتم عكس وإلغاء كافة الحركات المخزنية المترتبة عليه تلقائياً:\n• إلغاء خصم خامات التحضير (R) وإرجاع رصيدها لمخزن الصرف.\n• إلغاء حركة إنتاج وتصنيع الخامة (M).\n• إلغاء إذن النقل لخط الأنابيب لصالة الإنتاج.`
-      : `Delete tank (${tankIdentifier}) and roll back all inventory transactions?`;
+    const { hasBlockers, blockers, matchedVessel, tankEntryInVessel } = checkTankDownstreamDependencies(tank);
 
-    if (!window.confirm(confirmMsg)) return;
+    if (hasBlockers) {
+      setAdminDependencyModal({
+        open: true,
+        tank,
+        blockers,
+        details: isAr
+          ? 'وفقاً لقواعد النزاهة المحاسبية (Strict Dependency Blocker - LIFO)، لا يمكن إلغاء هذا التانك لوجود باليتات منتج تام معتمدة تعتمد عليه.'
+          : 'Strict Dependency Blocker: This tank cannot be reversed while downstream finished goods pallets depend on it.',
+      });
+      return;
+    }
 
-    setIsSaving(true);
+    // Resolve constituent raw materials to restore to warehouse
+    const transDocId = tank.transformationDocId || `TRANS-${tank.id}`;
+    const trans = transformations.find((tr) => tr.id === transDocId || tr.tankId === tank.id);
+    const consumedLines = Array.isArray(trans?.consumedComponents) && trans.consumedComponents.length > 0
+      ? trans.consumedComponents
+      : (Array.isArray(tank.consumedLines) ? tank.consumedLines : []);
+
+    const rawMaterialsToRestore = consumedLines.map((c) => ({
+      itemId: c.itemId,
+      nameAr: c.nameAr || c.itemNameAr || c.itemId,
+      quantity: Number(c.qtySmallUnits || c.quantity || 0),
+      unit: c.smallUnit || c.unit || 'كجم',
+      lotNumber: c.lotNumber || '—',
+      totalCost: Number(c.totalCost || 0),
+    }));
+
+    const unconsumedVol = tankEntryInVessel ? Number(tankEntryInVessel.remainingVolume || 0) : 0;
+
+    setAdminReversalModal({
+      open: true,
+      tank,
+      reason: '',
+      isSubmitting: false,
+      rawMaterialsToRestore,
+      unconsumedVolume: unconsumedVol,
+      vesselName: matchedVessel?.materialNameAr || matchedVessel?.materialNameEn || '',
+    });
+  };
+
+  const handleExecuteAdminTankReversal = async () => {
+    const { tank, reason } = adminReversalModal;
+    if (!reason || reason.trim().length < 5) {
+      showAlert({
+        title: isAr ? 'سبب الإلغاء مطلوب' : 'Reason Required',
+        message: isAr ? 'يرجى إدخال سبب واضح لإلغاء التانك للتوثيق المالي (5 أحرف على الأقل).' : 'Please enter a valid justification reason (at least 5 characters).',
+        variant: 'warning',
+      });
+      return;
+    }
+
+    setAdminReversalModal((prev) => ({ ...prev, isSubmitting: true }));
     try {
+      const nowIso = new Date().toISOString();
       const batch = writeBatch(db);
 
-      // 1. Delete Primary Tank Document
-      batch.delete(doc(db, 'liquid_tanks', tank.id));
+      const tId = String(tank.id || '').trim();
+      const tNum = String(tank.tankNumber || '').replace('#', '').trim();
 
-      // 2. Delete Internal Production Transformation Record
-      const transDocId = tank.transformationDocId || `TRANS-${tank.id}`;
-      batch.delete(doc(db, 'production_transformations', transDocId));
+      // 1. Remove tank from floor_liquid_vessels active & history lists
+      for (const v of floorLiquidVessels) {
+        let modified = false;
+        const vRef = doc(db, 'floor_liquid_vessels', v.id || v.materialCode);
 
-      // 3. Delete Pipeline Transfer if exists
+        const newActive = (v.activeTanks || []).filter((t) => {
+          const numMatch = tNum && String(t.tankNumber || '').replace('#', '').trim() === tNum;
+          const idMatch = tId && String(t.tankId || t.id || '').trim() === tId;
+          if (numMatch || idMatch) {
+            modified = true;
+            return false;
+          }
+          return true;
+        });
+
+        const newHistory = (v.historyTanks || []).filter((t) => {
+          const numMatch = tNum && String(t.tankNumber || '').replace('#', '').trim() === tNum;
+          const idMatch = tId && String(t.tankId || t.id || '').trim() === tId;
+          if (numMatch || idMatch) {
+            modified = true;
+            return false;
+          }
+          return true;
+        });
+
+        if (modified) {
+          const newTotalVol = newActive.reduce((sum, t) => sum + (Number(t.remainingVolume) || 0), 0);
+          batch.set(vRef, {
+            activeTanks: newActive,
+            historyTanks: newHistory,
+            currentVolume: newTotalVol,
+            updatedAt: serverTimestamp(),
+          }, { merge: true });
+        }
+      }
+
+      // 2. Mark TRN-PIPE as reversed in stock_transfers
       const trnId = tank.pipeTransferDocId || `TRN-PIPE-${tank.id}`;
-      batch.delete(doc(db, 'stock_transfers', trnId));
+      const trnRef = doc(db, 'stock_transfers', trnId);
+      batch.set(trnRef, {
+        status: 'reversed',
+        isReversed: true,
+        reversedBy: currentUserName,
+        reversedById: currentUser?.id || currentUser?.uid || '',
+        reversedAt: nowIso,
+        reversalReason: reason.trim(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
 
-      // 4. Clean legacy references if any exist
-      if (tank.consumeDocId) batch.delete(doc(db, 'goods_receipts', tank.consumeDocId));
-      if (tank.producedDocId) batch.delete(doc(db, 'goods_receipts', tank.producedDocId));
+      // 3. Mark transformation as reversed in production_transformations (restores raw material stock)
+      const transDocId = tank.transformationDocId || `TRANS-${tank.id}`;
+      const transRef = doc(db, 'production_transformations', transDocId);
+      batch.set(transRef, {
+        status: 'reversed',
+        isReversed: true,
+        reversedBy: currentUserName,
+        reversedById: currentUser?.id || currentUser?.uid || '',
+        reversedAt: nowIso,
+        reversalReason: reason.trim(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      // 4. Soft-delete primary tank doc in liquid_tanks
+      const tankRef = doc(db, 'liquid_tanks', tank.id);
+      const existingAudit = Array.isArray(tank.auditTrail) ? tank.auditTrail : [];
+      const newAuditEntry = {
+        version: '1.0',
+        action: 'admin_tank_reversed',
+        status: 'reversed',
+        performedBy: currentUserName,
+        timestamp: nowIso,
+        noteAr: `تم الإلغاء الإداري للتانك واسترجاع المواد الخام: ${reason.trim()}`,
+        noteEn: `Admin reversal: ${reason.trim()}`,
+      };
+
+      batch.set(tankRef, {
+        status: 'reversed',
+        pumpStatus: 'reversed',
+        isReversed: true,
+        reversedBy: currentUserName,
+        reversedById: currentUser?.id || currentUser?.uid || '',
+        reversedAt: nowIso,
+        reversalReason: reason.trim(),
+        auditTrail: [newAuditEntry, ...existingAudit].slice(0, 40),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
 
       await batch.commit();
+
+      setAdminReversalModal({ open: false, tank: null, reason: '', isSubmitting: false, rawMaterialsToRestore: [], unconsumedVolume: 0, vesselName: '' });
+      toast.success(
+        isAr ? `تم الإلغاء الإداري للتانك #${tank.tankNumber} واسترجاع المواد الخام بنجاح.` : `Tank #${tank.tankNumber} reversed and raw materials restored.`,
+        isAr ? 'إلغاء إداري معتمد' : 'Reversal Completed'
+      );
     } catch (err) {
-      console.error('Error deleting and rolling back tank:', err);
-      alert(isAr ? 'حدث خطأ أثناء إلغاء التانك وعكس الحركات المخزنية.' : 'Error rolling back tank inventory.');
-    } finally {
-      setIsSaving(false);
+      console.error('Error reversing tank:', err);
+      toast.error(isAr ? 'حدث خطأ أثناء إلغاء التانك.' : 'Failed to reverse tank.');
+      setAdminReversalModal((prev) => ({ ...prev, isSubmitting: false }));
     }
+  };
+
+  const handleDeleteTank = (tank) => {
+    handleOpenAdminTankReversal(tank);
   };
 
   // Period Dashboard Analytics (Ignores M-items not submitted during the period)
@@ -1428,12 +1717,17 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
         t.prepCode?.includes(q);
 
       const matchStatus =
-        statusFilter === 'all' ||
-        (statusFilter === 'pumping' && t.pumpStatus === 'pumping') ||
-        (statusFilter === 'paused' && t.pumpStatus === 'paused') ||
-        (statusFilter === 'completed' && t.pumpStatus === 'completed') ||
-        (statusFilter === 'pending_qa' && t.qaStatus === 'pending') ||
-        (statusFilter === 'qa_passed' && t.qaStatus === 'passed');
+        statusFilter === 'all'
+          ? (t.status !== 'reversed' && !t.isReversed)
+          : statusFilter === 'reversed'
+          ? (t.status === 'reversed' || t.isReversed)
+          : (t.status !== 'reversed' && !t.isReversed && (
+              (statusFilter === 'pumping' && t.pumpStatus === 'pumping') ||
+              (statusFilter === 'paused' && t.pumpStatus === 'paused') ||
+              (statusFilter === 'completed' && t.pumpStatus === 'completed') ||
+              (statusFilter === 'pending_qa' && t.qaStatus === 'pending') ||
+              (statusFilter === 'qa_passed' && t.qaStatus === 'passed')
+            ));
 
       return matchDate && matchSearch && matchStatus;
     });
@@ -1556,6 +1850,7 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
               <option value="completed">{isAr ? 'مكتمل الرفع' : 'Lifting Completed'}</option>
               <option value="pending_qa">{isAr ? 'بانتظار فحص QA' : 'Pending QA'}</option>
               <option value="qa_passed">{isAr ? 'فحص QA مطابق' : 'QA Passed'}</option>
+              <option value="reversed">{isAr ? 'ملغاة (Reversed)' : 'Reversed Tanks'}</option>
             </select>
           </div>
 
@@ -1940,8 +2235,18 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
                       </span>
                     )}
 
-                    {/* Secondary Actions (Audit, Edit, Delete) */}
+                    {/* Secondary Actions (Audit, Edit, Delete, Admin) */}
                     <div className="flex items-center gap-1">
+                      {isGeneralAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenAdminTankReversal(tank)}
+                          className="p-1 text-purple-400 hover:text-purple-300 hover:bg-purple-950/60 rounded border border-purple-500/40 transition cursor-pointer"
+                          title={isAr ? 'خيارات الإدارة العامة (إلغاء واسترجاع التانك)' : 'General Admin Reversal & Stock Rollback'}
+                        >
+                          <ShieldAlert className="h-4 w-4" />
+                        </button>
+                      )}
                       {canViewAudit && (
                         <button
                           type="button"
@@ -1952,7 +2257,7 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
                           <History className="h-4 w-4" />
                         </button>
                       )}
-                      {canEdit && !isCompleted && (
+                      {canEdit && !isCompleted && !tank.isReversed && (
                         <button
                           type="button"
                           onClick={() => handleOpenEdit(tank)}
@@ -1962,7 +2267,7 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
                           <Edit3 className="h-4 w-4" />
                         </button>
                       )}
-                      {canDelete && (
+                      {canDelete && !tank.isReversed && (
                         <button
                           type="button"
                           onClick={() => handleDeleteTank(tank)}
@@ -1978,7 +2283,19 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
 
                 {/* 4. High-Contrast Lifting Controls (Start / Pause / Resume / Finish) */}
                 <div className="pt-2 border-t border-slate-800">
-                  {!isCompleted ? (
+                  {tank.isReversed || tank.status === 'reversed' ? (
+                    <div className="w-full py-2.5 px-3 bg-rose-950/40 border border-rose-800/50 rounded-2xl text-center space-y-1">
+                      <div className="flex items-center justify-center gap-1.5 text-xs font-black text-rose-400">
+                        <RotateCcw className="h-4 w-4 shrink-0" />
+                        <span>{isAr ? 'تانك ملغي (Admin Reversed)' : 'Tank Reversed (Admin)'}</span>
+                      </div>
+                      {tank.reversalReason && (
+                        <div className="text-[10px] text-slate-400 font-medium truncate" title={tank.reversalReason}>
+                          {isAr ? 'السبب:' : 'Reason:'} {tank.reversalReason}
+                        </div>
+                      )}
+                    </div>
+                  ) : !isCompleted ? (
                     isPumping ? (
                       <div className="grid grid-cols-2 gap-2">
                         {/* Pause Lifting */}
@@ -3067,6 +3384,240 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
                 className="px-5 py-2 bg-[#1c2233] hover:bg-[#252c3d] text-white rounded-xl text-xs font-bold cursor-pointer"
               >
                 {isAr ? 'إغلاق' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* GENERAL ADMIN INTERLINKED TANK REVERSAL & DEPENDENCY MODALS (Phase 2)    */}
+      {/* ========================================================================= */}
+
+      {/* 1. ADMIN DEPENDENCY BLOCKER MODAL (Strict LIFO Cascade) */}
+      {adminDependencyModal.open && adminDependencyModal.tank && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-[#131722] text-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-rose-500/40 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl">
+                  <ShieldAlert className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-white">
+                    {isAr ? 'إجراء محظور - وجود حركات لاحقة مرتبطة بالتانك' : 'Action Blocked - Downstream Dependencies'}
+                  </h3>
+                  <span className="text-[11px] text-rose-400 font-bold">
+                    {isAr ? 'قاعدة الأسبقية الصارمة (Strict Dependency Blocker - LIFO)' : 'Strict LIFO Cascade Policy Active'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, tank: null, blockers: [], details: '' })}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              {adminDependencyModal.details}
+            </p>
+
+            {/* Visual Cascade Tree */}
+            <div className="p-3.5 bg-[#171c2b] border border-slate-800 rounded-2xl space-y-2">
+              <div className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
+                <GitBranch className="h-4 w-4 text-blue-400" />
+                <span>{isAr ? 'مسار الارتباط المخزني التابع:' : 'Downstream Dependency Chain:'}</span>
+              </div>
+
+              <div className="space-y-1.5 text-xs font-mono">
+                {/* Tank Level */}
+                <div className="flex items-center gap-2 p-2 bg-[#131722] rounded-xl border border-slate-800">
+                  <span className="px-1.5 py-0.5 bg-blue-950/80 text-blue-300 border border-blue-800/50 rounded text-[10px] font-bold">
+                    {isAr ? 'تانك تحضير' : 'Tank'}
+                  </span>
+                  <span className="font-bold text-white">#{adminDependencyModal.tank.tankNumber}</span>
+                  <span className="text-slate-400 font-sans">({adminDependencyModal.tank.itemNameAr})</span>
+                </div>
+
+                {/* Vessel Level */}
+                <div className="flex items-center gap-2 pl-3 rtl:pr-3 text-slate-500">
+                  <CornerDownRight className="h-3.5 w-3.5" />
+                  <div className="flex-1 flex items-center gap-2 p-2 bg-[#131722] rounded-xl border border-slate-800 text-slate-300">
+                    <span className="px-1.5 py-0.5 bg-indigo-950/80 text-indigo-300 border border-indigo-800/50 rounded text-[10px] font-bold font-sans">
+                      {isAr ? 'خزان صالة الإنتاج' : 'Floor Storage Pool'}
+                    </span>
+                    <span className="font-sans text-xs font-bold text-white">{adminDependencyModal.tank.itemNameAr}</span>
+                  </div>
+                </div>
+
+                {/* Pallet Blocker Rows */}
+                {(adminDependencyModal.blockers || []).map((b, bIdx) => (
+                  <div key={bIdx} className="flex items-center gap-2 pl-6 rtl:pr-6 text-rose-400">
+                    <CornerDownRight className="h-3.5 w-3.5" />
+                    <div className="flex-1 p-2 bg-rose-950/30 rounded-xl border border-rose-800/40 text-rose-200 font-sans text-xs">
+                      <div className="font-bold flex items-center justify-between">
+                        <span>{isAr ? b.titleAr : b.titleEn}</span>
+                        {b.consumedLiters > 0 && (
+                          <span className="font-mono text-[10px] bg-rose-900/60 px-1.5 py-0.5 rounded border border-rose-700/50 font-bold text-rose-300">
+                            {b.consumedLiters.toLocaleString()} L
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-rose-300 mt-1 leading-relaxed">
+                        {isAr ? b.messageAr : b.messageEn}
+                      </div>
+                      {b.actionType && (
+                        <div className="mt-2 pt-1.5 border-t border-rose-800/40 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('app_navigate_tab', {
+                                detail: {
+                                  tab: 'work_orders',
+                                  orderNumber: b.orderNumber,
+                                }
+                              }));
+                              setAdminDependencyModal({ open: false, tank: null, blockers: [], details: '' });
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-900 border border-rose-300 rounded-lg text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>{isAr ? b.actionTextAr : b.actionTextEn}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, tank: null, blockers: [], details: '' })}
+                className="px-4 py-2 bg-[#1c2233] hover:bg-[#252c3d] text-slate-300 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'فهمت، إغلاق النافذة' : 'Understood, Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. ADMIN TANK REVERSAL CONFIRMATION MODAL */}
+      {adminReversalModal.open && adminReversalModal.tank && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-[#131722] text-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-purple-500/40 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-xl">
+                  <RotateCcw className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-white">
+                    {isAr ? 'تأكيد إلغاء التانك واسترجاع المخزون (Admin Reversal)' : 'Confirm Admin Tank Reversal'}
+                  </h3>
+                  <span className="text-[11px] text-purple-400 font-bold">
+                    {isAr ? 'عكس خامات التحضير وتفريغ الخزان وتوثيق السجل' : 'Rollback Raw Materials & Floor Storage'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting}
+                onClick={() => setAdminReversalModal({ open: false, tank: null, reason: '', isSubmitting: false, rawMaterialsToRestore: [], unconsumedVolume: 0, vesselName: '' })}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Tank Summary Header */}
+            <div className="p-3 bg-[#171c2b] rounded-2xl border border-slate-800 text-xs space-y-1.5">
+              <div className="flex justify-between items-center">
+                <span className="font-mono font-bold text-purple-400 text-sm">
+                  #{adminReversalModal.tank.tankNumber}
+                </span>
+                <span className="font-bold text-slate-300">
+                  {adminReversalModal.tank.producedQty || adminReversalModal.tank.yieldVolume || 1000} L
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-400">
+                {adminReversalModal.tank.itemNameAr} • [{adminReversalModal.tank.lotNumber || '—'}]
+              </div>
+              {adminReversalModal.unconsumedVolume > 0 && (
+                <div className="text-[11px] text-amber-400 font-medium pt-1 border-t border-slate-800">
+                  ⚠️ {isAr ? `سيتم خصم (${adminReversalModal.unconsumedVolume.toLocaleString()} لتر) المتبقية تلقائياً من خزان صالة الإنتاج (${adminReversalModal.vesselName || ''}).` : `Remaining ${adminReversalModal.unconsumedVolume.toLocaleString()} L will be removed from floor storage vessel.`}
+                </div>
+              )}
+            </div>
+
+            {/* Constituent Raw Materials To Restore */}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-slate-300 flex items-center justify-between">
+                <span>{isAr ? 'الخامات الأولية المستردة لمخزن الصرف (R-Materials):' : 'Raw Materials Restored to Warehouse:'}</span>
+                <span className="font-mono text-purple-400 text-[10px]">
+                  ({adminReversalModal.rawMaterialsToRestore.length} {isAr ? 'بنود' : 'items'})
+                </span>
+              </div>
+              <div className="max-h-36 overflow-y-auto border border-slate-800 rounded-xl divide-y divide-slate-800/70 text-xs font-mono">
+                {adminReversalModal.rawMaterialsToRestore.length === 0 ? (
+                  <div className="p-2.5 text-center text-slate-500 font-sans text-xs italic">
+                    {isAr ? 'سيتم استرجاع الخامات وفق نسب معادلة التحضير المعتمدة.' : 'Raw materials will be restored based on approved BOM.'}
+                  </div>
+                ) : (
+                  adminReversalModal.rawMaterialsToRestore.map((rm, rmIdx) => (
+                    <div key={rmIdx} className="p-2 bg-[#171c2b] flex items-center justify-between">
+                      <div className="font-sans font-medium text-slate-200">
+                        <span>{rm.nameAr}</span>
+                        <span className="text-[10px] text-slate-500 font-mono ms-1">[{rm.lotNumber}]</span>
+                      </div>
+                      <div className="font-bold text-emerald-400">
+                        +{rm.quantity.toLocaleString()} {rm.unit}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Reason Textarea */}
+            <div className="space-y-1.5">
+              <label className="block font-bold text-slate-300 text-xs flex items-center gap-1">
+                <span>{isAr ? 'سبب الإلغاء الإداري (إلزامي للتوثيق المحاسبي - 5 أحرف على الأقل) *' : 'Reversal Justification Reason (Mandatory - min 5 chars) *'}</span>
+              </label>
+              <textarea
+                required
+                rows={2}
+                value={adminReversalModal.reason}
+                onChange={(e) => setAdminReversalModal((prev) => ({ ...prev, reason: e.target.value }))}
+                placeholder={isAr ? 'اكتب سبب الإلغاء بدقة، مثال: خطأ في إدخال بيانات التحضير، تلف السائل، إلخ...' : 'Enter clear reason for reversal...'}
+                className="w-full p-2.5 bg-[#171c2b] border border-slate-700 rounded-xl text-white text-xs focus:ring-2 focus:ring-purple-500 font-medium placeholder-slate-500"
+              />
+            </div>
+
+            <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting}
+                onClick={() => setAdminReversalModal({ open: false, tank: null, reason: '', isSubmitting: false, rawMaterialsToRestore: [], unconsumedVolume: 0, vesselName: '' })}
+                className="px-4 py-2 border border-slate-700 rounded-xl text-slate-300 text-xs font-bold hover:bg-slate-800 transition cursor-pointer"
+              >
+                {isAr ? 'تراجع' : 'Cancel'}
+              </button>
+
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting || !adminReversalModal.reason || adminReversalModal.reason.trim().length < 5}
+                onClick={handleExecuteAdminTankReversal}
+                className="px-5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>{adminReversalModal.isSubmitting ? (isAr ? 'جاري التنفيذ...' : 'Processing...') : (isAr ? 'تأكيد الإلغاء واسترجاع المخزون' : 'Confirm Reversal')}</span>
               </button>
             </div>
           </div>

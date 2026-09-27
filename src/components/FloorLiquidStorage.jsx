@@ -45,7 +45,11 @@ import {
   Info,
   Copy,
   Check,
-  Lock
+  Lock,
+  GitBranch,
+  CornerDownRight,
+  ExternalLink,
+  QrCode
 } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 import PeacockLoader from './PeacockLoader';
@@ -109,6 +113,14 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
   const [selectedTankForDetails, setSelectedTankForDetails] = useState(null);
   const [copiedLot, setCopiedLot] = useState(null);
   const [outflowFilter, setOutflowFilter] = useState('all'); // 'all' | 'active' | 'history'
+
+  // --- GENERAL ADMIN INTERLINKED TANK REVERSAL MODAL (Phase 2) ---
+  const [adminDependencyModal, setAdminDependencyModal] = useState({
+    open: false,
+    tank: null,
+    blockers: [],
+    details: '',
+  });
 
   // Form States
   const [configFormData, setConfigFormData] = useState({
@@ -1155,6 +1167,123 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
       console.error('Error retiring tank:', err);
       toast.error(isAr ? 'حدث خطأ أثناء استبعاد التانك.' : 'Failed to retire tank.');
     }
+  };
+
+  // --- GENERAL ADMIN DOWNSTREAM DEPENDENCY CHECKER (Floor Level) ---
+  const checkTankDependenciesFromFloor = (tankItem) => {
+    if (!tankItem) return [];
+    const tNum = String(tankItem.tankNumber || tankItem.lotNumber || tankItem.tankId || '').replace('#', '').trim();
+    const tId = String(tankItem.tankId || tankItem.id || '').trim();
+    const blockers = [];
+
+    // Check 1: Direct pallet consumptions logged on this tank entry
+    if (Array.isArray(tankItem.consumedByPallets)) {
+      tankItem.consumedByPallets.forEach((c) => {
+        const liters = Number(c.consumedLiters || 0);
+        if (liters <= 0) return;
+        const oNum = String(c.orderNumber || c.workOrderId || '').trim();
+        const pNum = c.palletNumber !== undefined ? Number(c.palletNumber) : null;
+
+        // Check if this pallet is reversed in workOrders
+        const wo = (workOrders || []).find((w) => String(w.orderNumber) === oNum || String(w.id) === oNum);
+        const palletInWo = wo && Array.isArray(wo.pallets) ? wo.pallets.find((p) => Number(p.palletNumber) === pNum) : null;
+        if (palletInWo && (palletInWo.status === 'reversed' || palletInWo.isReversed)) {
+          return; // Already reversed pallet, does not block
+        }
+
+        blockers.push({
+          orderNumber: oNum,
+          workOrderId: wo?.id || oNum,
+          palletNumber: pNum,
+          consumedLiters: liters,
+          titleAr: `باليت #${pNum || '—'} بأمر تشغيل #${oNum}`,
+          titleEn: `Pallet #${pNum || '—'} in Work Order #${oNum}`,
+          messageAr: `تم سحب ${liters.toLocaleString()} لتر من هذا التانك لصالح هذا الباليت. يجب إلغاء الباليت أولاً في أوامر التشغيل وفق مبدأ (LIFO).`,
+          messageEn: `Consumed ${liters.toLocaleString()} L for this pallet. You must reverse this pallet in Work Orders first (LIFO policy).`,
+          actionType: 'navigate_work_order',
+          actionTextAr: `الانتقال لأمر تشغيل #${oNum}`,
+          actionTextEn: `Go to Work Order #${oNum}`,
+        });
+      });
+    }
+
+    // Check 2: Staged pallets currently on the production floor
+    (stagedPallets || []).forEach((sp) => {
+      if (sp.status === 'reversed' || sp.isReversed) return;
+      const deductions = Array.isArray(sp.activeTankContributions)
+        ? sp.activeTankContributions
+        : Array.isArray(sp.tankDeductions)
+        ? sp.tankDeductions
+        : [];
+      const entry = deductions.find((d) => {
+        const dNum = String(d.tankNumber || '').replace('#', '').trim();
+        const dId = d.tankId && String(d.tankId).trim();
+        return (dNum && dNum === tNum) || (dId && dId === tId);
+      });
+
+      if (entry && Number(entry.consumedLiters || 0) > 0) {
+        const liters = Number(entry.consumedLiters || 0);
+        const oNum = String(sp.orderNumber || sp.workOrderId || '').trim();
+        const pNum = sp.palletNumber;
+        if (!blockers.some((b) => b.orderNumber === oNum && b.palletNumber === pNum)) {
+          blockers.push({
+            orderNumber: oNum,
+            workOrderId: sp.workOrderId || oNum,
+            palletNumber: pNum,
+            consumedLiters: liters,
+            titleAr: `باليت تحت التجهيز بالصالة #${pNum || '—'} بأمر #${oNum}`,
+            titleEn: `Floor Staged Pallet #${pNum || '—'} in WO #${oNum}`,
+            messageAr: `يوجد باليت في صالة الإنتاج قيد التجهيز استهلك ${liters.toLocaleString()} لتر من هذا التانك.`,
+            messageEn: `An active staged pallet on the floor consumed ${liters.toLocaleString()} L from this tank.`,
+            actionType: 'navigate_work_order',
+            actionTextAr: `الانتقال لأمر تشغيل #${oNum}`,
+            actionTextEn: `Go to Work Order #${oNum}`,
+          });
+        }
+      }
+    });
+
+    return blockers;
+  };
+
+  // General Admin Action on Active Tank in Floor Storage
+  const handleAdminActionOnFloorTank = (tankItem) => {
+    if (!isGeneralAdmin) {
+      showAlert({
+        title: isAr ? 'صلاحية غير كافية' : 'Permission Denied',
+        message: isAr ? 'إجراءات فحص وإلغاء التانكات محصورة بالمسؤول العام.' : 'Only General Admin can manage tank reversals.',
+        variant: 'error'
+      });
+      return;
+    }
+
+    const blockers = checkTankDependenciesFromFloor(tankItem);
+    if (blockers.length > 0) {
+      setAdminDependencyModal({
+        open: true,
+        tank: tankItem,
+        blockers,
+        details: isAr
+          ? `لا يمكن إلغاء التانك #${tankItem.tankNumber || tankItem.lotNumber} لوجود (${blockers.length}) باليت/أمر تشغيل سحب من محتواه في صالة الإنتاج. وفقاً لقواعد التكامل المحاسبي (Strict Cascade Dependency)، يجب إلغاء حركات السحب اللاحقة أولاً.`
+          : `Cannot reverse Tank #${tankItem.tankNumber || tankItem.lotNumber} because (${blockers.length}) downstream pallet(s) have consumed liquid from it. Following strict LIFO cascade rules, downstream consumptions must be reversed first.`,
+      });
+      return;
+    }
+
+    // If no blockers, prompt admin to navigate to Liquid Tanks Master to execute atomic reversal
+    showConfirm({
+      title: isAr ? `فحص التانك #${tankItem.tankNumber || tankItem.lotNumber}` : `Tank #${tankItem.tankNumber || tankItem.lotNumber} Check`,
+      message: isAr
+        ? `هذا التانك خالٍ من أي استهلاك في المنتج التام (0 لتر مسحوب). لإلغائه بالكامل واسترجاع خامات التحضير لمخزن الصرف، هل تريد الانتقال الآن إلى شاشة تانكات الخلط (Liquid Tanks Master)؟`
+        : `This tank has 0 downstream pallet consumptions. To execute full atomic reversal and restore raw materials back to warehouse stock, would you like to navigate to Liquid Tanks Master now?`,
+      confirmLabel: isAr ? 'الانتقال لتانكات الخلط' : 'Go to Liquid Tanks',
+      cancelLabel: isAr ? 'إلغاء' : 'Cancel',
+      variant: 'info',
+    }).then((confirmed) => {
+      if (confirmed) {
+        window.dispatchEvent(new CustomEvent('app_navigate_tab', { detail: 'liquid_tanks' }));
+      }
+    });
   };
 
   if (loading) {
@@ -2248,8 +2377,28 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
                     )}
                   </div>
 
-                  {/* Admin Force-Retire Action */}
-                  {canAdminOverrideTanks && (
+                  {/* Admin Actions */}
+                  {isGeneralAdmin ? (
+                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleAdminActionOnFloorTank(tank)}
+                        className="text-[11px] font-bold text-purple-700 hover:text-purple-900 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg cursor-pointer flex items-center gap-1.5 transition shadow-2xs"
+                        title={isAr ? 'فحص الارتباطات المحاسبية وإلغاء التانك' : 'Audit Downstream Dependencies & Reversal'}
+                      >
+                        <ShieldAlert className="h-3.5 w-3.5 text-purple-600" />
+                        <span>{isAr ? 'إلغاء / فحص الارتباطات' : 'Audit / Reversal'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRetireTank(tank)}
+                        className="text-[10px] font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer flex items-center gap-1"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        <span>{isAr ? 'استبعاد يدوياً' : 'Retire'}</span>
+                      </button>
+                    </div>
+                  ) : canAdminOverrideTanks ? (
                     <div className="pt-2 border-t border-slate-100 flex justify-end">
                       <button
                         type="button"
@@ -2260,7 +2409,7 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
                         <span>{isAr ? 'استبعاد التانك يدوياً (Admin)' : 'Retire Tank (Admin)'}</span>
                       </button>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               );
             })}
@@ -3140,6 +3289,122 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
           </div>
         );
       })()}
+
+      {/* ========================================================================= */}
+      {/* 6. GENERAL ADMIN INTERLINKED TANK DEPENDENCY MODAL (Phase 2)              */}
+      {/* ========================================================================= */}
+      {adminDependencyModal.open && adminDependencyModal.tank && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border-2 border-rose-400 space-y-4 text-slate-800">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-2xl">
+                  <ShieldAlert className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
+                    {isAr ? 'إجراء محظور - وجود حركات لاحقة مرتبطة بالتانك' : 'Action Blocked - Downstream Dependencies'}
+                  </h3>
+                  <span className="text-[11px] text-rose-600 font-bold">
+                    {isAr ? 'قاعدة الأسبقية الصارمة (Strict Dependency Blocker - LIFO)' : 'Strict LIFO Cascade Policy Active'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, tank: null, blockers: [], details: '' })}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed font-medium">
+              {adminDependencyModal.details}
+            </p>
+
+            {/* Visual Cascade Tree */}
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+              <div className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
+                <GitBranch className="h-4 w-4 text-indigo-600" />
+                <span>{isAr ? 'مسار الارتباط المخزني التابع:' : 'Downstream Dependency Chain:'}</span>
+              </div>
+
+              <div className="space-y-1.5 text-xs font-mono">
+                {/* Tank Level */}
+                <div className="flex items-center gap-2 p-2 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                  <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px] font-bold">
+                    {isAr ? 'تانك تحضير' : 'Tank'}
+                  </span>
+                  <span className="font-bold text-slate-900">#{adminDependencyModal.tank.tankNumber || adminDependencyModal.tank.lotNumber}</span>
+                  <span className="text-slate-500 font-sans">({currentMaterial?.nameAr || currentMaterial?.code})</span>
+                </div>
+
+                {/* Vessel Level */}
+                <div className="flex items-center gap-2 pl-3 rtl:pr-3 text-slate-400">
+                  <CornerDownRight className="h-3.5 w-3.5" />
+                  <div className="flex-1 flex items-center gap-2 p-2 bg-white rounded-xl border border-slate-200 text-slate-600 shadow-2xs">
+                    <span className="px-1.5 py-0.5 bg-cyan-50 text-cyan-800 border border-cyan-200 rounded text-[10px] font-bold font-sans">
+                      {isAr ? 'خزان صالة الإنتاج' : 'Floor Storage Pool'}
+                    </span>
+                    <span className="font-sans text-xs font-bold text-slate-800">{currentMaterial?.nameAr || currentMaterial?.code}</span>
+                  </div>
+                </div>
+
+                {/* Pallet Blocker Rows */}
+                {(adminDependencyModal.blockers || []).map((b, bIdx) => (
+                  <div key={bIdx} className="flex items-center gap-2 pl-6 rtl:pr-6 text-rose-500">
+                    <CornerDownRight className="h-3.5 w-3.5" />
+                    <div className="flex-1 p-2.5 bg-rose-50 rounded-xl border border-rose-200 text-rose-950 font-sans text-xs shadow-2xs">
+                      <div className="font-bold flex items-center justify-between">
+                        <span>{isAr ? b.titleAr : b.titleEn}</span>
+                        {b.consumedLiters > 0 && (
+                          <span className="font-mono text-[10px] bg-rose-200/80 px-1.5 py-0.5 rounded border border-rose-300 font-bold text-rose-900">
+                            {b.consumedLiters.toLocaleString()} L
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-rose-700 mt-1 leading-relaxed">
+                        {isAr ? b.messageAr : b.messageEn}
+                      </div>
+                      {b.actionType && (
+                        <div className="mt-2 pt-1.5 border-t border-rose-200 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('app_navigate_tab', {
+                                detail: {
+                                  tab: 'work_orders',
+                                  orderNumber: b.orderNumber,
+                                }
+                              }));
+                              setAdminDependencyModal({ open: false, tank: null, blockers: [], details: '' });
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-900 border border-rose-300 rounded-lg text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>{isAr ? b.actionTextAr : b.actionTextEn}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, tank: null, blockers: [], details: '' })}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'فهمت، إغلاق النافذة' : 'Understood, Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
