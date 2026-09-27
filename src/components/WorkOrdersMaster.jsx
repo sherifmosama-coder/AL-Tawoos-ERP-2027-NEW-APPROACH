@@ -382,6 +382,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   const [imagePreviewModal, setImagePreviewModal] = useState(null); // High-res image preview lightbox popover
   const [copiedId, setCopiedId] = useState(null); // Feedback for copied record IDs
   const [activeNotePopoverId, setActiveNotePopoverId] = useState(null); // Interactive modern tooltip for order notes
+  const [expandedNotesOrders, setExpandedNotesOrders] = useState({}); // Collapsible inline notes map for execution cards
   const [pinnedMatrixTooltip, setPinnedMatrixTooltip] = useState(null); // Pinned tooltip in rework matrix
   const [hoveredMatrixTooltip, setHoveredMatrixTooltip] = useState(null); // Hovered tooltip in rework matrix
   const [completePromptModal, setCompletePromptModal] = useState({ open: false, order: null, actionTime: '' }); // 3-option complete prompt
@@ -7638,6 +7639,88 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
               const currentSeq = order.importanceRank || (orderIdx + 1);
 
+              // Priority Badge Info
+              const priorityInfo = (() => {
+                switch (order.priority) {
+                  case 'urgent':
+                    return {
+                      label: isAr ? 'أولوية: مستعجل' : 'Priority: Urgent',
+                      cls: 'bg-rose-50 text-rose-800 border-rose-200',
+                      icon: <Flame className="h-3 w-3 text-rose-600 shrink-0" />
+                    };
+                  case 'important':
+                    return {
+                      label: isAr ? 'أولوية: مهم' : 'Priority: Important',
+                      cls: 'bg-amber-50 text-amber-900 border-amber-200',
+                      icon: <Star className="h-3 w-3 text-amber-600 shrink-0" />
+                    };
+                  case 'prep_and_run':
+                    return {
+                      label: isAr ? 'تجهيز وتشغيل' : 'Prep & Run',
+                      cls: 'bg-indigo-50 text-indigo-900 border-indigo-200',
+                      icon: <Wrench className="h-3 w-3 text-indigo-600 shrink-0" />
+                    };
+                  case 'prep_only':
+                    return {
+                      label: isAr ? 'تجهيز فقط' : 'Prep Only',
+                      cls: 'bg-slate-100 text-slate-800 border-slate-200',
+                      icon: <Clock className="h-3 w-3 text-slate-500 shrink-0" />
+                    };
+                  case 'today':
+                  default:
+                    return {
+                      label: isAr ? 'خلال اليوم' : 'Today',
+                      cls: 'bg-blue-50 text-blue-800 border-blue-200',
+                      icon: <Calendar className="h-3 w-3 text-blue-600 shrink-0" />
+                    };
+                }
+              })();
+
+              // Quantity Exactness Badge Info
+              const exactnessInfo = (() => {
+                switch (order.qtyExactness) {
+                  case 'exact':
+                    return {
+                      label: isAr ? 'مطابقة: بالظبط' : 'Exact Match',
+                      cls: 'bg-purple-50 text-purple-900 border-purple-200',
+                      icon: <Target className="h-3 w-3 text-purple-600 shrink-0" />
+                    };
+                  case 'at_least':
+                    return {
+                      label: isAr ? 'مطابقة: لا يقل عن' : 'At Least',
+                      cls: 'bg-teal-50 text-teal-900 border-teal-200',
+                      icon: <ArrowUpRight className="h-3 w-3 text-teal-600 shrink-0" />
+                    };
+                  case 'at_most':
+                    return {
+                      label: isAr ? 'مطابقة: لا يزيد عن' : 'At Most',
+                      cls: 'bg-orange-50 text-orange-900 border-orange-200',
+                      icon: <ArrowDownRight className="h-3 w-3 text-orange-600 shrink-0" />
+                    };
+                  case 'as_per_materials':
+                    return {
+                      label: isAr ? 'حسب الخامات' : 'Per Materials',
+                      cls: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+                      icon: <Boxes className="h-3 w-3 text-emerald-600 shrink-0" />
+                    };
+                  case 'as_per_time':
+                    return {
+                      label: isAr ? 'حسب الوقت' : 'Per Time',
+                      cls: 'bg-cyan-50 text-cyan-900 border-cyan-200',
+                      icon: <Clock className="h-3 w-3 text-cyan-600 shrink-0" />
+                    };
+                  case 'approximate':
+                  default:
+                    return {
+                      label: isAr ? 'مطابقة: تقريبي' : 'Approximate',
+                      cls: 'bg-slate-100 text-slate-700 border-slate-200',
+                      icon: <Scale className="h-3 w-3 text-slate-500 shrink-0" />
+                    };
+                }
+              })();
+
+              const isNotesExpanded = !!expandedNotesOrders[order.id];
+
               return (
                 <div
                   key={order.id}
@@ -7684,7 +7767,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                     )}
 
                     {/* Order Execution Header */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                    <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                      {/* Header Start: Identity, Thumbnail & Tags */}
                       <div className="flex items-center gap-3 min-w-0">
                         {/* High-Contrast Floating Sequence Badge */}
                         <span
@@ -7731,50 +7815,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                             )}
                           </div>
 
-                          {/* Pulsing Notes Popover Icon + Order Code + Feasibility Pill + Rework Return Info */}
+                          {/* Order Code + Feasibility Pill + Rework Return Info */}
                           <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                            {/* Pulsing Notes Icon before order number */}
-                            {order.notes && (
-                              <div className="relative inline-block">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setActiveNotePopoverId(activeNotePopoverId === order.id ? null : order.id);
-                                  }}
-                                  className="p-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 shadow-2xs transition cursor-pointer flex items-center justify-center animate-pulse"
-                                  title={isAr ? 'ملاحظة وتوجيهات التشغيل (انقر للعرض)' : 'Order notes (click to view)'}
-                                >
-                                  <MessageSquareText className="h-3.5 w-3.5 text-amber-700" />
-                                </button>
-
-                                {/* Modern Interactive Tooltip Popover */}
-                                {activeNotePopoverId === order.id && (
-                                  <div
-                                    className="absolute start-0 top-full mt-1.5 z-50 w-72 bg-slate-900 text-white rounded-2xl p-3 shadow-2xl border border-slate-700 animate-in fade-in zoom-in-95 duration-150 text-xs select-text"
-                                    onClick={(e) => e.stopPropagation()}
-                                  >
-                                    <div className="flex items-center justify-between border-b border-slate-700 pb-1.5 mb-1.5">
-                                      <span className="font-extrabold text-amber-400 text-[11px] flex items-center gap-1">
-                                        <MessageSquareText className="h-3.5 w-3.5" />
-                                        <span>{isAr ? 'ملاحظات وتوجيهات التشغيل' : 'Production Notes'}</span>
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() => setActiveNotePopoverId(null)}
-                                        className="p-0.5 text-slate-400 hover:text-white rounded transition cursor-pointer"
-                                      >
-                                        <X className="h-3.5 w-3.5" />
-                                      </button>
-                                    </div>
-                                    <p className="text-[11px] text-slate-200 leading-relaxed font-medium whitespace-pre-wrap">
-                                      {order.notes}
-                                    </p>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-
                             <span className="font-mono text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
                               أمر #{order.orderNumber}
                             </span>
@@ -7812,8 +7854,75 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                         </div>
                       </div>
 
-                      {/* Header End Side: Circular Donut Chart & Progress Percentage */}
-                      <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
+                      {/* Header Middle: "View Notes" Badge */}
+                      {order.notes && (
+                        <div className="flex items-center justify-start xl:justify-center shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setExpandedNotesOrders(prev => ({ ...prev, [order.id]: !prev[order.id] }))}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition shadow-2xs cursor-pointer ${
+                              isNotesExpanded
+                                ? 'bg-amber-600 text-white shadow-xs'
+                                : 'bg-amber-100/90 hover:bg-amber-200 text-amber-900 border border-amber-300'
+                            }`}
+                            title={isAr ? 'عرض أو إخفاء ملاحظات وتوجيهات التشغيل' : 'Toggle batch notes'}
+                          >
+                            <FileText className="h-3.5 w-3.5" />
+                            <span>{isAr ? 'عرض الملاحظات' : 'View Notes'}</span>
+                            <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${isNotesExpanded ? 'rotate-180' : ''}`} />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Header End Side: Plan Rules Chips + Quantity Chips + Circular Donut Chart */}
+                      <div className="flex flex-wrap items-center gap-2.5 shrink-0 self-start xl:self-center">
+                        {/* Plan Rules Chips Column (Priority & Exactness) */}
+                        <div className="flex flex-col justify-between h-14 shrink-0">
+                          {/* Upper chip: Priority */}
+                          <div
+                            className={`h-[26px] px-2.5 border rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-2xs whitespace-nowrap ${priorityInfo.cls}`}
+                            title={isAr ? `أولوية الخطة: ${priorityInfo.label}` : `Plan Priority: ${priorityInfo.label}`}
+                          >
+                            {priorityInfo.icon}
+                            <span>{priorityInfo.label}</span>
+                          </div>
+
+                          {/* Lower chip: Quantity Exactness */}
+                          <div
+                            className={`h-[26px] px-2.5 border rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-2xs whitespace-nowrap ${exactnessInfo.cls}`}
+                            title={isAr ? `معيار مطابقة الكمية: ${exactnessInfo.label}` : `Quantity Exactness: ${exactnessInfo.label}`}
+                          >
+                            {exactnessInfo.icon}
+                            <span>{exactnessInfo.label}</span>
+                          </div>
+                        </div>
+
+                        {/* Quantity Chips Column (Complete Qty & Target Qty) */}
+                        <div className="flex flex-col justify-between h-14 shrink-0">
+                          {/* Upper chip: Complete qty */}
+                          <div className="h-[26px] px-2.5 bg-emerald-50 text-emerald-900 border border-emerald-200 rounded-lg text-[10px] font-bold flex items-center justify-between gap-2 shadow-2xs whitespace-nowrap">
+                            <span className="text-emerald-700/80 font-medium">{isAr ? 'المنجز:' : 'Complete:'}</span>
+                            <div className="flex items-baseline gap-1">
+                              <span className="font-mono font-extrabold text-emerald-950">
+                                {roundedActualLarge.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                              </span>
+                              <span className="text-[9px] text-emerald-700 font-semibold">{largeUnit}</span>
+                            </div>
+                          </div>
+
+                          {/* Lower chip: Target qty */}
+                          <div className="h-[26px] px-2.5 bg-slate-100 text-slate-800 border border-slate-200 rounded-lg text-[10px] font-bold flex items-center justify-between gap-2 shadow-2xs whitespace-nowrap">
+                            <span className="text-slate-500 font-medium">{isAr ? 'المستهدف:' : 'Target:'}</span>
+                            <div className="flex items-baseline gap-1">
+                              <span className="font-mono font-extrabold text-slate-900">
+                                {roundedPlannedLarge.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                              </span>
+                              <span className="text-[9px] text-slate-500 font-semibold">{largeUnit}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Circular Donut Chart with % in Center */}
                         <div className="relative w-14 h-14 shrink-0 flex items-center justify-center">
                           <svg className="w-14 h-14 -rotate-90 transform" viewBox="0 0 48 48">
                             <circle
@@ -7837,28 +7946,38 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                               className="transition-all duration-500 ease-out"
                             />
                           </svg>
-                          {/* Center Content: Numerator over Denominator */}
-                          <div className="absolute inset-0 flex flex-col items-center justify-center text-center select-none pointer-events-none px-1">
-                            <span className={`font-mono font-black text-[10px] leading-tight ${progressColorClass}`}>
-                              {roundedActualLarge.toLocaleString(undefined, { maximumFractionDigits: 1 })}
-                            </span>
-                            <span className="w-4 h-[1px] bg-slate-300 my-0.5" />
-                            <span className="font-mono font-bold text-[9px] text-slate-500 leading-tight">
-                              {roundedPlannedLarge.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                          {/* Center Content: % Completed */}
+                          <div className="absolute inset-0 flex items-center justify-center select-none pointer-events-none">
+                            <span className={`font-mono font-black text-xs leading-none ${progressColorClass}`}>
+                              {completionPct.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}%
                             </span>
                           </div>
                         </div>
-
-                        <div className="flex flex-col">
-                          <span className={`font-mono font-black text-sm leading-none ${progressColorClass}`}>
-                            {completionPct.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 1 })}%
-                          </span>
-                          <span className="text-[10px] font-bold text-slate-400 mt-1">
-                            {largeUnit}
-                          </span>
-                        </div>
                       </div>
                     </div>
+
+                    {/* Inline Expanded Notes Section (Full Width, Untruncated) */}
+                    {order.notes && isNotesExpanded && (
+                      <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-2xl shadow-2xs space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150 select-text">
+                        <div className="flex items-center justify-between border-b border-amber-200/60 pb-1">
+                          <span className="text-[11px] font-extrabold text-amber-900 flex items-center gap-1.5">
+                            <FileText className="h-3.5 w-3.5 text-amber-700" />
+                            <span>{isAr ? 'ملاحظات وتوجيهات أمر التشغيل' : 'Production Batch Notes & Instructions'}</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedNotesOrders(prev => ({ ...prev, [order.id]: false }))}
+                            className="text-amber-700 hover:text-amber-900 p-0.5 rounded transition cursor-pointer"
+                            title={isAr ? 'إغلاق الملاحظات' : 'Close notes'}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <p className="text-xs text-amber-950 font-medium leading-relaxed whitespace-pre-wrap">
+                          {order.notes}
+                        </p>
+                      </div>
+                    )}
 
                     {/* Split Control Bar */}
                     <div className="p-3 bg-linear-to-r from-slate-50 via-indigo-50/20 to-slate-50 rounded-2xl border border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-2xs">
@@ -7965,7 +8084,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                             <Users className="h-3.5 w-3.5 text-indigo-600" />
                             <span>{isAr ? 'طاقم العمل:' : 'Crew:'}</span>
                           </span>
-                          {!isOrderLocked(order) && (
+                          {!isOrderLocked(order) && order.status !== 'completed' && (
                             <button
                               type="button"
                               onClick={() => handleUpdateCrewCount(order, -1)}
@@ -7979,7 +8098,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                           <span className="font-mono font-black text-xs px-1 text-indigo-950 min-w-5 text-center">
                             {getOrderCrewCount(order)}
                           </span>
-                          {!isOrderLocked(order) && (
+                          {!isOrderLocked(order) && order.status !== 'completed' && (
                             <button
                               type="button"
                               onClick={() => handleUpdateCrewCount(order, 1)}
