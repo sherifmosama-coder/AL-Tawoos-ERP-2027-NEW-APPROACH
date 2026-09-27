@@ -41,8 +41,10 @@ import SearchableSelect from './SearchableSelect';
 import VariantComboBox from './VariantComboBox';
 import VariantIdentifierChip from './VariantIdentifierChip';
 import { formatVariantLabel, resolveItemAllowFractions } from '../utils/stockResolver';
+import { useNotification } from '../context/NotificationContext';
 
 export default function POCreation({ currentUser = {}, permissions = null }) {
+  const { toast, showAlert, showConfirm } = useNotification();
   const canViewPrices = permissions ? permissions.sensitive?.canViewPrices !== false : true;
   const canViewTotals = permissions ? permissions.sensitive?.canViewTotals !== false : true;
   const { i18n } = useTranslation();
@@ -56,6 +58,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
   const [orders, setOrders] = useState([]);
   const [itemsMaster, setItemsMaster] = useState([]);
   const [suppliersMaster, setSuppliersMaster] = useState([]);
+  const [receiptsList, setReceiptsList] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Filter & Modal States
@@ -136,10 +139,15 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
       setSuppliersMaster(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
+    const unsubReceipts = onSnapshot(collection(db, 'goods_receipts'), (snap) => {
+      setReceiptsList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
     return () => {
       unsubOrders();
       unsubItems();
       unsubSuppliers();
+      unsubReceipts();
     };
   }, []);
 
@@ -568,8 +576,19 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
     return false;
   };
 
+  // Downstream Dependency: Check active non-reversed Goods Receipts (GRNs)
+  const getActiveGrnsForPo = (poId) => {
+    if (!poId) return [];
+    return receiptsList.filter(
+      (r) => r.poId === poId && r.status !== 'cancelled' && r.status !== 'reversed' && !r.isReversed
+    );
+  };
+
   const canCancelPo = (po) => {
     if (po.status === 'delivered' || po.status === 'cancelled') return false;
+    const hasActiveGrns = getActiveGrnsForPo(po.id).length > 0;
+    const hasReceivedQuantities = (po.lines || []).some((l) => Number(l.receivedSmallUnits || 0) > 0);
+    if (hasActiveGrns || hasReceivedQuantities) return false;
     return isPurchasingAdmin || isGeneralAdmin || (po.status === 'draft' && po.createdBy === currentUserName);
   };
 
@@ -798,63 +817,119 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
 
   // Soft Deletion
   const handleCancelPo = async (po) => {
-    if (!canCancelPo(po)) {
-      alert(isAr ? 'لا يمكن إلغاء أمر الشراء في حالته الحالية.' : 'Cannot cancel this PO.');
+    // Check for active downstream Goods Receipts (GRNs)
+    const activeGrns = getActiveGrnsForPo(po.id);
+    const hasReceivedQuantities = (po.lines || []).some((l) => Number(l.receivedSmallUnits || 0) > 0);
+
+    if (activeGrns.length > 0 || hasReceivedQuantities) {
+      const grnIds = activeGrns.map((g) => g.id).join(', ') || (isAr ? 'أذون استلام مسجلة' : 'Recorded Goods Receipts');
+      showAlert({
+        title: isAr ? 'تعذر إلغاء أمر الشراء لوجود أذون استلام نشطة' : 'Cannot Cancel PO: Active Goods Receipts Found',
+        message: isAr
+          ? `لا يمكن إلغاء أمر الشراء (${po.id}) لوجود (${activeGrns.length}) إذن استلام بضاعة نشط مرتبط به (${grnIds}). وفق مبدأ الأسبقية الصارمة (LIFO)، يجب إلغاء أو عكس أذون الاستلام أولاً من شاشة أذون الاستلام.`
+          : `Cannot cancel Purchase Order (${po.id}) because there are (${activeGrns.length}) active Goods Receipt(s) linked to it (${grnIds}). Following strict LIFO policy, you must first reverse the Goods Receipts in the Goods Receipts screen.`,
+        variant: 'danger',
+      });
       return;
     }
-    const confirmMsg = isAr 
-      ? `هل أنت متأكد من إلغاء أمر الشراء (${po.id})؟ سيتم تغيير حالته إلى "ملغي" ولن يتم توريده.` 
-      : `Are you sure you want to cancel PO (${po.id})?`;
 
-    if (window.confirm(confirmMsg)) {
-      setIsSavingPo(true);
-      try {
-        const currentAudit = po.auditTrail || [];
-        const cancelEntry = {
-          version: po.version || '1.0',
-          action: 'cancelled',
+    if (!canCancelPo(po)) {
+      showAlert({
+        title: isAr ? 'تعذر الإلغاء' : 'Cannot Cancel',
+        message: isAr ? 'لا يمكن إلغاء أمر الشراء في حالته الحالية.' : 'Cannot cancel this PO in its current state.',
+        variant: 'warning',
+      });
+      return;
+    }
+
+    const confirmed = await showConfirm({
+      title: isAr ? 'تأكيد إلغاء أمر الشراء' : 'Confirm Cancel PO',
+      message: isAr 
+        ? `هل أنت متأكد من إلغاء أمر الشراء (${po.id})؟ سيتم تحويل حالته إلى "ملغي" مع حفظه في السجل التاريخي.` 
+        : `Are you sure you want to cancel PO (${po.id})? It will be marked as Cancelled in the audit trail.`,
+      confirmText: isAr ? 'إلغاء أمر الشراء' : 'Cancel PO',
+      cancelText: isAr ? 'تراجع' : 'Keep Active',
+      variant: 'danger',
+    });
+
+    if (!confirmed) return;
+
+    setIsSavingPo(true);
+    try {
+      const currentAudit = po.auditTrail || [];
+      const cancelEntry = {
+        version: po.version || '1.0',
+        action: 'cancelled',
+        status: 'cancelled',
+        performedBy: currentUserName,
+        timestamp: new Date().toISOString(),
+        noteAr: 'تم إلغاء أمر الشراء (Soft Cancel)',
+        noteEn: 'PO Cancelled (Soft Cancel)',
+      };
+
+      await setDoc(
+        doc(db, 'purchase_orders', po.id),
+        {
           status: 'cancelled',
-          performedBy: currentUserName,
-          timestamp: new Date().toISOString(),
-          noteAr: 'تم إلغاء أمر الشراء (Soft Cancel)',
-          noteEn: 'PO Cancelled (Soft Cancel)',
-        };
-
-        await setDoc(
-          doc(db, 'purchase_orders', po.id),
-          {
-            status: 'cancelled',
-            cancelledBy: currentUserName,
-            cancelledAt: new Date().toISOString(),
-            auditTrail: [...currentAudit, cancelEntry],
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      } catch (error) {
-        console.error('Error cancelling PO:', error);
-      } finally {
-        setIsSavingPo(false);
-      }
+          cancelledBy: currentUserName,
+          cancelledAt: new Date().toISOString(),
+          auditTrail: [...currentAudit, cancelEntry],
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      toast.success(
+        isAr ? `تم إلغاء أمر الشراء (${po.id}) بنجاح.` : `PO (${po.id}) cancelled successfully.`
+      );
+    } catch (error) {
+      console.error('Error cancelling PO:', error);
+      toast.error(isAr ? 'حدث خطأ أثناء إلغاء أمر الشراء.' : 'Error cancelling PO.');
+    } finally {
+      setIsSavingPo(false);
     }
   };
 
   // Hard Deletion
   const handleHardDeletePo = async (poId) => {
     if (!isGeneralAdmin) {
-      alert(isAr ? 'الحذف النهائي متاح فقط للمسؤول العام (General Admin).' : 'Permanent deletion requires General Admin authority.');
+      showAlert({
+        title: isAr ? 'صلاحية غير كافية' : 'Permission Denied',
+        message: isAr ? 'الحذف النهائي متاح فقط للمسؤول العام (General Admin).' : 'Permanent deletion requires General Admin authority.',
+        variant: 'warning',
+      });
       return;
     }
 
-    const confirmMsg = isAr 
-      ? `⚠️ تحذير: هل أنت متأكد من الحذف النهائي لأمر الشراء (${poId}) من قاعدة البيانات السحابية؟ لا يمكن التراجع عن هذا الإجراء.` 
-      : `⚠️ Warning: Permanently delete PO (${poId}) from the cloud database?`;
+    const activeGrns = getActiveGrnsForPo(poId);
+    if (activeGrns.length > 0) {
+      const grnIds = activeGrns.map((g) => g.id).join(', ');
+      showAlert({
+        title: isAr ? 'تعذر الحذف النهائي' : 'Cannot Delete PO',
+        message: isAr
+          ? `لا يمكن حذف أمر الشراء (${poId}) لوجود (${activeGrns.length}) إذن استلام مرتبط به (${grnIds}). يرجى إلغاء أذون الاستلام أولاً.`
+          : `Cannot delete PO (${poId}) because active Goods Receipts (${grnIds}) are attached to it. Please reverse them first.`,
+        variant: 'danger',
+      });
+      return;
+    }
 
-    if (window.confirm(confirmMsg)) {
+    const confirmed = await showConfirm({
+      title: isAr ? 'تحذير: الحذف النهائي لأمر الشراء' : 'Permanent Deletion Warning',
+      message: isAr 
+        ? `⚠️ تحذير: هل أنت متأكد من الحذف النهائي لأمر الشراء (${poId}) من قاعدة البيانات السحابية؟ لا يمكن التراجع عن هذا الإجراء.` 
+        : `⚠️ Warning: Permanently delete PO (${poId}) from the cloud database? This cannot be undone.`,
+      confirmText: isAr ? 'حذف نهائي' : 'Delete Permanently',
+      cancelText: isAr ? 'إلغاء' : 'Cancel',
+      variant: 'danger',
+    });
+
+    if (confirmed) {
       try {
         await deleteDoc(doc(db, 'purchase_orders', poId));
+        toast.success(isAr ? `تم حذف أمر الشراء (${poId}) نهائياً.` : `PO (${poId}) permanently deleted.`);
       } catch (error) {
         console.error('Error deleting PO:', error);
+        toast.error(isAr ? 'حدث خطأ أثناء حذف أمر الشراء.' : 'Error deleting PO.');
       }
     }
   };
@@ -1079,6 +1154,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
                 const isApproved = po.status === 'approved' || po.status === 'partially_delivered' || po.status === 'delivered';
                 const canEdit = canEditPo(po);
                 const canCancel = canCancelPo(po);
+                const hasActiveGrns = getActiveGrnsForPo(po.id).length > 0 || (po.lines || []).some((l) => Number(l.receivedSmallUnits || 0) > 0);
 
                 return (
                   <tr key={po.id} className={`transition ${po.status === 'cancelled' ? 'bg-slate-50/60 opacity-75' : 'hover:bg-slate-50/70'}`}>
@@ -1230,7 +1306,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
                         </button>
 
                         {/* Soft Deletion */}
-                        {canCancel && (
+                        {canCancel ? (
                           <button
                             onClick={() => handleCancelPo(po)}
                             className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition cursor-pointer"
@@ -1238,7 +1314,15 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
                           >
                             <Ban className="h-4 w-4" />
                           </button>
-                        )}
+                        ) : hasActiveGrns && po.status !== 'cancelled' ? (
+                          <button
+                            onClick={() => handleCancelPo(po)}
+                            className="p-1.5 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                            title={isAr ? 'تعذر الإلغاء: توجد أذون استلام نشطة مرتبطة بأمر الشراء' : 'Cannot cancel: Active Goods Receipts linked'}
+                          >
+                            <Ban className="h-4 w-4" />
+                          </button>
+                        ) : null}
 
                         {/* Hard Deletion */}
                         {isGeneralAdmin && (
