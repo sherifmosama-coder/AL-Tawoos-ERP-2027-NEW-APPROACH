@@ -82,7 +82,10 @@ import {
   PackageCheck,
   RotateCcw,
   Split,
-  Zap
+  Zap,
+  GitBranch,
+  CornerDownRight,
+  ExternalLink
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
@@ -246,6 +249,48 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   const [intermediateRecipes, setIntermediateRecipes] = useState([]);
   const [tankOverridePallet, setTankOverridePallet] = useState(null);
   const [tankOverrideInput, setTankOverrideInput] = useState('');
+
+  // --- GENERAL ADMIN INTERLINKED REVERSALS & EDITING STATE (Phase 1) ---
+  const [adminDependencyModal, setAdminDependencyModal] = useState({
+    open: false,
+    pallet: null,
+    order: null,
+    blockers: [],
+    details: '',
+  });
+
+  const [adminReversalModal, setAdminReversalModal] = useState({
+    open: false,
+    pallet: null,
+    order: null,
+    palletIndex: -1,
+    reason: '',
+    isSubmitting: false,
+  });
+
+  const [adminTransferGuidanceModal, setAdminTransferGuidanceModal] = useState({
+    open: false,
+    shortComponents: [],
+    order: null,
+    pallet: null,
+    requiredCartons: 0,
+  });
+
+  const [adminOrderStatusPromptModal, setAdminOrderStatusPromptModal] = useState({
+    open: false,
+    order: null,
+    newCompletionPct: 0,
+    onChoice: null,
+  });
+
+  const [isAdminPalletAction, setIsAdminPalletAction] = useState(false);
+  const [adminPalletReason, setAdminPalletReason] = useState('');
+  const [adminPalletActionsMenuModal, setAdminPalletActionsMenuModal] = useState({
+    open: false,
+    order: null,
+    pallet: null,
+    pIdx: -1,
+  });
 
   // Staged Floor Inventory & Transfer Modals
   const [showTransferFgModal, setShowTransferFgModal] = useState(false);
@@ -4510,21 +4555,376 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     }));
   };
 
-  const handleOpenEditPallet = (order, pIdx) => {
-    if (isOrderLocked(order)) {
+  // ----------------------------------------------------
+  // GENERAL ADMIN INTERLINKED PALLET REVERSALS & DEPENDENCY CHECKER (Phase 1)
+  // ----------------------------------------------------
+  const checkPalletDownstreamDependencies = (order, pallet) => {
+    const blockers = [];
+    const pId = pallet.palletId || `PAL-${order.orderNumber}-P${String(pallet.palletNumber).padStart(2, '0')}`;
+
+    // 1. Direct status check on pallet
+    const isTransferredToFG = pallet.stagingStatus === 'transferred_to_fg' || pallet.status === 'transferred_to_fg';
+
+    // 2. Check staged_floor_pallets record
+    const stagedP = (stagedFloorPallets || []).find((sp) => sp.id === pId || sp.palletId === pId);
+    const isStagedTransferred = stagedP?.stagingStatus === 'transferred_to_fg' || stagedP?.status === 'transferred_to_fg';
+
+    // 3. Check stock_transfers collection for finished goods transfer vouchers containing this pallet
+    const linkedTransfers = (transfers || []).filter((t) => {
+      if (t.status === 'cancelled' || t.status === 'reversed') return false;
+      const hasLine = (t.lines || []).some(
+        (l) => l.palletId === pId || (String(l.workOrderId) === String(order.id) && Number(l.palletNumber) === Number(pallet.palletNumber))
+      );
+      return hasLine;
+    });
+
+    linkedTransfers.forEach((trn) => {
+      if (trn.status === 'completed') {
+        blockers.push({
+          type: 'fg_inward_completed',
+          titleAr: 'مستلم بمستودع المنتجات التامة',
+          titleEn: 'Received in Finished Goods Warehouse',
+          voucherId: trn.id,
+          date: trn.transferDate,
+          targetWarehouse: trn.targetWarehouse,
+          messageAr: `تم ترحيل واستلام هذه الباليتة رسمياً في مستودع المنتجات التامة بموجب إذن الترحيل (${trn.id}).`,
+          messageEn: `This pallet was received in FG warehouse via transfer voucher (${trn.id}).`,
+          actionType: 'navigate_fg_inward',
+          actionTextAr: 'الانتقال لشاشة استلام المنتج التام لإلغاء الاستلام أولاً',
+          actionTextEn: 'Go to FG Inward to reverse receipt first',
+        });
+      } else if (trn.status === 'in_transit' || trn.status === 'pending_acceptance') {
+        blockers.push({
+          type: 'fg_transfer_pending',
+          titleAr: 'مدرج بإذن ترحيل قيد الانتظار',
+          titleEn: 'Pending FG Transfer Voucher',
+          voucherId: trn.id,
+          date: trn.transferDate,
+          messageAr: `الباليتة مدرجة في إذن ترحيل قيد الانتظار (${trn.id}). يجب حذف أو إلغاء إذن الترحيل أولاً.`,
+          messageEn: `Pallet is listed in pending transfer (${trn.id}). Cancel or delete voucher first.`,
+          actionType: 'navigate_transfers',
+          actionTextAr: 'الانتقال لشاشة التحويلات المخزنية',
+          actionTextEn: 'Go to Stock Transfers',
+        });
+      }
+    });
+
+    if ((isTransferredToFG || isStagedTransferred) && blockers.length === 0) {
+      blockers.push({
+        type: 'fg_flag_locked',
+        titleAr: 'محصورة بمستودع المنتجات التامة',
+        titleEn: 'Locked in FG Warehouse',
+        messageAr: 'تم تعيين حالة الباليتة بأنها مرحلة للمنتجات التامة. يرجى إلغاء الاستلام بمستودع المنتجات التامة لإعادتها للصالة.',
+        messageEn: 'Pallet is marked as transferred to FG.',
+        actionType: 'navigate_fg_inward',
+        actionTextAr: 'الانتقال لشاشة استلام المنتج التام',
+        actionTextEn: 'Go to FG Inward',
+      });
+    }
+
+    return {
+      hasBlockers: blockers.length > 0,
+      blockers,
+    };
+  };
+
+  const handleOpenAdminPalletMenu = (order, pallet, pIdx) => {
+    if (!isGeneralAdmin) {
+      alert(isAr ? 'هذا الإجراء محصور بالمسؤول العام للنظام فقط.' : 'This action is restricted to General Admin.');
+      return;
+    }
+    const { hasBlockers, blockers } = checkPalletDownstreamDependencies(order, pallet);
+    if (hasBlockers) {
+      setAdminDependencyModal({
+        open: true,
+        pallet,
+        order,
+        blockers,
+        details: isAr
+          ? 'وفقاً لقواعد سلامة البيانات والارتباط الشامل، لا يمكن إجراء تعديل أو إلغاء على الباليتة أثناء وجود حركات تابعة لها.'
+          : 'According to Strict Dependency Blocker rules, this pallet cannot be modified or reversed while downstream records exist.',
+      });
+      return;
+    }
+
+    setAdminPalletActionsMenuModal({
+      open: true,
+      order,
+      pallet,
+      pIdx,
+    });
+  };
+
+  const handleOpenAdminPalletEdit = (order, pallet, pIdx) => {
+    setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 });
+    const { hasBlockers, blockers } = checkPalletDownstreamDependencies(order, pallet);
+    if (hasBlockers) {
+      setAdminDependencyModal({
+        open: true,
+        pallet,
+        order,
+        blockers,
+        details: isAr
+          ? 'وفقاً لقواعد سلامة البيانات والارتباط الشامل، لا يمكن إجراء تعديل على الباليتة أثناء وجود حركات تابعة لها.'
+          : 'According to Strict Dependency Blocker rules, this pallet cannot be modified while downstream records exist.',
+      });
+      return;
+    }
+
+    setIsAdminPalletAction(true);
+    setAdminPalletReason('');
+    handleOpenEditPallet(order, pIdx, true);
+  };
+
+  const handleOpenAdminPalletReversal = (order, pallet, pIdx) => {
+    setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 });
+    const { hasBlockers, blockers } = checkPalletDownstreamDependencies(order, pallet);
+    if (hasBlockers) {
+      setAdminDependencyModal({
+        open: true,
+        pallet,
+        order,
+        blockers,
+        details: isAr
+          ? 'وفقاً لقواعد سلامة البيانات والارتباط الشامل، لا يمكن إلغاء الباليتة أثناء وجود حركات تابعة لها.'
+          : 'According to Strict Dependency Blocker rules, this pallet cannot be reversed while downstream records exist.',
+      });
+      return;
+    }
+
+    setAdminReversalModal({
+      open: true,
+      pallet,
+      order,
+      palletIndex: pIdx,
+      reason: '',
+      isSubmitting: false,
+    });
+  };
+
+  const handleExecuteAdminReversal = async () => {
+    const { order, pallet, palletIndex, reason } = adminReversalModal;
+    if (!reason || reason.trim().length < 5) {
+      alert(isAr ? 'يرجى كتابة سبب الإلغاء الإداري بوضوح (5 أحرف على الأقل).' : 'Please enter a valid justification reason (at least 5 characters).');
+      return;
+    }
+
+    setAdminReversalModal((prev) => ({ ...prev, isSubmitting: true }));
+    try {
+      const palletId = pallet.palletId || `PAL-${order.orderNumber}-P${String(pallet.palletNumber).padStart(2, '0')}`;
+      const transId = `TRANS-PAL-${palletId}`;
+      const nowIso = new Date().toISOString();
+
+      // 1. Fetch transformation doc if exists to discover exact intermediate allocations
+      let transData = null;
+      try {
+        const transSnap = await getDoc(doc(db, 'production_transformations', transId));
+        if (transSnap.exists()) {
+          transData = transSnap.data();
+        }
+      } catch (err) {
+        console.warn('Could not read transformation doc for reversal:', err);
+      }
+
+      // Collect all intermediate liquid tank allocations
+      const intermediateAllocations = [
+        ...(Array.isArray(pallet.intermediateLiquidTanks) ? pallet.intermediateLiquidTanks : []),
+        ...(Array.isArray(transData?.intermediateLiquidTanks) ? transData.intermediateLiquidTanks : []),
+        ...((Array.isArray(transData?.consumedComponents) ? transData.consumedComponents : []).flatMap((c) =>
+          Array.isArray(c.intermediateLiquidTanks) ? c.intermediateLiquidTanks : []
+        )),
+      ];
+
+      // 2. Reverse intermediate liquid consumption back to floor_liquid_vessels
+      try {
+        const vesselsSnap = await getDocs(collection(db, 'floor_liquid_vessels'));
+        for (const vDoc of vesselsSnap.docs) {
+          const vData = vDoc.data();
+          const vId = vDoc.id;
+          let modified = false;
+
+          let activeTanks = Array.isArray(vData.activeTanks) ? vData.activeTanks.map((t) => ({ ...t })) : [];
+          let historyTanks = Array.isArray(vData.historyTanks) ? vData.historyTanks.map((t) => ({ ...t })) : [];
+
+          const processTankReversal = (t) => {
+            const consumedEntries = Array.isArray(t.consumedByPallets)
+              ? t.consumedByPallets.filter(
+                  (cp) =>
+                    cp.palletId === palletId ||
+                    (String(cp.workOrderId) === String(order.id) && Number(cp.palletNumber) === Number(pallet.palletNumber))
+                )
+              : [];
+
+            let litersToRestore = consumedEntries.reduce((sum, cp) => sum + (Number(cp.consumedLiters) || 0), 0);
+
+            if (litersToRestore <= 0 && intermediateAllocations.length > 0) {
+              const tNumStr = String(t.tankNumber || '').replace('#', '').trim();
+              const tIdStr = String(t.tankId || '').trim();
+              const matchAlloc = intermediateAllocations.find((ia) => {
+                const iaNum = String(ia.tankNumber || '').replace('#', '').trim();
+                const iaId = String(ia.tankId || '').trim();
+                return (tNumStr && iaNum && tNumStr === iaNum) || (tIdStr && iaId && tIdStr === iaId);
+              });
+              if (matchAlloc && Number(matchAlloc.consumedLiters) > 0) {
+                litersToRestore = Number(matchAlloc.consumedLiters);
+              }
+            }
+
+            if (litersToRestore > 0) {
+              modified = true;
+              t.remainingVolume = Number(((Number(t.remainingVolume) || 0) + litersToRestore).toFixed(2));
+              if (t.status === 'exhausted' && t.remainingVolume > 0) {
+                t.status = 'active';
+              }
+              if (Array.isArray(t.consumedByPallets)) {
+                t.consumedByPallets = t.consumedByPallets.filter(
+                  (cp) =>
+                    cp.palletId !== palletId &&
+                    !(String(cp.workOrderId) === String(order.id) && Number(cp.palletNumber) === Number(pallet.palletNumber))
+                );
+              }
+            }
+          };
+
+          activeTanks.forEach(processTankReversal);
+          historyTanks.forEach(processTankReversal);
+
+          if (modified) {
+            const updatedPoolVolume = activeTanks.reduce((sum, t) => sum + (Number(t.remainingVolume) || 0), 0);
+            await updateDoc(doc(db, 'floor_liquid_vessels', vId), {
+              ...vData,
+              activeTanks,
+              historyTanks,
+              currentVolume: updatedPoolVolume,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+      } catch (vErr) {
+        console.error('Error reversing floor liquid vessels:', vErr);
+      }
+
+      // 3. Mark transformation as reversed in production_transformations (restores raw material stock in buildLiveStockMatrix)
+      await setDoc(doc(db, 'production_transformations', transId), {
+        status: 'reversed',
+        isReversed: true,
+        reversalReason: reason.trim(),
+        reversedBy: currentUserName,
+        reversedById: currentUser?.id || currentUser?.uid || '',
+        reversedAt: nowIso,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      // 4. Update staged_floor_pallets (mark reversed)
+      await setDoc(doc(db, 'staged_floor_pallets', palletId), {
+        status: 'reversed',
+        stagingStatus: 'reversed',
+        isReversed: true,
+        reversalReason: reason.trim(),
+        reversedBy: currentUserName,
+        reversedById: currentUser?.id || currentUser?.uid || '',
+        reversedAt: nowIso,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      // 5. Update order.pallets: filter out or mark reversed
+      const existingPallets = order.pallets || [];
+      const updatedPallets = existingPallets.filter((_, idx) => idx !== palletIndex);
+      const ratio = Number(order.packagingRatio) || 12;
+      const totalProducedSmall = updatedPallets.reduce((sum, p) => sum + (Number(p.qtySmall) || 0), 0);
+      const totalProducedLarge = Number(
+        updatedPallets.reduce((sum, p) => sum + (Number(p.qtyLarge) || (Number(p.qtySmall || 0) / ratio) || 0), 0).toFixed(2)
+      );
+      const plannedLarge = Number(order.plannedQtyLarge) || (Number(order.plannedQtySmall || 0) / ratio) || 1;
+      const completionPct = Math.min(100, Number(((totalProducedLarge / plannedLarge) * 100).toFixed(2)));
+
+      const wasCompleted = order.status === 'completed' || Number(order.completionPercentage || 0) >= 100;
+
+      // Close Reversal Modal
+      setAdminReversalModal({ open: false, pallet: null, order: null, palletIndex: -1, reason: '', isSubmitting: false });
+
+      // Record audit entry on order
+      const reversalAuditEntry = {
+        action: 'admin_pallet_reversed',
+        palletId,
+        palletNumber: pallet.palletNumber,
+        qtyLarge: pallet.qtyLarge,
+        reason: reason.trim(),
+        user: currentUserName,
+        timestamp: nowIso,
+      };
+      const existingAudit = Array.isArray(order.auditTrail) ? order.auditTrail : [];
+
+      if (wasCompleted && completionPct < 100) {
+        // Trigger Adaptive Order Status Prompt Modal
+        setAdminOrderStatusPromptModal({
+          open: true,
+          order,
+          newCompletionPct: completionPct,
+          onChoice: async (chosenStatus) => {
+            await updateDoc(doc(db, 'work_orders', order.id), {
+              pallets: updatedPallets,
+              totalProducedQtySmall: totalProducedSmall,
+              totalProducedQtyLarge: totalProducedLarge,
+              completionPercentage: completionPct,
+              status: chosenStatus,
+              auditTrail: [reversalAuditEntry, ...existingAudit].slice(0, 40),
+              updatedAt: serverTimestamp(),
+            });
+            setAdminOrderStatusPromptModal({ open: false, order: null, newCompletionPct: 0, onChoice: null });
+            toast.success(
+              isAr ? 'تم الإلغاء الإداري للباليتة بنجاح وتحديث حالة أمر التشغيل.' : 'Admin pallet reversal completed successfully.',
+              isAr ? 'إلغاء إداري معتمد' : 'Authorized Reversal'
+            );
+          },
+        });
+      } else {
+        const newOrderStatus = completionPct >= 100 ? 'completed' : (totalProducedLarge > 0 ? 'in_progress' : 'planned');
+        await updateDoc(doc(db, 'work_orders', order.id), {
+          pallets: updatedPallets,
+          totalProducedQtySmall: totalProducedSmall,
+          totalProducedQtyLarge: totalProducedLarge,
+          completionPercentage: completionPct,
+          status: newOrderStatus,
+          auditTrail: [reversalAuditEntry, ...existingAudit].slice(0, 40),
+          updatedAt: serverTimestamp(),
+        });
+        toast.success(
+          isAr ? 'تم الإلغاء الإداري للباليتة واسترجاع الخامات والسوائل بنجاح.' : 'Admin pallet reversal completed successfully.',
+          isAr ? 'إلغاء إداري معتمد' : 'Authorized Reversal'
+        );
+      }
+    } catch (err) {
+      console.error('Error executing admin pallet reversal:', err);
+      toast.error(isAr ? 'حدث خطأ أثناء تنفيذ الإلغاء الإداري.' : 'Error executing admin reversal.');
+      setAdminReversalModal((prev) => ({ ...prev, isSubmitting: false }));
+    }
+  };
+
+  const handleOpenEditPallet = (order, pIdx, isAdmin = false) => {
+    if (!isAdmin && isOrderLocked(order)) {
       alert(isAr ? '🚫 أمر التشغيل هذا بتاريخ سابق ومقفل ضد التعديل (محصور بالمسؤول العام).' : 'This order is from a past date and is locked (General Admin only).');
       return;
     }
     const pallet = (order.pallets || [])[pIdx];
     if (!pallet) return;
     if (pallet.stagingStatus === 'transferred_to_fg' || pallet.status === 'transferred_to_fg') {
-      alert(
-        isAr
-          ? '🚫 هذه الباليتة تم ترحيلها واستلامها في مستودع المنتجات التامة ومقفلة ضد التعديل.'
-          : 'This pallet has been transferred to the Finished Goods warehouse and is locked.'
-      );
-      return;
+      const { hasBlockers, blockers } = checkPalletDownstreamDependencies(order, pallet);
+      if (hasBlockers) {
+        setAdminDependencyModal({
+          open: true,
+          pallet,
+          order,
+          blockers,
+          details: isAr
+            ? 'وفقاً لقواعد سلامة البيانات والارتباط الشامل، لا يمكن إجراء تعديل أو إلغاء على الباليتة أثناء وجود حركات تابعة لها.'
+            : 'According to Strict Dependency Blocker rules, this pallet cannot be modified or reversed while downstream records exist.',
+        });
+        return;
+      }
     }
+    setIsAdminPalletAction(isAdmin);
+    setAdminPalletReason('');
     setPalletTargetOrder(order);
     setEditingPalletIndex(pIdx);
     setPalletFormData({
@@ -4556,8 +4956,13 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       return;
     }
     if (!palletTargetOrder) return;
-    if (isOrderLocked(palletTargetOrder)) {
+    if (!isAdminPalletAction && isOrderLocked(palletTargetOrder)) {
       alert(isAr ? '🚫 أمر التشغيل هذا بتاريخ سابق ومقفل (محصور بالمسؤول العام).' : 'This order is from a past date and is locked (General Admin only).');
+      return;
+    }
+
+    if (isAdminPalletAction && (!adminPalletReason || adminPalletReason.trim().length < 5)) {
+      alert(isAr ? 'يرجى كتابة سبب التعديل الإداري المعتمد بوضوح (5 أحرف على الأقل).' : 'Please enter a valid justification reason for this admin modification (at least 5 characters).');
       return;
     }
 
@@ -4605,6 +5010,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       const currentPalletLarge = Number(palletFormData.qtyLarge || 0);
       const incrementalLargeNeeded = Math.max(0, currentPalletLarge - priorSavedLarge);
 
+      const shortComponents = [];
       for (const comp of recipe.components) {
         const stdQty = Number(comp.standardQty || 1);
         const neededForThisPallet = incrementalLargeNeeded * stdQty;
@@ -4621,12 +5027,40 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         if (isPipeFeeding) continue;
 
         if (neededForThisPallet > floorStock) {
+          shortComponents.push({
+            comp,
+            itemDoc,
+            needed: neededForThisPallet,
+            floorStock,
+            totalCompanyStock,
+            deficit: neededForThisPallet - floorStock,
+            availableInWarehouse: Math.max(0, totalCompanyStock - floorStock),
+          });
+        }
+      }
+
+      if (shortComponents.length > 0) {
+        const canFulfillFromCompany = shortComponents.every((sc) => sc.totalCompanyStock >= sc.needed);
+        if (canFulfillFromCompany) {
+          setAdminTransferGuidanceModal({
+            open: true,
+            shortComponents,
+            order: palletTargetOrder,
+            pallet: editingPalletIndex !== null ? palletTargetOrder.pallets?.[editingPalletIndex] : null,
+            requiredCartons: currentPalletLarge,
+          });
+          return;
+        } else {
+          const deficitList = shortComponents
+            .filter((sc) => sc.totalCompanyStock < sc.needed)
+            .map((sc) => `• ${sc.comp.materialNameAr || sc.comp.itemId}: المطلوب (${sc.needed}) - الإجمالي بالشركة (${sc.totalCompanyStock})`)
+            .join('\n');
           showAlert({
-            title: isAr ? 'تجاوز الرصيد المتاح بصالة الإنتاج' : 'Floor Stock Exceeded',
+            title: isAr ? 'عجز كلي في خامات الشركة' : 'Total Company Stock Deficit',
             message: isAr
-              ? `🚫 لا يمكن حفظ الباليتة لأن المطلوب لخامات هذه الباليتة من بند (${comp.materialNameAr || comp.itemId}) هو (${neededForThisPallet.toLocaleString()} ${comp.unit || 'عبوة'}) بينما الرصيد المتاح حالياً بصالة الإنتاج هو (${floorStock.toLocaleString()} ${comp.unit || 'عبوة'}) فقط.\n\nيرجى تحويل كميات إضافية لصالة الإنتاج قبل استكمال التعبئة.`
-              : `Floor stock exceeded for ${comp.materialNameAr || comp.itemId}. Available: ${floorStock}, Required for this pallet: ${neededForThisPallet}.`,
-            variant: 'error'
+              ? `🚫 لا يمكن حفظ/تعديل الباليتة لأن إجمالي رصيد الخامات في كافة مستودعات الشركة غير كافٍ:\n\n${deficitList}\n\nتم إلغاء التعديل والحفاظ على الحالة الأصلية للباليتة دون تغيير.`
+              : `Company stock is completely insufficient for this operation. Original pallet preserved.\n\n${deficitList}`,
+            variant: 'error',
           });
           return;
         }
@@ -4821,6 +5255,23 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
                   const vCopy = vesselWorkingCopies[comp.itemId];
                   if (vCopy && vCopy.activeTanks.length > 0) {
+                    // Unroll previous allocation of this edited pallet so new allocation is purely atomic
+                    if (editingPalletIndex !== null && isTargetPallet && oldPallet) {
+                      const oldPId = oldPallet.palletId || `PAL-${palletTargetOrder.orderNumber}-P${String(oldPallet.palletNumber).padStart(2, '0')}`;
+                      const unrollPalletFromTank = (t) => {
+                        if (Array.isArray(t.consumedByPallets)) {
+                          const match = t.consumedByPallets.find((cp) => cp.palletId === oldPId || (String(cp.workOrderId) === String(palletTargetOrder.id) && Number(cp.palletNumber) === Number(oldPallet.palletNumber)));
+                          if (match && Number(match.consumedLiters) > 0) {
+                            t.remainingVolume = Number(((Number(t.remainingVolume) || 0) + Number(match.consumedLiters)).toFixed(2));
+                            if (t.status === 'exhausted' && t.remainingVolume > 0) t.status = 'active';
+                            t.consumedByPallets = t.consumedByPallets.filter((cp) => cp !== match);
+                          }
+                        }
+                      };
+                      vCopy.activeTanks.forEach(unrollPalletFromTank);
+                      vCopy.historyTanks.forEach(unrollPalletFromTank);
+                    }
+
                     let neededLiters = cQty;
                     for (let tIdx = 0; tIdx < vCopy.activeTanks.length; tIdx++) {
                       if (neededLiters <= 0) break;
@@ -5062,15 +5513,55 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           }, { merge: true });
         }
 
-        // Update work order with enriched pallets containing intermediateLiquidTanks
-        await setDoc(orderRef, { pallets }, { merge: true });
+        // If admin action, record audit log on work order
+        if (isAdminPalletAction) {
+          const auditEntry = {
+            action: 'admin_pallet_modified',
+            palletNumber: palletPayload.palletNumber,
+            qtyLarge: palletPayload.qtyLarge,
+            reason: adminPalletReason.trim(),
+            user: currentUserName,
+            timestamp: nowIso,
+          };
+          const existingAudit = Array.isArray(palletTargetOrder.auditTrail) ? palletTargetOrder.auditTrail : [];
+          await setDoc(orderRef, { pallets, auditTrail: [auditEntry, ...existingAudit].slice(0, 40) }, { merge: true });
+        } else {
+          // Update work order with enriched pallets containing intermediateLiquidTanks
+          await setDoc(orderRef, { pallets }, { merge: true });
+        }
       }
 
       setShowPalletModal(false);
-      toast.success(
-        isAr ? 'تم حفظ واعتماد جواز الباليتة بنجاح.' : 'Pallet passport saved successfully.',
-        isAr ? 'تم الحفظ' : 'Saved'
-      );
+      const wasAdmin = isAdminPalletAction;
+      setIsAdminPalletAction(false);
+      setAdminPalletReason('');
+
+      const wasCompletedOrder = palletTargetOrder.status === 'completed' || Number(palletTargetOrder.completionPercentage || 0) >= 100;
+      if (wasCompletedOrder && completionPct < 100) {
+        setAdminOrderStatusPromptModal({
+          open: true,
+          order: palletTargetOrder,
+          newCompletionPct: completionPct,
+          onChoice: async (chosenStatus) => {
+            await updateDoc(orderRef, {
+              status: chosenStatus,
+              updatedAt: serverTimestamp(),
+            });
+            setAdminOrderStatusPromptModal({ open: false, order: null, newCompletionPct: 0, onChoice: null });
+            toast.success(
+              isAr ? 'تم تحديث حالة أمر التشغيل وحفظ الباليتة بنجاح.' : 'Order status updated and pallet saved successfully.',
+              isAr ? 'تم التحديث' : 'Updated'
+            );
+          },
+        });
+      } else {
+        toast.success(
+          isAr
+            ? (wasAdmin ? 'تم اعتماد وحفظ التعديل الإداري للباليتة بنجاح.' : 'تم حفظ واعتماد جواز الباليتة بنجاح.')
+            : 'Pallet passport saved successfully.',
+          isAr ? 'تم الحفظ' : 'Saved'
+        );
+      }
     } catch (err) {
       console.error('Error saving pallet passport:', err);
       toast.error(isAr ? 'حدث خطأ أثناء حفظ البالتة.' : 'Error saving pallet.');
@@ -8014,6 +8505,29 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                                       )}
                                     </>
                                   )}
+                                  {isGeneralAdmin && linkedOrder && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const pIdx = linkedOrder.pallets?.findIndex((pl) => {
+                                          if (pl.palletId === p.palletId || (Number(pl.palletNumber) === Number(p.palletNumber) && p.palletNumber !== undefined)) {
+                                            if (Number(pl.qtyLarge) === Number(p.qtyLarge)) return true;
+                                          }
+                                          return false;
+                                        });
+                                        const finalIdx = pIdx !== -1 && pIdx !== undefined
+                                          ? pIdx
+                                          : linkedOrder.pallets?.findIndex((pl) => pl.palletId === p.palletId || Number(pl.palletNumber) === Number(p.palletNumber));
+                                        if (finalIdx !== -1 && finalIdx !== undefined) {
+                                          handleOpenAdminPalletMenu(linkedOrder, p, finalIdx);
+                                        }
+                                      }}
+                                      className="p-1 text-purple-600 hover:bg-purple-100 bg-purple-50 rounded-lg border border-purple-200 transition cursor-pointer"
+                                      title={isAr ? 'خيارات الإدارة العامة (تعديل متقدم / إلغاء)' : 'General Admin Reversal & Override Options'}
+                                    >
+                                      <ShieldAlert className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
                                 </div>
                               </div>
 
@@ -8531,6 +9045,21 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 </button>
 
                 <div className="flex items-center gap-2">
+                  {isGeneralAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInspectPalletModal(null);
+                        handleOpenAdminPalletMenu(order, pallet, pIdx);
+                      }}
+                      className="px-3.5 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      title={isAr ? 'خيارات الإدارة العامة المتقدمة (تعديل / إلغاء)' : 'General Admin Advanced Actions'}
+                    >
+                      <ShieldAlert className="h-3.5 w-3.5 text-purple-600" />
+                      <span>{isAr ? 'إجراءات الإدارة العامة' : 'Admin Actions'}</span>
+                    </button>
+                  )}
+
                   {!isTransferred && (
                     <button
                       type="button"
@@ -8599,7 +9128,11 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
               <button
                 type="button"
-                onClick={() => setShowPalletModal(false)}
+                onClick={() => {
+                  setShowPalletModal(false);
+                  setIsAdminPalletAction(false);
+                  setAdminPalletReason('');
+                }}
                 className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl cursor-pointer"
               >
                 <X className="h-5 w-5" />
@@ -8607,6 +9140,19 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
             </div>
 
             <form onSubmit={handleSavePalletPassport} className="space-y-4 text-xs">
+              {isAdminPalletAction && (
+                <div className="p-3 bg-purple-50 border border-purple-200 rounded-2xl flex items-center gap-2.5 text-xs text-purple-900">
+                  <ShieldAlert className="h-5 w-5 text-purple-600 shrink-0" />
+                  <div>
+                    <span className="font-bold block">
+                      {isAr ? 'وضع التعديل الإداري المتقدم (تجاوز الأقفال وإعادة الموازنة)' : 'Admin Override Mode (Bypassing Locks & Re-balancing)'}
+                    </span>
+                    <span className="text-[11px] text-purple-700">
+                      {isAr ? 'سيتم إلغاء خصومات الباليتة السابقة من الخامات والتنكات وتطبيق القيم الجديدة بالكامل دون ترك أرصدة يتيمة.' : 'Previous raw materials and tank liquid deductions will be cleanly rolled back and re-applied.'}
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">{isAr ? 'رقم الباليتة *' : 'Pallet Number *'}</label>
@@ -9078,22 +9624,45 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 )}
               </div>
 
+              {isAdminPalletAction && (
+                <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-2xl space-y-1.5">
+                  <label className="block font-bold text-purple-900 text-xs flex items-center gap-1.5">
+                    <ShieldAlert className="h-3.5 w-3.5 text-purple-600" />
+                    <span>{isAr ? 'سبب التعديل الإداري (إلزامي للتوثيق المالي - 5 أحرف على الأقل) *' : 'Admin Modification Reason (Mandatory - min 5 chars) *'}</span>
+                  </label>
+                  <textarea
+                    required
+                    rows={2}
+                    value={adminPalletReason}
+                    onChange={(e) => setAdminPalletReason(e.target.value)}
+                    placeholder={isAr ? 'مثال: تعديل عدد الكراتين وتصحيح الخطأ المسجل في الوردية...' : 'e.g. Correcting carton count error recorded during shift...'}
+                    className="w-full p-2 border border-purple-300 rounded-xl bg-white text-xs focus:ring-2 focus:ring-purple-500 font-medium"
+                  />
+                </div>
+              )}
+
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setShowPalletModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-xl text-slate-700 font-bold"
+                  onClick={() => {
+                    setShowPalletModal(false);
+                    setIsAdminPalletAction(false);
+                    setAdminPalletReason('');
+                  }}
+                  className="px-4 py-2 border border-slate-300 rounded-xl text-slate-700 font-bold hover:bg-slate-50 transition cursor-pointer"
                 >
                   {isAr ? 'إلغاء' : 'Cancel'}
                 </button>
 
                 <button
                   type="submit"
-                  disabled={isSaving}
-                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-xs flex items-center gap-1.5"
+                  disabled={isSaving || (isAdminPalletAction && (!adminPalletReason || adminPalletReason.trim().length < 5))}
+                  className={`px-6 py-2 rounded-xl font-bold shadow-xs flex items-center gap-1.5 text-white transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                    isAdminPalletAction ? 'bg-purple-600 hover:bg-purple-700' : 'bg-indigo-600 hover:bg-indigo-700'
+                  }`}
                 >
-                  <CheckCircle2 className="h-4 w-4" />
-                  <span>{isAr ? 'حفظ وتأكيد الباليتة' : 'Save Pallet'}</span>
+                  {isAdminPalletAction ? <ShieldAlert className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+                  <span>{isAdminPalletAction ? (isAr ? 'تأكيد التعديل الإداري' : 'Apply Admin Edit') : (isAr ? 'حفظ وتأكيد الباليتة' : 'Save Pallet')}</span>
                 </button>
               </div>
             </form>
@@ -13105,6 +13674,503 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* GENERAL ADMIN INTERLINKED REVERSAL & HISTORICAL EDIT MODALS (Phase 1)    */}
+      {/* ========================================================================= */}
+
+      {/* 1. ADMIN PALLET ACTIONS MENU MODAL */}
+      {adminPalletActionsMenuModal.open && adminPalletActionsMenuModal.pallet && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-purple-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-purple-100 text-purple-700 rounded-xl">
+                  <ShieldAlert className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900">
+                    {isAr ? 'خيارات الإدارة العامة (الباليتات)' : 'General Admin Pallet Actions'}
+                  </h3>
+                  <span className="text-[11px] text-purple-600 font-bold">
+                    {isAr ? 'إجراءات تصحيح وعكس الحركات التاريخية' : 'Historical Correction & Reversal Tools'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 })}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Pallet summary card */}
+            <div className="p-3 bg-purple-50/50 rounded-2xl border border-purple-100 text-xs space-y-1.5">
+              <div className="flex justify-between items-center">
+                <span className="font-mono font-bold text-purple-900 flex items-center gap-1">
+                  <QrCode className="h-3.5 w-3.5" />
+                  <span>#{adminPalletActionsMenuModal.pallet.palletNumber || adminPalletActionsMenuModal.pallet.palletId}</span>
+                </span>
+                <span className="font-bold text-slate-700">
+                  {adminPalletActionsMenuModal.pallet.qtyLarge} {adminPalletActionsMenuModal.order?.outputLargeUnit || (isAr ? 'كرتونة' : 'ctn')}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-600 truncate">
+                {adminPalletActionsMenuModal.order?.productNameAr || adminPalletActionsMenuModal.pallet.productNameAr}
+              </div>
+            </div>
+
+            {/* Actions List */}
+            <div className="space-y-2.5">
+              {/* Option A: Admin Edit */}
+              <button
+                type="button"
+                onClick={() => handleOpenAdminPalletEdit(adminPalletActionsMenuModal.order, adminPalletActionsMenuModal.pallet, adminPalletActionsMenuModal.pIdx)}
+                className="w-full text-start p-3 bg-white hover:bg-purple-50 border border-slate-200 hover:border-purple-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+              >
+                <div className="p-2 bg-indigo-50 group-hover:bg-indigo-600 text-indigo-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
+                  <Edit3 className="h-4 w-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-xs text-slate-900 group-hover:text-indigo-900">
+                    {isAr ? 'تعديل بيانات الباليتة (إعادة موازنة آلية)' : 'Admin Edit (Atomic Re-balance)'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                    {isAr
+                      ? 'تعديل الكمية أو التوقيتات مع إلغاء استهلاك المواد والتنكات السابق تلقائياً وإعادة تطبيقه بدقة.'
+                      : 'Modify quantity or times with clean rollback of old allocations and re-application.'}
+                  </div>
+                </div>
+              </button>
+
+              {/* Option B: Admin Reversal */}
+              <button
+                type="button"
+                onClick={() => handleOpenAdminPalletReversal(adminPalletActionsMenuModal.order, adminPalletActionsMenuModal.pallet, adminPalletActionsMenuModal.pIdx)}
+                className="w-full text-start p-3 bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+              >
+                <div className="p-2 bg-rose-50 group-hover:bg-rose-600 text-rose-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
+                  <RotateCcw className="h-4 w-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-xs text-slate-900 group-hover:text-rose-900">
+                    {isAr ? 'إلغاء واسترجاع الباليتة بالكامل (Admin Reversal)' : 'Admin Pallet Reversal'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                    {isAr
+                      ? 'إرجاع المواد الخام لصالة الإنتاج وإعادة السائل للتنكات، وتوثيق سبب الإلغاء بالسجل المالي.'
+                      : 'Restores raw materials to floor, returns liquid to active tanks, and stamps audit log.'}
+                  </div>
+                </div>
+              </button>
+
+              {/* Option C: Tank Override */}
+              <button
+                type="button"
+                onClick={() => {
+                  const p = adminPalletActionsMenuModal.pallet;
+                  setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 });
+                  handleOpenTankOverride(p);
+                }}
+                className="w-full text-start p-3 bg-white hover:bg-cyan-50 border border-slate-200 hover:border-cyan-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+              >
+                <div className="p-2 bg-cyan-50 group-hover:bg-cyan-600 text-cyan-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
+                  <Activity className="h-4 w-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-xs text-slate-900 group-hover:text-cyan-900">
+                    {isAr ? 'تعديل أرقام التانكات المرتبطة يدوياً' : 'Override Linked Tank Numbers'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                    {isAr
+                      ? 'تعديل أرقام تشغيلات التانكات المغذية للباليتة ومزامنتها لحظياً.'
+                      : 'Manually specify feeding liquid tank numbers for this pallet.'}
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 })}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'إغلاق' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. ADMIN DEPENDENCY BLOCKER MODAL (Strict LIFO Cascade) */}
+      {adminDependencyModal.open && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-rose-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-rose-100 text-rose-700 rounded-xl">
+                  <ShieldAlert className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900">
+                    {isAr ? 'إجراء محظور - وجود حركات لاحقة مرتبطة' : 'Action Blocked - Downstream Dependencies'}
+                  </h3>
+                  <span className="text-[11px] text-rose-600 font-bold">
+                    {isAr ? 'قاعدة الأسبقية الصارمة (Strict Dependency Blocker - LIFO)' : 'Strict LIFO Cascade Policy Active'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, pallet: null, order: null, blockers: [], details: '' })}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {adminDependencyModal.details}
+            </p>
+
+            {/* Visual Cascade Tree */}
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+              <div className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
+                <GitBranch className="h-4 w-4 text-indigo-600" />
+                <span>{isAr ? 'مسار الارتباط المخزني التابع:' : 'Downstream Dependency Chain:'}</span>
+              </div>
+              
+              <div className="space-y-1.5 text-xs font-mono">
+                <div className="flex items-center gap-2 p-2 bg-white rounded-xl border border-slate-200">
+                  <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded text-[10px] font-bold">
+                    {isAr ? 'أمر تشغيل' : 'Work Order'}
+                  </span>
+                  <span className="font-bold text-slate-900">#{adminDependencyModal.order?.orderNumber}</span>
+                  <span className="text-slate-400">({adminDependencyModal.order?.productNameAr})</span>
+                </div>
+
+                <div className="flex items-center gap-2 pl-3 rtl:pr-3 text-slate-400">
+                  <CornerDownRight className="h-3.5 w-3.5" />
+                  <div className="flex-1 flex items-center gap-2 p-2 bg-white rounded-xl border border-slate-200 text-slate-900">
+                    <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-bold">
+                      {isAr ? 'باليتة' : 'Pallet'}
+                    </span>
+                    <span className="font-bold">#{adminDependencyModal.pallet?.palletNumber || adminDependencyModal.pallet?.palletId}</span>
+                    <span className="text-slate-500 font-sans">({adminDependencyModal.pallet?.qtyLarge} {isAr ? 'كرتونة' : 'ctn'})</span>
+                  </div>
+                </div>
+
+                {(adminDependencyModal.blockers || []).map((b, bIdx) => (
+                  <div key={bIdx} className="flex items-center gap-2 pl-6 rtl:pr-6 text-rose-500">
+                    <CornerDownRight className="h-3.5 w-3.5" />
+                    <div className="flex-1 p-2 bg-rose-50 rounded-xl border border-rose-200 text-rose-900 font-sans text-xs">
+                      <div className="font-bold flex items-center justify-between">
+                        <span>{isAr ? b.titleAr : b.titleEn}</span>
+                        {b.voucherId && <span className="font-mono text-[10px] bg-white px-1.5 py-0.5 rounded border border-rose-200">{b.voucherId}</span>}
+                      </div>
+                      <div className="text-[11px] text-rose-700 mt-1 leading-relaxed">
+                        {isAr ? b.messageAr : b.messageEn}
+                      </div>
+                      {b.actionType && (
+                        <div className="mt-2 pt-1.5 border-t border-rose-200/60 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('app_navigate_tab', {
+                                detail: {
+                                  tab: 'transfers',
+                                  highlightId: b.voucherId,
+                                }
+                              }));
+                              setAdminDependencyModal({ open: false, pallet: null, order: null, blockers: [], details: '' });
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-700 border border-rose-300 rounded-lg text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>{isAr ? b.actionTextAr : b.actionTextEn}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, pallet: null, order: null, blockers: [], details: '' })}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'فهمت، إغلاق النافذة' : 'Understood, Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. ADMIN PALLET REVERSAL CONFIRMATION MODAL */}
+      {adminReversalModal.open && adminReversalModal.pallet && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-rose-300 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-rose-100 text-rose-700 rounded-xl">
+                  <RotateCcw className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900">
+                    {isAr ? 'تأكيد إلغاء واسترجاع الباليتة (Admin Reversal)' : 'Confirm Admin Pallet Reversal'}
+                  </h3>
+                  <span className="text-[11px] text-rose-600 font-bold">
+                    {isAr ? 'إعادة استهلاك الخامات والسوائل وتوثيق السجل' : 'Rollback Stock & Stamp Financial Audit'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting}
+                onClick={() => setAdminReversalModal({ open: false, pallet: null, order: null, palletIndex: -1, reason: '', isSubmitting: false })}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-900 space-y-1.5">
+              <div className="font-bold flex items-center gap-1.5">
+                <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                <span>{isAr ? 'الآثار التلقائية المترتبة على الإلغاء:' : 'Automatic Reversal Effects:'}</span>
+              </div>
+              <ul className="list-disc list-inside space-y-1 text-[11px] text-rose-800 ps-1">
+                <li>
+                  {isAr
+                    ? `إرجاع كافة المواد الخام المستهلكة في الباليتة (${adminReversalModal.pallet.qtyLarge} كرتونة) إلى رصيد صالة الإنتاج.`
+                    : `Restore all consumed raw materials for ${adminReversalModal.pallet.qtyLarge} cartons back to production floor.`}
+                </li>
+                <li>
+                  {isAr
+                    ? 'إعادة كميات السوائل المستهلكة إلى التانكات النشطة بصالة الإنتاج وفتحها إن كانت مستنفدة.'
+                    : 'Restore consumed intermediate liquid volume back to active tanks.'}
+                </li>
+                <li>
+                  {isAr
+                    ? 'خصم كمية الباليتة من إجمالي إنتاج أمر التشغيل وتعديل نسبة الإنجاز تلقائياً.'
+                    : 'Deduct produced cartons from work order total and recalculate completion rate.'}
+                </li>
+                <li>
+                  {isAr
+                    ? 'تحويل حالة الباليتة إلى (ملغاة - reversed) وحفظ سبب الإلغاء بالسجل المالي دون حذف السجل التاريخي.'
+                    : 'Mark pallet as reversed with reason preserved for audit trail.'}
+                </li>
+              </ul>
+            </div>
+
+            {/* Reason Textarea */}
+            <div className="space-y-1.5">
+              <label className="block font-bold text-slate-800 text-xs flex items-center gap-1">
+                <span>{isAr ? 'سبب الإلغاء الإداري (إلزامي للتوثيق المحاسبي - 5 أحرف على الأقل) *' : 'Reversal Justification Reason (Mandatory - min 5 chars) *'}</span>
+              </label>
+              <textarea
+                required
+                rows={3}
+                value={adminReversalModal.reason}
+                onChange={(e) => setAdminReversalModal((prev) => ({ ...prev, reason: e.target.value }))}
+                placeholder={isAr ? 'اكتب سبب الإلغاء بدقة، مثال: خطأ في إدخال بيانات الإنتاج، تلف الباليتة، إلخ...' : 'Enter clear reason for reversal...'}
+                className="w-full p-2.5 border border-slate-300 rounded-xl bg-white text-xs focus:ring-2 focus:ring-rose-500 font-medium"
+              />
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting}
+                onClick={() => setAdminReversalModal({ open: false, pallet: null, order: null, palletIndex: -1, reason: '', isSubmitting: false })}
+                className="px-4 py-2 border border-slate-300 rounded-xl text-slate-700 text-xs font-bold hover:bg-slate-50 transition cursor-pointer"
+              >
+                {isAr ? 'تراجع' : 'Cancel'}
+              </button>
+
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting || !adminReversalModal.reason || adminReversalModal.reason.trim().length < 5}
+                onClick={handleExecuteAdminReversal}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>{adminReversalModal.isSubmitting ? (isAr ? 'جاري التنفيذ...' : 'Processing...') : (isAr ? 'تأكيد الإلغاء واسترجاع المخزون' : 'Confirm Reversal')}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. ADMIN TRANSFER GUIDANCE MODAL */}
+      {adminTransferGuidanceModal.open && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-5 sm:p-6 shadow-2xl border border-amber-300 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-100 text-amber-700 rounded-xl">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900">
+                    {isAr ? 'رصيد الصالة غير كافٍ - يتطلب تحويل مستودعي' : 'Floor Shortage - Transfer Required'}
+                  </h3>
+                  <span className="text-[11px] text-amber-600 font-bold">
+                    {isAr ? 'الكمية متوفرة في المستودعات المركزية ولكنها لم تحول لصالة الإنتاج بعد' : 'Stock exists in central warehouses but not transferred to floor'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminTransferGuidanceModal({ open: false, shortComponents: [], order: null, pallet: null, requiredCartons: 0 })}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {isAr
+                ? 'تم إيقاف حفظ تعديل الباليتة بأمان للحفاظ على نزاهة الأرصدة ومنع تسجيل أرصدة سالبة بصالة الإنتاج. الخامات متوفرة في المستودعات المركزية ويمكن تغطية العجز بإجراء تحويل مخزني بالكميات الموضحة أدناه:'
+                : 'Pallet edit safely halted to prevent negative stock on the floor. Stock is available in central warehouses; please transfer the following amounts to the floor:'}
+            </p>
+
+            {/* Breakdown Table */}
+            <div className="border border-slate-200 rounded-2xl overflow-hidden text-xs">
+              <table className="w-full text-start">
+                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200 text-[11px]">
+                  <tr>
+                    <th className="p-2 text-start">{isAr ? 'الخامة' : 'Material'}</th>
+                    <th className="p-2 text-center">{isAr ? 'المتوفر بالصالة' : 'Floor Stock'}</th>
+                    <th className="p-2 text-center">{isAr ? 'المطلوب' : 'Required'}</th>
+                    <th className="p-2 text-center text-rose-600">{isAr ? 'العجز' : 'Deficit'}</th>
+                    <th className="p-2 text-center text-emerald-600">{isAr ? 'المتوفر بالمستودعات' : 'Company Stock'}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-mono">
+                  {(adminTransferGuidanceModal.shortComponents || []).map((sc, scIdx) => (
+                    <tr key={scIdx} className="hover:bg-slate-50/50">
+                      <td className="p-2 font-sans font-medium text-slate-900">{sc.itemNameAr || sc.itemId}</td>
+                      <td className="p-2 text-center text-slate-600">{sc.availableFloor} {sc.unit}</td>
+                      <td className="p-2 text-center text-slate-800 font-bold">{sc.requiredTotal} {sc.unit}</td>
+                      <td className="p-2 text-center text-rose-600 font-bold">{sc.floorDeficit} {sc.unit}</td>
+                      <td className="p-2 text-center text-emerald-600 font-bold">{sc.companyTotal} {sc.unit}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setAdminTransferGuidanceModal({ open: false, shortComponents: [], order: null, pallet: null, requiredCartons: 0 })}
+                className="px-4 py-2 border border-slate-300 rounded-xl text-slate-700 text-xs font-bold hover:bg-slate-50 transition cursor-pointer"
+              >
+                {isAr ? 'إغلاق' : 'Close'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAdminTransferGuidanceModal({ open: false, shortComponents: [], order: null, pallet: null, requiredCartons: 0 });
+                  window.dispatchEvent(new CustomEvent('app_navigate_tab', {
+                    detail: { tab: 'transfers' }
+                  }));
+                }}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                <span>{isAr ? 'الانتقال إلى التحويلات المخزنية لطلب التحويل' : 'Go to Stock Transfers'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. ADMIN ORDER STATUS PROMPT MODAL */}
+      {adminOrderStatusPromptModal.open && adminOrderStatusPromptModal.order && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-indigo-200 space-y-4">
+            <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
+              <div className="p-2 bg-indigo-100 text-indigo-700 rounded-xl">
+                <CheckCircle2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900">
+                  {isAr ? 'تحديث حالة أمر التشغيل' : 'Update Work Order Status'}
+                </h3>
+                <span className="text-[11px] text-indigo-600 font-bold">
+                  {isAr ? 'انخفاض نسبة الإنجاز عن 100%' : 'Completion rate dropped below 100%'}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {isAr
+                ? `بعد إلغاء / تعديل الباليتة، أصبحت نسبة إنجاز أمر التشغيل #${adminOrderStatusPromptModal.order.orderNumber} هي (${adminOrderStatusPromptModal.newCompletionPct}%). كيف ترغب في ضبط حالة الأمر؟`
+                : `After reversing/editing the pallet, completion rate of order #${adminOrderStatusPromptModal.order.orderNumber} is (${adminOrderStatusPromptModal.newCompletionPct}%). How should the order status be set?`}
+            </p>
+
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof adminOrderStatusPromptModal.onChoice === 'function') {
+                    adminOrderStatusPromptModal.onChoice('in_progress');
+                  }
+                }}
+                className="w-full text-start p-3 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+              >
+                <div className="p-2 bg-amber-50 group-hover:bg-amber-600 text-amber-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
+                  <Play className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="font-bold text-xs text-slate-900 group-hover:text-indigo-900">
+                    {isAr ? 'إعادة فتح الأمر إلى (قيد التشغيل - In Progress)' : 'Reopen Order to (In Progress)'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                    {isAr
+                      ? 'يسمح لصالة الإنتاج بإصدار باليتات جديدة لاستكمال الكمية المستهدفة للأمر.'
+                      : 'Allows production line to produce new pallets to reach target quantity.'}
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof adminOrderStatusPromptModal.onChoice === 'function') {
+                    adminOrderStatusPromptModal.onChoice('completed');
+                  }
+                }}
+                className="w-full text-start p-3 bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+              >
+                <div className="p-2 bg-slate-100 group-hover:bg-slate-600 text-slate-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
+                  <CheckCircle2 className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="font-bold text-xs text-slate-900">
+                    {isAr ? 'إبقاء الأمر مكتملاً مع وجود عجز (Completed with Shortage)' : 'Keep Completed with Shortage'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                    {isAr
+                      ? 'يحتفظ بحالة الاكتمال ويغلق خط الإنتاج مع توثيق كمية العجز بالسجل.'
+                      : 'Preserves completed status and closes line with shortage documented.'}
+                  </div>
+                </div>
+              </button>
+            </div>
           </div>
         </div>
       )}

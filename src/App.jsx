@@ -184,8 +184,17 @@ export default function App() {
     const handleTabConfigUpdated = () => {
       setTabAppearanceMap(getStoredTabConfigs());
     };
+    const handleAppNavigate = (e) => {
+      const { tab, module: modId } = e.detail || {};
+      if (modId) setActiveModule(modId);
+      if (tab) setActiveTab(tab);
+    };
     window.addEventListener('app_tab_config_updated', handleTabConfigUpdated);
-    return () => window.removeEventListener('app_tab_config_updated', handleTabConfigUpdated);
+    window.addEventListener('app_navigate_tab', handleAppNavigate);
+    return () => {
+      window.removeEventListener('app_tab_config_updated', handleTabConfigUpdated);
+      window.removeEventListener('app_navigate_tab', handleAppNavigate);
+    };
   }, []);
 
   // 1. Subscribe to Live Cloud Users & Auto-Seed on initial startup
