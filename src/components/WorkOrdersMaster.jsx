@@ -663,6 +663,118 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     };
   }, []);
 
+  // Self-Healing Effect: Automatically detect and repair work orders with duplicate pallet numbers or colliding pallet IDs
+  useEffect(() => {
+    if (!workOrders || workOrders.length === 0) return;
+
+    const repairDuplicatePallets = async () => {
+      for (const order of workOrders) {
+        if (!Array.isArray(order.pallets) || order.pallets.length <= 1) continue;
+
+        const seenNumbers = new Set();
+        const seenIds = new Set();
+        let hasCollision = false;
+
+        for (const p of order.pallets) {
+          const num = Number(p.palletNumber);
+          const id = p.palletId || `PAL-${order.orderNumber}-P${String(num).padStart(2, '0')}`;
+          if (seenNumbers.has(num) || seenIds.has(id)) {
+            hasCollision = true;
+            break;
+          }
+          seenNumbers.add(num);
+          seenIds.add(id);
+        }
+
+        if (hasCollision) {
+          console.warn(`[WorkOrders Self-Healing] Found duplicate pallets in order ${order.orderNumber}. Re-indexing...`);
+
+          const usedNums = new Set();
+          let currentMax = 0;
+          const repairedPallets = [];
+
+          // Find current highest pallet number among all valid pallets
+          order.pallets.forEach((p) => {
+            const num = Number(p.palletNumber);
+            if (num > currentMax) currentMax = num;
+          });
+
+          for (let i = 0; i < order.pallets.length; i++) {
+            const p = { ...order.pallets[i] };
+            let pNum = Number(p.palletNumber) || (i + 1);
+
+            if (!usedNums.has(pNum)) {
+              usedNums.add(pNum);
+              p.palletNumber = pNum;
+              p.palletId = `PAL-${order.orderNumber}-P${String(pNum).padStart(2, '0')}`;
+              repairedPallets.push(p);
+            } else {
+              // Duplicate found: assign next sequential integer
+              currentMax += 1;
+              pNum = currentMax;
+              usedNums.add(pNum);
+              p.palletNumber = pNum;
+              p.palletId = `PAL-${order.orderNumber}-P${String(pNum).padStart(2, '0')}`;
+              repairedPallets.push(p);
+            }
+          }
+
+          // Update work order document with repaired pallets
+          try {
+            await updateDoc(doc(db, 'work_orders', order.id), {
+              pallets: repairedPallets,
+              updatedAt: serverTimestamp(),
+            });
+
+            // Resync all pallets to staged_floor_pallets
+            const ratio = Number(order.packagingRatio) || 12;
+            for (const p of repairedPallets) {
+              const pId = p.palletId;
+              await setDoc(doc(db, 'staged_floor_pallets', pId), {
+                id: pId,
+                palletId: pId,
+                palletNumber: p.palletNumber,
+                workOrderId: order.id,
+                orderNumber: order.orderNumber,
+                finishedProductId: order.finishedProductId,
+                productCode: order.productCode || order.finishedProductId,
+                productNameAr: order.productNameAr,
+                productNameEn: order.productNameEn || '',
+                packagingOptionSuffix: order.packagingOptionSuffix || 'A',
+                packagingOptionNameAr: order.packagingOptionNameAr || '',
+                packagingOptionCode: order.packagingOptionCode || '',
+                packagingRatio: ratio,
+                outputLargeUnit: order.outputLargeUnit || 'كرتونة',
+                outputSmallUnit: order.outputSmallUnit || 'عبوة',
+                qtyLarge: Number(p.qtyLarge || 0),
+                qtySmall: Number(p.qtySmall || (Number(p.qtyLarge || 0) * ratio)),
+                wrappingMachine: p.wrappingMachine || 'wrapping_1',
+                startTime: p.startTime || '',
+                endTime: p.endTime || '',
+                durationMins: p.durationMins || 0,
+                status: p.status || 'completed',
+                stagingStatus: p.stagingStatus || 'staged_on_floor',
+                qcStatus: p.qcStatus || 'passed',
+                productionDate: p.productionDate || order.productionDate || selectedPlanDate,
+                batchStart: p.batchStart || null,
+                batchEnd: p.batchEnd || null,
+                batchRangeDisplay: p.batchRangeDisplay || '',
+                imageUrl: p.imageUrl || '',
+                imageFile: p.imageFile || '',
+                updatedAt: serverTimestamp(),
+              }, { merge: true });
+            }
+            console.log(`[WorkOrders Self-Healing] Successfully repaired order ${order.orderNumber} pallets and synced staged_floor_pallets.`);
+          } catch (err) {
+            console.error('[WorkOrders Self-Healing] Error repairing pallets:', err);
+          }
+        }
+      }
+    };
+
+    repairDuplicatePallets();
+  }, [workOrders, selectedPlanDate]);
+
   // Match Warehouse Helper
   const matchWh = (val, target) => {
     if (!val || !target) return false;
@@ -4290,7 +4402,12 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     }
 
     const existingPallets = order.pallets || [];
-    const nextPalletNum = existingPallets.length + 1;
+    const maxNumInOrder = existingPallets.reduce((max, p) => Math.max(max, Number(p.palletNumber) || 0), 0);
+    const stagedForOrder = (stagedFloorPallets || []).filter(
+      (sp) => String(sp.workOrderId) === String(order.id) || String(sp.orderNumber) === String(order.orderNumber)
+    );
+    const maxNumInStaged = stagedForOrder.reduce((max, p) => Math.max(max, Number(p.palletNumber) || 0), 0);
+    const nextPalletNum = Math.max(maxNumInOrder, maxNumInStaged) + 1;
 
     // Resolve initial process for pallet (pre-set according to plan)
     let selectedProcId = order.processId || '';
@@ -4444,6 +4561,26 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       return;
     }
 
+    // Validate Pallet Number uniqueness within this work order
+    const targetPalletNum = Number(palletFormData.palletNumber);
+    if (!targetPalletNum || targetPalletNum <= 0) {
+      alert(isAr ? 'يرجى إدخال رقم باليتة صحيح أكبر من الصفر.' : 'Please enter a valid pallet number greater than zero.');
+      return;
+    }
+
+    const currentOrderPallets = palletTargetOrder.pallets || [];
+    const isNumDuplicate = currentOrderPallets.some(
+      (p, idx) => (editingPalletIndex === null || idx !== editingPalletIndex) && Number(p.palletNumber) === targetPalletNum
+    );
+    if (isNumDuplicate) {
+      alert(
+        isAr
+          ? `🚫 رقم الباليتة #${targetPalletNum} مسجل مسبقاً في أمر التشغيل هذا. يرجى اختيار رقم باليتة غير مكرر لتجنب تداخل البيانات.`
+          : `🚫 Pallet #${targetPalletNum} already exists in this work order. Please use another pallet number.`
+      );
+      return;
+    }
+
     // Strict Mandatory Step Completion Validation
     const staffing = palletFormData.stepStaffing || [];
     const unassignedMandatory = staffing.filter((step) => step.mandatory && (!step.workers || step.workers.length === 0));
@@ -4553,6 +4690,12 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       };
 
       if (editingPalletIndex !== null) {
+        const oldPalletId = pallets[editingPalletIndex]?.palletId;
+        const newPalletId = palletPayload.palletId;
+        if (oldPalletId && oldPalletId !== newPalletId) {
+          await deleteDoc(doc(db, 'staged_floor_pallets', oldPalletId)).catch(() => {});
+          await deleteDoc(doc(db, 'production_transformations', `TRANS-PAL-${oldPalletId}`)).catch(() => {});
+        }
         // Retain staging status if already set
         palletPayload.stagingStatus = pallets[editingPalletIndex]?.stagingStatus || 'staged_on_floor';
         palletPayload.transferId = pallets[editingPalletIndex]?.transferId || null;
@@ -7831,8 +7974,16 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                                         <button
                                           type="button"
                                           onClick={() => {
-                                            const pIdx = linkedOrder.pallets?.findIndex((pl) => pl.palletId === p.palletId);
-                                            if (pIdx !== -1) handleOpenEditPallet(linkedOrder, pIdx);
+                                            const pIdx = linkedOrder.pallets?.findIndex((pl) => {
+                                              if (pl.palletId === p.palletId || (Number(pl.palletNumber) === Number(p.palletNumber) && p.palletNumber !== undefined)) {
+                                                if (Number(pl.qtyLarge) === Number(p.qtyLarge)) return true;
+                                              }
+                                              return false;
+                                            });
+                                            const finalIdx = pIdx !== -1 && pIdx !== undefined
+                                              ? pIdx
+                                              : linkedOrder.pallets?.findIndex((pl) => pl.palletId === p.palletId || Number(pl.palletNumber) === Number(p.palletNumber));
+                                            if (finalIdx !== -1 && finalIdx !== undefined) handleOpenEditPallet(linkedOrder, finalIdx);
                                           }}
                                           className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition cursor-pointer"
                                           title={isAr ? 'تعديل بيانات الباليتة' : 'Edit Pallet'}
@@ -7844,8 +7995,16 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                                         <button
                                           type="button"
                                           onClick={() => {
-                                            const pIdx = linkedOrder.pallets?.findIndex((pl) => pl.palletId === p.palletId);
-                                            if (pIdx !== -1) handleDeletePallet(linkedOrder, pIdx);
+                                            const pIdx = linkedOrder.pallets?.findIndex((pl) => {
+                                              if (pl.palletId === p.palletId || (Number(pl.palletNumber) === Number(p.palletNumber) && p.palletNumber !== undefined)) {
+                                                if (Number(pl.qtyLarge) === Number(p.qtyLarge)) return true;
+                                              }
+                                              return false;
+                                            });
+                                            const finalIdx = pIdx !== -1 && pIdx !== undefined
+                                              ? pIdx
+                                              : linkedOrder.pallets?.findIndex((pl) => pl.palletId === p.palletId || Number(pl.palletNumber) === Number(p.palletNumber));
+                                            if (finalIdx !== -1 && finalIdx !== undefined) handleDeletePallet(linkedOrder, finalIdx);
                                           }}
                                           className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
                                           title={isAr ? 'حذف الباليتة واسترجاع خاماتها للصالة' : 'Delete Pallet & Restore Stock'}
