@@ -4614,6 +4614,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           const pId = p.palletId || `PAL-${palletTargetOrder.orderNumber}-P${String(p.palletNumber).padStart(2, '0')}`;
           const pTransId = `TRANS-PAL-${pId}`;
           const pQtyLarge = Number(p.qtyLarge || 0);
+          const pQtySmall = Number(p.qtySmall || (pQtyLarge * ratio) || 0);
 
           if (pQtyLarge > 0) {
             let palletIntermediateTanks = (Array.isArray(p.intermediateLiquidTanks) && p.intermediateLiquidTanks.length > 0)
