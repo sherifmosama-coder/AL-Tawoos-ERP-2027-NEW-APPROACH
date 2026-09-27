@@ -253,7 +253,7 @@ export function buildLiveStockMatrix({
   // 2. INGEST VENDOR PURCHASES (GRN), RETURNS (RTN) & RECONCILIATIONS (ADJ)
   // =========================================================================
   goodsReceipts.forEach((grn) => {
-    if (grn.status === 'cancelled' || grn.status === 'rejected') return;
+    if (grn.status === 'cancelled' || grn.status === 'rejected' || grn.status === 'reversed' || grn.isReversed) return;
     // Skip legacy opening balances in goodsReceipts as they are ingested from itemsMaster
     if (grn.docType === 'opening_balance' || grn.id?.startsWith('OB-')) return;
 
@@ -319,7 +319,7 @@ export function buildLiveStockMatrix({
   // 3. INGEST COMPLETED INTERNAL TRANSFERS (TRN & PIPELINE TRANSFERS)
   // =========================================================================
   transfers.forEach((trn) => {
-    if (trn.status !== 'completed') return;
+    if (trn.status !== 'completed' || trn.status === 'reversed' || trn.isReversed) return;
     // Skip Finished Goods transfers (only raw, packaging, chemical & scrap material transfers affect liveStockMatrix)
     if (trn.transferType === 'finished_goods' || trn.transferCategory === 'finished_goods' || trn.isFinishedGoods || trn.id?.startsWith('TRN-FG-') || trn.id?.startsWith('FG-')) return;
     if (Array.isArray(trn.lines) && trn.lines.some((l) => l.palletId)) return;

@@ -47,16 +47,19 @@ import {
   Paperclip,
   Download,
   Trash2,
-  UploadCloud,
   ExternalLink,
   File,
   Zap,
-  RefreshCw
+  RefreshCw,
+  ShieldAlert,
+  GitBranch,
+  CornerDownRight
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
 import VariantComboBox from './VariantComboBox';
 import VariantIdentifierChip from './VariantIdentifierChip';
+import { useNotification } from '../context/NotificationContext';
 import {
   buildLiveStockMatrix,
   StockOriginBadge,
@@ -70,6 +73,7 @@ import {
 export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
+  const { toast, showAlert, showConfirm } = useNotification();
 
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
   const isPurchasingAdmin = currentUser?.isPurchasingAdmin || isGeneralAdmin;
@@ -87,6 +91,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
   const [warehousesList, setWarehousesList] = useState([]);
   const [stockLedger, setStockLedger] = useState([]);
   const [transfersList, setTransfersList] = useState([]);
+  const [transformations, setTransformations] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Filters State
@@ -109,6 +114,23 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
   const [auditGrnData, setAuditGrnData] = useState(null);
   const [printGrnData, setPrintGrnData] = useState(null);
   const [printLang, setPrintLang] = useState('ar');
+
+  // General Admin Interlinked Goods Receipt Reversal Modals (Phase 3)
+  const [adminDependencyModal, setAdminDependencyModal] = useState({
+    open: false,
+    receipt: null,
+    blockers: [],
+    details: '',
+  });
+
+  const [adminReversalModal, setAdminReversalModal] = useState({
+    open: false,
+    receipt: null,
+    isReturn: false,
+    reason: '',
+    isSubmitting: false,
+    linesToRollback: [],
+  });
 
   // Attachment Management States
   const [attachmentModalGrn, setAttachmentModalGrn] = useState(null);
@@ -243,6 +265,10 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
       setTransfersList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
+    const unsubTransformations = onSnapshot(collection(db, 'production_transformations'), (snap) => {
+      setTransformations(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
     return () => {
       unsubReceipts();
       unsubOrders();
@@ -251,6 +277,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
       unsubWarehouses();
       unsubLedger();
       unsubTransfers();
+      unsubTransformations();
     };
   }, []);
 
@@ -444,8 +471,9 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
       warehouses: warehousesList,
       goodsReceipts: receipts,
       transfers: transfersList,
+      transformations,
     });
-  }, [itemsMaster, warehousesList, receipts, transfersList]);
+  }, [itemsMaster, warehousesList, receipts, transfersList, transformations]);
 
   // Helper: Compute 3-Level Stock Breakdown (Primary Matrix with Dynamic Fallback)
   const get3LevelStock = (parentItemId, variantCode, lotNumber, selectedWarehouse) => {
@@ -587,7 +615,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
 
   // Edit rule
   const canEditGrn = (grn) => {
-    if (grn.status === 'cancelled') return false;
+    if (grn.status === 'cancelled' || grn.status === 'reversed' || grn.isReversed) return false;
     if (isGeneralAdmin || isPurchasingAdmin) return true;
     const todayStr = new Date().toISOString().split('T')[0];
     return (grn.receiptDate || '') === todayStr;
@@ -1554,6 +1582,331 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
     }
   };
 
+  // --- GENERAL ADMIN DOWNSTREAM DEPENDENCY CHECKER (GRN LEVEL) ---
+  const checkGrnDownstreamDependencies = (grn) => {
+    if (!grn || !Array.isArray(grn.lines)) return [];
+    if (grn.docType === 'return' || grn.id?.startsWith('RTN')) return []; // Returns restore stock, no deficit blockers
+
+    const blockers = [];
+
+    grn.lines.forEach((line, lIdx) => {
+      const lineQty = Number(line.receivedSmallUnits || 0);
+      const lotNo =
+        line.lotNumber ||
+        (line.linkedGrnId
+          ? `${line.linkedGrnId}-${String(lIdx + 1).padStart(2, '0')}`
+          : `${grn.id}-${String(lIdx + 1).padStart(2, '0')}`);
+
+      const targetWhObj = warehousesList.find((w) => matchWarehouse(line.targetWarehouse, w)) || {
+        id: line.targetWarehouse,
+        code: line.targetWarehouse,
+      };
+      const whId = targetWhObj.id || targetWhObj.code || line.targetWarehouse;
+      const whName = targetWhObj.nameAr || targetWhObj.nameEn || line.targetWarehouse;
+
+      // 1. Live Available Stock in Target Warehouse Check
+      const lotKey = `${lotNo}_${whId}`;
+      const liveLot = stockMatrix?.lotMap?.[lotKey];
+      const availableInTarget = liveLot ? Number(liveLot.availableQty || 0) : 0;
+
+      // 2. Downstream Material Transfers (TRN)
+      (transfersList || []).forEach((trn) => {
+        if (trn.status !== 'completed' || trn.status === 'reversed' || trn.isReversed) return;
+        if (!matchWarehouse(trn.sourceWarehouse, line.targetWarehouse)) return;
+        (trn.lines || []).forEach((subLine) => {
+          if (subLine.lotNumber === lotNo) {
+            const subQty = Number(subLine.qtySmallUnits || 0);
+            const subTgtObj = warehousesList.find((w) => matchWarehouse(trn.targetWarehouse, w));
+            const subTgtName = subTgtObj?.nameAr || trn.targetWarehouse;
+
+            blockers.push({
+              id: `${trn.id}-${lotNo}`,
+              type: 'transfer',
+              refId: trn.id,
+              titleAr: `تحويل مخزني لاحق (${trn.id})`,
+              titleEn: `Subsequent Stock Transfer (${trn.id})`,
+              consumedQty: subQty,
+              unit: subLine.smallUnit || line.smallUnit || '',
+              messageAr: `تم ترحيل (${subQty.toLocaleString()} ${subLine.smallUnit || ''}) من هذا اللوط المستلم من مخزن (${whName}) إلى (${subTgtName}). يجب إلغاء أمر التحويل أولاً.`,
+              messageEn: `Transferred (${subQty.toLocaleString()} ${subLine.smallUnit || ''}) from this received lot to (${subTgtName}). You must reverse that transfer first.`,
+              navTab: 'transfers',
+            });
+          }
+        });
+      });
+
+      // 3. Downstream Batch Tanks & Work Order Pallets
+      (transformations || []).forEach((tr) => {
+        if (tr.status === 'cancelled' || tr.status === 'rejected' || tr.status === 'reversed' || tr.isReversed) return;
+        const comps = Array.isArray(tr.consumedComponents) ? tr.consumedComponents : [];
+        comps.forEach((c) => {
+          const matchLot = c.lotNumber && (c.lotNumber === lotNo);
+          const matchWh = matchWarehouse(line.targetWarehouse, c.warehouseId || c.warehouse);
+          if (matchLot && matchWh) {
+            const consumedQty = Number(c.qtySmallUnits || c.quantity || 0);
+            const isTank = tr.id?.startsWith('TRANS-TANK-') || tr.tankId || tr.type === 'tank_batch_production';
+            const isPallet = tr.id?.includes('PALLET') || tr.palletNumber !== undefined;
+            const oNum = tr.workOrderNumber || tr.orderNumber || '';
+            const tNum = tr.tankNumber || tr.tankId || '';
+
+            blockers.push({
+              id: `${tr.id}-${c.lotNumber}`,
+              type: isTank ? 'tank' : isPallet ? 'pallet' : 'transformation',
+              orderNumber: oNum,
+              tankId: tNum,
+              titleAr: isTank ? `تانك خلط رقم #${tNum || tr.id}` : isPallet ? `باليت منتج تام بأمر تشغيل #${oNum}` : `عملية تحويل إنتاجي (${tr.id})`,
+              titleEn: isTank ? `Liquid Tank #${tNum || tr.id}` : isPallet ? `Pallet in Work Order #${oNum}` : `Transformation (${tr.id})`,
+              consumedQty,
+              unit: c.smallUnit || c.unit || line.smallUnit || '',
+              messageAr: `تم استهلاك (${consumedQty.toLocaleString()} ${c.smallUnit || line.smallUnit || ''}) من هذا اللوط في هذه العملية الإنتاجية بمخزن (${whName}). يجب إلغاء العملية أولاً.`,
+              messageEn: `Consumed (${consumedQty.toLocaleString()} ${c.smallUnit || line.smallUnit || ''}) from this lot in this operation at (${whName}). You must reverse this operation first.`,
+              navTab: isTank ? 'liquid_tanks' : 'work_orders',
+            });
+          }
+        });
+      });
+
+      // 4. Net Stock Shortage Check
+      if (availableInTarget < lineQty && blockers.length === 0) {
+        const deficit = lineQty - availableInTarget;
+        blockers.push({
+          id: `deficit-${lotNo}`,
+          type: 'shortage',
+          titleAr: `عجز برصيد اللوط [${lotNo}] بمخزن (${whName})`,
+          titleEn: `Lot [${lotNo}] Stock Deficit in (${whName})`,
+          consumedQty: deficit,
+          unit: line.smallUnit || '',
+          messageAr: `الرصيد المتاح حالياً من هذا اللوط في (${whName}) هو (${availableInTarget.toLocaleString()}) فقط، بينما المطلوب استرجاعه (${lineQty.toLocaleString()}). استرجاع الإذن سيسبب عجزاً بمقدار (-${deficit.toLocaleString()}).`,
+          messageEn: `Current available balance of this lot in (${whName}) is only (${availableInTarget.toLocaleString()}), but (${lineQty.toLocaleString()}) is required. Reversing this receipt will cause a negative balance of (-${deficit.toLocaleString()}).`,
+          navTab: null,
+        });
+      }
+    });
+
+    return blockers;
+  };
+
+  // Open Admin Reversal Modal (or Blocker Modal)
+  const handleOpenAdminGrnReversal = (grn) => {
+    if (!isGeneralAdmin) {
+      showAlert({
+        title: isAr ? 'صلاحية غير كافية' : 'Permission Denied',
+        message: isAr ? 'إلغاء وعكس أذون الاستلام محصور بالمسؤول العام.' : 'Only General Admin can reverse goods receipts.',
+        variant: 'error',
+      });
+      return;
+    }
+
+    if (grn.status === 'cancelled' || grn.status === 'reversed' || grn.isReversed) {
+      showAlert({
+        title: isAr ? 'الإذن ملغي بالفعل' : 'Already Cancelled',
+        message: isAr ? 'هذا الإذن تم إلغاؤه أو عكسه مسبقاً.' : 'This document has already been cancelled or reversed.',
+        variant: 'info',
+      });
+      return;
+    }
+
+    const blockers = checkGrnDownstreamDependencies(grn);
+    if (blockers.length > 0) {
+      setAdminDependencyModal({
+        open: true,
+        receipt: grn,
+        blockers,
+        details: isAr
+          ? `لا يمكن إلغاء إذن الاستلام (${grn.id}) لوجود (${blockers.length}) حركة مرتبطة لاحقة استهلكت أو رحلت خامات هذا الإذن. وفق مبدأ الأسبقية الصارمة (LIFO)، يجب إلغاء الحركات اللاحقة أولاً.`
+          : `Cannot reverse Goods Receipt (${grn.id}) because (${blockers.length}) downstream transaction(s) have consumed or moved its materials. Following strict LIFO policy, downstream transactions must be reversed first.`,
+      });
+      return;
+    }
+
+    const isReturn = grn.docType === 'return' || grn.id?.startsWith('RTN');
+    const linesToRollback = (grn.lines || []).map((l, idx) => ({
+      itemId: l.itemId,
+      variantCode: l.variantCode,
+      nameAr: l.nameAr || l.code || l.itemId,
+      lotNumber: l.lotNumber || (l.linkedGrnId ? `${l.linkedGrnId}-${String(idx + 1).padStart(2, '0')}` : `${grn.id}-${String(idx + 1).padStart(2, '0')}`),
+      qtySmallUnits: Number(l.receivedSmallUnits || 0),
+      smallUnit: l.smallUnit || 'وحدة',
+      warehouse: l.targetWarehouse,
+    }));
+
+    setAdminReversalModal({
+      open: true,
+      receipt: grn,
+      isReturn,
+      reason: '',
+      isSubmitting: false,
+      linesToRollback,
+    });
+  };
+
+  // Execute Atomic Admin Goods Receipt Reversal
+  const handleExecuteAdminGrnReversal = async () => {
+    const { receipt, isReturn, reason } = adminReversalModal;
+    if (!reason || reason.trim().length < 5) {
+      showAlert({
+        title: isAr ? 'سبب الإلغاء مطلوب' : 'Reason Required',
+        message: isAr ? 'يرجى كتابة سبب واضح للإلغاء للتوثيق المالي والمخزني (5 أحرف على الأقل).' : 'Please enter a clear justification reason (at least 5 characters).',
+        variant: 'warning',
+      });
+      return;
+    }
+
+    setAdminReversalModal((prev) => ({ ...prev, isSubmitting: true }));
+    try {
+      const nowIso = new Date().toISOString();
+      const batch = writeBatch(db);
+      const grnRef = doc(db, 'goods_receipts', receipt.id);
+      const existingAudit = Array.isArray(receipt.auditTrail) ? receipt.auditTrail : [];
+      const nextVer = getNextVersion(receipt.version || '1.0');
+      const docLabel = isReturn ? (isAr ? 'إذن المرتجع' : 'Return') : (isAr ? 'إذن الاستلام' : 'GRN');
+
+      const newAudit = {
+        version: nextVer,
+        action: 'admin_reversal',
+        status: 'reversed',
+        performedBy: currentUserName,
+        timestamp: nowIso,
+        noteAr: `تم الإلغاء الإداري لـ ${docLabel} وعكس الأرصدة المخزنية: ${reason.trim()}`,
+        noteEn: `Admin reversal of ${docLabel}: ${reason.trim()}`,
+      };
+
+      batch.set(
+        grnRef,
+        {
+          status: 'reversed',
+          isReversed: true,
+          reversedBy: currentUserName,
+          reversedById: currentUser?.id || currentUser?.uid || '',
+          reversedAt: nowIso,
+          reversalReason: reason.trim(),
+          auditTrail: [newAudit, ...existingAudit].slice(0, 40),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      // If linked to PO, roll back received quantities
+      if (receipt.poId) {
+        const poRef = doc(db, 'purchase_orders', receipt.poId);
+        const poDoc = purchaseOrders.find((p) => p.id === receipt.poId);
+        if (poDoc) {
+          const poLines = (poDoc.lines || []).map((poLine) => {
+            const matchingGrnLine = (receipt.lines || []).find(
+              (gl) => (gl.variantCode && gl.variantCode === poLine.variantCode) || gl.itemId === poLine.itemId
+            );
+            if (matchingGrnLine) {
+              const rolledBackQty = Number(matchingGrnLine.receivedSmallUnits || 0);
+              const newReceived = Math.max(0, (Number(poLine.receivedSmallUnits || 0)) - rolledBackQty);
+              return {
+                ...poLine,
+                receivedSmallUnits: newReceived,
+              };
+            }
+            return poLine;
+          });
+
+          const totalReceivedAcrossPo = poLines.reduce((sum, l) => sum + (Number(l.receivedSmallUnits || 0)), 0);
+          const newPoStatus = totalReceivedAcrossPo > 0 ? 'partially_delivered' : 'approved';
+
+          const poAuditEntry = {
+            version: poDoc.version || '1.0',
+            action: 'grn_reversed_rollback',
+            status: newPoStatus,
+            performedBy: currentUserName,
+            timestamp: nowIso,
+            noteAr: `تم خصم كميات مستلمة في أمر الشراء بسبب إلغاء ${docLabel} (${receipt.id}) إدارياً`,
+            noteEn: `PO received quantities rolled back due to admin reversal of ${docLabel} (${receipt.id})`,
+          };
+
+          batch.set(
+            poRef,
+            {
+              lines: poLines,
+              status: newPoStatus,
+              auditTrail: [...(poDoc.auditTrail || []), poAuditEntry],
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      }
+
+      // Reverse physical stock in items collection if approved
+      if (receipt.status === 'approved') {
+        const itemDeltas = {};
+        const signMultiplier = isReturn ? 1 : -1;
+
+        (receipt.lines || []).forEach((l) => {
+          const qty = Number(l.receivedSmallUnits) || 0;
+          const parentId = l.itemId || l.code?.split('-')[0];
+          const vCode = l.variantCode || l.code;
+          if (parentId && qty > 0) {
+            if (!itemDeltas[parentId]) itemDeltas[parentId] = { total: 0, variants: {} };
+            itemDeltas[parentId].total += qty * signMultiplier;
+            if (vCode) itemDeltas[parentId].variants[vCode] = (itemDeltas[parentId].variants[vCode] || 0) + (qty * signMultiplier);
+
+            // Ledger log
+            const ledgerRef = doc(collection(db, 'stock_ledger'));
+            batch.set(ledgerRef, {
+              grnId: receipt.id,
+              action: isReturn ? 'return_reversed_admin' : 'receipt_reversed_admin',
+              docType: receipt.docType || (isReturn ? 'return' : 'receipt'),
+              receivingType: receipt.receivingType || 'direct',
+              poId: receipt.poId || null,
+              itemId: parentId,
+              variantCode: vCode,
+              materialNameAr: l.nameAr,
+              qty: qty * signMultiplier,
+              unit: l.smallUnit,
+              warehouse: l.targetWarehouse,
+              supplierId: receipt.supplierId,
+              supplierName: receipt.supplierName || '',
+              receivedBy: currentUserName,
+              timestamp: serverTimestamp(),
+            });
+          }
+        });
+
+        Object.entries(itemDeltas).forEach(([itemId, data]) => {
+          const itemDoc = itemsMaster.find((i) => i.code === itemId);
+          if (itemDoc) {
+            const updatedVariations = (itemDoc.variations || []).map((v) => {
+              const deltaQty = data.variants[v.variantCode] || 0;
+              return {
+                ...v,
+                stock: Math.max(0, (Number(v.stock) || 0) + deltaQty),
+              };
+            });
+            const updatedTotalStock = updatedVariations.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
+
+            batch.set(
+              doc(db, 'items', itemId),
+              {
+                stock: updatedTotalStock,
+                variations: updatedVariations,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+        });
+      }
+
+      await batch.commit();
+
+      setAdminReversalModal({ open: false, receipt: null, isReturn: false, reason: '', isSubmitting: false, linesToRollback: [] });
+      toast.success(
+        isAr ? `تم إلغاء ${docLabel} (${receipt.id}) وعكس الأرصدة بنجاح.` : `${docLabel} (${receipt.id}) reversed successfully.`,
+        isAr ? 'إلغاء إداري معتمد' : 'Reversal Completed'
+      );
+    } catch (err) {
+      console.error('Error reversing receipt:', err);
+      toast.error(isAr ? 'حدث خطأ أثناء إلغاء الإذن.' : 'Failed to reverse document.');
+      setAdminReversalModal((prev) => ({ ...prev, isSubmitting: false }));
+    }
+  };
+
   // Commit Document (Receipt / Return, Draft or Approved) + Unified Stock & PO Sync
   const handleSaveGrn = async (statusToSet = 'approved') => {
     if (!selectedSupplierId) {
@@ -2124,7 +2477,12 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
             l.targetWarehouse?.toLowerCase().includes(term)
         );
 
-      const matchStatus = statusFilter === 'all' || r.status === statusFilter;
+      const matchStatus =
+        statusFilter === 'all'
+          ? (r.status !== 'reversed' && !r.isReversed)
+          : statusFilter === 'reversed'
+          ? (r.status === 'reversed' || r.isReversed)
+          : (r.status === statusFilter && !r.isReversed);
       const matchType = typeFilter === 'all' || r.receivingType === typeFilter;
       const matchSupplier = supplierFilter === 'all' || r.supplierId === supplierFilter;
       const matchWarehouse =
@@ -2319,10 +2677,11 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
               onChange={(e) => setStatusFilter(e.target.value)}
               className="w-full p-1.5 border border-slate-200 rounded-lg bg-slate-50 font-medium text-slate-700 text-xs"
             >
-              <option value="all">{isAr ? 'جميع الحالات' : 'All Statuses'}</option>
+              <option value="all">{isAr ? 'جميع الحالات النشطة' : 'All Active Statuses'}</option>
               <option value="approved">{isAr ? 'معتمد ومضاف' : 'Approved'}</option>
               <option value="draft">{isAr ? 'مسودة مؤقتة' : 'Draft'}</option>
               <option value="cancelled">{isAr ? 'ملغي' : 'Cancelled'}</option>
+              <option value="reversed">{isAr ? 'ملغي إدارياً (مسترجع)' : 'Admin Reversed'}</option>
             </select>
           </div>
 
@@ -2398,12 +2757,27 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                 const isPriced = grn.financials?.hasPricing;
                 const canEdit = canEditGrn(grn);
                 const isReturn = grn.docType === 'return' || grn.id?.startsWith('RTN');
+                const isReversed = grn.status === 'reversed' || grn.isReversed;
 
                 return (
-                  <tr key={grn.id} className={`transition ${isReturn ? 'bg-rose-50/40 hover:bg-rose-50/70 border-s-4 border-s-rose-500' : 'hover:bg-slate-50/60'}`}>
+                  <tr
+                    key={grn.id}
+                    className={`transition ${
+                      isReversed
+                        ? 'bg-purple-50/40 opacity-75 hover:bg-purple-50/70 border-s-4 border-s-purple-500'
+                        : isReturn
+                        ? 'bg-rose-50/40 hover:bg-rose-50/70 border-s-4 border-s-rose-500'
+                        : 'hover:bg-slate-50/60'
+                    }`}
+                  >
                     <td className="p-3.5 align-top">
                       <div className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
-                        {isReturn ? (
+                        {isReversed ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-purple-100 text-purple-800 border border-purple-200">
+                            <RotateCcw className="h-3 w-3 text-purple-600" />
+                            <span>{isAr ? 'ملغي إدارياً' : 'Reversed'}</span>
+                          </span>
+                        ) : isReturn ? (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200">
                             <ArrowUpRight className="h-3 w-3 text-rose-600" />
                             <span>{isAr ? 'مرتجع مورد' : 'Return'}</span>
@@ -2491,7 +2865,14 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                     <td className="p-3.5 align-top">
                       <div className="flex items-center gap-1.5 pt-0.5">
                         {/* 1. Workflow Status Icon */}
-                        {grn.status === 'approved' ? (
+                        {isReversed ? (
+                          <div
+                            className="p-1.5 rounded-lg bg-purple-100 text-purple-700 border border-purple-300 cursor-help transition hover:scale-105"
+                            title={`${isAr ? 'الحالة: ملغي إدارياً ومسترجع من الأرصدة' : 'Status: Administratively Reversed'}\n${isAr ? 'المسؤول' : 'Admin'}: ${grn.reversedBy || (isAr ? 'المسؤول العام' : 'General Admin')}\n${isAr ? 'السبب' : 'Reason'}: ${grn.reversalReason || '-'}\n${isAr ? 'التاريخ والوقت' : 'Date & Time'}: ${grn.reversedAt?.toDate ? grn.reversedAt.toDate().toLocaleString('en-GB') : (grn.reversedAt || '-')}`}
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </div>
+                        ) : grn.status === 'approved' ? (
                           <div
                             className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 cursor-help transition hover:scale-105"
                             title={`${isAr ? 'الحالة: معتمد ومضاف للمخزن' : 'Status: Approved & In-Stock'}\n${isAr ? 'المستلم' : 'Received By'}: ${grn.receivedBy || (isAr ? 'أمين المخزن' : 'Storekeeper')}\n${isAr ? 'التاريخ والوقت' : 'Date & Time'}: ${formatGrnDateTime(grn)}`}
@@ -2655,6 +3036,16 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                         >
                           <Printer className="h-4 w-4" />
                         </button>
+
+                        {isGeneralAdmin && grn.status === 'approved' && !grn.isReversed && (
+                          <button
+                            onClick={() => handleOpenAdminGrnReversal(grn)}
+                            className="p-1.5 text-purple-600 hover:text-purple-800 hover:bg-purple-100 rounded-lg transition cursor-pointer"
+                            title={isAr ? 'إلغاء الإذن إدارياً وعكس الأرصدة وأمر الشراء (المسؤول العام)' : 'Admin Reversal & Stock Rollback (General Admin)'}
+                          >
+                            <ShieldAlert className="h-4 w-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -4187,6 +4578,268 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
           </div>
         );
       })()}
+
+      {/* 1. ADMIN DEPENDENCY MODAL (LIFO POLICY ENFORCEMENT & VISUAL CASCADE) */}
+      {adminDependencyModal.open && adminDependencyModal.receipt && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border-2 border-rose-400 space-y-4 text-slate-800">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-rose-50 text-rose-700 border border-rose-200 rounded-2xl">
+                  <ShieldAlert className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
+                    {isAr ? 'تعذر إلغاء الإذن لوجود حركات مرتبطة (LIFO)' : 'Cannot Reverse: Dependent Operations Found'}
+                  </h3>
+                  <span className="text-[11px] text-rose-700 font-bold">
+                    {isAr ? 'تم تحويل أو استهلاك خامات هذا الإذن في دورة العمل' : 'Materials moved or consumed in subsequent operations'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, receipt: null, blockers: [], details: '' })}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Receipt Summary */}
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl text-xs space-y-1">
+              <div className="flex justify-between items-center">
+                <span className="font-mono font-extrabold text-slate-900 text-sm">{adminDependencyModal.receipt.id}</span>
+                <span className="text-slate-500 font-medium">{adminDependencyModal.receipt.receiptDate}</span>
+              </div>
+              <div className="text-slate-700 font-bold">
+                {isAr ? 'المورد:' : 'Supplier:'} {adminDependencyModal.receipt.supplierName}
+              </div>
+            </div>
+
+            {/* Explanation Note */}
+            <div className="p-3 bg-amber-50 rounded-2xl border border-amber-200 text-xs text-amber-900 leading-relaxed">
+              <div className="font-extrabold flex items-center gap-1.5 mb-1 text-amber-950">
+                <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+                <span>{isAr ? 'مبدأ الأسبقية الصارمة (LIFO Policy)' : 'Strict LIFO Enforcement Policy'}</span>
+              </div>
+              <span>{adminDependencyModal.details}</span>
+            </div>
+
+            {/* Visual Dependency Tree */}
+            <div className="space-y-2">
+              <div className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
+                <span>{isAr ? 'شجرة الحركات المانعة للإلغاء:' : 'Blocking Downstream Dependency Tree:'}</span>
+                <span className="font-mono text-rose-600 text-[10px]">
+                  ({adminDependencyModal.blockers?.length || 0} {isAr ? 'حركات' : 'dependencies'})
+                </span>
+              </div>
+
+              <div className="max-h-56 overflow-y-auto space-y-2 pe-1">
+                {/* Root GRN / RTN */}
+                <div className="flex items-center gap-2 text-slate-900 font-extrabold text-xs">
+                  <div className="p-1 rounded bg-slate-200 text-slate-700">
+                    <GitBranch className="h-3.5 w-3.5" />
+                  </div>
+                  <span className="font-mono">{adminDependencyModal.receipt.id}</span>
+                  <span className="text-[10px] text-slate-500 font-normal">
+                    ({adminDependencyModal.receipt.docType === 'return' ? (isAr ? 'إذن المرتجع' : 'Return Note') : (isAr ? 'إذن الاستلام' : 'Goods Receipt')})
+                  </span>
+                </div>
+
+                {/* Downstream Blocker Rows */}
+                {(adminDependencyModal.blockers || []).map((b, bIdx) => (
+                  <div key={bIdx} className="flex items-center gap-2 pl-6 rtl:pr-6 text-rose-500">
+                    <CornerDownRight className="h-3.5 w-3.5" />
+                    <div className="flex-1 p-2.5 bg-rose-50 rounded-xl border border-rose-200 text-rose-950 font-sans text-xs shadow-2xs">
+                      <div className="font-bold flex items-center justify-between">
+                        <span>{isAr ? b.titleAr : b.titleEn}</span>
+                        {b.consumedQty > 0 && (
+                          <span className="font-mono text-[10px] bg-rose-200/80 px-1.5 py-0.5 rounded border border-rose-300 font-bold text-rose-900">
+                            {b.consumedQty.toLocaleString()} {b.unit}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-rose-700 mt-1 leading-relaxed">
+                        {isAr ? b.messageAr : b.messageEn}
+                      </div>
+                      {b.navTab && (
+                        <div className="mt-2 pt-1.5 border-t border-rose-200 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.dispatchEvent(
+                                new CustomEvent('app_navigate_tab', {
+                                  detail: b.orderNumber ? { tab: b.navTab, orderNumber: b.orderNumber } : b.navTab,
+                                })
+                              );
+                              setAdminDependencyModal({ open: false, receipt: null, blockers: [], details: '' });
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-900 border border-rose-300 rounded-lg text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>
+                              {b.navTab === 'liquid_tanks'
+                                ? isAr ? 'الانتقال لتانكات الخلط' : 'Go to Liquid Tanks'
+                                : b.navTab === 'work_orders'
+                                ? isAr ? `الانتقال لأمر تشغيل #${b.orderNumber || ''}` : `Go to Work Order #${b.orderNumber || ''}`
+                                : isAr ? 'الانتقال للتحويلات المخزنية' : 'Go to Transfers'}
+                            </span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, receipt: null, blockers: [], details: '' })}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'فهمت، إغلاق النافذة' : 'Understood, Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. ADMIN REVERSAL CONFIRMATION MODAL */}
+      {adminReversalModal.open && adminReversalModal.receipt && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border-2 border-purple-400 space-y-4 text-slate-800">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-2xl">
+                  <RotateCcw className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
+                    {isAr
+                      ? adminReversalModal.isReturn
+                        ? 'تأكيد إلغاء المرتجع واسترجاع الرصيد المخزني'
+                        : 'تأكيد إلغاء إذن الاستلام وعكس الأرصدة'
+                      : adminReversalModal.isReturn
+                      ? 'Confirm Return Note Reversal'
+                      : 'Confirm Goods Receipt Reversal'}
+                  </h3>
+                  <span className="text-[11px] text-purple-700 font-bold">
+                    {isAr
+                      ? adminReversalModal.isReturn
+                        ? 'إعادة الخامات للمخزن وتحديث الأرصدة'
+                        : 'خصم الخامات من المخزن وإعادة كميات أمر الشراء'
+                      : 'Rollback Stock & PO Received Quantities'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting}
+                onClick={() =>
+                  setAdminReversalModal({ open: false, receipt: null, isReturn: false, reason: '', isSubmitting: false, linesToRollback: [] })
+                }
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Receipt Summary */}
+            <div className="p-3 bg-purple-50/50 border border-purple-100 rounded-2xl text-xs space-y-1.5">
+              <div className="flex justify-between items-center">
+                <span className="font-mono font-extrabold text-purple-900 text-sm">{adminReversalModal.receipt.id}</span>
+                <span className="text-slate-500 font-medium">{adminReversalModal.receipt.receiptDate}</span>
+              </div>
+              <div className="text-slate-700 font-bold">
+                {isAr ? 'المورد:' : 'Supplier:'} {adminReversalModal.receipt.supplierName}
+              </div>
+              {adminReversalModal.receipt.poId && (
+                <div className="text-indigo-700 font-mono text-[11px] font-bold">
+                  {isAr ? 'أمر الشراء المرتبط:' : 'Linked PO:'} {adminReversalModal.receipt.poId}
+                </div>
+              )}
+            </div>
+
+            {/* Lines To Rollback */}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
+                <span>
+                  {isAr
+                    ? adminReversalModal.isReturn
+                      ? 'الكميات التي ستعاد إلى المخزن:'
+                      : 'الكميات التي ستخصم من المخزن:'
+                    : 'Quantities to Rollback:'}
+                </span>
+                <span className="font-mono text-purple-700 text-[10px]">
+                  ({adminReversalModal.linesToRollback.length} {isAr ? 'بنود' : 'items'})
+                </span>
+              </div>
+              <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 text-xs">
+                {adminReversalModal.linesToRollback.map((l, lIdx) => (
+                  <div key={lIdx} className="p-2 bg-slate-50/50 flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-900">{l.nameAr}</span>
+                      <span className="text-[10px] text-slate-500 font-mono ms-1.5">[{l.lotNumber}]</span>
+                      <div className="text-[10px] text-slate-500">
+                        {isAr ? 'المخزن:' : 'Warehouse:'} {l.warehouse}
+                      </div>
+                    </div>
+                    <div className={`font-mono font-bold ${adminReversalModal.isReturn ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {adminReversalModal.isReturn ? '+' : '-'}{l.qtySmallUnits.toLocaleString()} {l.smallUnit}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Mandatory Reason */}
+            <div className="space-y-1.5">
+              <label className="block font-bold text-slate-700 text-xs">
+                {isAr ? 'سبب الإلغاء الإداري (إلزامي للتوثيق المالي - 5 أحرف على الأقل) *' : 'Reversal Justification Reason (Mandatory - min 5 chars) *'}
+              </label>
+              <textarea
+                required
+                rows={2}
+                value={adminReversalModal.reason}
+                onChange={(e) => setAdminReversalModal((prev) => ({ ...prev, reason: e.target.value }))}
+                placeholder={isAr ? 'اكتب سبب إلغاء الإذن بدقة، مثال: خطأ في تسجيل الكميات، تم رفض التوريد، إلخ...' : 'Enter clear justification reason...'}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-slate-900 text-xs focus:ring-2 focus:ring-purple-500 font-medium placeholder-slate-400"
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting}
+                onClick={() =>
+                  setAdminReversalModal({ open: false, receipt: null, isReturn: false, reason: '', isSubmitting: false, linesToRollback: [] })
+                }
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'تراجع' : 'Cancel'}
+              </button>
+
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting || !adminReversalModal.reason || adminReversalModal.reason.trim().length < 5}
+                onClick={handleExecuteAdminGrnReversal}
+                className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>
+                  {adminReversalModal.isSubmitting
+                    ? isAr ? 'جاري التنفيذ...' : 'Processing...'
+                    : isAr ? 'تأكيد الإلغاء وعكس الأرصدة' : 'Confirm Reversal'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

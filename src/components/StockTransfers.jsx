@@ -41,12 +41,16 @@ import {
   UserCheck,
   Tag,
   Zap,
-  RefreshCw
+  RefreshCw,
+  GitBranch,
+  CornerDownRight,
+  ExternalLink
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
 import VariantComboBox from './VariantComboBox';
 import VariantIdentifierChip from './VariantIdentifierChip';
+import { useNotification } from '../context/NotificationContext';
 import { 
   buildLiveStockMatrix, 
   StockOriginBadge, 
@@ -61,6 +65,7 @@ import {
 export default function StockTransfers({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
+  const { toast, showAlert, showConfirm } = useNotification();
 
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
   const currentUserId = currentUser?.id || currentUser?.uid || '';
@@ -73,6 +78,8 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
   const [transformations, setTransformations] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [usersList, setUsersList] = useState([]);
+  const [liquidTanks, setLiquidTanks] = useState([]);
+  const [workOrders, setWorkOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Filters
@@ -87,6 +94,22 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
   const [auditData, setAuditData] = useState(null);
   const [printData, setPrintData] = useState(null);
   const [printLang, setPrintLang] = useState('ar');
+
+  // General Admin Interlinked Transfer Reversal Modals (Phase 3)
+  const [adminDependencyModal, setAdminDependencyModal] = useState({
+    open: false,
+    transfer: null,
+    blockers: [],
+    details: '',
+  });
+
+  const [adminReversalModal, setAdminReversalModal] = useState({
+    open: false,
+    transfer: null,
+    reason: '',
+    isSubmitting: false,
+    linesToRollback: [],
+  });
 
   // Verification & Rejection Modal States
   const [verifyModalTransfer, setVerifyModalTransfer] = useState(null);
@@ -167,6 +190,14 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
       }
     });
 
+    const unsubTanks = onSnapshot(collection(db, 'liquid_tanks'), (snap) => {
+      setLiquidTanks(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
+    const unsubWo = onSnapshot(collection(db, 'work_orders'), (snap) => {
+      setWorkOrders(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
     return () => {
       unsubTransfers();
       unsubTransformations();
@@ -174,6 +205,8 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
       unsubGrns();
       unsubUsers();
       unsubWh();
+      unsubTanks();
+      unsubWo();
     };
   }, []);
 
@@ -888,6 +921,206 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
     }, 200);
   };
 
+  // --- GENERAL ADMIN DOWNSTREAM DEPENDENCY CHECKER (TRN LEVEL) ---
+  const checkTransferDownstreamDependencies = (trn) => {
+    if (!trn || !Array.isArray(trn.lines)) return [];
+    const blockers = [];
+    const targetWhObj = warehouses.find((w) => matchWh(trn.targetWarehouse, w)) || { id: trn.targetWarehouse, code: trn.targetWarehouse };
+    const targetWhId = targetWhObj.id || targetWhObj.code || trn.targetWarehouse;
+    const targetWhName = getWarehouseName(trn.targetWarehouse);
+
+    trn.lines.forEach((line) => {
+      const lineQty = Number(line.qtySmallUnits || 0);
+      const lotNo = line.lotNumber;
+      if (!lotNo || lineQty <= 0) return;
+
+      // 1. Live Available Stock in Target Warehouse Check
+      const lotKey = `${lotNo}_${targetWhId}`;
+      const liveLot = stockMatrix?.lotMap?.[lotKey];
+      const availableInTarget = liveLot ? Number(liveLot.availableQty || 0) : 0;
+
+      // 2. Scan active transformations (liquid tanks or work order pallets) consuming this lot in targetWarehouse
+      (transformations || []).forEach((tr) => {
+        if (tr.status === 'cancelled' || tr.status === 'rejected' || tr.status === 'reversed' || tr.isReversed) return;
+        const comps = Array.isArray(tr.consumedComponents) ? tr.consumedComponents : [];
+        comps.forEach((c) => {
+          const matchLot = c.lotNumber && (c.lotNumber === lotNo);
+          const matchWh = matchWarehouse(trn.targetWarehouse, c.warehouseId || c.warehouse);
+          if (matchLot && matchWh) {
+            const consumedQty = Number(c.qtySmallUnits || c.quantity || 0);
+            const isTank = tr.id?.startsWith('TRANS-TANK-') || tr.tankId || tr.type === 'tank_batch_production';
+            const isPallet = tr.id?.includes('PALLET') || tr.palletNumber !== undefined;
+            const oNum = tr.workOrderNumber || tr.orderNumber || '';
+            const tNum = tr.tankNumber || tr.tankId || '';
+
+            blockers.push({
+              id: `${tr.id}-${c.lotNumber}`,
+              type: isTank ? 'tank' : isPallet ? 'pallet' : 'transformation',
+              orderNumber: oNum,
+              tankId: tNum,
+              titleAr: isTank ? `تانك خلط رقم #${tNum || tr.id}` : isPallet ? `باليت منتج تام بأمر تشغيل #${oNum}` : `عملية تحويل إنتاجي (${tr.id})`,
+              titleEn: isTank ? `Liquid Tank #${tNum || tr.id}` : isPallet ? `Pallet in Work Order #${oNum}` : `Transformation (${tr.id})`,
+              consumedQty,
+              unit: c.smallUnit || c.unit || line.smallUnit || '',
+              messageAr: `تم استهلاك (${consumedQty.toLocaleString()} ${c.smallUnit || line.smallUnit || ''}) من هذا اللوط في هذه العملية بعد استلامه بمخزن (${targetWhName}). يجب إلغاء العملية أولاً.`,
+              messageEn: `Consumed (${consumedQty.toLocaleString()} ${c.smallUnit || line.smallUnit || ''}) from this lot in this operation after being received at (${targetWhName}). You must reverse this operation first.`,
+              navTab: isTank ? 'liquid_tanks' : 'work_orders',
+            });
+          }
+        });
+      });
+
+      // 3. Scan subsequent stock transfers moving this lot out of targetWarehouse
+      (transfers || []).forEach((subTrn) => {
+        if (subTrn.id === trn.id || subTrn.status !== 'completed' || subTrn.status === 'reversed' || subTrn.isReversed) return;
+        if (!matchWarehouse(subTrn.sourceWarehouse, trn.targetWarehouse)) return;
+        (subTrn.lines || []).forEach((subLine) => {
+          if (subLine.lotNumber === lotNo) {
+            const subQty = Number(subLine.qtySmallUnits || 0);
+            const subTgtName = getWarehouseName(subTrn.targetWarehouse);
+            blockers.push({
+              id: `${subTrn.id}-${lotNo}`,
+              type: 'transfer',
+              refId: subTrn.id,
+              titleAr: `تحويل مخزني لاحق (${subTrn.id})`,
+              titleEn: `Subsequent Stock Transfer (${subTrn.id})`,
+              consumedQty: subQty,
+              unit: subLine.smallUnit || line.smallUnit || '',
+              messageAr: `تم ترحيل (${subQty.toLocaleString()} ${subLine.smallUnit || ''}) من هذا اللوط لاحقاً من (${targetWhName}) إلى (${subTgtName}). يجب إلغاء التحويل اللاحق أولاً.`,
+              messageEn: `Transferred (${subQty.toLocaleString()} ${subLine.smallUnit || ''}) of this lot further to (${subTgtName}). You must reverse that transfer first.`,
+              navTab: 'transfers',
+            });
+          }
+        });
+      });
+
+      // 4. Net Stock Shortage Check
+      if (availableInTarget < lineQty && blockers.length === 0) {
+        const deficit = lineQty - availableInTarget;
+        blockers.push({
+          id: `deficit-${lotNo}`,
+          type: 'shortage',
+          titleAr: `عجز برصيد اللوط [${lotNo}] بالمخزن المستلم`,
+          titleEn: `Lot [${lotNo}] Stock Deficit in Target Warehouse`,
+          consumedQty: deficit,
+          unit: line.smallUnit || '',
+          messageAr: `الرصيد المتاح حالياً من هذا اللوط في (${targetWhName}) هو (${availableInTarget.toLocaleString()}) فقط، بينما المطلوب استرجاعه (${lineQty.toLocaleString()}). استرجاع الإذن سيسبب عجزاً بمقدار (-${deficit.toLocaleString()}).`,
+          messageEn: `Current available balance of this lot in (${targetWhName}) is only (${availableInTarget.toLocaleString()}), but (${lineQty.toLocaleString()}) is required. Reversing this transfer will cause a negative balance of (-${deficit.toLocaleString()}).`,
+          navTab: null,
+        });
+      }
+    });
+
+    return blockers;
+  };
+
+  // Open Admin Reversal Modal (or Blocker Modal)
+  const handleOpenAdminTransferReversal = (trn) => {
+    if (!isGeneralAdmin) {
+      showAlert({
+        title: isAr ? 'صلاحية غير كافية' : 'Permission Denied',
+        message: isAr ? 'إلغاء وعكس التحويلات المخزنية محصور بالمسؤول العام.' : 'Only General Admin can reverse stock transfers.',
+        variant: 'error',
+      });
+      return;
+    }
+
+    if (trn.status !== 'completed') {
+      showAlert({
+        title: isAr ? 'الإذن غير مكتمل' : 'Transfer Not Completed',
+        message: isAr ? 'هذا التحويل غير مكتمل ولم تؤثر حركاته على أرصدة المخازن بعد.' : 'This transfer is not completed and has not affected live stock.',
+        variant: 'warning',
+      });
+      return;
+    }
+
+    const blockers = checkTransferDownstreamDependencies(trn);
+    if (blockers.length > 0) {
+      setAdminDependencyModal({
+        open: true,
+        transfer: trn,
+        blockers,
+        details: isAr
+          ? `لا يمكن إلغاء التحويل (${trn.id}) لوجود (${blockers.length}) حركة مرتبطة لاحقة استهلكت أو رحلت خامات هذا الإذن من مخزن الاستلام. وفق مبدأ الأسبقية الصارمة (LIFO)، يجب إلغاء الحركات اللاحقة أولاً.`
+          : `Cannot reverse Transfer (${trn.id}) because (${blockers.length}) downstream transaction(s) have consumed or moved its materials from the target warehouse. Following strict LIFO policy, downstream transactions must be reversed first.`,
+      });
+      return;
+    }
+
+    const linesToRollback = (trn.lines || []).map((l) => ({
+      itemId: l.itemId,
+      variantCode: l.variantCode,
+      nameAr: l.nameAr || l.code || l.itemId,
+      nameEn: l.nameEn || '',
+      lotNumber: l.lotNumber || '—',
+      qtySmallUnits: Number(l.qtySmallUnits || 0),
+      smallUnit: l.smallUnit || 'وحدة',
+    }));
+
+    setAdminReversalModal({
+      open: true,
+      transfer: trn,
+      reason: '',
+      isSubmitting: false,
+      linesToRollback,
+    });
+  };
+
+  // Execute Atomic Admin Transfer Reversal
+  const handleExecuteAdminTransferReversal = async () => {
+    const { transfer, reason } = adminReversalModal;
+    if (!reason || reason.trim().length < 5) {
+      showAlert({
+        title: isAr ? 'سبب الإلغاء مطلوب' : 'Reason Required',
+        message: isAr ? 'يرجى كتابة سبب واضح للإلغاء للتوثيق المالي والمخزني (5 أحرف على الأقل).' : 'Please enter a clear justification reason (at least 5 characters).',
+        variant: 'warning',
+      });
+      return;
+    }
+
+    setAdminReversalModal((prev) => ({ ...prev, isSubmitting: true }));
+    try {
+      const nowIso = new Date().toISOString();
+      const trnRef = doc(db, 'stock_transfers', transfer.id);
+      const existingAudit = Array.isArray(transfer.auditTrail) ? transfer.auditTrail : [];
+
+      const newAudit = {
+        version: '1.2',
+        action: 'admin_transfer_reversed',
+        status: 'reversed',
+        performedBy: currentUserName,
+        timestamp: nowIso,
+        noteAr: `تم الإلغاء الإداري للتحويل واسترجاع الرصيد للمخزن الصارف: ${reason.trim()}`,
+        noteEn: `Admin reversal: ${reason.trim()}`,
+      };
+
+      await setDoc(
+        trnRef,
+        {
+          status: 'reversed',
+          isReversed: true,
+          reversedBy: currentUserName,
+          reversedById: currentUserId,
+          reversedAt: nowIso,
+          reversalReason: reason.trim(),
+          auditTrail: [newAudit, ...existingAudit].slice(0, 40),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      setAdminReversalModal({ open: false, transfer: null, reason: '', isSubmitting: false, linesToRollback: [] });
+      toast.success(
+        isAr ? `تم إلغاء التحويل (${transfer.id}) واسترجاع الأرصدة بنجاح.` : `Transfer (${transfer.id}) reversed successfully.`,
+        isAr ? 'إلغاء إداري معتمد' : 'Reversal Completed'
+      );
+    } catch (err) {
+      console.error('Error reversing transfer:', err);
+      toast.error(isAr ? 'حدث خطأ أثناء إلغاء التحويل.' : 'Failed to reverse transfer.');
+      setAdminReversalModal((prev) => ({ ...prev, isSubmitting: false }));
+    }
+  };
+
   // Filtered List (Strictly Material Transfers - Finished Goods are isolated in #fg_inwards)
   const filteredTransfers = useMemo(() => {
     return transfers.filter((trn) => {
@@ -900,7 +1133,13 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
         trn.issuedBy?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         trn.lines?.some((l) => l.nameAr?.includes(searchQuery) || l.code?.includes(searchQuery));
 
-      const matchesStatus = statusFilter === 'all' || trn.status === statusFilter;
+      const matchesStatus =
+        statusFilter === 'all'
+          ? (trn.status !== 'reversed' && !trn.isReversed)
+          : statusFilter === 'reversed'
+          ? (trn.status === 'reversed' || trn.isReversed)
+          : (trn.status === statusFilter && !trn.isReversed);
+
       const matchesSource = sourceWhFilter === 'all' || trn.sourceWarehouse === sourceWhFilter;
       const matchesTarget = targetWhFilter === 'all' || trn.targetWarehouse === targetWhFilter;
 
@@ -982,6 +1221,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
             <option value="pending_admin_verification">{isAr ? '🟣 معلق (بانتظار اعتماد المسؤول العام)' : 'Pending Admin (Custom Date)'}</option>
             <option value="pending_custodian_verification">{isAr ? '🟡 بانتظار اعتماد مسؤول المستودع' : 'Pending Custodian'}</option>
             <option value="completed">{isAr ? '🟢 مكتمل ومستلم' : 'Completed'}</option>
+            <option value="reversed">{isAr ? '🟣 ملغي ومسترجع إدارياً (Reversed)' : 'Reversed (Admin)'}</option>
             <option value="rejected">{isAr ? '🔴 مرفوض' : 'Rejected'}</option>
           </select>
         </div>
@@ -1049,6 +1289,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                 const isPendingCustodian = trn.status === 'pending_custodian_verification';
                 const isCompleted = trn.status === 'completed';
                 const isRejected = trn.status === 'rejected';
+                const isReversed = trn.status === 'reversed' || trn.isReversed;
 
                 const srcObj = getWarehouseObj(trn.sourceWarehouse);
                 const tgtObj = getWarehouseObj(trn.targetWarehouse);
@@ -1153,11 +1394,24 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                           )}
                         </div>
                       )}
-                      {isCompleted && (
+                      {isCompleted && !isReversed && (
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-300">
                           <CheckCircle2 className="h-3 w-3" />
                           <span>{isAr ? 'مكتمل ومستلم' : 'Completed'}</span>
                         </span>
+                      )}
+                      {isReversed && (
+                        <div>
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-purple-50 text-purple-800 border border-purple-300">
+                            <RotateCcw className="h-3 w-3 text-purple-600" />
+                            <span>{isAr ? 'ملغي ومسترجع إدارياً' : 'Reversed (Admin)'}</span>
+                          </span>
+                          {trn.reversalReason && (
+                            <span className="text-[9px] text-purple-700 block mt-1 font-medium truncate max-w-xs" title={trn.reversalReason}>
+                              {trn.reversalReason}
+                            </span>
+                          )}
+                        </div>
                       )}
                       {isRejected && (
                         <div>
@@ -1200,6 +1454,18 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                               <XCircle className="h-4 w-4" />
                             </button>
                           </>
+                        )}
+
+                        {/* General Admin Interlinked Transfer Reversal Action */}
+                        {isGeneralAdmin && isCompleted && !isReversed && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenAdminTransferReversal(trn)}
+                            className="p-1.5 text-purple-700 hover:text-white hover:bg-purple-700 rounded-lg transition cursor-pointer border border-purple-300 bg-purple-50 shadow-2xs"
+                            title={isAr ? 'إلغاء وعكس التحويل إدارياً (General Admin)' : 'Admin Reversal (General Admin)'}
+                          >
+                            <ShieldAlert className="h-4 w-4" />
+                          </button>
                         )}
 
                         <button
@@ -2043,6 +2309,233 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                 {printLang === 'ar' ? 'مسؤول النقل الداخلي' : 'Internal Handler'}
               </span>
               <span className="font-bold text-slate-900 block">........................</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* GENERAL ADMIN INTERLINKED TRANSFER REVERSAL MODALS (Phase 3)              */}
+      {/* ========================================================================= */}
+
+      {/* 1. DEPENDENCY BLOCKER MODAL */}
+      {adminDependencyModal.open && adminDependencyModal.transfer && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border-2 border-rose-400 space-y-4 text-slate-800">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-2xl">
+                  <ShieldAlert className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
+                    {isAr ? 'إجراء محظور - وجود حركات لاحقة مرتبطة بالتحويل' : 'Action Blocked - Downstream Dependencies'}
+                  </h3>
+                  <span className="text-[11px] text-rose-600 font-bold">
+                    {isAr ? 'قاعدة الأسبقية الصارمة (Strict Dependency Blocker - LIFO)' : 'Strict LIFO Cascade Policy Active'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, transfer: null, blockers: [], details: '' })}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed font-medium">
+              {adminDependencyModal.details}
+            </p>
+
+            {/* Visual Cascade Tree */}
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+              <div className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
+                <GitBranch className="h-4 w-4 text-indigo-600" />
+                <span>{isAr ? 'مسار الارتباط المخزني التابع:' : 'Downstream Dependency Chain:'}</span>
+              </div>
+
+              <div className="space-y-1.5 text-xs font-mono">
+                {/* Transfer Level */}
+                <div className="flex items-center gap-2 p-2 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                  <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px] font-bold">
+                    {isAr ? 'إذن تحويل' : 'Transfer'}
+                  </span>
+                  <span className="font-bold text-slate-900">{adminDependencyModal.transfer.id}</span>
+                  <span className="text-slate-500 font-sans">
+                    ({getWarehouseName(adminDependencyModal.transfer.sourceWarehouse)} ➔ {getWarehouseName(adminDependencyModal.transfer.targetWarehouse)})
+                  </span>
+                </div>
+
+                {/* Target Warehouse Node */}
+                <div className="flex items-center gap-2 pl-3 rtl:pr-3 text-slate-400">
+                  <CornerDownRight className="h-3.5 w-3.5" />
+                  <div className="flex-1 flex items-center gap-2 p-2 bg-white rounded-xl border border-slate-200 text-slate-600 shadow-2xs">
+                    <span className="px-1.5 py-0.5 bg-cyan-50 text-cyan-800 border border-cyan-200 rounded text-[10px] font-bold font-sans">
+                      {isAr ? 'مخزن الاستلام' : 'Target Warehouse'}
+                    </span>
+                    <span className="font-sans text-xs font-bold text-slate-800">{getWarehouseName(adminDependencyModal.transfer.targetWarehouse)}</span>
+                  </div>
+                </div>
+
+                {/* Downstream Blocker Rows */}
+                {(adminDependencyModal.blockers || []).map((b, bIdx) => (
+                  <div key={bIdx} className="flex items-center gap-2 pl-6 rtl:pr-6 text-rose-500">
+                    <CornerDownRight className="h-3.5 w-3.5" />
+                    <div className="flex-1 p-2.5 bg-rose-50 rounded-xl border border-rose-200 text-rose-950 font-sans text-xs shadow-2xs">
+                      <div className="font-bold flex items-center justify-between">
+                        <span>{isAr ? b.titleAr : b.titleEn}</span>
+                        {b.consumedQty > 0 && (
+                          <span className="font-mono text-[10px] bg-rose-200/80 px-1.5 py-0.5 rounded border border-rose-300 font-bold text-rose-900">
+                            {b.consumedQty.toLocaleString()} {b.unit}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-rose-700 mt-1 leading-relaxed">
+                        {isAr ? b.messageAr : b.messageEn}
+                      </div>
+                      {b.navTab && (
+                        <div className="mt-2 pt-1.5 border-t border-rose-200 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent('app_navigate_tab', {
+                                detail: b.orderNumber ? { tab: b.navTab, orderNumber: b.orderNumber } : b.navTab
+                              }));
+                              setAdminDependencyModal({ open: false, transfer: null, blockers: [], details: '' });
+                            }}
+                            className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-900 border border-rose-300 rounded-lg text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>
+                              {b.navTab === 'liquid_tanks'
+                                ? (isAr ? 'الانتقال لتانكات الخلط' : 'Go to Liquid Tanks')
+                                : b.navTab === 'work_orders'
+                                ? (isAr ? `الانتقال لأمر تشغيل #${b.orderNumber || ''}` : `Go to Work Order #${b.orderNumber || ''}`)
+                                : (isAr ? 'الانتقال للتحويلات' : 'Go to Transfers')}
+                            </span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAdminDependencyModal({ open: false, transfer: null, blockers: [], details: '' })}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'فهمت، إغلاق النافذة' : 'Understood, Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. ADMIN REVERSAL CONFIRMATION MODAL */}
+      {adminReversalModal.open && adminReversalModal.transfer && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border-2 border-purple-400 space-y-4 text-slate-800">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-2xl">
+                  <RotateCcw className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
+                    {isAr ? 'تأكيد إلغاء التحويل واسترجاع الرصيد المخزني' : 'Confirm Admin Transfer Reversal'}
+                  </h3>
+                  <span className="text-[11px] text-purple-700 font-bold">
+                    {isAr ? 'إعادة الخامات لمخزن الصرف وخصمها من المستلم' : 'Rollback Stock to Source Warehouse'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting}
+                onClick={() => setAdminReversalModal({ open: false, transfer: null, reason: '', isSubmitting: false, linesToRollback: [] })}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Transfer Summary */}
+            <div className="p-3 bg-purple-50/50 border border-purple-100 rounded-2xl text-xs space-y-1.5">
+              <div className="flex justify-between items-center">
+                <span className="font-mono font-extrabold text-purple-900 text-sm">{adminReversalModal.transfer.id}</span>
+                <span className="text-slate-500 font-medium">{adminReversalModal.transfer.transferDate}</span>
+              </div>
+              <div className="flex items-center gap-2 text-slate-700 font-bold">
+                <span className="text-slate-500">{isAr ? 'من:' : 'From:'} {getWarehouseName(adminReversalModal.transfer.sourceWarehouse)}</span>
+                <span>➔</span>
+                <span className="text-indigo-800">{isAr ? 'إلى:' : 'To:'} {getWarehouseName(adminReversalModal.transfer.targetWarehouse)}</span>
+              </div>
+            </div>
+
+            {/* Lines To Rollback */}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
+                <span>{isAr ? 'البنود المسترجعة إلى مخزن الصرف:' : 'Items Returned to Source Warehouse:'}</span>
+                <span className="font-mono text-purple-700 text-[10px]">
+                  ({adminReversalModal.linesToRollback.length} {isAr ? 'بنود' : 'items'})
+                </span>
+              </div>
+              <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 text-xs">
+                {adminReversalModal.linesToRollback.map((l, lIdx) => (
+                  <div key={lIdx} className="p-2 bg-slate-50/50 flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-900">{l.nameAr}</span>
+                      <span className="text-[10px] text-slate-500 font-mono ms-1.5">[{l.lotNumber}]</span>
+                    </div>
+                    <div className="font-mono font-bold text-emerald-700">
+                      +{l.qtySmallUnits.toLocaleString()} {l.smallUnit}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Mandatory Reason */}
+            <div className="space-y-1.5">
+              <label className="block font-bold text-slate-700 text-xs">
+                {isAr ? 'سبب الإلغاء الإداري (إلزامي للتوثيق المالي - 5 أحرف على الأقل) *' : 'Reversal Justification Reason (Mandatory - min 5 chars) *'}
+              </label>
+              <textarea
+                required
+                rows={2}
+                value={adminReversalModal.reason}
+                onChange={(e) => setAdminReversalModal((prev) => ({ ...prev, reason: e.target.value }))}
+                placeholder={isAr ? 'اكتب سبب إلغاء التحويل بدقة، مثال: إذن مكرر، خطأ في اختيار المخزن، إلخ...' : 'Enter clear justification reason...'}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-slate-900 text-xs focus:ring-2 focus:ring-purple-500 font-medium placeholder-slate-400"
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting}
+                onClick={() => setAdminReversalModal({ open: false, transfer: null, reason: '', isSubmitting: false, linesToRollback: [] })}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'تراجع' : 'Cancel'}
+              </button>
+
+              <button
+                type="button"
+                disabled={adminReversalModal.isSubmitting || !adminReversalModal.reason || adminReversalModal.reason.trim().length < 5}
+                onClick={handleExecuteAdminTransferReversal}
+                className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>{adminReversalModal.isSubmitting ? (isAr ? 'جاري التنفيذ...' : 'Processing...') : (isAr ? 'تأكيد الإلغاء واسترجاع الرصيد' : 'Confirm Reversal')}</span>
+              </button>
             </div>
           </div>
         </div>
