@@ -384,6 +384,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   const [activeNotePopoverId, setActiveNotePopoverId] = useState(null); // Interactive modern tooltip for order notes
   const [pinnedMatrixTooltip, setPinnedMatrixTooltip] = useState(null); // Pinned tooltip in rework matrix
   const [hoveredMatrixTooltip, setHoveredMatrixTooltip] = useState(null); // Hovered tooltip in rework matrix
+  const [completePromptModal, setCompletePromptModal] = useState({ open: false, order: null, actionTime: '' }); // 3-option complete prompt
 
   // Floor Transfer Modal State (Triggered from Plan Overview Bar)
   const [showFloorTransferModal, setShowFloorTransferModal] = useState(false);
@@ -4419,31 +4420,32 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     const plannedLarge = Number(order.plannedQtyLarge) || (Number(order.plannedQtySmall || 0) / ratio) || 0;
     const remainingLarge = Math.max(0, plannedLarge - actualProducedLarge);
 
-    // Case 1: Zero stock on any component -> Hard block
-    if (maxCartons <= 0) {
-      showAlert({
-        title: isAr ? 'رصيد الخامات غير متوفر بصالة الإنتاج' : 'No Floor Stock Available',
-        message: isAr
-          ? `🚫 لا يمكن بدء الإنتاج أو تسجيل البالتات:\nرصيد خامة (${zeroComponent || 'بعض الخامات'}) = 0 بصالة الإنتاج.\n\nيرجى تنفيذ إذن تحويل مخزني (TRN) من مستودع الخامات إلى صالة الإنتاج أولاً.`
-          : `Cannot start production: Component stock is 0 on factory floor. Please transfer materials to floor warehouse first.`,
-        variant: 'error'
-      });
-      return;
-    }
+    // Case 1 & 2: Floor Readiness Gate (Applies to standard virgin production; rework orders sort/repack existing cartons)
+    if (!order.isRework) {
+      if (maxCartons <= 0) {
+        showAlert({
+          title: isAr ? 'رصيد الخامات غير متوفر بصالة الإنتاج' : 'No Floor Stock Available',
+          message: isAr
+            ? `🚫 لا يمكن بدء الإنتاج أو تسجيل البالتات:\nرصيد خامة (${zeroComponent || 'بعض الخامات'}) = 0 بصالة الإنتاج.\n\nيرجى تنفيذ إذن تحويل مخزني (TRN) من مستودع الخامات إلى صالة الإنتاج أولاً.`
+            : `Cannot start production: Component stock is 0 on factory floor. Please transfer materials to floor warehouse first.`,
+          variant: 'error'
+        });
+        return;
+      }
 
-    // Case 2: Partial stock available -> Track against REMAINING work order quantity (considering what has been finished)
-    const targetQtyToCheck = remainingLarge > 0 ? remainingLarge : plannedLarge;
-    if (maxCartons < targetQtyToCheck) {
-      const proceed = await showConfirm({
-        title: isAr ? 'تنبيه رصيد جزئي بصالة الإنتاج' : 'Partial Floor Stock Alert',
-        message: isAr
-          ? `الخامات المتوفرة حالياً بصالة الإنتاج تكفي لإنتاج (${maxCartons.toLocaleString()} كرتونة) فقط، بينما الكمية المتبقية لإتمام أمر التشغيل هي (${targetQtyToCheck.toLocaleString()} كرتونة).\n(تم إنجاز ${actualProducedLarge.toLocaleString()} كرتونة من أصل ${plannedLarge.toLocaleString()} كرتونة مخطط).\n\nهل ترغب في متابعة التشغيل وتسجيل البالتات في حدود الرصيد المتاح؟`
-          : `Available floor stock can produce ${maxCartons} cartons, while remaining to produce is ${targetQtyToCheck} cartons (already produced ${actualProducedLarge} of ${plannedLarge}). Proceed in available limits?`,
-        confirmText: isAr ? 'متابعة بالرصيد المتاح' : 'Proceed',
-        cancelText: isAr ? 'إلغاء' : 'Cancel',
-        variant: 'warning'
-      });
-      if (!proceed) return;
+      const targetQtyToCheck = remainingLarge > 0 ? remainingLarge : plannedLarge;
+      if (maxCartons < targetQtyToCheck) {
+        const proceed = await showConfirm({
+          title: isAr ? 'تنبيه رصيد جزئي بصالة الإنتاج' : 'Partial Floor Stock Alert',
+          message: isAr
+            ? `الخامات المتوفرة حالياً بصالة الإنتاج تكفي لإنتاج (${maxCartons.toLocaleString()} كرتونة) فقط، بينما الكمية المتبقية لإتمام أمر التشغيل هي (${targetQtyToCheck.toLocaleString()} كرتونة).\n(تم إنجاز ${actualProducedLarge.toLocaleString()} كرتونة من أصل ${plannedLarge.toLocaleString()} كرتونة مخطط).\n\nهل ترغب في متابعة التشغيل وتسجيل البالتات في حدود الرصيد المتاح؟`
+            : `Available floor stock can produce ${maxCartons} cartons, while remaining to produce is ${targetQtyToCheck} cartons (already produced ${actualProducedLarge} of ${plannedLarge}). Proceed in available limits?`,
+          confirmText: isAr ? 'متابعة بالرصيد المتاح' : 'Proceed',
+          cancelText: isAr ? 'إلغاء' : 'Cancel',
+          variant: 'warning'
+        });
+        if (!proceed) return;
+      }
     }
 
     const existingPallets = order.pallets || [];
@@ -5000,9 +5002,9 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       return;
     }
 
-    // Strict Pallet Save Gate: Verify that saving this pallet does not exceed available floor stock
+    // Strict Pallet Save Gate: Verify that saving this pallet does not exceed available floor stock (virgin orders only)
     const recipe = bomRecipes.find((b) => b.code === palletTargetOrder.bomRecipeId || b.id === palletTargetOrder.bomRecipeId);
-    if (recipe && Array.isArray(recipe.components)) {
+    if (!palletTargetOrder.isRework && recipe && Array.isArray(recipe.components)) {
       const pallets = palletTargetOrder.pallets || [];
       const priorSavedLarge = editingPalletIndex !== null && editingPalletIndex >= 0
         ? Number(pallets[editingPalletIndex]?.qtyLarge || 0)
@@ -5940,19 +5942,46 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     }
   };
 
-  const handleCompleteOrder = async (order, customTime) => {
+  const handleInitiateCompleteOrder = (order, customTime) => {
+    if (isOrderLocked(order)) return;
+    setCompletePromptModal({
+      open: true,
+      order,
+      actionTime: customTime || minsToTime(timeToMins(new Date().toTimeString().slice(0, 5))),
+    });
+  };
+
+  const handleConfirmCompleteWithoutPallet = async () => {
+    const { order, actionTime } = completePromptModal;
+    setCompletePromptModal({ open: false, order: null, actionTime: '' });
+    if (order) {
+      await handleCompleteOrder(order, actionTime, true);
+    }
+  };
+
+  const handleConfirmCompleteWithFinalPallet = () => {
+    const { order } = completePromptModal;
+    setCompletePromptModal({ open: false, order: null, actionTime: '' });
+    if (order) {
+      handleOpenAddPallet(order);
+    }
+  };
+
+  const handleCompleteOrder = async (order, customTime, skipConfirm = false) => {
     if (isOrderLocked(order)) return;
     const effectiveTime = customTime || minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)));
-    const confirmed = await showConfirm({
-      title: isAr ? 'تأكيد إنهاء أمر التشغيل' : 'Confirm Order Completion',
-      message: isAr
-        ? `هل أنت متأكد من إنهاء تشغيل أمر #${order.orderNumber} في تمام الساعة (${effectiveTime})؟ سيتم إغلاق وقت التشغيل واعتماده كأمر مكتمل.`
-        : `Are you sure you want to complete order #${order.orderNumber} at (${effectiveTime})?`,
-      confirmText: isAr ? 'إنهاء التشغيل' : 'Complete',
-      cancelText: isAr ? 'إلغاء' : 'Cancel',
-      variant: 'primary',
-    });
-    if (!confirmed) return;
+    if (!skipConfirm) {
+      const confirmed = await showConfirm({
+        title: isAr ? 'تأكيد إنهاء أمر التشغيل' : 'Confirm Order Completion',
+        message: isAr
+          ? `هل أنت متأكد من إنهاء تشغيل أمر #${order.orderNumber} في تمام الساعة (${effectiveTime})؟ سيتم إغلاق وقت التشغيل واعتماده كأمر مكتمل.`
+          : `Are you sure you want to complete order #${order.orderNumber} at (${effectiveTime})?`,
+        confirmText: isAr ? 'إنهاء التشغيل' : 'Complete',
+        cancelText: isAr ? 'إلغاء' : 'Cancel',
+        variant: 'primary',
+      });
+      if (!confirmed) return;
+    }
 
     const segments = (order.segments || []).map((seg) => {
       if (seg.status === 'Active' || !seg.endTime) {
@@ -6261,6 +6290,26 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
     return list;
   }, [workOrders, selectedPlanDate, searchTerm, statusFilter, lineFilter, priorityFilter]);
+
+  // Subtab 2 Specific Hierarchy: Running ('in_progress') first -> Ready / Paused -> Completed last (each tier ordered by plan sequence)
+  const sortedSubtab2Orders = useMemo(() => {
+    return [...filteredPlanOrders].sort((a, b) => {
+      const getStatusTier = (ord) => {
+        if (ord.status === 'in_progress') return 0;
+        if (ord.status === 'completed') return 2;
+        return 1;
+      };
+      const tierA = getStatusTier(a);
+      const tierB = getStatusTier(b);
+      if (tierA !== tierB) return tierA - tierB;
+
+      const rankA = Number(a.importanceRank) || 9999;
+      const rankB = Number(b.importanceRank) || 9999;
+      if (rankA !== rankB) return rankA - rankB;
+
+      return (a.orderNumber || '').localeCompare(b.orderNumber || '');
+    });
+  }, [filteredPlanOrders]);
 
   // Today Pallet Checkpoints for the Live Timeline
   const todayPalletCheckpoints = useMemo(() => {
@@ -7526,7 +7575,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           )}
 
           <div className="grid grid-cols-1 gap-4">
-            {filteredPlanOrders.map((order) => {
+            {sortedSubtab2Orders.map((order, orderIdx) => {
               const feasibility = sequentialPlanFeasibilityMap[order.id] || evaluateBomFeasibility(order.bomRecipeId, order.plannedQtyLarge, order.componentSelections);
               const pallets = order.pallets || [];
               const ratio = Number(order.packagingRatio) || 12;
@@ -7552,93 +7601,416 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
               const largeUnit = order.outputLargeUnit || (isAr ? 'كرتونة' : 'Carton');
 
-              return (
-                <div key={order.id} className="p-5 bg-white border-2 border-slate-300 rounded-3xl shadow-md hover:shadow-lg transition-all space-y-4">
-                  {/* Past Date Lockdown Banner */}
-                  {isOrderPastDate(order) && (
-                    <div className={`flex items-center justify-between px-3.5 py-1.5 rounded-xl text-xs font-bold ${
-                      isOrderLocked(order) ? 'bg-slate-100 text-slate-700 border border-slate-300' : 'bg-amber-50 text-amber-900 border border-amber-300'
-                    }`}>
-                      <div className="flex items-center gap-1.5">
-                        {isOrderLocked(order) ? <Lock className="h-3.5 w-3.5 text-slate-500" /> : <Unlock className="h-3.5 w-3.5 text-amber-600" />}
-                        <span>
-                          {isOrderLocked(order)
-                            ? (isAr ? 'أمر تشغيل سابق ومؤرشف (للقراءة فقط - مقفل ضد إدخال البالتات والتعديل)' : 'Past Order (Locked - Read Only)')
-                            : (isAr ? 'أمر تشغيل سابق (متاح للتعديل بصلاحية المسؤول العام)' : 'Past Order (Editable by General Admin)')}
-                        </span>
-                      </div>
-                      <span className="font-mono text-[11px] text-slate-500">{order.planDate || order.productionDate}</span>
-                    </div>
-                  )}
+              // Status states
+              const isRunning = order.status === 'in_progress';
+              const isPaused = order.status === 'paused';
+              const isCompleted = order.status === 'completed';
 
-                  {/* Order Execution Header */}
-                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-3">
-                      {cardImage && (
-                        <img
-                          src={cardImage}
-                          alt={order.productNameAr}
-                          className="w-12 h-12 rounded-xl object-cover border border-slate-200 shadow-2xs shrink-0 cursor-pointer"
-                          onClick={() => window.open(cardImage, '_blank')}
-                          title={isAr ? 'معاينة صورة الصنف' : 'Preview image'}
-                        />
-                      )}
-                      <div className="space-y-1">
-                        {/* Primary Product Identity & Packaging Option */}
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h4 className="font-extrabold text-slate-900 text-base leading-snug flex items-center gap-2">
-                            <span>{order.productNameAr}</span>
-                            {order.packagingOptionNameAr && (
+              let statusRibbonBg = 'bg-slate-300 text-slate-700';
+              let statusLabel = isAr ? 'بانتظار البدء' : 'READY';
+
+              if (isRunning) {
+                statusRibbonBg = 'bg-emerald-600 text-white';
+                statusLabel = isAr ? 'قيد التشغيل' : 'RUNNING';
+              } else if (isPaused) {
+                statusRibbonBg = 'bg-amber-500 text-white';
+                statusLabel = isAr ? 'متوقف مؤقتاً' : 'PAUSED';
+              } else if (isCompleted) {
+                statusRibbonBg = 'bg-blue-600 text-white';
+                statusLabel = isAr ? 'مكتمل' : 'COMPLETED';
+              }
+
+              // Donut chart variables
+              const completionPctClamped = Math.min(100, Math.max(0, completionPct));
+              const donutRadius = 20;
+              const donutCircumference = 2 * Math.PI * donutRadius;
+              const strokeDashoffset = donutCircumference - (completionPctClamped / 100) * donutCircumference;
+
+              let progressColor = '#f59e0b'; // Amber < 30%
+              let progressColorClass = 'text-amber-600';
+              if (completionPctClamped >= 80) {
+                progressColor = '#10b981'; // Green >= 80%
+                progressColorClass = 'text-emerald-600';
+              } else if (completionPctClamped >= 30) {
+                progressColor = '#3b82f6'; // Blue 30% - 80%
+                progressColorClass = 'text-blue-600';
+              }
+
+              const currentSeq = order.importanceRank || (orderIdx + 1);
+
+              return (
+                <div
+                  key={order.id}
+                  className={`relative flex flex-row overflow-hidden rounded-3xl border-2 shadow-md hover:shadow-lg transition-all ${
+                    isCompleted
+                      ? 'opacity-75 grayscale-[20%] border-slate-200 bg-slate-50/50'
+                      : isRunning
+                      ? 'border-emerald-400 ring-2 ring-emerald-100 bg-white'
+                      : isPaused
+                      ? 'border-amber-300 bg-white'
+                      : 'border-slate-300 bg-white'
+                  }`}
+                >
+                  {/* Vertical 90-degree Rotated Status Ribbon on Leading Edge */}
+                  <div
+                    className={`w-9 shrink-0 flex items-center justify-center select-none ${statusRibbonBg}`}
+                    title={statusLabel}
+                  >
+                    <span
+                      style={{ writingMode: 'vertical-rl' }}
+                      className="transform rotate-180 font-black text-[11px] tracking-wider uppercase whitespace-nowrap py-4"
+                    >
+                      {statusLabel}
+                    </span>
+                  </div>
+
+                  {/* Card Main Body */}
+                  <div className="flex-1 p-4 sm:p-5 space-y-4 min-w-0">
+                    {/* Past Date Lockdown Banner */}
+                    {isOrderPastDate(order) && (
+                      <div className={`flex items-center justify-between px-3.5 py-1.5 rounded-xl text-xs font-bold ${
+                        isOrderLocked(order) ? 'bg-slate-100 text-slate-700 border border-slate-300' : 'bg-amber-50 text-amber-900 border border-amber-300'
+                      }`}>
+                        <div className="flex items-center gap-1.5">
+                          {isOrderLocked(order) ? <Lock className="h-3.5 w-3.5 text-slate-500" /> : <Unlock className="h-3.5 w-3.5 text-amber-600" />}
+                          <span>
+                            {isOrderLocked(order)
+                              ? (isAr ? 'أمر تشغيل سابق ومؤرشف (للقراءة فقط - مقفل ضد إدخال البالتات والتعديل)' : 'Past Order (Locked - Read Only)')
+                              : (isAr ? 'أمر تشغيل سابق (متاح للتعديل بصلاحية المسؤول العام)' : 'Past Order (Editable by General Admin)')}
+                          </span>
+                        </div>
+                        <span className="font-mono text-[11px] text-slate-500">{order.planDate || order.productionDate}</span>
+                      </div>
+                    )}
+
+                    {/* Order Execution Header */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {/* High-Contrast Floating Sequence Badge */}
+                        <span
+                          className="font-mono text-xs font-black px-2 py-1 rounded-lg bg-indigo-950 text-white shadow-2xs shrink-0"
+                          title={isAr ? `ترتيب الخطة: #${currentSeq}` : `Plan sequence: #${currentSeq}`}
+                        >
+                          #{currentSeq}
+                        </span>
+
+                        {/* Contained Thumbnail with Lightbox Popover Preview */}
+                        {cardImage && (
+                          <div className="w-12 h-12 rounded-xl bg-slate-50 border border-slate-200 shadow-2xs flex items-center justify-center p-0.5 shrink-0 overflow-hidden group/img">
+                            <img
+                              src={cardImage}
+                              alt={order.productNameAr}
+                              onClick={() => setImagePreviewModal({
+                                url: cardImage,
+                                title: `${order.productNameAr} - ${order.packagingOptionNameAr || ''}`,
+                                subtitle: `${order.finishedProductId || ''} • ${order.packagingOptionCode || ''}`
+                              })}
+                              className="w-full h-full object-contain cursor-pointer hover:scale-110 transition duration-150"
+                              title={isAr ? 'انقر لعرض الصورة بالحجم الكامل' : 'Click to preview image'}
+                            />
+                          </div>
+                        )}
+
+                        <div className="space-y-1 min-w-0">
+                          {/* Primary Product Identity & Packaging Option */}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="font-extrabold text-slate-900 text-base leading-snug flex items-center gap-2">
+                              <span>{order.productNameAr}</span>
+                              {order.packagingOptionNameAr && (
+                                <>
+                                  <span className="text-slate-400 font-normal">•</span>
+                                  <span className="text-indigo-900 font-bold">{order.packagingOptionNameAr}</span>
+                                </>
+                              )}
+                            </h4>
+                            {order.isRework && (
+                              <span className="px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 font-bold rounded-lg text-[11px] flex items-center gap-1">
+                                <Wrench className="h-3 w-3 text-amber-700" />
+                                <span>{isAr ? 'أمر تصليح ومرتجع' : 'Rework Order'}</span>
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Pulsing Notes Popover Icon + Order Code + Feasibility Pill + Rework Return Info */}
+                          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                            {/* Pulsing Notes Icon before order number */}
+                            {order.notes && (
+                              <div className="relative inline-block">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveNotePopoverId(activeNotePopoverId === order.id ? null : order.id);
+                                  }}
+                                  className="p-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 shadow-2xs transition cursor-pointer flex items-center justify-center animate-pulse"
+                                  title={isAr ? 'ملاحظة وتوجيهات التشغيل (انقر للعرض)' : 'Order notes (click to view)'}
+                                >
+                                  <MessageSquareText className="h-3.5 w-3.5 text-amber-700" />
+                                </button>
+
+                                {/* Modern Interactive Tooltip Popover */}
+                                {activeNotePopoverId === order.id && (
+                                  <div
+                                    className="absolute start-0 top-full mt-1.5 z-50 w-72 bg-slate-900 text-white rounded-2xl p-3 shadow-2xl border border-slate-700 animate-in fade-in zoom-in-95 duration-150 text-xs select-text"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <div className="flex items-center justify-between border-b border-slate-700 pb-1.5 mb-1.5">
+                                      <span className="font-extrabold text-amber-400 text-[11px] flex items-center gap-1">
+                                        <MessageSquareText className="h-3.5 w-3.5" />
+                                        <span>{isAr ? 'ملاحظات وتوجيهات التشغيل' : 'Production Notes'}</span>
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setActiveNotePopoverId(null)}
+                                        className="p-0.5 text-slate-400 hover:text-white rounded transition cursor-pointer"
+                                      >
+                                        <X className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                    <p className="text-[11px] text-slate-200 leading-relaxed font-medium whitespace-pre-wrap">
+                                      {order.notes}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            <span className="font-mono text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+                              أمر #{order.orderNumber}
+                            </span>
+                            {order.finishedProductId && (
+                              <span className="text-[11px] text-slate-400 font-mono">[{order.finishedProductId}]</span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setFeasibilityModalData({ order, feasibility })}
+                              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[10px] font-bold transition-all shadow-2xs hover:scale-105 cursor-pointer ${
+                                feasibility.status === 'floor_ready'
+                                  ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                  : feasibility.status === 'transfer_needed'
+                                  ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+                                  : 'bg-rose-50 hover:bg-rose-100 text-rose-900 border border-rose-300 animate-pulse'
+                              }`}
+                              title={isAr ? 'انقر لعرض تفاصيل توفر خامات الـ BOM' : 'Click to inspect BOM component breakdown'}
+                            >
+                              <CircleDot className="h-2.5 w-2.5" />
+                              <span>{feasibility.labelAr}</span>
+                              <Eye className="h-2.5 w-2.5 opacity-60 ms-0.5" />
+                            </button>
+
+                            {order.isRework && (() => {
+                              const orig = getOriginalReturnQty(order);
+                              return orig ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-50 text-purple-900 border border-purple-200 rounded-lg text-[10px] font-bold">
+                                  <RotateCcw className="h-3 w-3 text-purple-600" />
+                                  <span>{isAr ? 'أصل المرتجع:' : 'Orig Return:'}</span>
+                                  <b className="font-mono">{orig.qtyLarge} {orig.largeUnit}</b>
+                                </span>
+                              ) : null;
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Header End Side: Circular Donut Chart & Progress Percentage */}
+                      <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
+                        <div className="relative w-14 h-14 shrink-0 flex items-center justify-center">
+                          <svg className="w-14 h-14 -rotate-90 transform" viewBox="0 0 48 48">
+                            <circle
+                              cx="24"
+                              cy="24"
+                              r={donutRadius}
+                              className="stroke-slate-200"
+                              strokeWidth="4"
+                              fill="transparent"
+                            />
+                            <circle
+                              cx="24"
+                              cy="24"
+                              r={donutRadius}
+                              stroke={progressColor}
+                              strokeWidth="4"
+                              strokeDasharray={donutCircumference}
+                              strokeDashoffset={strokeDashoffset}
+                              strokeLinecap="round"
+                              fill="transparent"
+                              className="transition-all duration-500 ease-out"
+                            />
+                          </svg>
+                          {/* Center Content: Numerator over Denominator */}
+                          <div className="absolute inset-0 flex flex-col items-center justify-center text-center select-none pointer-events-none px-1">
+                            <span className={`font-mono font-black text-[10px] leading-tight ${progressColorClass}`}>
+                              {roundedActualLarge.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                            </span>
+                            <span className="w-4 h-[1px] bg-slate-300 my-0.5" />
+                            <span className="font-mono font-bold text-[9px] text-slate-500 leading-tight">
+                              {roundedPlannedLarge.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col">
+                          <span className={`font-mono font-black text-sm leading-none ${progressColorClass}`}>
+                            {completionPct.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 1 })}%
+                          </span>
+                          <span className="text-[10px] font-bold text-slate-400 mt-1">
+                            {largeUnit}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Split Control Bar */}
+                    <div className="p-3 bg-linear-to-r from-slate-50 via-indigo-50/20 to-slate-50 rounded-2xl border border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-2xs">
+                      {/* Side A: Execution Timer Controls & Crew Adjuster */}
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        {!isOrderLocked(order) && order.status !== 'completed' && (
+                          <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-xl border border-slate-300 shadow-2xs">
+                            <Clock className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                            <span className="text-[10px] font-bold text-slate-500 shrink-0 hidden sm:inline">
+                              {isAr ? 'الوقت:' : 'Time:'}
+                            </span>
+                            <input
+                              type="time"
+                              value={orderActionTimes[order.id] ?? minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)))}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setOrderActionTimes((prev) => ({ ...prev, [order.id]: val }));
+                              }}
+                              className="w-[72px] px-1 py-0.5 text-xs font-mono font-black text-center border border-slate-200 rounded-md bg-slate-50 text-slate-900 focus:bg-white"
+                              title={isAr ? 'تحديد وقت الإجراء يدوياً' : 'Set action time manually'}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)));
+                                setOrderActionTimes((prev) => ({ ...prev, [order.id]: cur }));
+                              }}
+                              className="px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-md text-[10px] font-black transition cursor-pointer"
+                              title={isAr ? 'ضبط على التوقيت الحالي الآن' : 'Set to current time'}
+                            >
+                              {isAr ? 'الآن' : 'Now'}
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Timer Action Buttons */}
+                        {!isOrderLocked(order) && (
+                          <div className="flex items-center gap-1.5">
+                            {order.status !== 'completed' && !hasOrderTimeRecorded(order) && (
+                              <button
+                                type="button"
+                                onClick={() => handleStartOrder(order, orderActionTimes[order.id])}
+                                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                                title={isAr ? 'بدء تشغيل أمر الإنتاج واحتساب دقائق العمل' : 'Start floor execution'}
+                              >
+                                <Play className="h-3.5 w-3.5 fill-current" />
+                                <span>{isAr ? 'بدء التشغيل' : 'Start Run'}</span>
+                              </button>
+                            )}
+
+                            {order.status === 'in_progress' && (
                               <>
-                                <span className="text-slate-400 font-normal">•</span>
-                                <span className="text-indigo-900 font-bold">{order.packagingOptionNameAr}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handlePauseOrder(order, orderActionTimes[order.id])}
+                                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
+                                  title={isAr ? 'إيقاف تشغيل الأمر مؤقتاً' : 'Pause execution'}
+                                >
+                                  <Pause className="h-3.5 w-3.5 fill-current" />
+                                  <span>{isAr ? 'إيقاف مؤقت' : 'Pause'}</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleInitiateCompleteOrder(order, orderActionTimes[order.id])}
+                                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
+                                  title={isAr ? 'إنهاء التشغيل وإغلاق الوقت' : 'Complete execution'}
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                  <span>{isAr ? 'إنهاء التشغيل' : 'Complete'}</span>
+                                </button>
                               </>
                             )}
-                          </h4>
-                          {order.isRework && (
-                            <span className="px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 font-bold rounded-lg text-[11px] flex items-center gap-1">
-                              <Wrench className="h-3 w-3 text-amber-700" />
-                              <span>{isAr ? 'أمر تصليح ومرتجع' : 'Rework Order'}</span>
-                            </span>
-                          )}
-                        </div>
 
-                        {/* Subtle Order Code Chip & Feasibility Pill placed just below Product Name */}
-                        <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                          <span className="font-mono text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
-                            أمر #{order.orderNumber}
+                            {order.status !== 'completed' && order.status !== 'in_progress' && hasOrderTimeRecorded(order) && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleResumeOrder(order, orderActionTimes[order.id])}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
+                                  title={isAr ? 'استئناف تشغيل أمر الإنتاج' : 'Resume execution'}
+                                >
+                                  <Play className="h-3.5 w-3.5 fill-current" />
+                                  <span>{isAr ? 'استئناف' : 'Resume'}</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleInitiateCompleteOrder(order, orderActionTimes[order.id])}
+                                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
+                                  title={isAr ? 'إنهاء التشغيل وإغلاق الوقت' : 'Complete execution'}
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                  <span>{isAr ? 'إنهاء التشغيل' : 'Complete'}</span>
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Crew Count Adjuster */}
+                        <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs">
+                          <span className="text-[11px] font-bold text-slate-600 flex items-center gap-1">
+                            <Users className="h-3.5 w-3.5 text-indigo-600" />
+                            <span>{isAr ? 'طاقم العمل:' : 'Crew:'}</span>
                           </span>
-                          {order.finishedProductId && (
-                            <span className="text-[11px] text-slate-400 font-mono">[{order.finishedProductId}]</span>
+                          {!isOrderLocked(order) && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateCrewCount(order, -1)}
+                              disabled={getOrderCrewCount(order) <= 1}
+                              className="w-5 h-5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs disabled:opacity-30 cursor-pointer transition"
+                              title={isAr ? 'تقليل العمالة' : 'Decrease crew'}
+                            >
+                              -
+                            </button>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => setFeasibilityModalData({ order, feasibility })}
-                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[10px] font-bold transition-all shadow-2xs hover:scale-105 cursor-pointer ${
-                              feasibility.status === 'floor_ready'
-                                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                : feasibility.status === 'transfer_needed'
-                                ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
-                                : 'bg-rose-50 hover:bg-rose-100 text-rose-900 border border-rose-300 animate-pulse'
-                            }`}
-                            title={isAr ? 'انقر لعرض تفاصيل توفر خامات الـ BOM' : 'Click to inspect BOM component breakdown'}
-                          >
-                            <CircleDot className="h-2.5 w-2.5" />
-                            <span>{feasibility.labelAr}</span>
-                            <Eye className="h-2.5 w-2.5 opacity-60 ms-0.5" />
-                          </button>
+                          <span className="font-mono font-black text-xs px-1 text-indigo-950 min-w-5 text-center">
+                            {getOrderCrewCount(order)}
+                          </span>
+                          {!isOrderLocked(order) && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateCrewCount(order, 1)}
+                              className="w-5 h-5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs cursor-pointer transition"
+                              title={isAr ? 'زيادة العمالة' : 'Increase crew'}
+                            >
+                              +
+                            </button>
+                          )}
+                          <span className="text-[10px] text-slate-400 font-semibold">{isAr ? 'عمال' : 'workers'}</span>
                         </div>
-                      </div>
-                    </div>
 
-                    {/* Header Action Buttons Grouped to Far Side */}
-                    {isOrderLocked(order) ? (
-                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-600 shrink-0">
-                        <Lock className="h-3.5 w-3.5 text-slate-500" />
-                        <span>{isAr ? 'أمر سابق مقفل' : 'Archived & Locked'}</span>
+                        {/* Runtime Counter */}
+                        {(() => {
+                          const segs = order.segments || [];
+                          const nowTimeStr = minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)));
+                          const totalMins = segs.reduce((sum, s) => {
+                            const eTime = s.endTime || (s.status === 'Active' ? nowTimeStr : s.startTime);
+                            return sum + calculateDuration(s.startTime, eTime);
+                          }, 0);
+                          return totalMins > 0 ? (
+                            <div className="flex items-center gap-1 text-xs font-mono font-bold text-slate-700 bg-white px-2.5 py-1 rounded-xl border border-slate-200 shadow-2xs">
+                              <Clock className="h-3.5 w-3.5 text-slate-400" />
+                              <span>{formatDuration(totalMins, isAr)}</span>
+                            </div>
+                          ) : null;
+                        })()}
                       </div>
-                    ) : (
-                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+
+                      {/* Side B: Floor Actions (Rework Matrix + Log Scrap + Smart Add Pallet) */}
+                      <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                         {/* Rework Reconciliation Button for Rework Orders */}
                         {order.isRework && (
                           <button
@@ -7652,247 +8024,47 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                           </button>
                         )}
 
-                        {/* Smaller Sized Log Scrap Button */}
-                        <button
-                          type="button"
-                          onClick={() => handleOpenLogFloorScrap(order)}
-                          className="h-8 px-2.5 py-1 bg-white hover:bg-rose-50 hover:text-rose-700 text-slate-600 border border-slate-200 hover:border-rose-200 rounded-xl text-[11px] font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-                          title={isAr ? 'تسجيل هالك أو مرتجع للمورد ووضعه جانباً بالصالة' : 'Log scrap / vendor return on floor'}
-                        >
-                          <AlertTriangle className="h-3.5 w-3.5 text-rose-500" />
-                          <span>{isAr ? 'تسجيل هالك' : 'Log Scrap'}</span>
-                        </button>
-
-                        {/* Primary Add Pallet Button */}
-                        <button
-                          type="button"
-                          onClick={() => handleOpenAddPallet(order)}
-                          className="px-3.5 py-2 min-h-[38px] bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <Plus className="h-4 w-4" />
-                          <span>{isAr ? 'إدراج باليتة جديدة وطاقم العمل' : 'Add Pallet & Crew'}</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Realtime Execution & Crew Control Strip */}
-                  <div className="p-3 bg-linear-to-r from-slate-50 via-indigo-50/30 to-slate-50 rounded-2xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
-                    <div className="flex flex-wrap items-center gap-2.5">
-                      {/* Live Status Pill */}
-                      {order.status === 'in_progress' ? (
-                        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-black shadow-2xs">
-                          <span className="relative flex h-2.5 w-2.5">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                          </span>
-                          <span>{isAr ? 'يعمل الآن بالصالة' : 'Running on Floor'}</span>
-                        </div>
-                      ) : order.status === 'paused' ? (
-                        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-300 rounded-xl text-xs font-black shadow-2xs">
-                          <Pause className="h-3 w-3 text-amber-600 fill-current" />
-                          <span>{isAr ? 'متوقف مؤقتاً' : 'Paused'}</span>
-                        </div>
-                      ) : order.status === 'completed' ? (
-                        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-800 border border-blue-300 rounded-xl text-xs font-black shadow-2xs">
-                          <CheckCircle2 className="h-3.5 w-3.5 text-blue-600" />
-                          <span>{isAr ? 'مكتمل التشغيل' : 'Completed'}</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold shadow-2xs">
-                          <Clock className="h-3.5 w-3.5 text-slate-400" />
-                          <span>{isAr ? 'بانتظار البدء' : 'Ready to Start'}</span>
-                        </div>
-                      )}
-
-                      {/* Execution Action Controls (Manual Time + Quick Now Button + Contextual Actions) */}
-                      {!isOrderLocked(order) && (
-                        <div className="flex flex-wrap items-center gap-2">
-                          {/* Manual Action Time Input & Quick "Now" Button */}
-                          {order.status !== 'completed' && (
-                            <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-xl border border-slate-300 shadow-2xs">
-                              <Clock className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
-                              <span className="text-[10px] font-bold text-slate-500 shrink-0 hidden sm:inline">
-                                {isAr ? 'الوقت:' : 'Time:'}
-                              </span>
-                              <input
-                                type="time"
-                                value={orderActionTimes[order.id] ?? minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)))}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setOrderActionTimes((prev) => ({ ...prev, [order.id]: val }));
-                                }}
-                                className="w-[72px] px-1 py-0.5 text-xs font-mono font-black text-center border border-slate-200 rounded-md bg-slate-50 text-slate-900 focus:bg-white"
-                                title={isAr ? 'تحديد وقت الإجراء يدوياً' : 'Set action time manually'}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const cur = minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)));
-                                  setOrderActionTimes((prev) => ({ ...prev, [order.id]: cur }));
-                                }}
-                                className="px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-md text-[10px] font-black transition cursor-pointer"
-                                title={isAr ? 'ضبط على التوقيت الحالي الآن' : 'Set to current time'}
-                              >
-                                {isAr ? 'الآن' : 'Now'}
-                              </button>
-                            </div>
-                          )}
-
-                          {/* "Start Run" is ONLY shown if NO time has been recorded for that work order */}
-                          {order.status !== 'completed' && !hasOrderTimeRecorded(order) && (
-                            <button
-                              type="button"
-                              onClick={() => handleStartOrder(order, orderActionTimes[order.id])}
-                              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-                              title={isAr ? 'بدء تشغيل أمر الإنتاج واحتساب دقائق العمل' : 'Start floor execution'}
-                            >
-                              <Play className="h-3.5 w-3.5 fill-current" />
-                              <span>{isAr ? 'بدء التشغيل' : 'Start Run'}</span>
-                            </button>
-                          )}
-
-                          {/* If time has been recorded: In Progress -> Pause & Complete */}
-                          {order.status === 'in_progress' && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handlePauseOrder(order, orderActionTimes[order.id])}
-                                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
-                                title={isAr ? 'إيقاف تشغيل الأمر مؤقتاً' : 'Pause execution'}
-                              >
-                                <Pause className="h-3.5 w-3.5 fill-current" />
-                                <span>{isAr ? 'إيقاف مؤقت' : 'Pause'}</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handleCompleteOrder(order, orderActionTimes[order.id])}
-                                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
-                                title={isAr ? 'إنهاء التشغيل وإغلاق الوقت' : 'Complete execution'}
-                              >
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                <span>{isAr ? 'إنهاء التشغيل' : 'Complete'}</span>
-                              </button>
-                            </>
-                          )}
-
-                          {/* If time has been recorded: Paused or other non-running status -> Resume & Complete */}
-                          {order.status !== 'completed' && order.status !== 'in_progress' && hasOrderTimeRecorded(order) && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleResumeOrder(order, orderActionTimes[order.id])}
-                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
-                                title={isAr ? 'استئناف تشغيل أمر الإنتاج' : 'Resume execution'}
-                              >
-                                <Play className="h-3.5 w-3.5 fill-current" />
-                                <span>{isAr ? 'استئناف' : 'Resume'}</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handleCompleteOrder(order, orderActionTimes[order.id])}
-                                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
-                                title={isAr ? 'إنهاء التشغيل وإغلاق الوقت' : 'Complete execution'}
-                              >
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                <span>{isAr ? 'إنهاء التشغيل' : 'Complete'}</span>
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Dynamic Crew Count Adjuster & Running Runtime Indicator */}
-                    <div className="flex items-center gap-3">
-                      {/* Crew Count Pill */}
-                      <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs">
-                        <span className="text-[11px] font-bold text-slate-600 flex items-center gap-1">
-                          <Users className="h-3.5 w-3.5 text-indigo-600" />
-                          <span>{isAr ? 'طاقم العمل:' : 'Crew:'}</span>
-                        </span>
+                        {/* Log Scrap Button */}
                         {!isOrderLocked(order) && (
                           <button
                             type="button"
-                            onClick={() => handleUpdateCrewCount(order, -1)}
-                            disabled={getOrderCrewCount(order) <= 1}
-                            className="w-5 h-5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs disabled:opacity-30 cursor-pointer transition"
-                            title={isAr ? 'تقليل العمالة' : 'Decrease crew'}
+                            onClick={() => handleOpenLogFloorScrap(order)}
+                            className="h-8 px-2.5 py-1 bg-white hover:bg-rose-50 hover:text-rose-700 text-slate-600 border border-slate-200 hover:border-rose-200 rounded-xl text-[11px] font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                            title={isAr ? 'تسجيل هالك أو مرتجع للمورد ووضعه جانباً بالصالة' : 'Log scrap / vendor return on floor'}
                           >
-                            -
+                            <AlertTriangle className="h-3.5 w-3.5 text-rose-500" />
+                            <span>{isAr ? 'تسجيل هالك' : 'Log Scrap'}</span>
                           </button>
                         )}
-                        <span className="font-mono font-black text-xs px-1 text-indigo-950 min-w-5 text-center">
-                          {getOrderCrewCount(order)}
-                        </span>
-                        {!isOrderLocked(order) && (
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateCrewCount(order, 1)}
-                            className="w-5 h-5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs cursor-pointer transition"
-                            title={isAr ? 'زيادة العمالة' : 'Increase crew'}
-                          >
-                            +
-                          </button>
-                        )}
-                        <span className="text-[10px] text-slate-400 font-semibold">{isAr ? 'عمال' : 'workers'}</span>
-                      </div>
 
-                      {/* Runtime Counter */}
-                      {(() => {
-                        const segs = order.segments || [];
-                        const nowTimeStr = minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)));
-                        const totalMins = segs.reduce((sum, s) => {
-                          const eTime = s.endTime || (s.status === 'Active' ? nowTimeStr : s.startTime);
-                          return sum + calculateDuration(s.startTime, eTime);
-                        }, 0);
-                        return totalMins > 0 ? (
-                          <div className="flex items-center gap-1 text-xs font-mono font-bold text-slate-700 bg-white px-2.5 py-1 rounded-xl border border-slate-200 shadow-2xs">
-                            <Clock className="h-3.5 w-3.5 text-slate-400" />
-                            <span>{formatDuration(totalMins, isAr)}</span>
+                        {/* Smart Add Pallet Button */}
+                        {isOrderLocked(order) ? (
+                          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-600 shrink-0">
+                            <Lock className="h-3.5 w-3.5 text-slate-500" />
+                            <span>{isAr ? 'أمر سابق مقفل' : 'Archived & Locked'}</span>
                           </div>
-                        ) : null;
-                      })()}
+                        ) : isRunning ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenAddPallet(order)}
+                            className="px-3.5 py-2 min-h-[38px] bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <Plus className="h-4 w-4" />
+                            <span>{isAr ? 'إدراج باليتة جديدة وطاقم العمل' : 'Add Pallet & Crew'}</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled
+                            className="px-3.5 py-2 min-h-[38px] bg-slate-100 text-slate-400 border border-slate-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-not-allowed opacity-80"
+                            title={isAr ? 'يجب بدء أو استئناف تشغيل الأمر أولاً لإدراج البالتات' : 'Start or resume timer to add pallets'}
+                          >
+                            <Plus className="h-4 w-4 opacity-50" />
+                            <span>{isAr ? 'إدراج باليتة جديدة وطاقم العمل' : 'Add Pallet & Crew'}</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Production Progress Gauge */}
-                  <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold text-slate-700 flex flex-wrap items-center gap-2">
-                        <span>
-                          {isAr ? 'الإنتاج الفعلي المحقق:' : 'Actual Output:'}{' '}
-                          <b className="font-mono text-blue-700 font-extrabold">
-                            {roundedActualLarge.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
-                          </b>{' '}
-                          /{' '}
-                          {roundedPlannedLarge.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}{' '}
-                          {largeUnit}
-                        </span>
-                        {order.isRework && (() => {
-                          const orig = getOriginalReturnQty(order);
-                          return orig ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-900 border border-purple-200 rounded-lg text-[11px] font-extrabold">
-                              <RotateCcw className="h-3 w-3 text-purple-600" />
-                              <span>{isAr ? 'أصل المرتجع:' : 'Orig Return:'}</span>
-                              <b className="font-mono">{orig.qtyLarge} {orig.largeUnit} ({orig.qtySmall} {orig.smallUnit})</b>
-                            </span>
-                          ) : null;
-                        })()}
-                      </span>
-                      <span className="font-mono font-extrabold text-blue-800 bg-blue-100 px-2 py-0.5 rounded-md">
-                        {completionPct.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%
-                      </span>
-                    </div>
-                    <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-blue-600 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, completionPct)}%` }}
-                      />
-                    </div>
-                  </div>
 
                   {/* Serialized Pallets Registry - Compact Square Pallet Subcards */}
                   <div className="space-y-2 pt-1 border-t border-slate-100">
@@ -7986,9 +8158,10 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                     )}
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
+        </div>
         </div>
       )}
 
@@ -14169,6 +14342,83 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                       : 'Preserves completed status and closes line with shortage documented.'}
                   </div>
                 </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3-Option Completion Prompt Modal */}
+      {completePromptModal.open && completePromptModal.order && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <div className="flex items-center gap-2 text-indigo-950 font-black text-base">
+                <CheckCircle2 className="h-5 w-5 text-indigo-600" />
+                <span>{isAr ? 'إنهاء تشغيل أمر الإنتاج' : 'Complete Work Order'}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCompletePromptModal({ open: false, order: null, actionTime: '' })}
+                className="p-1 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 mb-5 leading-relaxed">
+              {isAr
+                ? `أنت على وشك إنهاء أمر التشغيل #${completePromptModal.order.orderNumber} في تمام الساعة (${completePromptModal.actionTime}). هل ترغب في تسجيل باليتة أخيرة قبل الإغلاق النهائي؟`
+                : `You are about to complete order #${completePromptModal.order.orderNumber} at (${completePromptModal.actionTime}). Would you like to record a final pallet before closing?`}
+            </p>
+
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={handleConfirmCompleteWithFinalPallet}
+                className="w-full text-start p-3.5 bg-indigo-50 hover:bg-indigo-100/80 border border-indigo-200 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+              >
+                <div className="p-2 bg-indigo-600 text-white rounded-xl shrink-0 mt-0.5 shadow-2xs">
+                  <Plus className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="font-extrabold text-xs text-indigo-950">
+                    {isAr ? 'تسجيل باليتة أخيرة ثم الإنهاء' : 'Add Final Pallet Then Complete'}
+                  </div>
+                  <div className="text-[11px] text-indigo-700/80 mt-0.5 leading-relaxed">
+                    {isAr
+                      ? 'فتح شاشة إدراج الباليتة لتسجيل آخر كراتين تم إنتاجها بالصالة.'
+                      : 'Open pallet modal to log the last produced cartons on floor.'}
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleConfirmCompleteWithoutPallet}
+                className="w-full text-start p-3.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+              >
+                <div className="p-2 bg-slate-700 text-white rounded-xl shrink-0 mt-0.5 shadow-2xs">
+                  <CheckCircle2 className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="font-extrabold text-xs text-slate-900">
+                    {isAr ? 'إنهاء التشغيل مباشرة بدون باليتة' : 'Complete Immediately Without Pallet'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                    {isAr
+                      ? 'إغلاق وقت التشغيل فوراً واعتماد الأمر كمكتمل بالبالتات الحالية المسجلة.'
+                      : 'Close runtime now and finalize order with currently recorded pallets.'}
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCompletePromptModal({ open: false, order: null, actionTime: '' })}
+                className="w-full py-2.5 text-center text-xs font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+              >
+                {isAr ? 'إلغاء ومتابعة التشغيل' : 'Cancel & Keep Running'}
               </button>
             </div>
           </div>
