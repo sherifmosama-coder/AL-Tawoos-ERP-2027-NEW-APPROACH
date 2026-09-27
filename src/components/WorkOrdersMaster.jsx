@@ -9,6 +9,8 @@ import {
   updateDoc,
   addDoc,
   deleteDoc,
+  getDoc,
+  getDocs,
   writeBatch,
   serverTimestamp
 } from 'firebase/firestore';
@@ -4159,8 +4161,17 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
   const handleDeletePlanOrder = async (orderId, orderTitle) => {
     const order = workOrders.find((o) => o.id === orderId);
+    if (!order) return;
     if (isOrderLocked(order)) {
       alert(isAr ? '🚫 أمر التشغيل هذا بتاريخ سابق ومقفل ضد الحذف (محصور بالمسؤول العام).' : 'This order is from a past date and is locked (General Admin only).');
+      return;
+    }
+    if ((order.pallets || []).length > 0) {
+      alert(
+        isAr
+          ? '🚫 لا يمكن حذف أمر التشغيل مباشرة لوجود باليتات مسجلة عليه. يرجى حذف الباليتات من تبويب الباليتات أولاً لاسترجاع الخامات والسوائل بدقة.'
+          : 'Cannot delete order directly because it has registered pallets. Please delete the pallets first to reverse materials and liquid.'
+      );
       return;
     }
     if (!canCancel) {
@@ -4639,11 +4650,17 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 ((itmDoc?.flags || []).some((f) => String(f).toUpperCase().includes('M')) &&
                  ((comp.unit || itmDoc?.smallUnit || '').includes('لتر') || (comp.unit || itmDoc?.smallUnit || '').toLowerCase().includes('liter') || (comp.materialNameAr || itmDoc?.nameAr || '').includes('خل')));
 
+              const oldPallet = editingPalletIndex !== null ? palletTargetOrder.pallets?.[editingPalletIndex] : null;
+              const qtyChanged = oldPallet && (Number(oldPallet.qtyLarge) !== pQtyLarge || Number(oldPallet.qtySmall) !== pQtySmall);
+              const shouldPreserveExistingTanks = palletIntermediateTanks.length > 0 && (!isTargetPallet || (editingPalletIndex !== null && !qtyChanged));
+
               if (isLiquidIntermediate) {
-                // If not target pallet and already has intermediate tanks, preserve them without duplicate deduction
-                if (!isTargetPallet && palletIntermediateTanks.length > 0) {
+                // If not target pallet or editing without qty change, preserve already allocated tanks without duplicate deduction
+                if (shouldPreserveExistingTanks) {
                   allocatedTanksForComp = palletIntermediateTanks;
-                  finalLotNumber = palletIntermediateTanks.map((t) => `#${t.tankNumber}`).join(' + ');
+                  finalLotNumber = palletIntermediateTanks
+                    .map((t) => (t.lotNumber && t.lotNumber.startsWith('TANK-')) ? t.lotNumber : (t.tankNumber ? `TANK-${t.tankNumber}` : t.lotNumber || `#${t.tankNumber}`))
+                    .join(' + ');
                 } else {
                   if (!vesselWorkingCopies[comp.itemId]) {
                     const existingVessel = floorLiquidVessels.find((v) => v.materialCode === comp.itemId || v.id === comp.itemId);
@@ -4916,7 +4933,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     }
   };
 
-  // Delete Pallet and Instantly Reverse Consumed Raw Materials
+  // Delete Pallet and Instantly Reverse Consumed Raw Materials & Liquid Tanks
   const handleDeletePallet = async (order, palletIndex) => {
     if (isOrderLocked(order)) {
       alert(isAr ? '🚫 أمر التشغيل هذا بتاريخ سابق ومقفل ضد الحذف (محصور بالمسؤول العام).' : 'This order is from a past date and is locked (General Admin only).');
@@ -4937,8 +4954,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     const confirmed = await showConfirm({
       title: isAr ? 'تأكيد حذف الباليتة' : 'Confirm Pallet Deletion',
       message: isAr
-        ? `هل أنت متأكد من حذف الباليتة #${pallet.palletNumber} (${pallet.palletId || ''})؟\n\nسيتم إلغاء استهلاك الخامات فورياً وإعادتها لرصيد صالة الإنتاج.`
-        : `Are you sure you want to delete Pallet #${pallet.palletNumber}? Consumed materials will be reversed back to floor balances immediately.`,
+        ? `هل أنت متأكد من حذف الباليتة #${pallet.palletNumber} (${pallet.palletId || ''})؟\n\nسيتم إلغاء استهلاك الخامات فورياً وإعادتها لرصيد صالة الإنتاج وخزانات السوائل.`
+        : `Are you sure you want to delete Pallet #${pallet.palletNumber}? Consumed materials and liquid storage will be reversed back immediately.`,
       confirmText: isAr ? 'حذف واسترجاع الخامات' : 'Delete & Reverse',
       cancelText: isAr ? 'إلغاء' : 'Cancel',
       variant: 'danger',
@@ -4951,13 +4968,162 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       const palletId = pallet.palletId || `PAL-${order.orderNumber}-P${String(pallet.palletNumber).padStart(2, '0')}`;
       const transId = `TRANS-PAL-${palletId}`;
 
-      // 1. Delete pallet transformation doc -> automatically reverses raw material deduction in buildLiveStockMatrix!
+      // 1. Fetch transformation doc if exists to discover exact intermediate allocations
+      let transData = null;
+      try {
+        const transSnap = await getDoc(doc(db, 'production_transformations', transId));
+        if (transSnap.exists()) {
+          transData = transSnap.data();
+        }
+      } catch (err) {
+        console.warn('Could not read transformation doc for reversal:', err);
+      }
+
+      // Collect all intermediate liquid tank allocations recorded on pallet or transformation doc
+      const intermediateAllocations = [
+        ...(Array.isArray(pallet.intermediateLiquidTanks) ? pallet.intermediateLiquidTanks : []),
+        ...(Array.isArray(transData?.intermediateLiquidTanks) ? transData.intermediateLiquidTanks : []),
+        ...((Array.isArray(transData?.consumedComponents) ? transData.consumedComponents : []).flatMap((c) =>
+          Array.isArray(c.intermediateLiquidTanks) ? c.intermediateLiquidTanks : []
+        )),
+      ];
+
+      // 2. Reverse intermediate liquid consumption back to floor_liquid_vessels
+      try {
+        const vesselsSnap = await getDocs(collection(db, 'floor_liquid_vessels'));
+        for (const vDoc of vesselsSnap.docs) {
+          const vData = vDoc.data();
+          const vId = vDoc.id;
+          let modified = false;
+
+          let activeTanks = Array.isArray(vData.activeTanks) ? vData.activeTanks.map((t) => ({ ...t })) : [];
+          let historyTanks = Array.isArray(vData.historyTanks) ? vData.historyTanks.map((t) => ({ ...t })) : [];
+
+          const processTankReversal = (t) => {
+            const consumedEntries = Array.isArray(t.consumedByPallets)
+              ? t.consumedByPallets.filter(
+                  (cp) =>
+                    cp.palletId === palletId ||
+                    (String(cp.workOrderId) === String(order.id) && Number(cp.palletNumber) === Number(pallet.palletNumber))
+                )
+              : [];
+
+            let litersToRestore = consumedEntries.reduce((sum, cp) => sum + (Number(cp.consumedLiters) || 0), 0);
+
+            if (litersToRestore <= 0 && intermediateAllocations.length > 0) {
+              const tNumStr = String(t.tankNumber || '').replace('#', '').trim();
+              const tIdStr = String(t.tankId || '').trim();
+              const matchAlloc = intermediateAllocations.find((ia) => {
+                const iaNum = String(ia.tankNumber || '').replace('#', '').trim();
+                const iaId = String(ia.tankId || '').trim();
+                return (tNumStr && iaNum && tNumStr === iaNum) || (tIdStr && iaId && tIdStr === iaId);
+              });
+              if (matchAlloc && Number(matchAlloc.consumedLiters) > 0) {
+                litersToRestore = Number(matchAlloc.consumedLiters);
+              }
+            }
+
+            if (litersToRestore > 0) {
+              modified = true;
+              const curRem = Number(t.remainingVolume) || 0;
+              const initVol = Number(t.initialVolume || t.volume || t.transferQuantity || 1000);
+              let newRem = Number((curRem + litersToRestore).toFixed(2));
+              if (initVol > 0 && newRem > initVol) {
+                newRem = initVol;
+              }
+              t.remainingVolume = newRem;
+
+              // Remove pallet entry from consumedByPallets
+              if (Array.isArray(t.consumedByPallets)) {
+                t.consumedByPallets = t.consumedByPallets.filter(
+                  (cp) =>
+                    !(
+                      cp.palletId === palletId ||
+                      (String(cp.workOrderId) === String(order.id) && Number(cp.palletNumber) === Number(pallet.palletNumber))
+                    )
+                );
+              }
+
+              // Update finishedWorkOrderIds if no other pallet for this order
+              if (Array.isArray(t.finishedWorkOrderIds)) {
+                const stillInThisTank = (t.consumedByPallets || []).some(
+                  (cp) => String(cp.orderNumber) === String(order.orderNumber) || String(cp.workOrderId) === String(order.id)
+                );
+                if (!stillInThisTank) {
+                  t.finishedWorkOrderIds = t.finishedWorkOrderIds.filter(
+                    (fId) => fId !== String(order.orderNumber) && fId !== String(order.id)
+                  );
+                }
+              }
+
+              return true;
+            }
+            return false;
+          };
+
+          // Process active tanks
+          activeTanks.forEach(processTankReversal);
+
+          // Process history tanks (revive depleted tanks if liters restored)
+          const tanksToRevive = [];
+          historyTanks = historyTanks.filter((ht) => {
+            const wasRestored = processTankReversal(ht);
+            if (wasRestored && (Number(ht.remainingVolume) || 0) > 0) {
+              ht.status = 'active';
+              delete ht.depletedAt;
+              tanksToRevive.push(ht);
+              return false; // remove from historyTanks
+            }
+            return true; // keep in historyTanks
+          });
+
+          if (tanksToRevive.length > 0) {
+            modified = true;
+            tanksToRevive.forEach((rt) => {
+              if (
+                !activeTanks.some(
+                  (at) => (rt.tankId && at.tankId === rt.tankId) || (rt.tankNumber && String(at.tankNumber) === String(rt.tankNumber))
+                )
+              ) {
+                activeTanks.push(rt);
+              }
+            });
+
+            // Keep activeTanks sorted
+            activeTanks.sort((a, b) => {
+              if (a.pumpFinishedAt && b.pumpFinishedAt) {
+                return a.pumpFinishedAt.localeCompare(b.pumpFinishedAt);
+              }
+              return Number(a.tankNumber || 0) - Number(b.tankNumber || 0);
+            });
+          }
+
+          if (modified) {
+            const updatedPoolVolume = activeTanks.reduce((s, tk) => s + (Number(tk.remainingVolume) || 0), 0);
+            await setDoc(
+              doc(db, 'floor_liquid_vessels', vId),
+              {
+                ...vData,
+                activeTanks,
+                historyTanks,
+                currentVolume: updatedPoolVolume,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+        }
+      } catch (vErr) {
+        console.error('Error reversing floor liquid vessels:', vErr);
+      }
+
+      // 3. Delete pallet transformation doc -> automatically reverses raw material deduction in buildLiveStockMatrix!
       await deleteDoc(doc(db, 'production_transformations', transId)).catch(() => {});
 
-      // 2. Delete from staged_floor_pallets
+      // 4. Delete from staged_floor_pallets
       await deleteDoc(doc(db, 'staged_floor_pallets', palletId)).catch(() => {});
 
-      // 3. Update order.pallets
+      // 5. Update order.pallets
       const updatedPallets = (order.pallets || []).filter((_, idx) => idx !== palletIndex);
       const ratio = Number(order.packagingRatio) || 12;
       const totalProducedSmall = updatedPallets.reduce((sum, p) => sum + (Number(p.qtySmall) || 0), 0);
@@ -4979,8 +5145,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       });
 
       toast.success(
-        isAr ? 'تم حذف الباليتة واسترجاع خاماتها لرصيد الصالة بنجاح.' : 'Pallet deleted and materials restored to floor balance.',
-        isAr ? 'تم الحذف' : 'Deleted'
+        isAr ? 'تم حذف الباليتة واسترجاع خاماتها ورصيد السوائل بنجاح.' : 'Pallet deleted and all materials & liquid volume restored successfully.',
+        isAr ? 'تم الحذف والاسترجاع' : 'Deleted & Restored'
       );
     } catch (err) {
       console.error('Error deleting pallet:', err);

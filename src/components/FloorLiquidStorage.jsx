@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { db } from '../firebase';
 import {
@@ -437,8 +437,136 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
     }
   }, [liquidTanks, currentMaterial, currentVessel]);
 
+  // Reconcile and reverse any ghost pallet consumptions where the pallet was deleted in Work Orders
+  const reconcilePalletConsumptions = async () => {
+    if (!currentMaterial || !currentVessel || isSaving) return 0;
+    if (workOrders.length === 0 && stagedPallets.length === 0) return 0;
+
+    try {
+      const validPalletIds = new Set();
+      (stagedPallets || []).forEach((p) => {
+        if (p.id) validPalletIds.add(String(p.id));
+        if (p.palletId) validPalletIds.add(String(p.palletId));
+      });
+      (workOrders || []).forEach((wo) => {
+        if (Array.isArray(wo.pallets)) {
+          wo.pallets.forEach((p) => {
+            if (p.id) validPalletIds.add(String(p.id));
+            if (p.palletId) validPalletIds.add(String(p.palletId));
+          });
+        }
+      });
+
+      let totalLitersRestored = 0;
+      const activeTanks = (currentVessel.activeTanks || []).map((t) => ({ ...t }));
+      let historyTanks = (currentVessel.historyTanks || []).map((t) => ({ ...t }));
+
+      const checkTankForGhostPallets = (t) => {
+        if (!Array.isArray(t.consumedByPallets) || t.consumedByPallets.length === 0) return false;
+        const ghostEntries = t.consumedByPallets.filter((cp) => {
+          const pId = cp.palletId;
+          if (pId && !validPalletIds.has(String(pId))) return true;
+          if (!pId && cp.workOrderId) {
+            const wo = workOrders.find((w) => w.id === cp.workOrderId || String(w.orderNumber) === String(cp.orderNumber));
+            const hasPallet = wo && Array.isArray(wo.pallets) && wo.pallets.some((pl) => Number(pl.palletNumber) === Number(cp.palletNumber));
+            return !hasPallet;
+          }
+          return false;
+        });
+
+        if (ghostEntries.length > 0) {
+          const litersToReturn = ghostEntries.reduce((s, ge) => s + (Number(ge.consumedLiters) || 0), 0);
+          if (litersToReturn > 0) {
+            const curRem = Number(t.remainingVolume) || 0;
+            const initVol = Number(t.initialVolume || t.volume || t.transferQuantity || 1000);
+            let newRem = Number((curRem + litersToReturn).toFixed(2));
+            if (initVol > 0 && newRem > initVol) newRem = initVol;
+            t.remainingVolume = newRem;
+            totalLitersRestored += litersToReturn;
+          }
+          t.consumedByPallets = t.consumedByPallets.filter((cp) => !ghostEntries.includes(cp));
+
+          if (Array.isArray(t.finishedWorkOrderIds)) {
+            t.finishedWorkOrderIds = t.finishedWorkOrderIds.filter((woId) => {
+              return (t.consumedByPallets || []).some(
+                (cp) => String(cp.orderNumber) === String(woId) || String(cp.workOrderId) === String(woId)
+              );
+            });
+          }
+          return true;
+        }
+        return false;
+      };
+
+      activeTanks.forEach(checkTankForGhostPallets);
+
+      const tanksToRevive = [];
+      historyTanks = historyTanks.filter((ht) => {
+        const hadGhost = checkTankForGhostPallets(ht);
+        if (hadGhost && (Number(ht.remainingVolume) || 0) > 0) {
+          ht.status = 'active';
+          delete ht.depletedAt;
+          tanksToRevive.push(ht);
+          return false;
+        }
+        return true;
+      });
+
+      if (tanksToRevive.length > 0) {
+        tanksToRevive.forEach((rt) => {
+          if (!activeTanks.some((at) => (rt.tankId && at.tankId === rt.tankId) || (rt.tankNumber && String(at.tankNumber) === String(rt.tankNumber)))) {
+            activeTanks.push(rt);
+          }
+        });
+        activeTanks.sort((a, b) => {
+          if (a.pumpFinishedAt && b.pumpFinishedAt) return a.pumpFinishedAt.localeCompare(b.pumpFinishedAt);
+          return Number(a.tankNumber || 0) - Number(b.tankNumber || 0);
+        });
+      }
+
+      if (totalLitersRestored > 0 || tanksToRevive.length > 0) {
+        setIsSaving(true);
+        const vRef = doc(db, 'floor_liquid_vessels', currentMaterial.code);
+        const newVol = activeTanks.reduce((s, t) => s + (Number(t.remainingVolume) || 0), 0);
+        await setDoc(
+          vRef,
+          {
+            ...currentVessel,
+            activeTanks,
+            historyTanks,
+            currentVolume: newVol,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        toast.success(
+          isAr
+            ? `تم استرجاع (${totalLitersRestored.toFixed(1)} لتر) تلقائياً لخزانات الصالة من باليتات محذوفة.`
+            : `Auto-restored ${totalLitersRestored.toFixed(1)} L back to floor vessels from deleted pallets.`,
+          isAr ? 'مزامنة الصالة' : 'Floor Synced'
+        );
+      }
+      return totalLitersRestored;
+    } catch (err) {
+      console.error('Error reconciling pallet consumptions:', err);
+      return 0;
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Auto-detect and reconcile ghost pallet consumptions when collections are ready
+  const hasReconciledRef = useRef(false);
+  useEffect(() => {
+    if (hasReconciledRef.current || !currentMaterial || !currentVessel || isSaving) return;
+    if (workOrders.length > 0 || stagedPallets.length > 0) {
+      hasReconciledRef.current = true;
+      reconcilePalletConsumptions();
+    }
+  }, [workOrders, stagedPallets, currentMaterial, currentVessel]);
+
   // Manual Trigger to re-check and sync
-  const handleManualSync = () => {
+  const handleManualSync = async () => {
     if (!currentMaterial || !currentVessel) return;
     const activeIds = new Set((currentVessel.activeTanks || []).map((t) => String(t.tankId || t.tankNumber)));
     const historyIds = new Set((currentVessel.historyTanks || []).map((t) => String(t.tankId || t.tankNumber)));
@@ -452,10 +580,23 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
       return matchesMat && isDone && !activeIds.has(tId) && !activeIds.has(tNum) && !historyIds.has(tId) && !historyIds.has(tNum);
     });
 
+    let performedAction = false;
     if (pendingCompleted.length > 0) {
-      reconcileCompletedTanks(pendingCompleted);
-    } else {
-      toast.info(isAr ? 'الخزانات متزامنة بالكامل مع تبويب التانكات.' : 'Storage is fully synced with #liquid_tanks.');
+      await reconcileCompletedTanks(pendingCompleted);
+      performedAction = true;
+    }
+
+    const restoredLiters = await reconcilePalletConsumptions();
+    if (restoredLiters > 0) {
+      performedAction = true;
+    }
+
+    if (!performedAction) {
+      toast.info(
+        isAr
+          ? 'خزانات الصالة متزامنة بالكامل مع تانكات الخلط وأوامر التشغيل.'
+          : 'Floor storage is fully synced with Liquid Tanks and Work Orders.'
+      );
     }
   };
 
