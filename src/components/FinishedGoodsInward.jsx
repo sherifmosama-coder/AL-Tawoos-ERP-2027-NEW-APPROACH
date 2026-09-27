@@ -274,8 +274,13 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
   const pendingInwardTransfers = useMemo(() => {
     return transfers.filter((trn) => {
       if (trn.status !== 'pending_custodian_verification') return false;
-      // Must be destined for a finished goods warehouse or starts with TRN-FG-
-      const isFgTrn = trn.id?.startsWith('TRN-FG-');
+      // Must be destined for a finished goods warehouse or tagged/prefixed as FG transfer
+      const isFgTrn =
+        trn.id?.startsWith('TRN-FG-') ||
+        trn.id?.startsWith('FG-') ||
+        trn.transferType === 'finished_goods' ||
+        trn.transferCategory === 'finished_goods' ||
+        trn.isFinishedGoods;
       const targetWh = warehouses.find((w) => w.id === trn.targetWarehouse);
       const isFgWh = targetWh?.classification === 'finished_goods' || targetWh?.operationalClassification === 'finished_goods';
       return isFgTrn || isFgWh;

@@ -202,6 +202,21 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
     return isAr ? (user?.nameAr || userId) : (user?.name || user?.nameAr || userId);
   };
 
+  // Material Transfers Only - Exclude Finished Goods transfers (managed exclusively in #fg_inward)
+  const isFinishedGoodsTransfer = (trn) => {
+    if (!trn) return false;
+    if (trn.transferType === 'finished_goods' || trn.transferCategory === 'finished_goods' || trn.isFinishedGoods) return true;
+    if (trn.id?.startsWith('TRN-FG-') || trn.id?.startsWith('FG-INW-') || trn.id?.startsWith('FG-TRN-')) return true;
+    if (Array.isArray(trn.lines) && trn.lines.some((l) => l.palletId || (Array.isArray(l.intermediateLiquidTanks) && l.intermediateLiquidTanks.length > 0))) return true;
+    const targetWh = warehouses.find((w) => matchWh(trn.targetWarehouse, w));
+    const isTargetFg = targetWh?.classification === 'finished_goods' || targetWh?.operationalClassification === 'finished_goods';
+    const srcWh = warehouses.find((w) => matchWh(trn.sourceWarehouse, w));
+    const isSrcFloor = srcWh?.classification === 'factory_floor' || srcWh?.isFactoryLinked;
+    if (isTargetFg && isSrcFloor) return true;
+    if (trn.notes && (trn.notes.includes('ترحيل بالتات منتج تام') || trn.notes.toLowerCase().includes('pallets to fg'))) return true;
+    return false;
+  };
+
   // Helper to render dynamic warehouse icon
   const renderWarehouseIcon = (wh, className = 'h-4 w-4') => {
     const iconType = wh?.icon || (wh?.classification === 'factory_floor' || wh?.isFactoryLinked ? 'Factory' : 'Warehouse');
@@ -409,7 +424,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
     const dd = String(today.getDate()).padStart(2, '0');
     const datePrefix = `TRN-${yyyy}${mm}${dd}`;
 
-    const todaysTransfers = transfers.filter((t) => t.id && t.id.startsWith(datePrefix));
+    const todaysTransfers = transfers.filter((t) => t.id && t.id.startsWith(datePrefix) && !isFinishedGoodsTransfer(t));
     let maxSeq = 0;
     todaysTransfers.forEach((t) => {
       const seqPart = parseInt(t.id.slice(datePrefix.length), 10);
@@ -873,9 +888,12 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
     }, 200);
   };
 
-  // Filtered List
+  // Filtered List (Strictly Material Transfers - Finished Goods are isolated in #fg_inwards)
   const filteredTransfers = useMemo(() => {
     return transfers.filter((trn) => {
+      // Exclude Finished Goods transfers from #transfers tab
+      if (isFinishedGoodsTransfer(trn)) return false;
+
       const matchesSearch =
         trn.id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         trn.productionOrderRef?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -888,7 +906,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
 
       return matchesSearch && matchesStatus && matchesSource && matchesTarget;
     });
-  }, [transfers, searchQuery, statusFilter, sourceWhFilter, targetWhFilter]);
+  }, [transfers, searchQuery, statusFilter, sourceWhFilter, targetWhFilter, warehouses]);
 
   const { verifierId: previewVerifierId, verifierRoleDesc: previewVerifierRoleDesc } = getRequiredVerifierInfo(currentUserId);
 

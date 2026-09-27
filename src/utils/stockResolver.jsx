@@ -320,6 +320,9 @@ export function buildLiveStockMatrix({
   // =========================================================================
   transfers.forEach((trn) => {
     if (trn.status !== 'completed') return;
+    // Skip Finished Goods transfers (only raw, packaging, chemical & scrap material transfers affect liveStockMatrix)
+    if (trn.transferType === 'finished_goods' || trn.transferCategory === 'finished_goods' || trn.isFinishedGoods || trn.id?.startsWith('TRN-FG-') || trn.id?.startsWith('FG-')) return;
+    if (Array.isArray(trn.lines) && trn.lines.some((l) => l.palletId)) return;
 
     const srcWhObj = warehouses.find((w) => matchWarehouse(trn.sourceWarehouse, w)) || {
       id: trn.sourceWarehouse,

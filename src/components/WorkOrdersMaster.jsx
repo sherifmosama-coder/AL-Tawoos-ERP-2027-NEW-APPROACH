@@ -2948,6 +2948,9 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         requiredVerifierId: requiredVerifierId,
         issuedBy: currentUserName,
         issuedById: currentUserId,
+        transferType: 'finished_goods',
+        transferCategory: 'finished_goods',
+        isFinishedGoods: true,
         verifiedBy: isAuthorizedDirectly ? currentUserName : '',
         verifiedAt: isAuthorizedDirectly ? new Date().toISOString() : '',
         auditTrail: [{
