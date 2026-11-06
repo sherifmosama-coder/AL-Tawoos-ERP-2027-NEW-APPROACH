@@ -47,11 +47,17 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { translateBatchToPallets, parseInkjetBatch } from '../utils/inkjetBatchTranslator';
+import SearchableSelect from './SearchableSelect';
 import {
   getStoredThermalConfig,
   saveStoredThermalConfig,
   DEFAULT_THERMAL_CONFIG,
 } from '../utils/thermalLabelGenerator';
+import {
+  createActionRequired,
+  completeActionRequired,
+  createNotification
+} from '../utils/notificationEngine';
 
 // Client-side image compression helper
 const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.75) => {
@@ -776,6 +782,24 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
 
         await updateDoc(doc(db, 'faulty_fg_returns', voucherId), updatePayload);
 
+        if (wasReceivedOnFloor) {
+          await createActionRequired({
+            actionType: 'faulty_fg_floor_confirm',
+            docId: voucherId,
+            docNumber: voucherId,
+            title: `مطلوب إعادة تأكيد استلام مرتجع معيب: ${voucherId}`,
+            titleEn: `Reconfirmation Required for Faulty FG: ${voucherId}`,
+            message: `تم تعديل بيانات إشعار المرتجع ويجب إعادة تأكيد استلام العهدة بالصالة`,
+            messageEn: `Faulty return voucher modified; reconfirmation required by floor`,
+            targetTab: 'faulty_fg',
+            targetModule: 'production',
+            highlightId: voucherId,
+            createdBy: currentUserId || 'system',
+            createdByName: currentUser?.nameAr || currentUser?.name || 'مستودع المنتج التام',
+            targetRoles: ['general_admin', 'production_supervisor', 'production_manager', 'standard']
+          });
+        }
+
         setShowCreateModal(false);
         resetCreateForm();
 
@@ -838,6 +862,22 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
 
         await setDoc(doc(db, 'faulty_fg_returns', voucherId), payload);
 
+        await createActionRequired({
+          actionType: 'faulty_fg_floor_confirm',
+          docId: voucherId,
+          docNumber: voucherId,
+          title: `مطلوب تأكيد استلام مرتجع معيب: ${voucherId}`,
+          titleEn: `Floor Acceptance Required for Faulty FG: ${voucherId}`,
+          message: `إذن ارتجاع معيبات متضمناً (${finalItems.length}) أصناف بانتظار استلام العهدة بصالة الإنتاج`,
+          messageEn: `Return voucher with (${finalItems.length}) items awaiting floor receipt`,
+          targetTab: 'faulty_fg',
+          targetModule: 'production',
+          highlightId: voucherId,
+          createdBy: currentUserId || 'system',
+          createdByName: currentUser?.nameAr || currentUser?.name || 'مستودع المنتج التام',
+          targetRoles: ['general_admin', 'production_supervisor', 'production_manager', 'standard']
+        });
+
         setShowCreateModal(false);
         resetCreateForm();
         alert(isAr ? `تم تسجيل إشعار المرتجع بنجاح برقم: ${voucherId} متضمناً (${finalItems.length}) أصناف.` : `Return voucher registered successfully: ${voucherId} with (${finalItems.length}) products.`);
@@ -867,6 +907,32 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
         },
         updatedAt: serverTimestamp(),
       });
+
+      // Complete Action Required & Notify Submitter
+      await completeActionRequired({
+        actionType: 'faulty_fg_floor_confirm',
+        docId: activeVoucher.id,
+        completedBy: currentUserId,
+        completedByName: currentUser?.nameAr || currentUser?.name || 'مسؤول صالة الإنتاج',
+        resolutionNote: `تم تأكيد استلام المنتجات المعيبة بالصالة: ${confirmNotes.trim()}`
+      });
+
+      const submitterId = activeVoucher.submittedBy?.userId;
+      if (submitterId && submitterId !== currentUserId) {
+        await createNotification({
+          type: 'success',
+          title: `تم تأكيد استلام المرتجع بالصالة: ${activeVoucher.id}`,
+          titleEn: `Faulty FG Accepted on Floor: ${activeVoucher.id}`,
+          message: `قام (${currentUser?.nameAr || currentUser?.name || 'مسؤول الإنتاج'}) بتأكيد استلام ونقل العهدة لصالة الإنتاج.`,
+          messageEn: `Production floor confirmed custody transfer for voucher ${activeVoucher.id}.`,
+          targetUserId: submitterId,
+          targetTab: 'faulty_fg',
+          targetModule: 'production',
+          highlightId: activeVoucher.id,
+          createdBy: currentUserId,
+          createdByName: currentUser?.nameAr || currentUser?.name || 'Production Floor'
+        });
+      }
 
       setShowConfirmModal(false);
       setConfirmNotes('');
@@ -980,6 +1046,7 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
   };
 
   // Compute all individual stickers to be printed based on queue and mode
+  // Compute all individual stickers to be printed based on queue and mode
   const generatedStickers = useMemo(() => {
     const stickers = [];
 
@@ -990,6 +1057,22 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
       const prodName = isAr ? item.productNameAr : item.productNameEn || item.productNameAr;
       const tagsStr = Array.isArray(item.faultTags) ? item.faultTags.join(' • ') : '';
 
+      // Determine if the product has more than 1 packaging option
+      const targetProdCode = item.productCode || item.finishedProductId || item.productId;
+      const matchedProd = finishedProducts.find(
+        (p) =>
+          (p.id && (p.id === targetProdCode || p.id === item.productId || p.id === item.productCode)) ||
+          (p.code && (p.code === targetProdCode || p.code === item.productCode || p.code === item.productId))
+      );
+
+      const packagingOptionsCount = Array.isArray(matchedProd?.packagingOptions)
+        ? matchedProd.packagingOptions.length
+        : Number(matchedProd?.packagingOptionsCount || 1);
+
+      const hasMultipleOptions =
+        packagingOptionsCount > 1 || (Boolean(item.packagingOptionSuffix) && item.packagingOptionSuffix !== 'A');
+      const showPackagingOption = hasMultipleOptions && Boolean(item.packagingOptionSuffix);
+
       if (printMode === 'per_large_unit') {
         for (let i = 1; i <= qtyLarge; i++) {
           stickers.push({
@@ -999,7 +1082,8 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
             itemIndex,
             productName: prodName,
             productCode: item.productCode || item.finishedProductId,
-            packagingOptionSuffix: item.packagingOptionSuffix || 'A',
+            showPackagingOption,
+            packagingOptionSuffix: item.packagingOptionSuffix || '',
             packagingOptionNameAr: item.packagingOptionNameAr || '',
             sequenceBadge: isAr ? `كرتونة ${i} من ${qtyLarge}` : `Case ${i} of ${qtyLarge}`,
             faultTags: tagsStr,
@@ -1015,7 +1099,8 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
           itemIndex,
           productName: prodName,
           productCode: item.productCode || item.finishedProductId,
-          packagingOptionSuffix: item.packagingOptionSuffix || 'A',
+          showPackagingOption,
+          packagingOptionSuffix: item.packagingOptionSuffix || '',
           packagingOptionNameAr: item.packagingOptionNameAr || '',
           sequenceBadge: isAr ? `إجمالي: ${item.qtyLarge} ${item.largeUnit} (${item.qtySmall} ${item.smallUnit})` : `Total: ${item.qtyLarge} ${item.largeUnit}`,
           faultTags: tagsStr,
@@ -1031,7 +1116,8 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
             itemIndex,
             productName: prodName,
             productCode: item.productCode || item.finishedProductId,
-            packagingOptionSuffix: item.packagingOptionSuffix || 'A',
+            showPackagingOption,
+            packagingOptionSuffix: item.packagingOptionSuffix || '',
             packagingOptionNameAr: item.packagingOptionNameAr || '',
             sequenceBadge: isAr ? `عبوة ${i} من ${qtySmall}` : `Unit ${i} of ${qtySmall}`,
             faultTags: tagsStr,
@@ -1043,7 +1129,7 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
     });
 
     return stickers;
-  }, [printQueue, printMode, isAr]);
+  }, [printQueue, printMode, isAr, finishedProducts]);
 
   // Execute Browser Print & Log Print in Firestore
   const handleExecutePrint = async () => {
@@ -1847,18 +1933,17 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
                   <label className="block font-bold text-slate-700 mb-1">
                     {isAr ? 'المنتج التام المستهدف *' : 'Target Finished Good *'}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={selectedProductId}
-                    onChange={(e) => handleProductSelect(e.target.value)}
-                    className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none"
-                  >
-                    <option value="">{isAr ? '-- اختر المنتج التام --' : '-- Select Finished Good --'}</option>
-                    {finishedProducts.map((prod) => (
-                      <option key={prod.id} value={prod.id}>
-                        {prod.code ? `[${prod.code}] ` : ''}{isAr ? prod.nameAr : prod.nameEn || prod.nameAr}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(val) => handleProductSelect(val)}
+                    options={finishedProducts.map((prod) => ({
+                      value: prod.id,
+                      label: isAr ? prod.nameAr : (prod.nameEn || prod.nameAr),
+                      sublabel: prod.code,
+                    }))}
+                    placeholder={isAr ? '-- اختر المنتج التام --' : '-- Select Finished Good --'}
+                    isAr={isAr}
+                  />
                 </div>
 
                 {/* Packaging Option Selector (shown when product has > 1 packaging option) */}
@@ -2235,7 +2320,7 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
                     <div>
                       <label className="block text-slate-700 font-bold mb-1">{isAr ? 'العرض (mm)' : 'Width (mm)'}</label>
                       <input
@@ -2273,7 +2358,7 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
                     </div>
 
                     <div>
-                      <label className="block text-slate-700 font-bold mb-1">{isAr ? 'فاصل الملصقات (Gap mm)' : 'Label Gap (mm)'}</label>
+                      <label className="block text-slate-700 font-bold mb-1">{isAr ? 'فاصل الحساس (Gap)' : 'Sensor Gap'}</label>
                       <input
                         type="number"
                         min="0"
@@ -2284,6 +2369,23 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
                         className="w-full p-1.5 bg-white border border-amber-300 rounded-lg font-mono font-bold text-center"
                         title={isAr ? 'المسافة الفاصلة بين كل استيكر وآخر على الرول الحراري (افتراضي 2 مم)' : 'Physical die-cut gap between stickers (Default 2mm)'}
                       />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">{isAr ? 'قلب الاتجاه' : 'Rotation'}</label>
+                      <button
+                        type="button"
+                        onClick={() => setThermalConfig({ ...thermalConfig, flip180: !thermalConfig.flip180 })}
+                        className={`w-full p-1.5 rounded-lg font-bold border transition flex items-center justify-center gap-1 cursor-pointer text-xs ${
+                          thermalConfig.flip180
+                            ? 'bg-amber-500 text-white border-amber-600'
+                            : 'bg-white text-slate-700 border-amber-300 hover:bg-amber-50'
+                        }`}
+                        title={isAr ? 'قلب اتجاه الطباعة 180 درجة لمعالجة رول التغذية المعكوس' : 'Flip label 180 degrees'}
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        <span>{isAr ? (thermalConfig.flip180 ? 'معكوس 180°' : 'طبيعي 0°') : (thermalConfig.flip180 ? '180° Flip' : 'Normal')}</span>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -2344,7 +2446,7 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="font-bold text-slate-700">{isAr ? 'معاينة شكل الملصق الحراري:' : 'Thermal Label Preview:'}</span>
                   <span className="text-[10px] text-slate-400 font-mono">
-                    {thermalConfig.widthMm}mm × {thermalConfig.heightMm}mm ({thermalConfig.orientation})
+                    {thermalConfig.widthMm}mm × {thermalConfig.heightMm}mm ({thermalConfig.orientation}) {thermalConfig.flip180 ? '· ↻180°' : ''}
                   </span>
                 </div>
 
@@ -2356,49 +2458,47 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
                         width: `${thermalConfig.widthMm * 5}px`,
                         minHeight: `${thermalConfig.heightMm * 5}px`,
                         maxWidth: '100%',
+                        transform: thermalConfig.flip180 ? 'rotate(180deg)' : undefined,
+                        transformOrigin: 'center center',
+                        transition: 'transform 0.2s ease',
                       }}
-                      className="bg-white border-2 border-black rounded-lg p-3 shadow-md font-sans text-black flex flex-col justify-between select-none"
+                      className="bg-white border-2 border-black rounded-lg p-3.5 shadow-md font-sans text-black flex flex-col justify-between select-none"
                     >
                       {/* Line 1: Header + Sequence Badge */}
-                      <div className="flex items-center justify-between border-b-2 border-black pb-1 mb-1">
-                        <span className="text-xs font-black tracking-tight">{isAr ? 'مرتجع للانتاج' : 'RETURN TO PRODUCTION'}</span>
-                        <span className="text-[11px] font-black border border-black px-1.5 py-0.2 rounded font-mono">
+                      <div className="flex items-center justify-between border-b-2 border-black pb-1.5 mb-1.5">
+                        <span className="text-xs font-medium tracking-tight">{isAr ? 'مرتجع للانتاج' : 'RETURN TO PRODUCTION'}</span>
+                        <span className="text-[11px] font-medium border border-black px-1.5 py-0.5 rounded font-mono">
                           {generatedStickers[0].sequenceBadge}
                         </span>
                       </div>
 
-                      {/* Line 2: Product Name (Bold & Prominent) */}
-                      <div className="my-1">
-                        <div className="text-sm font-black leading-tight truncate">
-                          {generatedStickers[0].productName}
-                        </div>
-                        <div className="font-mono text-[10px] font-bold flex items-center gap-1.5">
-                          <span>SKU: {generatedStickers[0].productCode}</span>
-                          {generatedStickers[0].packagingOptionSuffix && (
-                            <span className="font-sans font-black bg-black text-white px-1 py-0.2 rounded text-[9px]">
-                              خيار {generatedStickers[0].packagingOptionSuffix}
-                            </span>
-                          )}
-                        </div>
+                      {/* Line 2: Product Name (Product name only + packaging option in square brackets if > 1) */}
+                      <div className="my-1.5 py-1 text-sm font-medium leading-tight truncate">
+                        <span>{generatedStickers[0].productName}</span>
+                        {generatedStickers[0].showPackagingOption && (
+                          <span className="ms-1.5 text-xs font-medium">
+                            {isAr ? `[خيار ${generatedStickers[0].packagingOptionSuffix}]` : `[Opt ${generatedStickers[0].packagingOptionSuffix}]`}
+                          </span>
+                        )}
                       </div>
 
                       {/* Line 3: Voucher ID & Date */}
-                      <div className="flex items-center justify-between text-[10px] font-mono font-bold my-0.5">
-                        <span>إشعار: {generatedStickers[0].voucherId}</span>
+                      <div className="flex items-center justify-between text-xs font-mono font-medium my-1.5 pt-1.5 border-t border-slate-200">
+                        <span>{generatedStickers[0].voucherId}</span>
                         <span>{generatedStickers[0].returnDate}</span>
                       </div>
 
                       {/* Line 4: Fault Tags */}
                       {generatedStickers[0].faultTags && (
-                        <div className="text-[10px] font-black text-black border-t border-dashed border-black pt-1 my-0.5">
-                          العيب: {generatedStickers[0].faultTags}
+                        <div className="text-xs font-medium text-black border-t border-dashed border-black pt-1.5 my-1.5 truncate">
+                          {generatedStickers[0].faultTags}
                         </div>
                       )}
 
                       {/* Line 5: Printed Batch Code if available */}
                       {generatedStickers[0].batchNo && (
-                        <div className="text-[10px] font-mono font-bold mt-1 pt-1 border-t border-slate-300">
-                          تشغيلة الطباعة: {generatedStickers[0].batchNo}
+                        <div className="text-[11px] font-mono font-medium mt-1.5 pt-1.5 border-t border-slate-300">
+                          تشغيلة: {generatedStickers[0].batchNo}
                         </div>
                       )}
                     </div>
@@ -2438,7 +2538,7 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
         </div>
       )}
 
-      {/* ISOLATED PORTAL FOR CLEAN THERMAL BROWSER PRINT (A4 / ROLL DRIVER SAFE) */}
+      {/* ISOLATED PORTAL FOR CLEAN THERMAL BROWSER PRINT (ZERO BLANK PAGES) */}
       {showPrintModal && createPortal(
         <div id="thermal-print-container">
           <style>{`
@@ -2451,23 +2551,30 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
               html, body {
                 margin: 0 !important;
                 padding: 0 !important;
-                background: #fff !important;
+                background: #ffffff !important;
+                width: 100% !important;
+                height: auto !important;
+                min-height: 0 !important;
+                overflow: visible !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
               }
-              body * {
-                visibility: hidden !important;
-              }
-              #thermal-print-container,
-              #thermal-print-container * {
-                visibility: visible !important;
+              #root,
+              body > *:not(#thermal-print-container) {
+                display: none !important;
               }
               #thermal-print-container {
-                position: absolute !important;
-                left: 0 !important;
-                top: 0 !important;
+                display: block !important;
+                position: static !important;
                 width: 100% !important;
                 margin: 0 !important;
                 padding: 0 !important;
-                background: #fff !important;
+                background: #ffffff !important;
+                font-size: 0 !important;
+                line-height: 0 !important;
+              }
+              #thermal-print-container * {
+                visibility: visible !important;
               }
               @page {
                 size: ${thermalConfig.widthMm}mm ${thermalConfig.heightMm}mm !important;
@@ -2475,19 +2582,38 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
               }
               .thermal-page-sticker {
                 width: ${thermalConfig.widthMm}mm !important;
-                height: ${thermalConfig.heightMm}mm !important;
-                margin-bottom: ${thermalConfig.gapMm || 0}mm !important;
-                page-break-after: always !important;
-                break-after: page !important;
+                height: calc(${thermalConfig.heightMm}mm - 0.5mm) !important;
+                max-height: calc(${thermalConfig.heightMm}mm - 0.5mm) !important;
+                margin: 0 !important;
+                margin-bottom: 0 !important;
+                page-break-after: avoid !important;
+                break-after: avoid !important;
+                page-break-before: avoid !important;
+                break-before: avoid !important;
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
                 box-sizing: border-box !important;
-                padding: 2.5mm 3mm !important;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-                color: #000 !important;
-                background: #fff !important;
+                padding: 1.8mm 2.2mm !important;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Cairo", "Tahoma", sans-serif !important;
+                font-weight: 500 !important;
+                color: #000000 !important;
+                background: #ffffff !important;
                 display: flex !important;
                 flex-direction: column !important;
                 justify-content: space-between !important;
                 overflow: hidden !important;
+                ${thermalConfig.flip180 ? 'transform: rotate(180deg) !important; transform-origin: center center !important;' : ''}
+              }
+              .thermal-page-sticker * {
+                font-weight: 500 !important;
+              }
+              .thermal-page-sticker:not(:last-child) {
+                page-break-after: always !important;
+                break-after: page !important;
+              }
+              .thermal-page-sticker:last-child {
+                page-break-after: avoid !important;
+                break-after: avoid !important;
               }
             }
           `}</style>
@@ -2495,44 +2621,39 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
           {generatedStickers.map((sticker, idx) => (
             <div key={idx} className="thermal-page-sticker">
               {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1.5px solid #000', paddingBottom: '1.5px', marginBottom: '1.5px' }}>
-                <span style={{ fontSize: '9pt', fontWeight: '900' }}>مرتجع للانتاج</span>
-                <span style={{ fontSize: '8pt', fontWeight: '900', border: '1px solid #000', padding: '0.5px 3px', borderRadius: '2px', fontFamily: 'monospace' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #000', paddingBottom: '1.2mm', lineHeight: 1 }}>
+                <span style={{ fontSize: '8.5pt', fontWeight: 500 }}>مرتجع للانتاج</span>
+                <span style={{ fontSize: '7.5pt', fontWeight: 500, border: '1px solid #000', padding: '0.4mm 2.5mm', borderRadius: '2px', fontFamily: 'monospace', lineHeight: 1 }}>
                   {sticker.sequenceBadge}
                 </span>
               </div>
 
-              {/* Product Name (Bold & Prominent) */}
-              <div style={{ margin: '1px 0' }}>
-                <div style={{ fontSize: '9.5pt', fontWeight: '900', lineHeight: 1.15, wordBreak: 'break-word' }}>
-                  {sticker.productName}
-                </div>
-                <div style={{ fontSize: '8pt', fontFamily: 'monospace', fontWeight: 'bold' }}>
-                  SKU: {sticker.productCode}
-                  {sticker.packagingOptionSuffix && (
-                    <span style={{ marginInlineStart: '6px', padding: '0 3px', border: '1px solid #000', borderRadius: '2px', fontSize: '7.5pt' }}>
-                      خيار {sticker.packagingOptionSuffix}
-                    </span>
-                  )}
-                </div>
+              {/* Product Name (and Packaging Option in square brackets if > 1 option) */}
+              <div style={{ padding: '0.8mm 0', fontSize: '10pt', fontWeight: 500, lineHeight: 1.25, wordBreak: 'break-word' }}>
+                <span>{sticker.productName}</span>
+                {sticker.showPackagingOption && (
+                  <span style={{ marginInlineStart: '6px', fontSize: '8.5pt', fontWeight: 500 }}>
+                    {isAr ? `[خيار ${sticker.packagingOptionSuffix}]` : `[Opt ${sticker.packagingOptionSuffix}]`}
+                  </span>
+                )}
               </div>
 
               {/* Voucher ID & Date */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '8pt', fontFamily: 'monospace', fontWeight: 'bold', margin: '1px 0' }}>
-                <span>إشعار: {sticker.voucherId}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '8.5pt', fontFamily: 'monospace', fontWeight: 500, borderTop: '0.6px solid #999', paddingTop: '1.2mm', lineHeight: 1 }}>
+                <span>{sticker.voucherId}</span>
                 <span>{sticker.returnDate}</span>
               </div>
 
               {/* Fault Tags */}
               {sticker.faultTags && (
-                <div style={{ fontSize: '8pt', fontWeight: '900', borderTop: '1px dashed #000', paddingTop: '1px', margin: '1px 0' }}>
-                  العيب: {sticker.faultTags}
+                <div style={{ fontSize: '8.5pt', fontWeight: 500, borderTop: '0.8px dashed #000', paddingTop: '1.2mm', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1 }}>
+                  {sticker.faultTags}
                 </div>
               )}
 
               {/* Printed Batch Code */}
               {sticker.batchNo && (
-                <div style={{ fontSize: '8pt', fontFamily: 'monospace', fontWeight: 'bold', borderTop: '1px solid #000', paddingTop: '1px' }}>
+                <div style={{ fontSize: '8pt', fontFamily: 'monospace', fontWeight: 500, borderTop: '0.8px solid #000', paddingTop: '1.2mm', lineHeight: 1 }}>
                   تشغيلة: {sticker.batchNo}
                 </div>
               )}

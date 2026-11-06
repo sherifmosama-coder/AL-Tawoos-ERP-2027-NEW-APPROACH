@@ -962,7 +962,7 @@ export function resolveItemOrLotCost({
   // Tier 2: Check Goods Receipts for matching LOT number
   if (cleanLot && cleanLot !== '—' && Array.isArray(goodsReceipts) && goodsReceipts.length > 0) {
     for (const grn of goodsReceipts) {
-      if (grn.status === 'cancelled' || grn.status === 'rejected') continue;
+      if (grn.status === 'cancelled' || grn.status === 'rejected' || grn.status === 'reversed' || grn.isReversed) continue;
       const matchedLine = (grn.lines || []).find(
         (line) => (line.lotNumber === cleanLot || line.supplierBatchNo === cleanLot) && Number(line.unitPrice) > 0
       );
@@ -1021,7 +1021,7 @@ export function resolveItemOrLotCost({
   if (Array.isArray(goodsReceipts) && goodsReceipts.length > 0 && cleanItem) {
     const sortedGrns = [...goodsReceipts].sort((a, b) => (b.receiptDate || '').localeCompare(a.receiptDate || ''));
     for (const grn of sortedGrns) {
-      if (grn.status === 'cancelled' || grn.status === 'rejected') continue;
+      if (grn.status === 'cancelled' || grn.status === 'rejected' || grn.status === 'reversed' || grn.isReversed) continue;
       const matchedLine = (grn.lines || []).find((line) => {
         const lineItem = line.itemId || (line.code ? line.code.split('-')[0] : '');
         const lineVar = line.variantCode || line.code || lineItem;

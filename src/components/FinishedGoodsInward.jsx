@@ -33,11 +33,18 @@ import {
   ShieldAlert,
   Activity
 } from 'lucide-react';
-import { collection, doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, getDoc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getWarehouseDisplayName, getFinishedGoodsWarehouses } from '../utils/warehouseClassifier';
 import { buildLiveStockMatrix, resolveItemOrLotCost } from '../utils/stockResolver';
 import { useNotification } from '../context/NotificationContext';
+import BatchRangeDisplay from './BatchRangeDisplay';
+import PalletThermalPrintModal from './PalletThermalPrintModal';
+import SearchableSelect from './SearchableSelect';
+import {
+  completeActionRequired,
+  createNotification
+} from '../utils/notificationEngine';
 
 export default function FinishedGoodsInward({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
@@ -91,6 +98,7 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
   const [modalRejectionReason, setModalRejectionReason] = useState('');
   const [applyToAllInTrn, setApplyToAllInTrn] = useState(false);
   const [isActionInProgress, setIsActionInProgress] = useState(false);
+  const [processedPalletKeys, setProcessedPalletKeys] = useState(new Set());
 
   // Copy feedback state
   const [copiedKey, setCopiedKey] = useState(null);
@@ -109,6 +117,7 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
   const [selectedPalletPassport, setSelectedPalletPassport] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
   const [intermediateRecipes, setIntermediateRecipes] = useState([]);
+  const [thermalPrintItems, setThermalPrintItems] = useState(null);
 
   // Subscribe to Cloud Collections
   useEffect(() => {
@@ -199,6 +208,82 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
       unsubRecipes();
     };
   }, []);
+
+  // Auto-open Pallet Passport when deep-linked with palletId in URL or hash
+  useEffect(() => {
+    if (selectedPalletPassport) return;
+    const searchStr = typeof window !== 'undefined' ? window.location.search || '' : '';
+    const hashStr = typeof window !== 'undefined' ? window.location.hash || '' : '';
+    const searchParams = new URLSearchParams(searchStr || (hashStr.includes('?') ? hashStr.split('?')[1] : ''));
+    const targetPalletId = searchParams.get('palletId');
+    if (!targetPalletId) return;
+
+    let found = stagedPallets.find((p) => (p.palletId || p.id) === targetPalletId);
+    if (!found) {
+      for (const t of transfers) {
+        if (Array.isArray(t.pallets)) {
+          const tp = t.pallets.find((p) => (p.palletId || p.id) === targetPalletId);
+          if (tp) {
+            found = tp;
+            break;
+          }
+        }
+      }
+    }
+    if (found) {
+      setSelectedPalletPassport(found.stagedPallet || found);
+    }
+  }, [stagedPallets, transfers, selectedPalletPassport]);
+
+  // Open Thermal Label Print Modal for a Pallet
+  const handleOpenThermalLabel = (palletItem, orderItem = null) => {
+    if (!palletItem) return;
+    const palletId =
+      palletItem.palletId ||
+      palletItem.id ||
+      (palletItem.palletNumber
+        ? `PAL-${palletItem.orderNumber || ''}-P${String(palletItem.palletNumber).padStart(2, '0')}`
+        : 'PAL-1');
+    const linkedOrder =
+      orderItem ||
+      workOrders.find(
+        (o) =>
+          o.id === palletItem.orderId ||
+          o.id === palletItem.workOrderId ||
+          String(o.orderNumber) === String(palletItem.orderNumber)
+      );
+
+    // Look up staged pallet or order pallet to capture highest current printCount
+    const stagedMatch = stagedPallets.find((sp) => sp.palletId === palletId || sp.id === palletId);
+    const orderMatch = linkedOrder?.pallets?.find(
+      (op) =>
+        op.palletId === palletId ||
+        (palletItem.palletNumber !== undefined && Number(op.palletNumber) === Number(palletItem.palletNumber))
+    );
+
+    const printCount =
+      Number(palletItem.printCount) ||
+      Number(stagedMatch?.printCount) ||
+      Number(orderMatch?.printCount) ||
+      (palletItem.isPrinted || stagedMatch?.isPrinted || orderMatch?.isPrinted ? 1 : 0);
+
+    const mergedPallet = {
+      ...stagedMatch,
+      ...palletItem,
+      palletId,
+      printCount,
+      isPrinted: Boolean(palletItem.isPrinted || stagedMatch?.isPrinted || orderMatch?.isPrinted || printCount > 0),
+    };
+
+    setThermalPrintItems([
+      {
+        pallet: mergedPallet,
+        order: linkedOrder,
+        palletId,
+        transferId: palletItem.transferId || null,
+      },
+    ]);
+  };
 
   // Centralized Live Stock & Valuation Matrix
   const liveStockMatrix = useMemo(() => {
@@ -840,7 +925,35 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
 
       lines.forEach((line, lineIdx) => {
         const pId = line.palletId || `${trn.id}-P${lineIdx + 1}`;
+        const uniqueKey = `${trn.id}-${pId}-${lineIdx}`;
+
+        // 1. Check if already processed locally / optimistically
+        if (processedPalletKeys.has(uniqueKey) || (pId && processedPalletKeys.has(pId))) {
+          return;
+        }
+
+        // 2. Check line status on transfer voucher
+        if (
+          line.isAccepted === true ||
+          line.status === 'accepted' ||
+          line.stagingStatus === 'transferred_to_fg' ||
+          line.isRejected === true ||
+          line.status === 'rejected'
+        ) {
+          return;
+        }
+
         const stagedPallet = stagedPallets.find((p) => p.id === line.palletId || p.palletId === line.palletId) || {};
+
+        // 3. Check staged pallet status in Firestore
+        if (
+          stagedPallet.status === 'transferred_to_fg' ||
+          stagedPallet.status === 'accepted_in_fg' ||
+          stagedPallet.stagingStatus === 'transferred_to_fg' ||
+          stagedPallet.status === 'staged_on_floor'
+        ) {
+          return;
+        }
 
         const prodCode = line.itemId || line.itemCode || stagedPallet.finishedProductId || stagedPallet.productCode;
         const catalogProd = finishedProducts.find((p) => p.code === prodCode || p.id === prodCode);
@@ -859,7 +972,7 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
         const readyTimestamp = toIsoString(rawReady) || (typeof rawReady === 'string' ? rawReady : null);
 
         list.push({
-          uniqueKey: `${trn.id}-${pId}-${lineIdx}`,
+          uniqueKey,
           palletId: line.palletId || stagedPallet.palletId || `#P${lineIdx + 1}`,
           palletNumber: stagedPallet.palletNumber || line.palletNumber || (lineIdx + 1),
           trnId: trn.id,
@@ -890,7 +1003,7 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
       });
     });
     return list;
-  }, [pendingInwardTransfers, stagedPallets, warehouses, finishedProducts, isGeneralAdmin, currentUserId, canInspect, canAccept, canReject, isAr]);
+  }, [pendingInwardTransfers, stagedPallets, warehouses, finishedProducts, isGeneralAdmin, currentUserId, canInspect, canAccept, canReject, isAr, processedPalletKeys]);
 
   // 3-Level Grouping for Received Pallets Ledger:
   // Date (Descending) -> Product -> Packaging Option -> Pallets[]
@@ -1023,6 +1136,22 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
     }
 
     setIsActionInProgress(true);
+    // Optimistic removal from gate
+    setProcessedPalletKeys((prev) => {
+      const next = new Set(prev);
+      if (applyToAll) {
+        (transfer.lines || []).forEach((l, idx) => {
+          const pId = l.palletId || `${transfer.id}-P${idx + 1}`;
+          next.add(pId);
+          next.add(`${transfer.id}-${pId}-${idx}`);
+        });
+      } else {
+        next.add(palletItem.palletId);
+        if (palletItem.uniqueKey) next.add(palletItem.uniqueKey);
+      }
+      return next;
+    });
+
     try {
       const nowIso = new Date().toISOString();
       const trnRef = doc(db, 'stock_transfers', transfer.id);
@@ -1061,34 +1190,42 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
             updatedAt: serverTimestamp(),
           }).catch(() => {});
 
-          // Also sync in work_orders
+          // Also sync in work_orders and production_work_orders
           if (line.workOrderId) {
-            const wo = workOrders.find((o) => o.id === line.workOrderId);
-            if (wo && Array.isArray(wo.pallets)) {
-              const updatedPallets = wo.pallets.map((pl) => {
-                if (pl.palletId === line.palletId || (pl.palletNumber && String(pl.palletNumber) === String(line.palletNumber))) {
-                  return {
-                    ...pl,
-                    stagingStatus: 'transferred_to_fg',
-                    targetWarehouseId: transfer.targetWarehouse,
-                    transferAcceptedAt: nowIso,
-                    palletTotalCost: pMatData.totalCost,
-                    costPerLarge: pMatData.costPerLarge,
-                    costPerSmall: pMatData.costPerSmall,
-                  };
+            for (const col of ['work_orders', 'production_work_orders']) {
+              try {
+                const woRef = doc(db, col, line.workOrderId);
+                const woSnap = await getDoc(woRef);
+                if (woSnap.exists()) {
+                  const woData = woSnap.data();
+                  if (Array.isArray(woData.pallets)) {
+                    const updatedPallets = woData.pallets.map((pl) => {
+                      if (pl.palletId === line.palletId || (pl.palletNumber && String(pl.palletNumber) === String(line.palletNumber))) {
+                        return {
+                          ...pl,
+                          stagingStatus: 'transferred_to_fg',
+                          targetWarehouseId: transfer.targetWarehouse,
+                          transferAcceptedAt: nowIso,
+                          palletTotalCost: pMatData.totalCost,
+                          costPerLarge: pMatData.costPerLarge,
+                          costPerSmall: pMatData.costPerSmall,
+                        };
+                      }
+                      return pl;
+                    });
+                    await updateDoc(woRef, {
+                      pallets: updatedPallets,
+                      updatedAt: serverTimestamp(),
+                    });
+                  }
                 }
-                return pl;
-              });
-              await updateDoc(doc(db, 'work_orders', wo.id), {
-                pallets: updatedPallets,
-                updatedAt: serverTimestamp(),
-              }).catch(() => {});
+              } catch (_) {}
             }
           }
         }
       }
 
-      // 2. Update transfer voucher lines with accurate unitPrice (costPerLarge) and totalPrice
+      // 2. Update transfer voucher lines with accurate unitPrice (costPerLarge), totalPrice, and accepted status
       const updatedLines = (transfer.lines || []).map((line) => {
         const isAccepted = applyToAll || line.palletId === palletItem.palletId;
         if (isAccepted) {
@@ -1100,6 +1237,11 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
 
           return {
             ...line,
+            status: 'accepted',
+            isAccepted: true,
+            stagingStatus: 'transferred_to_fg',
+            acceptedAt: nowIso,
+            acceptedBy: currentUserName,
             unitPrice: ctnCost,
             totalPrice: lineVal,
             palletTotalCost: lineVal,
@@ -1110,19 +1252,45 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
         return line;
       });
 
-      const remainingUnaccepted = updatedLines.filter(
-        (l) => l.palletId !== palletItem.palletId && !applyToAll
+      const remainingPending = updatedLines.filter(
+        (l) => !l.isAccepted && l.status !== 'accepted' && !l.isRejected && l.status !== 'rejected'
       );
 
       await updateDoc(trnRef, {
         lines: updatedLines,
-        status: remainingUnaccepted.length === 0 ? 'completed' : 'pending_custodian_verification',
+        status: remainingPending.length === 0 ? 'completed' : 'pending_custodian_verification',
         verifiedBy: currentUserName,
         verifiedById: currentUserId,
         verifiedAt: nowIso,
         auditTrail,
         updatedAt: serverTimestamp(),
       });
+
+      if (remainingPending.length === 0) {
+        await completeActionRequired({
+          actionType: 'fg_inward_verification',
+          docId: transfer.id,
+          completedBy: currentUserId,
+          completedByName: currentUserName,
+          resolutionNote: 'تم قبول واستلام كافة باليتات التحويل بمستودع المنتج التام'
+        });
+      }
+
+      if (transfer.issuedById && transfer.issuedById !== currentUserId) {
+        await createNotification({
+          type: 'success',
+          title: `تم قبول استلام باليتة المنتج التام: ${palletItem.palletId}`,
+          titleEn: `FG Pallet Accepted: ${palletItem.palletId}`,
+          message: `قام (${currentUserName}) بقبول واستلام الباليتة في مستودع المنتج التام بنجاح.`,
+          messageEn: `(${currentUserName}) accepted pallet #${palletItem.palletId} into FG warehouse.`,
+          targetUserId: transfer.issuedById,
+          targetTab: 'fg_inward',
+          targetModule: 'production',
+          highlightId: palletItem.palletId,
+          createdBy: currentUserId,
+          createdByName: currentUserName
+        });
+      }
 
       setRespondingPallet(null);
       setModalRejectionReason('');
@@ -1176,6 +1344,22 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
     }
 
     setIsActionInProgress(true);
+    // Optimistic removal from gate
+    setProcessedPalletKeys((prev) => {
+      const next = new Set(prev);
+      if (applyToAll) {
+        (transfer.lines || []).forEach((l, idx) => {
+          const pId = l.palletId || `${transfer.id}-P${idx + 1}`;
+          next.add(pId);
+          next.add(`${transfer.id}-${pId}-${idx}`);
+        });
+      } else {
+        next.add(palletItem.palletId);
+        if (palletItem.uniqueKey) next.add(palletItem.uniqueKey);
+      }
+      return next;
+    });
+
     try {
       const nowIso = new Date().toISOString();
       const trnRef = doc(db, 'stock_transfers', transfer.id);
@@ -1211,34 +1395,69 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
             updatedAt: serverTimestamp(),
           }).catch(() => {});
 
-          // Revert in work_orders
+          // Revert in work_orders and production_work_orders
           if (line.workOrderId) {
-            const wo = workOrders.find((o) => o.id === line.workOrderId);
-            if (wo && Array.isArray(wo.pallets)) {
-              const updatedPallets = wo.pallets.map((pl) => {
-                if (pl.palletId === line.palletId || (pl.palletNumber && String(pl.palletNumber) === String(line.palletNumber))) {
-                  return {
-                    ...pl,
-                    stagingStatus: 'staged_on_floor',
-                    transferId: null,
-                    targetWarehouseId: null,
-                    lastTransferRejectionReason: reasonText,
-                  };
+            for (const col of ['work_orders', 'production_work_orders']) {
+              try {
+                const woRef = doc(db, col, line.workOrderId);
+                const woSnap = await getDoc(woRef);
+                if (woSnap.exists()) {
+                  const woData = woSnap.data();
+                  if (Array.isArray(woData.pallets)) {
+                    const updatedPallets = woData.pallets.map((pl) => {
+                      if (pl.palletId === line.palletId || (pl.palletNumber && String(pl.palletNumber) === String(line.palletNumber))) {
+                        return {
+                          ...pl,
+                          stagingStatus: 'staged_on_floor',
+                          transferId: null,
+                          targetWarehouseId: null,
+                          lastTransferRejectionReason: reasonText,
+                        };
+                      }
+                      return pl;
+                    });
+                    await updateDoc(woRef, {
+                      pallets: updatedPallets,
+                      updatedAt: serverTimestamp(),
+                    });
+                  }
                 }
-                return pl;
-              });
-              await updateDoc(doc(db, 'work_orders', wo.id), {
-                pallets: updatedPallets,
-                updatedAt: serverTimestamp(),
-              }).catch(() => {});
+              } catch (_) {}
             }
           }
         }
       }
 
-      // 2. Update transfer voucher
+      // 2. Update transfer voucher lines with rejected status
+      const updatedLines = (transfer.lines || []).map((line) => {
+        const isTarget = applyToAll || line.palletId === palletItem.palletId;
+        if (isTarget) {
+          return {
+            ...line,
+            status: 'rejected',
+            isRejected: true,
+            stagingStatus: 'staged_on_floor',
+            rejectedAt: nowIso,
+            rejectedBy: currentUserName,
+            rejectionReason: reasonText,
+          };
+        }
+        return line;
+      });
+
+      const remainingPending = updatedLines.filter(
+        (l) => !l.isAccepted && l.status !== 'accepted' && !l.isRejected && l.status !== 'rejected'
+      );
+      const anyAccepted = updatedLines.some((l) => l.isAccepted || l.status === 'accepted');
+
+      let finalTrnStatus = 'pending_custodian_verification';
+      if (remainingPending.length === 0) {
+        finalTrnStatus = anyAccepted ? 'completed' : 'rejected_and_returned';
+      }
+
       await updateDoc(trnRef, {
-        status: 'rejected_and_returned',
+        lines: updatedLines,
+        status: finalTrnStatus,
         rejectedBy: currentUserName,
         rejectedById: currentUserId,
         rejectedAt: nowIso,
@@ -1246,6 +1465,32 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
         auditTrail,
         updatedAt: serverTimestamp(),
       });
+
+      if (remainingPending.length === 0) {
+        await completeActionRequired({
+          actionType: 'fg_inward_verification',
+          docId: transfer.id,
+          completedBy: currentUserId,
+          completedByName: currentUserName,
+          resolutionNote: `تم رفض الباليتات وإعادتها: ${reasonText}`
+        });
+      }
+
+      if (transfer.issuedById && transfer.issuedById !== currentUserId) {
+        await createNotification({
+          type: 'warning',
+          title: `تم رفض باليتة المنتج التام: ${palletItem.palletId}`,
+          titleEn: `FG Pallet Rejected: ${palletItem.palletId}`,
+          message: `قام (${currentUserName}) برفض الباليتة وإعادتها لصالة الإنتاج. السبب: ${reasonText}`,
+          messageEn: `(${currentUserName}) rejected pallet #${palletItem.palletId}. Reason: ${reasonText}`,
+          targetUserId: transfer.issuedById,
+          targetTab: 'fg_inward',
+          targetModule: 'production',
+          highlightId: palletItem.palletId,
+          createdBy: currentUserId,
+          createdByName: currentUserName
+        });
+      }
 
       setRespondingPallet(null);
       setModalRejectionReason('');
@@ -1388,46 +1633,56 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                   </div>
 
                   {/* Action Button: Responsive to Scoped Permission Matrix */}
-                  {item.canRespondToPallet ? (
+                  <div className="flex items-center gap-1.5 w-full mt-0.5">
+                    {item.canRespondToPallet ? (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenResponseModal(item)}
+                        className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs hover:shadow-xs text-white ${
+                          item.canAcceptPallet && item.canRejectPallet
+                            ? 'bg-indigo-600 hover:bg-indigo-700'
+                            : item.canRejectPallet
+                            ? 'bg-rose-700 hover:bg-rose-800'
+                            : 'bg-emerald-700 hover:bg-emerald-800'
+                        }`}
+                      >
+                        {item.canAcceptPallet && item.canRejectPallet ? (
+                          <>
+                            <ShieldCheck className="h-3.5 w-3.5" />
+                            <span>{isAr ? 'فحص واستجابة' : 'Inspect & Respond'}</span>
+                          </>
+                        ) : item.canRejectPallet ? (
+                          <>
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            <span>{isAr ? 'فحص ورفض الباليتة' : 'Inspect & Reject'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>{isAr ? 'فحص واعتماد' : 'Inspect & Accept'}</span>
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPalletPassport(item.stagedPallet || item)}
+                        className="flex-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                        title={isAr ? 'معاينة جواز الباليتة (قراءة فقط)' : 'View Passport (Read-only)'}
+                      >
+                        <Eye className="h-3.5 w-3.5 text-slate-500" />
+                        <span>{isAr ? 'معاينة الجواز' : 'View Passport'}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => handleOpenResponseModal(item)}
-                      className={`w-full mt-0.5 py-1.5 px-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs hover:shadow-xs text-white ${
-                        item.canAcceptPallet && item.canRejectPallet
-                          ? 'bg-indigo-600 hover:bg-indigo-700'
-                          : item.canRejectPallet
-                          ? 'bg-rose-700 hover:bg-rose-800'
-                          : 'bg-emerald-700 hover:bg-emerald-800'
-                      }`}
+                      onClick={() => handleOpenThermalLabel(item.stagedPallet || item)}
+                      className="p-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-600 hover:text-emerald-700 border border-slate-200 hover:border-emerald-300 rounded-xl transition cursor-pointer"
+                      title={isAr ? 'طباعة نسخة من ملصق الباليت الحراري' : 'Print Pallet Thermal Label Copy'}
                     >
-                      {item.canAcceptPallet && item.canRejectPallet ? (
-                        <>
-                          <ShieldCheck className="h-3.5 w-3.5" />
-                          <span>{isAr ? 'فحص واستجابة' : 'Inspect & Respond'}</span>
-                        </>
-                      ) : item.canRejectPallet ? (
-                        <>
-                          <RotateCcw className="h-3.5 w-3.5" />
-                          <span>{isAr ? 'فحص ورفض الباليتة' : 'Inspect & Reject'}</span>
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          <span>{isAr ? 'فحص واعتماد' : 'Inspect & Accept'}</span>
-                        </>
-                      )}
+                      <Printer className="h-4 w-4" />
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPalletPassport(item.stagedPallet || item)}
-                      className="w-full mt-0.5 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
-                      title={isAr ? 'معاينة جواز الباليتة (قراءة فقط)' : 'View Passport (Read-only)'}
-                    >
-                      <Eye className="h-3.5 w-3.5 text-slate-500" />
-                      <span>{isAr ? 'معاينة الجواز' : 'View Passport'}</span>
-                    </button>
-                  )}
+                  </div>
                 </div>
               );
             })}
@@ -1494,18 +1749,17 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
 
             {/* Product Filter */}
             <div>
-              <select
-                value={selectedProductFilter}
-                onChange={(e) => setSelectedProductFilter(e.target.value)}
-                className="w-full p-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="ALL">{isAr ? 'جميع الأصناف والمنتجات' : 'All Finished Products'}</option>
-                {finishedProducts.map((p) => (
-                  <option key={p.code || p.id} value={p.code || p.id}>
-                    {p.nameAr || p.name} [{p.code}]
-                  </option>
-                ))}
-              </select>
+              <SearchableSelect
+                value={selectedProductFilter === 'ALL' ? '' : selectedProductFilter}
+                onChange={(val) => setSelectedProductFilter(val || 'ALL')}
+                options={finishedProducts.map((p) => ({
+                  value: p.code || p.id,
+                  label: isAr ? (p.nameAr || p.name) : (p.nameEn || p.nameAr || p.name),
+                  sublabel: p.code,
+                }))}
+                placeholder={isAr ? 'جميع الأصناف والمنتجات' : 'All Finished Products'}
+                isAr={isAr}
+              />
             </div>
 
             {/* Date Range Inputs */}
@@ -1711,7 +1965,7 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                                                   {pallet.qtySmall} {pallet.outputSmallUnit || 'عبوة'}
                                                 </td>
                                                 <td className="py-2.5 px-3 font-mono text-rose-700 font-bold text-[11px]">
-                                                  {String(pallet.batchRangeDisplay || '—')}
+                                                  <BatchRangeDisplay range={pallet.batchRangeDisplay} />
                                                 </td>
                                                 <td className="py-2.5 px-3">
                                                   {(() => {
@@ -1763,14 +2017,24 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                                                   {typeof pallet.verifiedBy === 'string' ? pallet.verifiedBy : '—'}
                                                 </td>
                                                 <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => setSelectedPalletPassport(pallet)}
-                                                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition cursor-pointer"
-                                                    title={isAr ? 'عرض جواز سفر الباليتة' : 'View Pallet Passport'}
-                                                  >
-                                                    <Eye className="h-4 w-4" />
-                                                  </button>
+                                                  <div className="flex items-center justify-center gap-1">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => handleOpenThermalLabel(pallet)}
+                                                      className="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition cursor-pointer"
+                                                      title={isAr ? 'طباعة نسخة من ملصق الباليت الحراري' : 'Print Pallet Thermal Label Copy'}
+                                                    >
+                                                      <Printer className="h-4 w-4" />
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setSelectedPalletPassport(pallet)}
+                                                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition cursor-pointer"
+                                                      title={isAr ? 'عرض جواز سفر الباليتة' : 'View Pallet Passport'}
+                                                    >
+                                                      <Eye className="h-4 w-4" />
+                                                    </button>
+                                                  </div>
                                                 </td>
                                               </tr>
                                             );
@@ -1870,7 +2134,7 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                 <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200">
                   <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'تشغيلة الطباعة' : 'Inkjet Batch'}</span>
                   <span className="font-mono font-bold text-xs text-rose-700 block truncate">
-                    {String(respondingPallet.batchRangeDisplay || '—')}
+                    <BatchRangeDisplay range={respondingPallet.batchRangeDisplay} />
                   </span>
                 </div>
               </div>
@@ -2468,7 +2732,9 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                       {selectedPalletPassport.batchRangeDisplay && (
                         <div className="flex justify-between items-center font-mono">
                           <span className="font-bold text-slate-700 font-sans">{isAr ? 'تشغيلة الطباعة (Inkjet Batch):' : 'Inkjet Batch:'}</span>
-                          <span className="font-bold text-rose-700">{String(selectedPalletPassport.batchRangeDisplay)}</span>
+                          <span className="font-bold text-rose-700">
+                            <BatchRangeDisplay range={selectedPalletPassport.batchRangeDisplay} start={selectedPalletPassport.batchStart} end={selectedPalletPassport.batchEnd} />
+                          </span>
                         </div>
                       )}
                     </div>
@@ -2726,16 +2992,26 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
               )}
 
               {/* Modal Bottom Actions */}
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                <div>
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenThermalLabel(selectedPalletPassport)}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                    title={isAr ? 'طباعة نسخة من ملصق الباليت الحراري (50×38 مم)' : 'Print Pallet Thermal Sticker Label'}
+                  >
+                    <Printer className="h-4 w-4" />
+                    <span>{isAr ? 'طباعة نسخة ملصق الباليت (حراري)' : 'Print Pallet Label Copy (Thermal)'}</span>
+                  </button>
+
                   {canExport && (
                     <button
                       type="button"
                       onClick={() => window.print()}
                       className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
                     >
-                      <Printer className="h-4 w-4" />
-                      <span>{isAr ? 'طباعة جواز الباليتة' : 'Print Pallet Passport'}</span>
+                      <FileText className="h-4 w-4" />
+                      <span>{isAr ? 'طباعة جواز الباليتة (A4)' : 'Print Pallet Passport (A4)'}</span>
                     </button>
                   )}
                 </div>
@@ -2769,6 +3045,21 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
             </button>
           </div>
         </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* PALLET THERMAL LABEL PRINT MODAL (SHARED COMPONENT)                       */}
+      {/* ========================================================================= */}
+      {thermalPrintItems && (
+        <PalletThermalPrintModal
+          isOpen={Boolean(thermalPrintItems)}
+          onClose={() => setThermalPrintItems(null)}
+          items={thermalPrintItems}
+          isAr={isAr}
+          currentUserId={currentUserId}
+          currentUserName={currentUserName}
+          finishedProducts={finishedProducts}
+        />
       )}
 
     </div>

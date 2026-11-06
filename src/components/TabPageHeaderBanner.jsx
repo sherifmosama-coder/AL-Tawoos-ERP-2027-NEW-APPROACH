@@ -96,44 +96,43 @@ export default function TabPageHeaderBanner({
           </div>
         </div>
 
-        {/* Right/End: Quick Configuration Actions for General Admin Only */}
-        {isGeneralAdmin && (
-          <div className="flex items-center gap-2 shrink-0">
-            {onOpenTabPermissions && (
-              <button
-                type="button"
-                onClick={() => onOpenTabPermissions(activeTab)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer border bg-white/85 hover:bg-white text-slate-700 hover:text-emerald-700 hover:border-emerald-300"
-                style={{
-                  borderColor: `rgba(${r}, ${g}, ${b}, 0.3)`
-                }}
-                title={isAr ? `ضبط صلاحيات تبويب: ${title}` : `Configure permissions for ${title}`}
-              >
-                <ShieldAlert className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                <span className="hidden sm:inline">
-                  {isAr ? 'صلاحيات التبويب' : 'Tab Permissions'}
-                </span>
-              </button>
-            )}
+        {/* Right/End: Admin Configuration Actions */}
+        <div className="flex items-center gap-2 shrink-0">
 
-            {onOpenTabCustomizer && (
-              <button
-                type="button"
-                onClick={() => onOpenTabCustomizer(activeTab)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer border bg-white/85 hover:bg-white text-slate-700 hover:text-slate-900"
-                style={{
-                  borderColor: `rgba(${r}, ${g}, ${b}, 0.3)`
-                }}
-                title={isAr ? `تخصيص مسمى ولون وأيقونة: ${title}` : `Customize tab appearance for ${title}`}
-              >
-                <Palette className="h-3.5 w-3.5 shrink-0" style={{ color: tabColor }} />
-                <span className="hidden sm:inline">
-                  {isAr ? 'تخصيص مظهر التبويب' : 'Customize Tab'}
-                </span>
-              </button>
-            )}
-          </div>
-        )}
+          {isGeneralAdmin && onOpenTabPermissions && (
+            <button
+              type="button"
+              onClick={() => onOpenTabPermissions(activeTab)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer border bg-white/85 hover:bg-white text-slate-700 hover:text-emerald-700 hover:border-emerald-300"
+              style={{
+                borderColor: `rgba(${r}, ${g}, ${b}, 0.3)`
+              }}
+              title={isAr ? `ضبط صلاحيات تبويب: ${title}` : `Configure permissions for ${title}`}
+            >
+              <ShieldAlert className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              <span className="hidden sm:inline">
+                {isAr ? 'صلاحيات التبويب' : 'Tab Permissions'}
+              </span>
+            </button>
+          )}
+
+          {isGeneralAdmin && onOpenTabCustomizer && (
+            <button
+              type="button"
+              onClick={() => onOpenTabCustomizer(activeTab)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer border bg-white/85 hover:bg-white text-slate-700 hover:text-slate-900"
+              style={{
+                borderColor: `rgba(${r}, ${g}, ${b}, 0.3)`
+              }}
+              title={isAr ? `تخصيص مسمى ولون وأيقونة: ${title}` : `Customize tab appearance for ${title}`}
+            >
+              <Palette className="h-3.5 w-3.5 shrink-0" style={{ color: tabColor }} />
+              <span className="hidden sm:inline">
+                {isAr ? 'تخصيص مظهر التبويب' : 'Customize Tab'}
+              </span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

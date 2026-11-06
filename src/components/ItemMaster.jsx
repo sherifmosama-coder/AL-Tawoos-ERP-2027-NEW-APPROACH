@@ -43,8 +43,10 @@ import {
   Settings2,
   Sparkles,
   UploadCloud,
-  Eye
+  Eye,
+  MessageSquare
 } from 'lucide-react';
+import { RowCommentButton, useRecordComments } from './comments';
 
 export default function ItemMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
@@ -67,6 +69,8 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
       ? permissions.actions['items.canDelete'] === true
       : permissions?.actions?.canDelete === true
   );
+
+  const { registerRowActions } = useRecordComments();
 
   // Lightweight Client-Side Image Compression Helper (<80KB Web-Ready Payloads)
   const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.7) => {
@@ -1297,7 +1301,7 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
               <th className="p-3 text-start">{isAr ? 'التنوعات والموردين' : 'Variations & Vendors'}</th>
               <th className="p-3 text-center">{isAr ? 'الرصيد المتاح للتشغيل' : 'Usable Stock'}</th>
               <th className="p-3 text-start">{isAr ? 'الحالة' : 'Status'}</th>
-              {(canEdit || canDelete) && <th className="p-3 text-center">{isAr ? 'إجراء' : 'Action'}</th>}
+              <th className="p-3 text-center">{isAr ? 'إجراء' : 'Action'}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -1313,10 +1317,55 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
                 const catObj = categories.find((c) => Number(c.id) === Number(item.categoryId));
                 const hasVariations = Array.isArray(item.variations) && item.variations.length > 0;
 
+                // Register row actions for item right-click context menu
+                const itemRowActions = [
+                  ...(canEdit ? [
+                    {
+                      id: 'edit',
+                      label: 'تعديل بيانات الخامة',
+                      labelAr: 'تعديل بيانات الخامة',
+                      labelEn: 'Edit Material',
+                      icon: Edit3,
+                      onClick: () => handleOpenEdit(item)
+                    }
+                  ] : []),
+                  ...(hasVariations ? [
+                    {
+                      id: 'toggle_variations',
+                      label: isExpanded ? 'طي التنوعات' : 'عرض التنوعات والموردين',
+                      labelAr: isExpanded ? 'طي التنوعات' : 'عرض التنوعات والموردين',
+                      labelEn: isExpanded ? 'Collapse Variations' : 'Expand Variations',
+                      icon: Layers,
+                      onClick: () => toggleItemExpand(item.code)
+                    }
+                  ] : []),
+                  ...(canDelete ? [
+                    {
+                      id: 'delete',
+                      label: 'حذف الخامة نهائياً',
+                      labelAr: 'حذف الخامة نهائياً',
+                      labelEn: 'Delete Material',
+                      icon: Trash2,
+                      variant: 'danger',
+                      onClick: () => handleDeleteItem(item.code)
+                    }
+                  ] : [])
+                ];
+                registerRowActions(item.code, itemRowActions);
+
                 return (
                   <React.Fragment key={item.code}>
                     {/* Master Parent Row */}
-                    <tr className={`transition ${isExpanded ? 'bg-slate-50/90' : 'hover:bg-slate-50/60'}`}>
+                    <tr
+                      id={`item-row-${item.code}`}
+                      data-comment-doc={item.code}
+                      data-comment-number={item.code}
+                      data-comment-label={isAr ? item.nameAr : item.nameEn}
+                      data-comment-tab="items"
+                      data-comment-module="master_data"
+                      data-comment-type="table_row"
+                      className={`transition ${isExpanded ? 'bg-slate-50/90' : 'hover:bg-slate-50/60'}`}
+                    >
                       {/* Accordion Expand Chevron */}
                       <td className="p-3 text-center">
                         {hasVariations && (
@@ -1450,30 +1499,35 @@ export default function ItemMaster({ currentUser = {}, permissions = null }) {
                       </td>
 
                       {/* Actions */}
-                      {(canEdit || canDelete) && (
-                        <td className="p-3 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            {canEdit && (
-                              <button
-                                onClick={() => handleOpenEdit(item)}
-                                className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition cursor-pointer"
-                                title={isAr ? 'تعديل بيانات وتنوعات الخامة' : 'Edit Material & Variations'}
-                              >
-                                <Edit3 className="h-4 w-4" />
-                              </button>
-                            )}
-                            {canDelete && (
-                              <button
-                                onClick={() => handleDeleteItem(item.code)}
-                                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
-                                title={isAr ? 'حذف الخامة نهائياً' : 'Delete Material'}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      )}
+                      <td className="p-3 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          {/* Quick Row Comment Button */}
+                          <RowCommentButton
+                            docId={item.code}
+                            docNumber={item.code}
+                            tab="items"
+                            module="master_data"
+                          />
+                          {canEdit && (
+                            <button
+                              onClick={() => handleOpenEdit(item)}
+                              className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition cursor-pointer"
+                              title={isAr ? 'تعديل بيانات وتنوعات الخامة' : 'Edit Material & Variations'}
+                            >
+                              <Edit3 className="h-4 w-4" />
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button
+                              onClick={() => handleDeleteItem(item.code)}
+                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                              title={isAr ? 'حذف الخامة نهائياً' : 'Delete Material'}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
 
                     {/* Expandable Nested Variations Sub-Grid */}

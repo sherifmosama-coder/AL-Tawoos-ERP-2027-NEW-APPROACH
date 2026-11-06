@@ -147,6 +147,14 @@ export default function ScopedPermissionMatrixModal({
     const user = usersList.find((u) => u.id === userId);
     if (!user) return false;
 
+    // CASCADE RULE: If "show tab in navigation" (modules[tabId]) is deselected,
+    // all below related selections (actions and fields) for this tab must be automatically false
+    if (tier === 'actions' || tier === 'fields') {
+      const tabId = key.split('.')[0];
+      const isTabEnabled = getCellValue(userId, 'modules', tabId);
+      if (!isTabEnabled) return false;
+    }
+
     const override = permissionsState[userId] || {};
     if (override[tier] && override[tier][key] !== undefined) {
       return override[tier][key] === true;
@@ -161,20 +169,49 @@ export default function ScopedPermissionMatrixModal({
 
   // Toggle Matrix Cell
   const handleToggleCell = (userId, tier, key) => {
+    // If trying to toggle an action or field, but the tab is disabled, prevent it
+    if (tier === 'actions' || tier === 'fields') {
+      const tabId = key.split('.')[0];
+      const isTabEnabled = getCellValue(userId, 'modules', tabId);
+      if (!isTabEnabled) return;
+    }
+
     const currentVal = getCellValue(userId, tier, key);
+    const nextVal = !currentVal;
+
     setPermissionsState((prev) => {
       const userOverrides = prev[userId] || {};
       const tierOverrides = userOverrides[tier] || {};
 
+      const updatedUserOverrides = {
+        ...userOverrides,
+        [tier]: {
+          ...tierOverrides,
+          [key]: nextVal
+        }
+      };
+
+      // CASCADE RULE: If "show tab in navigation" (modules[tabId]) is deselected,
+      // all below related selections (actions and fields) for this tab must be automatically deselected
+      if (tier === 'modules' && nextVal === false) {
+        const tabSchema = scopedTabsList.find((t) => t.id === key);
+        if (tabSchema) {
+          const updatedActions = { ...(updatedUserOverrides.actions || userOverrides.actions || {}) };
+          (tabSchema.actions || []).forEach((act) => {
+            updatedActions[`${tabSchema.id}.${act.key}`] = false;
+          });
+          const updatedFields = { ...(updatedUserOverrides.fields || userOverrides.fields || {}) };
+          Object.keys(tabSchema.fields || {}).forEach((fKey) => {
+            updatedFields[`${tabSchema.id}.${fKey}`] = false;
+          });
+          updatedUserOverrides.actions = updatedActions;
+          updatedUserOverrides.fields = updatedFields;
+        }
+      }
+
       return {
         ...prev,
-        [userId]: {
-          ...userOverrides,
-          [tier]: {
-            ...tierOverrides,
-            [key]: !currentVal
-          }
-        }
+        [userId]: updatedUserOverrides
       };
     });
   };
@@ -387,15 +424,23 @@ export default function ScopedPermissionMatrixModal({
                               </div>
                             </td>
                             {visibleUsers.map((u) => {
+                              const isTabEnabled = getCellValue(u.id, 'modules', tab.id);
                               const isChecked = getCellValue(u.id, 'actions', permKey);
                               return (
-                                <td key={u.id} className="p-2 text-center border-e border-slate-100">
+                                <td key={u.id} className={`p-2 text-center border-e border-slate-100 ${!isTabEnabled ? 'bg-slate-100/50' : ''}`}>
                                   <input
                                     type="checkbox"
                                     checked={isChecked}
+                                    disabled={!isTabEnabled}
                                     onChange={() => handleToggleCell(u.id, 'actions', permKey)}
-                                    className="h-4 w-4 rounded accent-indigo-600 cursor-pointer"
-                                    title={isChecked ? 'Allowed' : 'Denied'}
+                                    className={`h-4 w-4 rounded accent-indigo-600 ${
+                                      !isTabEnabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
+                                    }`}
+                                    title={
+                                      !isTabEnabled
+                                        ? (isAr ? 'معطل تلقائياً لعدم إتاحة التبويب' : 'Auto-disabled because tab is hidden')
+                                        : (isChecked ? 'Allowed' : 'Denied')
+                                    }
                                   />
                                 </td>
                               );
@@ -419,15 +464,23 @@ export default function ScopedPermissionMatrixModal({
                                 </div>
                               </td>
                               {visibleUsers.map((u) => {
+                                const isTabEnabled = getCellValue(u.id, 'modules', tab.id);
                                 const isChecked = getCellValue(u.id, 'fields', permKey);
                                 return (
-                                  <td key={u.id} className="p-2 text-center border-e border-slate-100 bg-amber-50/10">
+                                  <td key={u.id} className={`p-2 text-center border-e border-slate-100 ${!isTabEnabled ? 'bg-slate-100/50' : 'bg-amber-50/10'}`}>
                                     <input
                                       type="checkbox"
                                       checked={isChecked}
+                                      disabled={!isTabEnabled}
                                       onChange={() => handleToggleCell(u.id, 'fields', permKey)}
-                                      className="h-4 w-4 rounded accent-amber-600 cursor-pointer"
-                                      title={isChecked ? 'Visible' : 'Hidden'}
+                                      className={`h-4 w-4 rounded accent-amber-600 ${
+                                        !isTabEnabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
+                                      }`}
+                                      title={
+                                        !isTabEnabled
+                                          ? (isAr ? 'معطل تلقائياً لعدم إتاحة التبويب' : 'Auto-disabled because tab is hidden')
+                                          : (isChecked ? 'Visible' : 'Hidden')
+                                      }
                                     />
                                   </td>
                                 );

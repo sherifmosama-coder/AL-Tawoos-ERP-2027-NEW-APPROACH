@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, ChevronDown, Check, X, Link2, Boxes } from 'lucide-react';
+import { Search, ChevronDown, Check, X, Link2, Boxes, PlusCircle } from 'lucide-react';
 
 export default function SearchableSelect({
   options = [],
@@ -11,7 +11,9 @@ export default function SearchableSelect({
   isAr = true,
   className = '',
   emptyText,
-  required = false
+  required = false,
+  onCreateNew = null,
+  createLabel = ''
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -39,6 +41,7 @@ export default function SearchableSelect({
         group,
         isLinked: Boolean(opt.isLinked),
         badgeText: opt.badgeText || '',
+        disabled: Boolean(opt.disabled),
       };
     });
   }, [options]);
@@ -144,6 +147,8 @@ export default function SearchableSelect({
   }, [isOpen, dropdownCoords]);
 
   const handleSelect = (optValue) => {
+    const targetOpt = normalizedOptions.find((o) => String(o.value) === String(optValue));
+    if (targetOpt?.disabled) return;
     onChange(optValue);
     setIsOpen(false);
     setSearchQuery('');
@@ -254,56 +259,97 @@ export default function SearchableSelect({
             style={{ maxHeight: `${Math.min(dropdownCoords.maxHeight - 50, 260)}px` }}
           >
             {filteredOptions.length === 0 ? (
-              <div className="p-3 text-center text-slate-400">
-                {emptyText || (isAr ? 'لا توجد نتائج مطابقة' : 'No matching results')}
+              <div className="p-3 text-center text-slate-400 space-y-2">
+                <div>{emptyText || (isAr ? 'لا توجد نتائج مطابقة' : 'No matching results')}</div>
+                {onCreateNew && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsOpen(false);
+                      onCreateNew(searchQuery);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition cursor-pointer shadow-xs"
+                  >
+                    <PlusCircle className="h-3.5 w-3.5" />
+                    <span>{createLabel || (isAr ? `+ إضافة "${searchQuery || 'جديد'}"` : `+ Add "${searchQuery || 'New'}"`)}</span>
+                  </button>
+                )}
               </div>
             ) : (
-              filteredOptions.map((opt, optIndex) => {
-                const isSelected = String(opt.value) === String(value);
-                const prevOpt = optIndex > 0 ? filteredOptions[optIndex - 1] : null;
-                const isFirstOfGroup = opt.group && (!prevOpt || prevOpt.group !== opt.group);
+              <>
+                {filteredOptions.map((opt, optIndex) => {
+                  const isSelected = String(opt.value) === String(value);
+                  const prevOpt = optIndex > 0 ? filteredOptions[optIndex - 1] : null;
+                  const isFirstOfGroup = opt.group && (!prevOpt || prevOpt.group !== opt.group);
 
-                return (
-                  <React.Fragment key={opt.value}>
-                    {isFirstOfGroup && (
-                      <div className="px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-600 bg-slate-100 rounded-lg my-1 flex items-center gap-1.5 select-none border border-slate-200/80">
-                        {opt.isLinked ? (
-                          <Link2 className="h-3 w-3 text-indigo-600 shrink-0" />
-                        ) : (
-                          <Boxes className="h-3 w-3 text-slate-400 shrink-0" />
-                        )}
-                        <span>{opt.group}</span>
-                      </div>
-                    )}
-                    <div
-                      onClick={() => handleSelect(opt.value)}
-                      className={`p-2 rounded-xl flex items-center justify-between gap-2 cursor-pointer transition ${
-                        isSelected
-                          ? 'bg-indigo-50 text-indigo-950 font-bold border border-indigo-200 shadow-2xs'
-                          : opt.isLinked
-                          ? 'bg-indigo-50/25 hover:bg-indigo-50/70 text-slate-900 border-s-2 border-indigo-500'
-                          : 'hover:bg-slate-100 text-slate-800'
-                      }`}
-                    >
-                      <div className="truncate flex-1 text-start flex items-center gap-1.5 min-w-0">
-                        {opt.sublabel && (
-                          <span className="font-mono text-[11px] text-slate-500 font-semibold shrink-0">
-                            [{opt.sublabel}]
-                          </span>
-                        )}
-                        <span className="truncate">{opt.label}</span>
-                        {opt.isLinked && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200 shrink-0 ms-auto">
+                  return (
+                    <React.Fragment key={opt.value}>
+                      {isFirstOfGroup && (
+                        <div className="px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-600 bg-slate-100 rounded-lg my-1 flex items-center gap-1.5 select-none border border-slate-200/80">
+                          {opt.isLinked ? (
                             <Link2 className="h-3 w-3 text-indigo-600 shrink-0" />
-                            <span>{opt.badgeText || (isAr ? 'مورد مسجل' : 'Linked Supplier')}</span>
-                          </span>
-                        )}
+                          ) : (
+                            <Boxes className="h-3 w-3 text-slate-400 shrink-0" />
+                          )}
+                          <span>{opt.group}</span>
+                        </div>
+                      )}
+                      <div
+                        onClick={() => !opt.disabled && handleSelect(opt.value)}
+                        className={`p-2 rounded-xl flex items-center justify-between gap-2 transition ${
+                          opt.disabled
+                            ? 'opacity-40 cursor-not-allowed bg-slate-50 text-slate-400 select-none'
+                            : isSelected
+                            ? 'bg-indigo-50 text-indigo-950 font-bold border border-indigo-200 shadow-2xs cursor-pointer'
+                            : opt.isLinked
+                            ? 'bg-indigo-50/25 hover:bg-indigo-50/70 text-slate-900 border-s-2 border-indigo-500 cursor-pointer'
+                            : 'hover:bg-slate-100 text-slate-800 cursor-pointer'
+                        }`}
+                      >
+                        <div className="truncate flex-1 text-start flex items-center gap-1.5 min-w-0">
+                          {opt.sublabel && (
+                            <span className="font-mono text-[11px] text-slate-500 font-semibold shrink-0">
+                              [{opt.sublabel}]
+                            </span>
+                          )}
+                          <span className="truncate">{opt.label}</span>
+                          {(opt.badgeText || opt.isLinked) && (
+                            <span
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ms-auto ${
+                                opt.disabled
+                                  ? 'bg-slate-200 text-slate-600 border border-slate-300'
+                                  : opt.isLinked
+                                  ? 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                                  : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                              }`}
+                            >
+                              {opt.isLinked && <Link2 className="h-3 w-3 text-indigo-600 shrink-0" />}
+                              <span>{opt.badgeText || (isAr ? 'مورد مسجل' : 'Linked Supplier')}</span>
+                            </span>
+                          )}
+                        </div>
+                        {isSelected && <Check className="h-3.5 w-3.5 text-indigo-600 shrink-0 ms-1" />}
                       </div>
-                      {isSelected && <Check className="h-3.5 w-3.5 text-indigo-600 shrink-0 ms-1" />}
-                    </div>
-                  </React.Fragment>
-                );
-              })
+                    </React.Fragment>
+                  );
+                })}
+
+                {onCreateNew && (
+                  <div className="pt-1.5 mt-1 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsOpen(false);
+                        onCreateNew(searchQuery);
+                      }}
+                      className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-slate-50 hover:bg-emerald-50 text-emerald-800 font-bold text-xs border border-dashed border-emerald-300 transition cursor-pointer"
+                    >
+                      <PlusCircle className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>{createLabel || (isAr ? '+ إضافة حساب / مستفيد جديد' : '+ Add New Account / Beneficiary')}</span>
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>,

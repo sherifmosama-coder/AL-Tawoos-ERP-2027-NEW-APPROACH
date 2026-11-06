@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { db } from '../firebase';
 import {
@@ -58,10 +59,12 @@ import {
   Unlock,
   Search,
   Check,
+  CheckCheck,
   Flag,
   CircleDot,
   Users,
   Copy,
+  ClipboardPaste,
   History,
   QrCode,
   ShieldCheck,
@@ -81,12 +84,31 @@ import {
   Printer,
   PackageCheck,
   RotateCcw,
+  RotateCw,
   Split,
   Zap,
   GitBranch,
   CornerDownRight,
-  ExternalLink
+  ExternalLink,
+  PowerOff,
+  PrinterCheck,
+  FileSpreadsheet,
+  Download,
+  MoreVertical,
+  Sliders,
+  MessageSquare
 } from 'lucide-react';
+import { useRecordComments } from '../context/CommentContext';
+import { RowCommentButton, RowCommentMenuItem } from './comments';
+import * as XLSX from 'xlsx';
+import { 
+  getStoredPalletThermalConfig, 
+  saveStoredPalletThermalConfig, 
+  PALLET_THERMAL_PRESETS 
+} from '../utils/thermalLabelGenerator';
+import { generateQRCodeDataURL } from '../utils/qrCodeGenerator';
+import BatchRangeDisplay from './BatchRangeDisplay';
+import PalletThermalPrintModal, { markPalletsAsPrintedInDb } from './PalletThermalPrintModal';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
 import VariantComboBox from './VariantComboBox';
@@ -106,6 +128,7 @@ import {
 import { getFinishedGoodsWarehouses, getWarehouseDisplayName } from '../utils/warehouseClassifier';
 import { calculatePalletBatchRange, buildBatchCode, translateBatchToPallets } from '../utils/inkjetBatchTranslator';
 import { useNotification } from '../context/NotificationContext';
+import { createActionRequired } from '../utils/notificationEngine';
 
 // Lightweight Client-Side Image Compression Helper (<80KB Web-Ready Payloads)
 const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.75) => {
@@ -220,12 +243,63 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       : permissions?.actions?.canLogScrap !== false
   );
 
+  const canPrintPalletThermal = isGeneralAdmin || (
+    permissions?.actions?.['work_orders.canPrintPalletThermal'] !== undefined
+      ? permissions.actions['work_orders.canPrintPalletThermal'] === true
+      : permissions?.actions?.canPrintPalletThermal !== false
+  );
+
+  const canCloseShift = isGeneralAdmin || (
+    permissions?.actions?.['work_orders.canCloseShift'] !== undefined
+      ? permissions.actions['work_orders.canCloseShift'] === true
+      : permissions?.actions?.canCloseShift !== false
+  );
+
+  const canAdminModifyPallet = isGeneralAdmin || (
+    permissions?.actions?.['work_orders.canAdminModifyPallet'] !== undefined
+      ? permissions.actions['work_orders.canAdminModifyPallet'] === true
+      : permissions?.actions?.canAdminModifyPallet === true
+  );
+
+  const canReverse = isGeneralAdmin || (
+    permissions?.actions?.['work_orders.canReverse'] !== undefined
+      ? permissions.actions['work_orders.canReverse'] === true
+      : permissions?.actions?.canReverse === true
+  );
+
   // Themed Notifications & Alert modals
   const { toast, showConfirm, showAlert } = useNotification();
   const alert = (msg) => showAlert({ message: typeof msg === 'object' ? JSON.stringify(msg) : String(msg), variant: 'warning' });
+  const { registerRowActions } = useRecordComments();
 
-  // 3 Unified Sub-Tabs: 'plan' | 'today_prod' | 'live_tracking'
-  const [activeSubTab, setActiveSubTab] = useState('plan');
+  // 3 Unified Sub-Tabs: 'plan' | 'today_prod' | 'live_tracking' (Synchronized with URL hash subTab)
+  const [activeSubTab, setActiveSubTab] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const raw = window.location.hash || '';
+      if (raw.includes('?')) {
+        const p = new URLSearchParams(raw.split('?')[1]);
+        const s = p.get('subTab');
+        if (s && ['plan', 'today_prod', 'live_tracking'].includes(s)) {
+          return s;
+        }
+      }
+    }
+    return 'plan';
+  });
+
+  // Sync activeSubTab into URL hash subTab so refresh returns to same view
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = window.location.hash || '#work_orders';
+    const [base, query] = raw.split('?');
+    const params = new URLSearchParams(query || '');
+    if (params.get('subTab') !== activeSubTab || !params.has('module')) {
+      params.set('subTab', activeSubTab);
+      if (!params.has('module')) params.set('module', 'production');
+      const newHash = `${base || '#work_orders'}?${params.toString()}`;
+      window.history.replaceState(null, '', newHash);
+    }
+  }, [activeSubTab]);
 
   // Cloud Collections State
   const [workOrders, setWorkOrders] = useState([]);
@@ -311,6 +385,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   const [quickWorkerName, setQuickWorkerName] = useState('');
   const [quickWorkerRole, setQuickWorkerRole] = useState('عامل تشغيل');
   const [quickWorkerTargetContext, setQuickWorkerTargetContext] = useState(null); // { type: 'plan' | 'pallet', stepNum: 1 }
+  const [copiedStepCrew, setCopiedStepCrew] = useState(null); // Clipboard for copying workers across steps
+  const [lastCopiedStepNum, setLastCopiedStepNum] = useState(null); // Visual feedback indicator for copied step
 
   // Rework & Defective Returns Integration State
   const [showFixesModal, setShowFixesModal] = useState(false);
@@ -333,20 +409,44 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     notes: '',
   });
 
-  // Smart Date Boundary Initialization (Defaults to Today, or Tomorrow if after 16:30)
+  // Smart Date Boundary Initialization: Defaults to Today until midnight (23:59:59)
   const computeInitialShiftDate = () => {
-    const now = new Date();
-    const currentMins = now.getHours() * 60 + now.getMinutes();
-    if (currentMins > 990) { // After 16:30
-      const tomorrow = new Date(now);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return tomorrow.toISOString().split('T')[0];
-    }
-    return now.toISOString().split('T')[0];
+    return new Date().toISOString().split('T')[0];
   };
 
   const [selectedPlanDate, setSelectedPlanDate] = useState(computeInitialShiftDate());
   const todayCalendarDateStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+
+  // Production Shifts & Daily Closure State
+  const [productionShifts, setProductionShifts] = useState([]);
+  const [showEndShiftModal, setShowEndShiftModal] = useState(false);
+  const [endShiftStep, setEndShiftStep] = useState(1);
+  const [endShiftBreakEndTime, setEndShiftBreakEndTime] = useState('');
+  const [endShiftNotes, setEndShiftNotes] = useState('');
+  const [isSealingShift, setIsSealingShift] = useState(false);
+
+  // Pallet Thermal Sticker Printing State (Unified thermal printing matching faulty_fg architecture)
+  const [palletThermalModal, setPalletThermalModal] = useState(null); // { items: [{ order, pallet, pIdx, copyLabel }], activePreviewIdx: 0 }
+  const [palletThermalConfig, setPalletThermalConfig] = useState(getStoredPalletThermalConfig());
+  const [showPalletPageSetup, setShowPalletPageSetup] = useState(false);
+  const [isPalletPrinting, setIsPalletPrinting] = useState(false);
+  const [activePreviewQr, setActivePreviewQr] = useState('');
+
+  // Sub-Tab 4: Shift Analytics & Timeline Filters
+  const [analyticsDate, setAnalyticsDate] = useState(new Date().toISOString().split('T')[0]);
+  const [analyticsLineFilter, setAnalyticsLineFilter] = useState('all');
+  const [analyticsProductFilter, setAnalyticsProductFilter] = useState('all');
+
+  // Sub-Tab 1: Era Sections Collapsible Toggles
+  const [eraExpandedSections, setEraExpandedSections] = useState({
+    present: true,
+    future_nearest: true,
+    future_week: true,
+    future_beyond: false,
+    past_nearest: true,
+    past_week: false,
+    past_beyond: false,
+  });
 
   // Strict Calendar Date Lockdown: Past work orders (today's date > planDate/execution date)
   // are permanently locked for everyone except General Admin
@@ -365,11 +465,14 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
   // Sub-Tab 2: Compact Pallet Inspection Popup Modal State
   const [inspectPalletModal, setInspectPalletModal] = useState(null);
+  const [waitingMaterialsPromptModal, setWaitingMaterialsPromptModal] = useState(null);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [lineFilter, setLineFilter] = useState('all');
+  const [productFilter, setProductFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
 
   // Sub-Tab 1: Plan Assignment & Edit Modal State
   const [showPlanModal, setShowPlanModal] = useState(false);
@@ -378,10 +481,17 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   const [feasibilityModalData, setFeasibilityModalData] = useState(null); // { order, feasibility }
   const [splitModalData, setSplitModalData] = useState(null); // { bottleneckInfo, planFormData }
   const [isPlanBomMatrixExpanded, setIsPlanBomMatrixExpanded] = useState(false); // Collapsed by default
+  const [selectedInheritOrderId, setSelectedInheritOrderId] = useState(''); // Source work order to inherit SOP staff from
+  const [inheritFeedback, setInheritFeedback] = useState(false); // Visual feedback indicator upon applying staff inheritance
+  const [isCustomReworkProcessMode, setIsCustomReworkProcessMode] = useState(false); // Toggle custom rework step builder
+  const [autosaveReworkProcess, setAutosaveReworkProcess] = useState(true); // Autosave custom rework SOP to line library
+  const [inheritReworkWithCrew, setInheritReworkWithCrew] = useState(false); // Whether to also inherit past crew when picking rework SOP
+  const [palletAutosaveRework, setPalletAutosaveRework] = useState(true); // Autosave rework SOP from pallet modal
   const [isOverviewBarExpanded, setIsOverviewBarExpanded] = useState(false); // Collapsible Plan Summary Bar
   const [imagePreviewModal, setImagePreviewModal] = useState(null); // High-res image preview lightbox popover
   const [copiedId, setCopiedId] = useState(null); // Feedback for copied record IDs
   const [activeNotePopoverId, setActiveNotePopoverId] = useState(null); // Interactive modern tooltip for order notes
+  const [activeActionMenu, setActiveActionMenu] = useState(null); // Fixed position 3-dots actions menu { order, style }
   const [expandedNotesOrders, setExpandedNotesOrders] = useState({}); // Collapsible inline notes map for execution cards
   const [pinnedMatrixTooltip, setPinnedMatrixTooltip] = useState(null); // Pinned tooltip in rework matrix
   const [hoveredMatrixTooltip, setHoveredMatrixTooltip] = useState(null); // Hovered tooltip in rework matrix
@@ -687,6 +797,11 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       setIntermediateRecipes(list);
     });
 
+    const unsubShifts = onSnapshot(collection(db, 'production_shifts'), (snap) => {
+      const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+      setProductionShifts(list);
+    }, (err) => console.error('Error fetching production_shifts:', err));
+
     return () => {
       unsubOrders();
       unsubProducts();
@@ -707,6 +822,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       unsubFloorVessels();
       unsubTanks();
       unsubRecipes();
+      unsubShifts();
     };
   }, []);
 
@@ -776,6 +892,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
             // Resync all pallets to staged_floor_pallets
             const ratio = Number(order.packagingRatio) || 12;
             for (const p of repairedPallets) {
+              if (p.isWaitingMaterials || p.stagingStatus === 'waiting_materials' || p.status === 'waiting_materials') continue;
               const pId = p.palletId;
               await setDoc(doc(db, 'staged_floor_pallets', pId), {
                 id: pId,
@@ -1755,7 +1872,6 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         nameAr: mat.materialNameAr,
         nameEn: mat.materialNameEn,
         specs: mat.specsText,
-        supplierName: mat.supplierName,
         smallUnit: mat.smallUnit,
         largeUnitName: mat.largeUnitName,
         packagingRatio: ratio,
@@ -1771,7 +1887,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         currency: pickedLot?.currency || 'EGP',
         receivedDate: pickedLot?.receivedDate || '',
         supplierId: pickedLot?.supplierId || '',
-        supplierName: pickedLot?.supplierName || '',
+        supplierName: pickedLot?.supplierName || mat.supplierName || '',
         supplierBatchNo: pickedLot?.supplierBatchNo || '',
         productionDate: pickedLot?.productionDate || '',
         expiryDate: pickedLot?.expiryDate || '',
@@ -1839,14 +1955,41 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       const todayIso = new Date().toISOString().split('T')[0];
       const isDateDifferentFromToday = floorTransferData.transferDate !== todayIso;
 
+      const srcWh = warehouses.find((w) => w.id === floorTransferData.sourceWarehouse || w.code === floorTransferData.sourceWarehouse);
+      const tgtWh = warehouses.find((w) => w.id === floorTransferData.targetWarehouse || w.code === floorTransferData.targetWarehouse);
+      const srcCustodianId = srcWh?.responsibleUserId || '';
+      const tgtCustodianId = tgtWh?.responsibleUserId || '';
+      const isAuthorizedDirectly = isGeneralAdmin || (srcCustodianId && tgtCustodianId && srcCustodianId === tgtCustodianId && currentUserId === srcCustodianId);
+
+      let initialStatus = 'completed';
+      let requiredVerifierId = '';
+      let auditAction = 'transfer_created_from_plan';
+      let auditNoteAr = `تم إنشاء وتحويل الخامات آلياً لتغذية صالة الإنتاج لأوامر التشغيل (${floorTransferData.productionOrderRef})`;
+      let auditNoteEn = `Auto-generated transfer to factory floor for MOs (${floorTransferData.productionOrderRef})`;
+
+      if (!isAuthorizedDirectly) {
+        if (isDateDifferentFromToday && !isGeneralAdmin) {
+          initialStatus = 'pending_admin_verification';
+          auditAction = 'transfer_held_backdate';
+          auditNoteAr = `تم تعليق التحويل لاختلاف تاريخ الصرف (${floorTransferData.transferDate}) عن تاريخ اليوم وبانتظار اعتماد المسؤول العام حصراً`;
+          auditNoteEn = `Transfer held due to custom date (${floorTransferData.transferDate}); awaiting General Admin verification`;
+        } else {
+          initialStatus = 'pending_custodian_verification';
+          requiredVerifierId = srcCustodianId || tgtCustodianId || '';
+          auditAction = 'transfer_requested_custodian';
+          auditNoteAr = `طلب تحويل خامات لتغذية صالة الإنتاج لأمر تشغيل (${floorTransferData.productionOrderRef}) بانتظار فحص واعتماد أمين المستودع`;
+          auditNoteEn = `Transfer requested; awaiting inspection & verification by warehouse custodian`;
+        }
+      }
+
       const auditEntry = {
         version: '1.0',
-        action: 'transfer_created_from_plan',
-        status: 'completed',
+        action: auditAction,
+        status: initialStatus,
         performedBy: currentUserName,
         timestamp: new Date().toISOString(),
-        noteAr: `تم إنشاء وتحويل الخامات آلياً لتغذية صالة الإنتاج لأوامر التشغيل (${floorTransferData.productionOrderRef})`,
-        noteEn: `Auto-generated transfer to factory floor for MOs (${floorTransferData.productionOrderRef})`,
+        noteAr: auditNoteAr,
+        noteEn: auditNoteEn,
       };
 
       const transferDoc = {
@@ -1862,11 +2005,13 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           qtySmallUnits: Number(l.qtySmallUnits),
           qtyLargeUnits: Number(l.qtyLargeUnits || 0),
         })),
-        status: 'completed',
+        status: initialStatus,
         issuedBy: currentUserName,
         issuedById: currentUser?.id || currentUser?.uid || '',
-        verifiedBy: currentUserName,
-        verifiedAt: new Date().toISOString(),
+        requiredVerifierId: requiredVerifierId || null,
+        allowedVerifierIds: [srcCustodianId, tgtCustodianId].filter(Boolean),
+        verifiedBy: initialStatus === 'completed' ? currentUserName : null,
+        verifiedAt: initialStatus === 'completed' ? new Date().toISOString() : null,
         auditTrail: [auditEntry],
         attachments: [],
         version: '1.0',
@@ -1875,8 +2020,38 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       };
 
       await setDoc(doc(db, 'stock_transfers', newTrnId), transferDoc);
+
+      if (initialStatus !== 'completed') {
+        const isAdminOnly = initialStatus === 'pending_admin_verification';
+        const allowedVerifierIds = [srcCustodianId, tgtCustodianId].filter(Boolean);
+        await createActionRequired({
+          actionType: 'stock_transfer_verification',
+          docId: newTrnId,
+          docNumber: newTrnId,
+          title: `مطلوب اعتماد وتأكيد صرف خامات لأمر تشغيل: ${newTrnId}`,
+          titleEn: `Floor Material Feeding Verification Required: ${newTrnId}`,
+          message: `صرف خامات لأمر تشغيل (${floorTransferData.productionOrderRef}) من [${srcWh?.nameAr || floorTransferData.sourceWarehouse}] إلى [${tgtWh?.nameAr || floorTransferData.targetWarehouse}]`,
+          messageEn: `Material transfer for MO (${floorTransferData.productionOrderRef}) from [${srcWh?.nameEn || floorTransferData.sourceWarehouse}]`,
+          targetTab: 'transfers',
+          targetModule: 'purchases',
+          highlightId: newTrnId,
+          createdBy: currentUserId,
+          createdByName: currentUserName,
+          targetUserId: requiredVerifierId || null,
+          targetUserIds: allowedVerifierIds.length > 0 ? allowedVerifierIds : (requiredVerifierId ? [requiredVerifierId] : []),
+          targetRoles: isAdminOnly
+            ? ['general_admin']
+            : ['general_admin', 'warehouse_keeper', 'storekeeper'],
+          createdAt: serverTimestamp()
+        });
+      }
+
       setShowFloorTransferModal(false);
-      alert(isAr ? `تم إنشاء واعتماد إذن التحويل بنجاح برقم: (${newTrnId})` : `Transfer created successfully: (${newTrnId})`);
+      if (initialStatus === 'completed') {
+        alert(isAr ? `تم إنشاء واعتماد إذن التحويل بنجاح برقم: (${newTrnId})` : `Transfer created and approved successfully: (${newTrnId})`);
+      } else {
+        alert(isAr ? `تم تسجيل إذن التحويل برقم (${newTrnId}) وبانتظار اعتماد مسؤول المستودع لتأكيد الصرف.` : `Transfer order registered (${newTrnId}); awaiting warehouse custodian approval.`);
+      }
     } catch (err) {
       console.error('Error saving floor transfer:', err);
       alert(isAr ? 'حدث خطأ أثناء حفظ إذن التحويل.' : 'Error saving transfer.');
@@ -1951,7 +2126,15 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       processCode: '',
       processNameAr: '',
       processNameEn: '',
-      stepStaffing: [],
+      stepStaffing: [
+        {
+          stepNum: 1,
+          stepName: '',
+          stepDesc: '',
+          mandatory: false,
+          workers: [],
+        },
+      ],
       notes: `[أمر تصليح ومرتجع إنتاج] - إشعارات: ${prod.vouchers.map((v) => v.id).join(', ')} - العيوب: ${Array.from(prod.faultTags).join('، ')}`,
       isRework: true,
       reworkSourceVouchers: prod.vouchers.map((v) => v.id),
@@ -1960,6 +2143,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       detectedFromOrderNumber,
     });
 
+    setSelectedInheritOrderId('');
+    setInheritFeedback(false);
     setShowFixesModal(false);
     setShowPlanModal(true);
   };
@@ -2708,12 +2893,33 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     }
   };
 
+  // Check if a floor pallet is printed with comprehensive fallback across staged doc and linked work orders
+  const isFloorPalletPrinted = (p) => {
+    if (Boolean(p.isPrinted || Number(p.printCount) > 0)) return true;
+    const order = workOrders.find((o) => o.id === p.orderId || o.id === p.workOrderId || String(o.orderNumber) === String(p.orderNumber));
+    const matchInOrder = order?.pallets?.find((op) => (op.palletId && op.palletId === p.palletId) || (p.palletNumber !== undefined && Number(op.palletNumber) === Number(p.palletNumber)));
+    return Boolean(matchInOrder?.isPrinted || Number(matchInOrder?.printCount) > 0);
+  };
+
   // Open Finished Goods Pallet Transfer Modal
   const handleOpenTransferFgModal = (group = null) => {
     if (!canTransferFg) {
       alert(isAr ? 'ليس لديك صلاحية ترحيل ونقل الباليتات لمستودع التام.' : 'You do not have permission to transfer pallets to Finished Goods warehouse.');
       return;
     }
+
+    // Strict Pallet Label Printing Gate: Pallets must NOT be transferred without being printed
+    const palletsToCheck = group ? (group.pallets || []) : activeStagedFloorPallets;
+    const unprintedPallets = palletsToCheck.filter((p) => !isFloorPalletPrinted(p));
+    if (unprintedPallets.length > 0) {
+      alert(
+        isAr
+          ? `لا يمكن ترحيل الباليتات لمستودع التام قبل طباعة ملصق الباليت (Barcode/QR) لكل بالتة.\nيوجد (${unprintedPallets.length}) بالتة بانتظار طباعة الملصق. يرجى طباعة الملصقات أولاً.`
+          : `Cannot transfer pallets to Finished Goods before printing pallet labels.\nThere are (${unprintedPallets.length}) unprinted pallet(s). Please print all labels first.`
+      );
+      return;
+    }
+
     const targetWh = defaultFinishedGoodsWarehouse || finishedGoodsWarehouses[0] || null;
     setTransferFgGroup(group);
     setTransferFgWarehouseId(targetWh?.id || '');
@@ -3182,6 +3388,26 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           isAr ? 'تم الترحيل' : 'Transferred'
         );
       } else {
+        // Dispatch Action Required targeting FG Inward tab
+        await createActionRequired({
+          actionType: 'fg_inward_verification',
+          docId: newTrnId,
+          docNumber: newTrnId,
+          title: `مطلوب فحص واستلام باليتات منتج تام: ${newTrnId}`,
+          titleEn: `FG Inward Pallets Receipt Required: ${newTrnId}`,
+          message: `ترحيل (${palletsToTransfer.length}) باليتة إلى مستودع [${targetWh?.nameAr || targetWh?.nameEn || 'المنتجات التامة'}]`,
+          messageEn: `Transfer of ${palletsToTransfer.length} pallets to [${targetWh?.nameEn || targetWh?.nameAr || 'FG Warehouse'}]`,
+          targetTab: 'fg_inward',
+          targetModule: 'production',
+          highlightId: newTrnId,
+          createdBy: currentUserId,
+          createdByName: currentUserName,
+          targetUserId: requiredVerifierId || null,
+          targetUserIds: requiredVerifierId ? [requiredVerifierId] : [],
+          targetRoles: ['finished_goods_custodian', 'warehouse_keeper', 'storekeeper', 'general_admin'],
+          createdAt: serverTimestamp()
+        });
+
         showAlert({
           title: isAr ? 'تم إنشاء طلب التحويل' : 'Transfer Created',
           message: isAr
@@ -3409,6 +3635,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       stepStaffing: [],
       notes: '',
     });
+    setSelectedInheritOrderId('');
+    setInheritFeedback(false);
     setShowPlanModal(true);
   };
 
@@ -3464,6 +3692,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       originalReturnQtySmall: order.originalReturnQtySmall != null ? Number(order.originalReturnQtySmall) : (getOriginalReturnQty(order)?.qtySmall ?? null),
       detectedFromOrderNumber: order.detectedFromOrderNumber || null,
     });
+    setSelectedInheritOrderId('');
+    setInheritFeedback(false);
     setShowPlanModal(true);
   };
 
@@ -3481,6 +3711,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       originalReturnQtyLarge: order.originalReturnQtyLarge != null ? Number(order.originalReturnQtyLarge) : (origFallback?.qtyLarge ?? null),
       originalReturnQtySmall: order.originalReturnQtySmall != null ? Number(order.originalReturnQtySmall) : (origFallback?.qtySmall ?? null),
     });
+    setSelectedInheritOrderId('');
+    setInheritFeedback(false);
     setShowPlanModal(true);
   };
 
@@ -3536,6 +3768,44 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     return productionProcesses.filter((proc) => proc.status !== 'inactive');
   };
 
+  // Update recent worker memory for a process step in Firestore (max 5, MRU order, global across all users)
+  const updateStepWorkerMemory = async (processId, stepNum, newWorkerIds) => {
+    if (!processId || stepNum == null || !newWorkerIds || newWorkerIds.length === 0) return;
+    const proc = productionProcesses.find(
+      (p) => p.id === processId || p.processCode === processId
+    );
+    if (!proc || !proc.id) return;
+
+    const currentMemMap = proc.stepWorkerMemory || {};
+    const currentStepList = Array.isArray(currentMemMap[stepNum]) ? currentMemMap[stepNum] : [];
+
+    // Prepend newly assigned worker IDs, deduplicate while preserving MRU order, cap at 5
+    const combined = [...newWorkerIds, ...currentStepList];
+    const deduplicated = [];
+    for (const id of combined) {
+      if (id && !deduplicated.includes(id)) {
+        deduplicated.push(id);
+      }
+    }
+    const updatedList = deduplicated.slice(0, 5);
+
+    // If identical, do nothing to prevent redundant Firestore writes
+    if (JSON.stringify(currentStepList) === JSON.stringify(updatedList)) return;
+
+    const updatedMemoryMap = {
+      ...currentMemMap,
+      [stepNum]: updatedList,
+    };
+
+    try {
+      await updateDoc(doc(db, 'production_processes', proc.id), {
+        stepWorkerMemory: updatedMemoryMap,
+      });
+    } catch (err) {
+      console.error('Error updating stepWorkerMemory in Firestore:', err);
+    }
+  };
+
   // Process Selection Handler for Plan Form
   const handlePlanProcessChange = (procId) => {
     const proc = productionProcesses.find((p) => p.id === procId || p.processCode === procId);
@@ -3570,16 +3840,21 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       processNameEn: proc.nameEn || '',
       stepStaffing: newStaffing,
     }));
+    setSelectedInheritOrderId('');
   };
 
   // Multi-Worker Assignment Toggler for Plan Steps
   const handleToggleWorkerInPlanStep = (stepNum, worker) => {
+    let wasAdded = false;
+    let targetProcessId = planFormData.processId;
     setPlanFormData((prev) => {
+      targetProcessId = prev.processId;
       const currentStaffing = prev.stepStaffing || [];
       const updated = currentStaffing.map((step) => {
         if (step.stepNum !== stepNum) return step;
         const currentWorkers = step.workers || [];
         const exists = currentWorkers.some((w) => w.workerId === worker.id);
+        if (!exists) wasAdded = true;
         const newWorkers = exists
           ? currentWorkers.filter((w) => w.workerId !== worker.id)
           : [...currentWorkers, { workerId: worker.id, workerName: worker.name, isManual: !!worker.isManual }];
@@ -3587,6 +3862,9 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       });
       return { ...prev, stepStaffing: updated };
     });
+    if (wasAdded && targetProcessId) {
+      updateStepWorkerMemory(targetProcessId, stepNum, [worker.id]);
+    }
   };
 
   // Process Selection Handler for Pallet Form
@@ -3625,12 +3903,16 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
   // Multi-Worker Assignment Toggler for Pallet Steps
   const handleToggleWorkerInPalletStep = (stepNum, worker) => {
+    let wasAdded = false;
+    let targetProcessId = palletFormData.processId;
     setPalletFormData((prev) => {
+      targetProcessId = prev.processId;
       const currentStaffing = prev.stepStaffing || [];
       const updated = currentStaffing.map((step) => {
         if (step.stepNum !== stepNum) return step;
         const currentWorkers = step.workers || [];
         const exists = currentWorkers.some((w) => w.workerId === worker.id);
+        if (!exists) wasAdded = true;
         const newWorkers = exists
           ? currentWorkers.filter((w) => w.workerId !== worker.id)
           : [...currentWorkers, { workerId: worker.id, workerName: worker.name, isManual: !!worker.isManual }];
@@ -3638,6 +3920,9 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       });
       return { ...prev, stepStaffing: updated };
     });
+    if (wasAdded && targetProcessId) {
+      updateStepWorkerMemory(targetProcessId, stepNum, [worker.id]);
+    }
   };
 
   // Quick Manual Worker Creation on the Fly
@@ -3676,6 +3961,706 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       alert(isAr ? 'حدث خطأ أثناء حفظ العامل.' : 'Error saving worker.');
     }
   };
+
+  // Universal Crew Clipboard Handlers
+  const handleCopyStepCrew = (step) => {
+    if (!step?.workers || step.workers.length === 0) return;
+    setCopiedStepCrew(step.workers.map((w) => ({ ...w })));
+    setLastCopiedStepNum(step.stepNum);
+    setTimeout(() => {
+      setLastCopiedStepNum(null);
+    }, 2500);
+  };
+
+  const handlePasteStepCrewInPlan = (stepNum) => {
+    if (!copiedStepCrew || copiedStepCrew.length === 0) return;
+    setPlanFormData((prev) => {
+      const currentStaffing = prev.stepStaffing || [];
+      const updated = currentStaffing.map((step) => {
+        if (step.stepNum !== stepNum) return step;
+        const currentWorkers = step.workers || [];
+        const existingIds = new Set(currentWorkers.map((w) => w.workerId));
+        const newWorkersToAppend = copiedStepCrew
+          .filter((w) => !existingIds.has(w.workerId))
+          .map((w) => ({ ...w }));
+        return {
+          ...step,
+          workers: [...currentWorkers, ...newWorkersToAppend],
+        };
+      });
+      return { ...prev, stepStaffing: updated };
+    });
+    if (planFormData.processId) {
+      updateStepWorkerMemory(planFormData.processId, stepNum, copiedStepCrew.map((w) => w.workerId));
+    }
+  };
+
+  const handlePasteStepCrewInPallet = (stepNum) => {
+    if (!copiedStepCrew || copiedStepCrew.length === 0) return;
+    setPalletFormData((prev) => {
+      const currentStaffing = prev.stepStaffing || [];
+      const updated = currentStaffing.map((step) => {
+        if (step.stepNum !== stepNum) return step;
+        const currentWorkers = step.workers || [];
+        const existingIds = new Set(currentWorkers.map((w) => w.workerId));
+        const newWorkersToAppend = copiedStepCrew
+          .filter((w) => !existingIds.has(w.workerId))
+          .map((w) => ({ ...w }));
+        return {
+          ...step,
+          workers: [...currentWorkers, ...newWorkersToAppend],
+        };
+      });
+      return { ...prev, stepStaffing: updated };
+    });
+    if (palletFormData.processId) {
+      updateStepWorkerMemory(palletFormData.processId, stepNum, copiedStepCrew.map((w) => w.workerId));
+    }
+  };
+
+  // Helper to format worker options for SearchableSelect with MRU memory (up to 5 recent workers per process step)
+  const getWorkerOptionsForStep = (assignedWorkers = [], processId, stepNum) => {
+    const assignedIds = new Set((assignedWorkers || []).map((w) => w.workerId));
+
+    // Resolve recent worker IDs for this process step (max 5)
+    const proc = productionProcesses.find(
+      (p) => p.id === processId || p.processCode === processId
+    );
+    const recentIds = (proc?.stepWorkerMemory && Array.isArray(proc.stepWorkerMemory[stepNum]))
+      ? proc.stepWorkerMemory[stepNum]
+      : [];
+
+    const recentIdSet = new Set(recentIds);
+
+    // 1. Recent workers (ordered by MRU sequence)
+    const recentOpts = [];
+    recentIds.forEach((rId) => {
+      const w = combinedWorkerPool.find((worker) => worker.id === rId);
+      if (w) {
+        const isAlreadyAssigned = assignedIds.has(w.id);
+        recentOpts.push({
+          value: w.id,
+          label: w.name,
+          sublabel: w.isManual ? (isAr ? 'عامل مؤقت' : 'Manual') : (w.role || w.department || ''),
+          group: isAr ? '🕒 المعينون مؤخراً للخطوة (حتى 5)' : '🕒 Recent Step Crew (Up to 5)',
+          disabled: isAlreadyAssigned,
+          badgeText: isAlreadyAssigned ? (isAr ? 'مُسند' : 'Assigned') : (isAr ? 'مؤخراً' : 'Recent'),
+        });
+      }
+    });
+
+    // 2. Remaining workers from combinedWorkerPool
+    const remainingOpts = [];
+    const otherGroupLabel = recentOpts.length > 0
+      ? (isAr ? '👥 باقي عمال الإنتاج' : '👥 Other Production Workers')
+      : (isAr ? '👥 كافة عمال الإنتاج' : '👥 All Production Workers');
+
+    combinedWorkerPool.forEach((w) => {
+      if (!recentIdSet.has(w.id)) {
+        const isAlreadyAssigned = assignedIds.has(w.id);
+        remainingOpts.push({
+          value: w.id,
+          label: w.name,
+          sublabel: w.isManual ? (isAr ? 'عامل مؤقت' : 'Manual') : (w.role || w.department || ''),
+          group: otherGroupLabel,
+          disabled: isAlreadyAssigned,
+          badgeText: isAlreadyAssigned ? (isAr ? 'مُسند' : 'Assigned') : undefined,
+        });
+      }
+    });
+
+    return [...recentOpts, ...remainingOpts];
+  };
+
+  // Candidate orders for SOP staff inheritance (same-day primary, fallback to most recent date)
+  const eligibleInheritanceOrders = useMemo(() => {
+    if (!planFormData.processId) return { orders: [], isFallback: false, fallbackDate: null };
+
+    // Resolve target process
+    const targetProc = productionProcesses.find(
+      (p) => p.id === planFormData.processId || p.processCode === planFormData.processId
+    );
+    const targetProcId = targetProc?.id;
+    const targetProcCode = targetProc?.processCode;
+
+    const targetPlanDate = planFormData.planDate || selectedPlanDate;
+
+    // Helper to check if an order has staffed workers
+    const hasAssignedWorkers = (order) => {
+      return Array.isArray(order.stepStaffing) && order.stepStaffing.some(
+        (s) => Array.isArray(s.workers) && s.workers.length > 0
+      );
+    };
+
+    // Filter candidate orders matching process, excluding currently edited order, not cancelled, and with assigned workers
+    const allMatching = workOrders.filter((o) => {
+      if (editingPlanOrder && o.id === editingPlanOrder.id) return false;
+      if (o.status === 'cancelled') return false;
+      const matchesProc = (targetProcId && o.processId === targetProcId) ||
+                          (targetProcCode && o.processCode === targetProcCode) ||
+                          o.processId === planFormData.processId ||
+                          o.processCode === planFormData.processId;
+      if (!matchesProc) return false;
+      return hasAssignedWorkers(o);
+    });
+
+    // 1. Same-day orders
+    const sameDayOrders = allMatching.filter((o) => o.planDate === targetPlanDate);
+    if (sameDayOrders.length > 0) {
+      return { orders: sameDayOrders, isFallback: false, fallbackDate: null };
+    }
+
+    // 2. Fallback to the most recent preceding date with matching staffed orders
+    const otherOrders = allMatching.filter((o) => o.planDate !== targetPlanDate);
+    if (otherOrders.length === 0) {
+      return { orders: [], isFallback: false, fallbackDate: null };
+    }
+
+    otherOrders.sort((a, b) => (b.planDate || '').localeCompare(a.planDate || ''));
+    const mostRecentDate = otherOrders[0].planDate;
+    const fallbackOrders = otherOrders.filter((o) => o.planDate === mostRecentDate);
+
+    return { orders: fallbackOrders, isFallback: true, fallbackDate: mostRecentDate };
+  }, [planFormData.processId, planFormData.planDate, selectedPlanDate, workOrders, productionProcesses, editingPlanOrder]);
+
+  // Options for staff inheritance dropdown
+  const inheritOrderOptions = useMemo(() => {
+    if (!eligibleInheritanceOrders.orders || eligibleInheritanceOrders.orders.length === 0) return [];
+    return eligibleInheritanceOrders.orders.map((o) => {
+      const prod = finishedProducts.find((p) => p.code === o.finishedProductId);
+      const prodName = isAr
+        ? (o.productNameAr || prod?.nameAr || o.productNameEn || o.finishedProductId || o.orderNumber)
+        : (o.productNameEn || prod?.nameEn || o.productNameAr || o.finishedProductId || o.orderNumber);
+      const workerCount = (o.stepStaffing || []).reduce(
+        (acc, s) => acc + (Array.isArray(s.workers) ? s.workers.length : 0),
+        0
+      );
+      const prefix = eligibleInheritanceOrders.isFallback ? `[${o.planDate}] ` : '';
+      return {
+        value: o.id,
+        label: `${prefix}${prodName}`,
+        sublabel: `#${o.orderNumber || o.id}`,
+        badgeText: isAr ? `${workerCount} عمال` : `${workerCount} workers`,
+      };
+    });
+  }, [eligibleInheritanceOrders, finishedProducts, isAr]);
+
+  // Handler to apply crew inheritance from selected candidate work order
+  const handleApplyStaffInheritance = () => {
+    if (!selectedInheritOrderId) return;
+    const sourceOrder = workOrders.find((o) => o.id === selectedInheritOrderId);
+    if (!sourceOrder || !Array.isArray(sourceOrder.stepStaffing)) return;
+
+    const sourceStaffing = sourceOrder.stepStaffing;
+
+    // Replace current step staffing with source staffing (matching by stepNum or stepName)
+    setPlanFormData((prev) => {
+      const currentSteps = prev.stepStaffing || [];
+      const updatedSteps = currentSteps.map((curStep) => {
+        const matchedSource = sourceStaffing.find(
+          (s) => s.stepNum === curStep.stepNum || (s.stepName && s.stepName === curStep.stepName)
+        );
+        if (matchedSource && Array.isArray(matchedSource.workers)) {
+          return {
+            ...curStep,
+            workers: matchedSource.workers.map((w) => ({ ...w })),
+          };
+        }
+        return {
+          ...curStep,
+          workers: [],
+        };
+      });
+      return { ...prev, stepStaffing: updatedSteps };
+    });
+
+    // Automatically update global MRU memory for each step
+    if (planFormData.processId) {
+      sourceStaffing.forEach((srcStep) => {
+        if (Array.isArray(srcStep.workers) && srcStep.workers.length > 0) {
+          updateStepWorkerMemory(
+            planFormData.processId,
+            srcStep.stepNum,
+            srcStep.workers.map((w) => w.workerId)
+          );
+        }
+      });
+    }
+
+    setInheritFeedback(true);
+    setTimeout(() => setInheritFeedback(false), 3000);
+  };
+
+  // Helper to save a custom rework process to Firestore (autosaved to line library)
+  const saveCustomReworkProcess = async ({
+    targetProduct,
+    lineKey,
+    faultTags = [],
+    steps = [],
+  }) => {
+    // Clean empty steps and re-index
+    const cleanedSteps = (steps || [])
+      .filter((s) => s && (s.stepName || s.name || '').trim() !== '')
+      .map((s, idx) => ({
+        stepNum: idx + 1,
+        name: (s.stepName || s.name || '').trim(),
+        desc: (s.desc || s.stepDesc || '').trim(),
+        mandatory: false,
+        workers: Array.isArray(s.workers) ? s.workers.map((w) => ({ ...w })) : [],
+      }));
+
+    if (cleanedSteps.length === 0) return null;
+
+    // Resolve production line key
+    const effectiveLine = (
+      lineKey ||
+      targetProduct?.categoryKey ||
+      targetProduct?.category ||
+      targetProduct?.productionLine ||
+      'GEN'
+    ).toUpperCase();
+
+    // Find next sequence number for RWK-{LINE_KEY}-{SEQ}
+    const prefix = `RWK-${effectiveLine}-`;
+    let maxSeq = 0;
+    (productionProcesses || []).forEach((p) => {
+      const code = (p.processCode || p.id || '').toUpperCase();
+      if (code.startsWith(prefix)) {
+        const numPart = parseInt(code.replace(prefix, ''), 10);
+        if (!isNaN(numPart) && numPart > maxSeq) {
+          maxSeq = numPart;
+        }
+      }
+    });
+    const nextSeq = maxSeq + 1;
+    const seqStr = String(nextSeq).padStart(3, '0');
+    const processCode = `${prefix}${seqStr}`;
+
+    // Find repeat count for this product and fault combination
+    const prodCode = targetProduct?.code || targetProduct?.finishedProductId || targetProduct?.id || '';
+    const existingReworksForProduct = (productionProcesses || []).filter((p) => {
+      if (!p.isReworkProcess) return false;
+      return Array.isArray(p.compatibleProductIds) && p.compatibleProductIds.includes(prodCode);
+    });
+    const repeatCount = existingReworksForProduct.length + 1;
+
+    // Format process names: "Fault Type Tags" + "product name" + # repeats
+    const tagsStrAr = faultTags.length > 0 ? `[${faultTags.join('، ')}] ` : '';
+    const tagsStrEn = faultTags.length > 0 ? `[${faultTags.join(', ')}] ` : '';
+    const prodNameAr = targetProduct?.nameAr || prodCode;
+    const prodNameEn = targetProduct?.nameEn || targetProduct?.nameAr || prodCode;
+
+    const nameAr = `${tagsStrAr}${prodNameAr} #${repeatCount}`;
+    const nameEn = `${tagsStrEn}${prodNameEn} #${repeatCount}`;
+
+    // Build step worker memory map
+    const initialMemory = {};
+    cleanedSteps.forEach((s) => {
+      if (Array.isArray(s.workers) && s.workers.length > 0) {
+        initialMemory[s.stepNum] = s.workers.map((w) => w.workerId).slice(0, 5);
+      }
+    });
+
+    const payload = {
+      processCode,
+      nameAr,
+      nameEn,
+      category: (
+        lineKey ||
+        targetProduct?.categoryKey ||
+        targetProduct?.category ||
+        targetProduct?.productionLine ||
+        'general'
+      ).toLowerCase(),
+      isReworkProcess: true,
+      faultTags: Array.isArray(faultTags) ? faultTags : [],
+      repeatCount,
+      compatibleProductIds: prodCode ? [prodCode] : [],
+      steps: cleanedSteps.map((s) => ({
+        stepNum: s.stepNum,
+        name: s.name,
+        desc: s.desc || '',
+        mandatory: false,
+      })),
+      stepWorkerMemory: initialMemory,
+      createdAt: serverTimestamp(),
+      createdBy: currentUser?.id || currentUser?.uid || 'admin',
+      createdByName: currentUserName,
+      updatedAt: serverTimestamp(),
+    };
+
+    const docRef = await addDoc(collection(db, 'production_processes'), payload);
+    return { id: docRef.id, processCode, nameAr, nameEn, steps: cleanedSteps };
+  };
+
+  // Reusable Rework Processes for Plan Modal
+  const availablePlanReworkProcesses = useMemo(() => {
+    if (!planFormData.isRework) return [];
+    const prod = finishedProducts.find((p) => p.code === planFormData.finishedProductId);
+    const prodCat = (prod?.categoryKey || prod?.category || prod?.productionLine || planFormData.productionLine || '').toLowerCase();
+    const faultTags = planFormData.reworkFaultTags || [];
+
+    const reworks = (productionProcesses || []).filter((p) => p.isReworkProcess === true && p.status !== 'inactive');
+
+    return reworks.map((p) => {
+      const isSameLine = (p.category || '').toLowerCase() === prodCat;
+      const sharedTagsCount = (p.faultTags || []).filter((t) => faultTags.includes(t)).length;
+      let score = 0;
+      if (isSameLine) score += 10;
+      score += sharedTagsCount * 5;
+
+      const group = sharedTagsCount > 0
+        ? (isAr ? '⭐ مسارات متطابقة مع العيوب' : '⭐ Matching Fault Tag SOPs')
+        : isSameLine
+        ? (isAr ? '🏭 مسارات خط الإنتاج' : '🏭 Same Production Line SOPs')
+        : (isAr ? '📋 مسارات تصليح أخرى' : '📋 Other Rework SOPs');
+
+      return {
+        value: p.id || p.processCode,
+        label: isAr ? (p.nameAr || p.nameEn) : (p.nameEn || p.nameAr),
+        sublabel: `[${p.processCode}] • ${(p.steps || []).length} ${isAr ? 'خطوات' : 'steps'}`,
+        badgeText: isAr ? 'مسار تصليح' : 'Rework SOP',
+        group,
+        score,
+        processObj: p,
+      };
+    }).sort((a, b) => b.score - a.score);
+  }, [planFormData.isRework, planFormData.finishedProductId, planFormData.productionLine, planFormData.reworkFaultTags, productionProcesses, finishedProducts, isAr]);
+
+  // Reusable Rework Processes for Pallet Modal
+  const availablePalletReworkProcesses = useMemo(() => {
+    if (!palletTargetOrder?.isRework) return [];
+    const prodCode = palletTargetOrder.finishedProductId || palletTargetOrder.productCode;
+    const prod = finishedProducts.find((p) => p.code === prodCode);
+    const prodCat = (prod?.categoryKey || prod?.category || prod?.productionLine || palletTargetOrder.productionLine || '').toLowerCase();
+    const faultTags = palletTargetOrder.reworkFaultTags || [];
+
+    const reworks = (productionProcesses || []).filter((p) => p.isReworkProcess === true && p.status !== 'inactive');
+
+    return reworks.map((p) => {
+      const isSameLine = (p.category || '').toLowerCase() === prodCat;
+      const sharedTagsCount = (p.faultTags || []).filter((t) => faultTags.includes(t)).length;
+      let score = 0;
+      if (isSameLine) score += 10;
+      score += sharedTagsCount * 5;
+
+      const group = sharedTagsCount > 0
+        ? (isAr ? '⭐ مسارات متطابقة مع العيوب' : '⭐ Matching Fault Tag SOPs')
+        : isSameLine
+        ? (isAr ? '🏭 مسارات خط الإنتاج' : '🏭 Same Production Line SOPs')
+        : (isAr ? '📋 مسارات تصليح أخرى' : '📋 Other Rework SOPs');
+
+      return {
+        value: p.id || p.processCode,
+        label: isAr ? (p.nameAr || p.nameEn) : (p.nameEn || p.nameAr),
+        sublabel: `[${p.processCode}] • ${(p.steps || []).length} ${isAr ? 'خطوات' : 'steps'}`,
+        badgeText: isAr ? 'مسار تصليح' : 'Rework SOP',
+        group,
+        score,
+        processObj: p,
+      };
+    }).sort((a, b) => b.score - a.score);
+  }, [palletTargetOrder?.isRework, palletTargetOrder?.finishedProductId, palletTargetOrder?.productCode, palletTargetOrder?.productionLine, palletTargetOrder?.reworkFaultTags, productionProcesses, finishedProducts, isAr]);
+
+  // Dynamic preview name for plan rework process
+  const planReworkPreviewName = useMemo(() => {
+    if (!planFormData.isRework) return '';
+    const prod = finishedProducts.find((p) => p.code === planFormData.finishedProductId);
+    const prodCode = planFormData.finishedProductId || '';
+    const faultTags = planFormData.reworkFaultTags || [];
+
+    const existingReworksForProduct = (productionProcesses || []).filter((p) => {
+      if (!p.isReworkProcess) return false;
+      return Array.isArray(p.compatibleProductIds) && p.compatibleProductIds.includes(prodCode);
+    });
+    const repeatCount = existingReworksForProduct.length + 1;
+    const tagsStr = faultTags.length > 0 ? `[${faultTags.join('، ')}] ` : '';
+    const prodName = isAr ? (prod?.nameAr || prodCode) : (prod?.nameEn || prod?.nameAr || prodCode);
+    return `${tagsStr}${prodName} #${repeatCount}`;
+  }, [planFormData.isRework, planFormData.finishedProductId, planFormData.reworkFaultTags, productionProcesses, finishedProducts, isAr]);
+
+  // Dynamic preview name for pallet rework process
+  const palletReworkPreviewName = useMemo(() => {
+    if (!palletTargetOrder?.isRework) return '';
+    const prodCode = palletTargetOrder.finishedProductId || palletTargetOrder.productCode || '';
+    const prod = finishedProducts.find((p) => p.code === prodCode);
+    const faultTags = palletTargetOrder.reworkFaultTags || [];
+
+    const existingReworksForProduct = (productionProcesses || []).filter((p) => {
+      if (!p.isReworkProcess) return false;
+      return Array.isArray(p.compatibleProductIds) && p.compatibleProductIds.includes(prodCode);
+    });
+    const repeatCount = existingReworksForProduct.length + 1;
+    const tagsStr = faultTags.length > 0 ? `[${faultTags.join('، ')}] ` : '';
+    const prodName = isAr ? (prod?.nameAr || prodCode) : (prod?.nameEn || prod?.nameAr || prodCode);
+    return `${tagsStr}${prodName} #${repeatCount}`;
+  }, [palletTargetOrder?.isRework, palletTargetOrder?.finishedProductId, palletTargetOrder?.productCode, palletTargetOrder?.reworkFaultTags, productionProcesses, finishedProducts, isAr]);
+
+  // Select an existing rework process into plan
+  const handleSelectPlanReworkProcess = (selectedProcVal, withCrew = inheritReworkWithCrew) => {
+    if (!selectedProcVal) {
+      setPlanFormData((prev) => ({
+        ...prev,
+        processId: '',
+        processCode: '',
+        processNameAr: '',
+        processNameEn: '',
+        stepStaffing: [],
+      }));
+      return;
+    }
+
+    const proc = productionProcesses.find((p) => p.id === selectedProcVal || p.processCode === selectedProcVal);
+    if (!proc) return;
+
+    const newSteps = (proc.steps || []).map((s) => {
+      let crew = [];
+      if (withCrew) {
+        if (Array.isArray(s.workers) && s.workers.length > 0) {
+          crew = s.workers.map((w) => ({ ...w }));
+        } else if (proc.stepWorkerMemory && Array.isArray(proc.stepWorkerMemory[s.stepNum])) {
+          crew = proc.stepWorkerMemory[s.stepNum]
+            .map((wId) => combinedWorkerPool.find((w) => w.id === wId))
+            .filter(Boolean)
+            .map((w) => ({
+              workerId: w.id,
+              workerName: w.name,
+              isManual: !!w.isManual,
+            }));
+        }
+      }
+      return {
+        stepNum: s.stepNum,
+        stepName: s.name,
+        stepDesc: s.desc || '',
+        mandatory: false,
+        workers: crew,
+      };
+    });
+
+    setPlanFormData((prev) => ({
+      ...prev,
+      processId: proc.id || proc.processCode,
+      processCode: proc.processCode,
+      processNameAr: proc.nameAr,
+      processNameEn: proc.nameEn || '',
+      stepStaffing: newSteps,
+    }));
+    setIsCustomReworkProcessMode(false);
+  };
+
+  // Add custom rework step in Plan
+  const handleAddPlanReworkStep = () => {
+    setPlanFormData((prev) => {
+      const current = prev.stepStaffing || [];
+      const nextNum = current.length + 1;
+      return {
+        ...prev,
+        stepStaffing: [
+          ...current,
+          {
+            stepNum: nextNum,
+            stepName: '',
+            stepDesc: '',
+            mandatory: false,
+            workers: [],
+          },
+        ],
+      };
+    });
+    setIsCustomReworkProcessMode(true);
+  };
+
+  // Remove custom rework step in Plan
+  const handleRemovePlanReworkStep = (stepIdx) => {
+    setPlanFormData((prev) => {
+      const current = prev.stepStaffing || [];
+      const filtered = current.filter((_, idx) => idx !== stepIdx);
+      const reindexed = filtered.map((s, idx) => ({ ...s, stepNum: idx + 1 }));
+      return {
+        ...prev,
+        stepStaffing: reindexed,
+      };
+    });
+  };
+
+  // Update custom rework step name in Plan
+  const handleUpdatePlanReworkStepName = (stepIdx, newName) => {
+    setPlanFormData((prev) => {
+      const current = [...(prev.stepStaffing || [])];
+      if (current[stepIdx]) {
+        current[stepIdx] = { ...current[stepIdx], stepName: newName, name: newName };
+      }
+      return { ...prev, stepStaffing: current };
+    });
+  };
+
+  // Pallet Rework Handlers
+  const handleSelectPalletReworkProcess = (selectedProcVal, withCrew = inheritReworkWithCrew) => {
+    if (!selectedProcVal) {
+      setPalletFormData((prev) => ({
+        ...prev,
+        processId: '',
+        processCode: '',
+        processNameAr: '',
+        processNameEn: '',
+        stepStaffing: [],
+      }));
+      return;
+    }
+
+    const proc = productionProcesses.find((p) => p.id === selectedProcVal || p.processCode === selectedProcVal);
+    if (!proc) return;
+
+    const newSteps = (proc.steps || []).map((s) => {
+      let crew = [];
+      if (withCrew) {
+        if (Array.isArray(s.workers) && s.workers.length > 0) {
+          crew = s.workers.map((w) => ({ ...w }));
+        } else if (proc.stepWorkerMemory && Array.isArray(proc.stepWorkerMemory[s.stepNum])) {
+          crew = proc.stepWorkerMemory[s.stepNum]
+            .map((wId) => combinedWorkerPool.find((w) => w.id === wId))
+            .filter(Boolean)
+            .map((w) => ({
+              workerId: w.id,
+              workerName: w.name,
+              isManual: !!w.isManual,
+            }));
+        }
+      }
+      return {
+        stepNum: s.stepNum,
+        stepName: s.name,
+        stepDesc: s.desc || '',
+        mandatory: false,
+        workers: crew,
+      };
+    });
+
+    setPalletFormData((prev) => ({
+      ...prev,
+      processId: proc.id || proc.processCode,
+      processCode: proc.processCode,
+      processNameAr: proc.nameAr,
+      processNameEn: proc.nameEn || '',
+      stepStaffing: newSteps,
+    }));
+  };
+
+  const handleAddPalletReworkStep = () => {
+    setPalletFormData((prev) => {
+      const current = prev.stepStaffing || [];
+      const nextNum = current.length + 1;
+      return {
+        ...prev,
+        stepStaffing: [
+          ...current,
+          {
+            stepNum: nextNum,
+            stepName: '',
+            stepDesc: '',
+            mandatory: false,
+            workers: [],
+          },
+        ],
+      };
+    });
+  };
+
+  const handleRemovePalletReworkStep = (stepIdx) => {
+    setPalletFormData((prev) => {
+      const current = prev.stepStaffing || [];
+      const filtered = current.filter((_, idx) => idx !== stepIdx);
+      const reindexed = filtered.map((s, idx) => ({ ...s, stepNum: idx + 1 }));
+      return {
+        ...prev,
+        stepStaffing: reindexed,
+      };
+    });
+  };
+
+  const handleUpdatePalletReworkStepName = (stepIdx, newName) => {
+    setPalletFormData((prev) => {
+      const current = [...(prev.stepStaffing || [])];
+      if (current[stepIdx]) {
+        current[stepIdx] = { ...current[stepIdx], stepName: newName, name: newName };
+      }
+      return { ...prev, stepStaffing: current };
+    });
+  };
+
+  // Process SearchableSelect Options for Plan Modal
+  const planProcessOptions = useMemo(() => {
+    if (planFormData.isRework) {
+      return availablePlanReworkProcesses;
+    }
+    const compProcs = getCompatibleProcesses(planFormData.finishedProductId);
+    const compIds = new Set(compProcs.map((p) => p.id || p.processCode));
+    const otherProcs = productionProcesses.filter(
+      (p) => p.status !== 'inactive' && !compIds.has(p.id || p.processCode)
+    );
+
+    const opts = [];
+    if (compProcs.length > 0) {
+      compProcs.forEach((p) => {
+        opts.push({
+          value: p.id || p.processCode,
+          label: p.nameAr || p.nameEn,
+          sublabel: p.processCode,
+          group: isAr ? 'مسارات متوافقة مع الصنف' : 'Compatible Processes',
+          badgeText: isAr ? 'متوافق' : 'Compatible',
+        });
+      });
+    }
+    if (otherProcs.length > 0) {
+      otherProcs.forEach((p) => {
+        opts.push({
+          value: p.id || p.processCode,
+          label: p.nameAr || p.nameEn,
+          sublabel: p.processCode,
+          group: isAr ? 'مسارات تشغيل أخرى' : 'Other Processes',
+        });
+      });
+    }
+    return opts;
+  }, [planFormData.isRework, availablePlanReworkProcesses, planFormData.finishedProductId, productionProcesses, isAr]);
+
+  // Process SearchableSelect Options for Pallet Modal
+  const palletProcessOptions = useMemo(() => {
+    if (palletTargetOrder?.isRework) {
+      return availablePalletReworkProcesses;
+    }
+    const prodCode = palletTargetOrder?.finishedProductId || palletTargetOrder?.productCode;
+    const compProcs = getCompatibleProcesses(prodCode);
+    const compIds = new Set(compProcs.map((p) => p.id || p.processCode));
+    const otherProcs = productionProcesses.filter(
+      (p) => p.status !== 'inactive' && !compIds.has(p.id || p.processCode)
+    );
+
+    const opts = [];
+    if (compProcs.length > 0) {
+      compProcs.forEach((p) => {
+        opts.push({
+          value: p.id || p.processCode,
+          label: p.nameAr || p.nameEn,
+          sublabel: p.processCode,
+          group: isAr ? 'مسارات متوافقة مع الصنف' : 'Compatible Processes',
+          badgeText: isAr ? 'متوافق' : 'Compatible',
+        });
+      });
+    }
+    if (otherProcs.length > 0) {
+      otherProcs.forEach((p) => {
+        opts.push({
+          value: p.id || p.processCode,
+          label: p.nameAr || p.nameEn,
+          sublabel: p.processCode,
+          group: isAr ? 'مسارات تشغيل أخرى' : 'Other Processes',
+        });
+      });
+    }
+    return opts;
+  }, [palletTargetOrder?.isRework, availablePalletReworkProcesses, palletTargetOrder?.finishedProductId, palletTargetOrder?.productCode, productionProcesses, isAr]);
 
   // Available BOM Recipes for Selected Product and Packaging Option
   const availableBomRecipesForPlan = useMemo(() => {
@@ -4232,6 +5217,36 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         });
       }
 
+      // If Rework order and autosave toggle is active, save custom rework process to library
+      let effectiveProcessId = planFormData.processId || '';
+      let effectiveProcessCode = planFormData.processCode || '';
+      let effectiveProcessNameAr = planFormData.processNameAr || '';
+      let effectiveProcessNameEn = planFormData.processNameEn || '';
+      let effectiveStepStaffing = planFormData.stepStaffing || [];
+
+      if (planFormData.isRework && autosaveReworkProcess && Array.isArray(effectiveStepStaffing) && effectiveStepStaffing.length > 0) {
+        const validSteps = effectiveStepStaffing.filter((s) => (s.stepName || s.name || '').trim() !== '');
+        if (validSteps.length > 0 && (!planFormData.processId || isCustomReworkProcessMode)) {
+          try {
+            const savedProc = await saveCustomReworkProcess({
+              targetProduct: prod || { code: planFormData.finishedProductId, nameAr: planFormData.finishedProductId },
+              lineKey: resolvedLine,
+              faultTags: planFormData.reworkFaultTags || [],
+              steps: validSteps,
+            });
+            if (savedProc) {
+              effectiveProcessId = savedProc.id;
+              effectiveProcessCode = savedProc.processCode;
+              effectiveProcessNameAr = savedProc.nameAr;
+              effectiveProcessNameEn = savedProc.nameEn;
+              effectiveStepStaffing = savedProc.steps;
+            }
+          } catch (procErr) {
+            console.error('Error autosaving custom rework process:', procErr);
+          }
+        }
+      }
+
       const payload = {
         id: orderId,
         orderNumber: orderId,
@@ -4250,11 +5265,11 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         bomRecipeId: planFormData.bomRecipeId || '',
         productionLine: resolvedLine, // Auto-derived from Finished Product Master
 
-        processId: planFormData.processId || '',
-        processCode: planFormData.processCode || '',
-        processNameAr: planFormData.processNameAr || '',
-        processNameEn: planFormData.processNameEn || '',
-        stepStaffing: planFormData.stepStaffing || [],
+        processId: effectiveProcessId,
+        processCode: effectiveProcessCode,
+        processNameAr: effectiveProcessNameAr,
+        processNameEn: effectiveProcessNameEn,
+        stepStaffing: effectiveStepStaffing,
 
         priority: planFormData.priority || 'today',
         importanceRank: Number(planFormData.importanceRank) || 1,
@@ -4382,14 +5397,19 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         floorLiquidVessels.some((v) => v.materialCode === comp.itemId || v.id === comp.itemId) ||
         ((comp.unit || itemDoc?.smallUnit || '').includes('لتر') && (comp.materialNameAr || itemDoc?.nameAr || '').includes('خل'));
 
-      // If pipe-feeding (continuous overhead pipes from floor vessels), continuous parallel feed
-      if (isPipeFeeding) return;
+      // Continuous pipe-feeding: check active floor liquid tanks + floor warehouse stock
+      let effectiveFloorStock = floorStock;
+      if (isPipeFeeding) {
+        const vessel = floorLiquidVessels.find((v) => v.materialCode === comp.itemId || v.id === comp.itemId);
+        const activeVesselLiters = (vessel?.activeTanks || []).reduce((s, t) => s + (Number(t.remainingVolume) || 0), 0);
+        effectiveFloorStock = Math.max(Number(floorStock || 0), Number(activeVesselLiters || 0));
+      }
 
-      const producible = Math.floor(floorStock / stdQty);
+      const producible = Math.floor(effectiveFloorStock / stdQty);
       if (producible < minCartons) {
         minCartons = producible;
       }
-      if (floorStock <= 0 && !zeroComponent) {
+      if (effectiveFloorStock <= 0 && !zeroComponent) {
         zeroComponent = comp.materialNameAr || comp.itemId;
       }
     });
@@ -4398,6 +5418,326 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       maxCartons: minCartons === Infinity ? 0 : minCartons,
       zeroComponent,
     };
+  };
+
+  /**
+   * Evaluates real-time floor stock availability (piped liquid vessels + floor warehouse stock)
+   * specifically for a pallet to determine if it can be materialized/staged.
+   */
+  const checkPalletStockAvailability = (order, pallet) => {
+    if (!order || !pallet) return { isSufficient: false, shortages: [] };
+    const recipe = bomRecipes.find((b) => b.code === order.bomRecipeId || b.id === order.bomRecipeId);
+    if (!recipe || !Array.isArray(recipe.components)) return { isSufficient: false, shortages: [] };
+
+    const pQtyLarge = Number(pallet.qtyLarge || 0);
+    const shortages = [];
+
+    recipe.components.forEach((comp) => {
+      const stdQty = Number(comp.standardQty || 1);
+      const neededForThisPallet = pQtyLarge * stdQty;
+      const { floorStock } = getComponentLiveStock(comp, order.componentSelections);
+
+      const itemDoc = itemsMaster.find((i) => i.code === comp.itemId || i.id === comp.itemId);
+      const flagsArr = Array.isArray(itemDoc?.flags) ? itemDoc.flags : (itemDoc?.flag ? [itemDoc.flag] : []);
+      const isMFlagged = flagsArr.some((f) => String(f).toUpperCase().includes('M')) || (comp.itemId && String(comp.itemId).toUpperCase().startsWith('M'));
+      const isPipeFeeding = isMFlagged ||
+        floorLiquidVessels.some((v) => v.materialCode === comp.itemId || v.id === comp.itemId) ||
+        ((comp.unit || itemDoc?.smallUnit || '').includes('لتر') && (comp.materialNameAr || itemDoc?.nameAr || '').includes('خل'));
+
+      let availableFloor = floorStock;
+      if (isPipeFeeding) {
+        const vessel = floorLiquidVessels.find((v) => v.materialCode === comp.itemId || v.id === comp.itemId);
+        const activeVesselLiters = (vessel?.activeTanks || []).reduce((s, t) => s + (Number(t.remainingVolume) || 0), 0);
+        availableFloor = Math.max(Number(floorStock || 0), Number(activeVesselLiters || 0));
+      }
+
+      if (neededForThisPallet > availableFloor) {
+        shortages.push({
+          comp,
+          itemDoc,
+          nameAr: comp.materialNameAr || itemDoc?.nameAr || comp.itemId,
+          unit: comp.unit || itemDoc?.smallUnit || (isPipeFeeding ? 'لتر' : 'عبوة'),
+          needed: neededForThisPallet,
+          available: availableFloor,
+          deficit: Number((neededForThisPallet - availableFloor).toFixed(2)),
+          isPipeFeeding,
+        });
+      }
+    });
+
+    return {
+      isSufficient: shortages.length === 0,
+      shortages,
+    };
+  };
+
+  const handleShowPalletShortagesAlert = (pallet, stockCheck) => {
+    const shortagesList = (stockCheck?.shortages?.length > 0 ? stockCheck.shortages : (pallet.waitingMaterialsShortages || []));
+    const deficitText = shortagesList.map(s => 
+      `• ${s.nameAr || s.comp?.materialNameAr || s.itemId}: المطلوب (${Number(s.needed || 0).toFixed(1)} ${s.unit || 'وحدة'}) | المتاح حالياً بالصالة (${Number(s.available || 0).toFixed(1)} ${s.unit || 'وحدة'}) | العجز (${Number(s.deficit || 0).toFixed(1)} ${s.unit || 'وحدة'})`
+    ).join('\n');
+
+    showAlert({
+      title: isAr ? `عجز خامات الباليتة #${pallet.palletNumber || pallet.palletId}` : `Material Shortage for Pallet #${pallet.palletNumber || pallet.palletId}`,
+      message: isAr
+        ? `⚠️ هذه الباليتة مسجلة بحالة «بانتظار توفر الخامات». تفاصيل العجز بصالة الإنتاج:\n\n${deficitText}\n\nيرجى توريد أو ضخ الكميات المطلوبة لصالة الإنتاج ليظهر زر الترحيل التلقائي.`
+        : `This pallet is in "Waiting Materials" status. Current floor shortage:\n\n${deficitText}\n\nPlease transfer or pump required materials to floor warehouse.`,
+      variant: 'warning',
+    });
+  };
+
+  const handleDeductAndStagePallet = async (order, pallet, pIdx) => {
+    if (!order || !pallet) return;
+    
+    const stockCheck = checkPalletStockAvailability(order, pallet);
+    if (!stockCheck.isSufficient) {
+      handleShowPalletShortagesAlert(pallet, stockCheck);
+      return;
+    }
+
+    const recipe = bomRecipes.find((b) => b.code === order.bomRecipeId || b.id === order.bomRecipeId);
+    if (!recipe || !Array.isArray(recipe.components)) {
+      toast.error(isAr ? 'لم يتم العثور على تركيبة الـ BOM الخاصة بهذا الصنف.' : 'BOM recipe not found.');
+      return;
+    }
+
+    const pQtyLarge = Number(pallet.qtyLarge || 0);
+    const pQtySmall = Number(pallet.qtySmall || 0);
+    const ratio = Number(pallet.packagingRatio || order.packagingRatio || 12);
+    const palletId = pallet.palletId || pallet.id || (order.orderNumber ? `PAL-${order.orderNumber}-P${String(pallet.palletNumber || pIdx + 1).padStart(2, '0')}` : `PAL-${pallet.palletNumber || pIdx + 1}`);
+
+    setIsSaving(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const pDate = pallet.productionDate || order.productionDate || order.orderDate || selectedPlanDate || nowIso.split('T')[0];
+      const factoryWhId = factoryWarehouse?.id || factoryWarehouse?.code || 'WH-PRD-01';
+
+      // Prepare Working Copies for Floor Liquid Vessels (FIFO Deduction)
+      const vesselWorkingCopies = {};
+      floorLiquidVessels.forEach((v) => {
+        const mCode = v.materialCode || v.id;
+        vesselWorkingCopies[mCode] = {
+          activeTanks: (v.activeTanks || []).map((t) => ({ ...t })),
+          historyTanks: (v.historyTanks || []).map((t) => ({ ...t })),
+          originalData: v,
+        };
+      });
+
+      const palletIntermediateTanks = [];
+
+      const pConsumed = recipe.components.map((comp) => {
+        const itmDoc = itemsMaster.find((i) => i.code === comp.itemId || i.id === comp.itemId);
+        const cStdQty = Number(comp.standardQty || 1);
+        const cQty = pQtyLarge * cStdQty;
+        const vCode = pallet.variantCode || comp.variantCode || '';
+        const r = Number(comp.packagingRatio || ratio);
+
+        const flagsArr = Array.isArray(itmDoc?.flags) ? itmDoc.flags : (itmDoc?.flag ? [itmDoc.flag] : []);
+        const isM = flagsArr.some((f) => String(f).toUpperCase().includes('M')) || (comp.itemId && String(comp.itemId).toUpperCase().startsWith('M'));
+        const isPipe = isM ||
+          floorLiquidVessels.some((v) => v.materialCode === comp.itemId || v.id === comp.itemId) ||
+          ((comp.unit || itmDoc?.smallUnit || '').includes('لتر') && (comp.materialNameAr || itmDoc?.nameAr || '').includes('خل'));
+
+        const allocatedTanksForComp = [];
+        let finalLotNumber = '';
+
+        if (isPipe && vesselWorkingCopies[comp.itemId]) {
+          const vCopy = vesselWorkingCopies[comp.itemId];
+          let neededLiters = cQty;
+
+          for (const curTank of vCopy.activeTanks) {
+            if (neededLiters <= 0) break;
+            const curRem = Number(curTank.remainingVolume) || 0;
+            if (curRem <= 0) continue;
+
+            const take = Math.min(curRem, neededLiters);
+            curTank.remainingVolume = Number((curRem - take).toFixed(2));
+            neededLiters = Number((neededLiters - take).toFixed(2));
+
+            const tankAllocationEntry = {
+              tankNumber: curTank.tankNumber || curTank.id,
+              lotNumber: curTank.lotNumber || (curTank.tankNumber ? `TANK-${curTank.tankNumber}` : null),
+              materialCode: comp.itemId,
+              materialNameAr: comp.materialNameAr || itmDoc?.nameAr || comp.itemId,
+              allocatedLiters: take,
+              unitCost: Number(curTank.unitCost || curTank.costPerUnit || 0),
+              qaStatus: curTank.qaStatus || 'passed',
+              concentration: curTank.qaAcidity || 5.0,
+              rMaterialLots: Array.isArray(curTank.rMaterialLots) ? curTank.rMaterialLots : [],
+            };
+            allocatedTanksForComp.push(tankAllocationEntry);
+            if (!palletIntermediateTanks.some((x) => x.tankNumber === curTank.tankNumber)) {
+              palletIntermediateTanks.push(tankAllocationEntry);
+            }
+          }
+
+          const depleted = vCopy.activeTanks.filter((t) => (Number(t.remainingVolume) || 0) <= 0);
+          vCopy.activeTanks = vCopy.activeTanks.filter((t) => (Number(t.remainingVolume) || 0) > 0);
+          depleted.forEach((dt) => {
+            vCopy.historyTanks.unshift({ ...dt, depletedAt: nowIso, status: 'depleted_in_production' });
+          });
+
+          if (allocatedTanksForComp.length > 0) {
+            finalLotNumber = allocatedTanksForComp.map((t) => t.lotNumber || `#${t.tankNumber}`).join(' + ');
+          }
+        }
+
+        const unitCost = resolveItemOrLotCost({
+          itemId: comp.itemId,
+          variantCode: vCode,
+          lotNumber: finalLotNumber,
+          warehouseId: factoryWhId,
+          liveStockMatrix,
+          itemsMaster,
+          goodsReceipts,
+          tanks: liquidTanks,
+          transformations,
+          intermediateRecipes,
+        });
+        const totalCost = Number((cQty * unitCost).toFixed(2));
+
+        return {
+          itemId: comp.itemId,
+          variantCode: vCode,
+          nameAr: comp.materialNameAr || itmDoc?.nameAr || comp.itemId,
+          nameEn: itmDoc?.nameEn || '',
+          smallUnit: comp.unit || itmDoc?.smallUnit || 'عبوة',
+          largeUnitName: itmDoc?.largeUnitName || 'كرتونة',
+          packagingRatio: r,
+          qtySmallUnits: cQty,
+          qtyLargeUnits: Number((cQty / r).toFixed(2)),
+          warehouseId: factoryWhId,
+          lotNumber: finalLotNumber,
+          unitCost,
+          totalCost,
+          intermediateLiquidTanks: allocatedTanksForComp.length > 0 ? allocatedTanksForComp : null,
+          rMaterialLots: allocatedTanksForComp.length > 0 ? allocatedTanksForComp.flatMap((t) => t.rMaterialLots || []) : null,
+        };
+      });
+
+      const palletTotalCost = Number(pConsumed.reduce((sum, c) => sum + (c.totalCost || 0), 0).toFixed(2));
+      const costPerLarge = pQtyLarge > 0 ? Number((palletTotalCost / pQtyLarge).toFixed(2)) : 0;
+      const costPerSmall = pQtySmall > 0 ? Number((palletTotalCost / pQtySmall).toFixed(4)) : 0;
+
+      // Update floor_liquid_vessels
+      for (const [matCode, vCopy] of Object.entries(vesselWorkingCopies)) {
+        const vRef = doc(db, 'floor_liquid_vessels', matCode);
+        const newVol = vCopy.activeTanks.reduce((s, t) => s + (Number(t.remainingVolume) || 0), 0);
+        await setDoc(vRef, {
+          ...vCopy.originalData,
+          activeTanks: vCopy.activeTanks,
+          historyTanks: vCopy.historyTanks,
+          currentVolume: newVol,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+
+      // Write production transformation
+      const pTransId = `TRANS-PAL-${palletId}`;
+      await setDoc(doc(db, 'production_transformations', pTransId), {
+        id: pTransId,
+        palletId,
+        workOrderId: order.id,
+        orderNumber: order.orderNumber,
+        date: pDate,
+        time: pallet.endTime || pallet.startTime || minsToTime(timeToMins(nowIso.slice(11, 16))),
+        timestamp: nowIso,
+        warehouseId: factoryWhId,
+        itemCode: order.finishedProductId,
+        variantCode: order.packagingOptionCode || order.finishedProductId,
+        itemNameAr: order.productNameAr,
+        producedQty: pQtyLarge,
+        yieldUnit: order.outputLargeUnit,
+        totalCost: palletTotalCost,
+        costPerLarge,
+        costPerSmall,
+        consumedComponents: pConsumed,
+        intermediateLiquidTanks: palletIntermediateTanks,
+        status: 'completed',
+        registeredBy: currentUserName,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      // Write to staged_floor_pallets with staged_on_floor status
+      const stagedDocRef = doc(db, 'staged_floor_pallets', palletId);
+      await setDoc(stagedDocRef, {
+        ...pallet,
+        id: palletId,
+        palletId,
+        workOrderId: order.id,
+        orderNumber: order.orderNumber,
+        finishedProductId: order.finishedProductId,
+        productCode: order.productCode || order.finishedProductId,
+        productNameAr: order.productNameAr,
+        productNameEn: order.productNameEn || '',
+        packagingOptionSuffix: order.packagingOptionSuffix || 'A',
+        packagingOptionNameAr: order.packagingOptionNameAr || '',
+        packagingOptionCode: order.packagingOptionCode || '',
+        packagingRatio: ratio,
+        outputLargeUnit: order.outputLargeUnit || 'كرتونة',
+        outputSmallUnit: order.outputSmallUnit || 'عبوة',
+        qtyLarge: pQtyLarge,
+        qtySmall: pQtySmall,
+        status: 'staged_on_floor',
+        stagingStatus: 'staged_on_floor',
+        palletTotalCost,
+        costPerLarge,
+        costPerSmall,
+        consumedComponents: pConsumed,
+        intermediateLiquidTanks: palletIntermediateTanks,
+        intermediateLiquidTanksDisplay: palletIntermediateTanks.map((t) => `#${t.tankNumber}`).join(' + '),
+        materializedAt: nowIso,
+        materializedBy: currentUserName,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      // Update pallet in work_orders and production_work_orders
+      const updatedPallets = (order.pallets || []).map((pl, idx) => {
+        const isMatch = pl.palletId === palletId || (idx === pIdx) || (Number(pl.palletNumber) === Number(pallet.palletNumber));
+        if (isMatch) {
+          return {
+            ...pl,
+            status: 'staged_on_floor',
+            stagingStatus: 'staged_on_floor',
+            isWaitingMaterials: false,
+            waitingMaterialsShortages: null,
+            palletTotalCost,
+            costPerLarge,
+            costPerSmall,
+            consumedComponents: pConsumed,
+            intermediateLiquidTanks: palletIntermediateTanks,
+            intermediateLiquidTanksDisplay: palletIntermediateTanks.map((t) => `#${t.tankNumber}`).join(' + '),
+            materializedAt: nowIso,
+            materializedBy: currentUserName,
+          };
+        }
+        return pl;
+      });
+
+      for (const col of ['work_orders', 'production_work_orders']) {
+        try {
+          await updateDoc(doc(db, col, order.id), {
+            pallets: updatedPallets,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (_) {}
+      }
+
+      if (inspectPalletModal) {
+        setInspectPalletModal(null);
+      }
+
+      toast.success(
+        isAr ? `تم صرف الخامات ونقل الباليتة #${pallet.palletNumber} للتام الجاهز للترحيل بنجاح!` : `Materials deducted & Pallet #${pallet.palletNumber} moved to Staged FG!`,
+        isAr ? 'تم الصرف والترحيل' : 'Staged to FG'
+      );
+    } catch (err) {
+      console.error('Error materializing pallet:', err);
+      toast.error(isAr ? 'حدث خطأ أثناء صرف الخامات وترحيل الباليتة.' : 'Error materializing pallet.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleOpenAddPallet = async (order) => {
@@ -4424,28 +5764,35 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     // Case 1 & 2: Floor Readiness Gate (Applies to standard virgin production; rework orders sort/repack existing cartons)
     if (!order.isRework) {
       if (maxCartons <= 0) {
-        showAlert({
-          title: isAr ? 'رصيد الخامات غير متوفر بصالة الإنتاج' : 'No Floor Stock Available',
-          message: isAr
-            ? `🚫 لا يمكن بدء الإنتاج أو تسجيل البالتات:\nرصيد خامة (${zeroComponent || 'بعض الخامات'}) = 0 بصالة الإنتاج.\n\nيرجى تنفيذ إذن تحويل مخزني (TRN) من مستودع الخامات إلى صالة الإنتاج أولاً.`
-            : `Cannot start production: Component stock is 0 on factory floor. Please transfer materials to floor warehouse first.`,
-          variant: 'error'
-        });
-        return;
-      }
-
-      const targetQtyToCheck = remainingLarge > 0 ? remainingLarge : plannedLarge;
-      if (maxCartons < targetQtyToCheck) {
+        toast.warning(
+          isAr
+            ? `⚠️ تنبيه: رصيد خامة (${zeroComponent || 'بعض الخامات'}) = 0 بصالة الإنتاج. يمكنك تسجيل الباليتة وحفظها بحالة «بانتظار توفر الخامات».`
+            : `Note: Stock of (${zeroComponent || 'some materials'}) is 0. You can save pallet as "Waiting Materials".`
+        );
         const proceed = await showConfirm({
-          title: isAr ? 'تنبيه رصيد جزئي بصالة الإنتاج' : 'Partial Floor Stock Alert',
+          title: isAr ? 'تنبيه عجز رصيد الصالة' : 'Floor Stock Alert',
           message: isAr
-            ? `الخامات المتوفرة حالياً بصالة الإنتاج تكفي لإنتاج (${maxCartons.toLocaleString()} كرتونة) فقط، بينما الكمية المتبقية لإتمام أمر التشغيل هي (${targetQtyToCheck.toLocaleString()} كرتونة).\n(تم إنجاز ${actualProducedLarge.toLocaleString()} كرتونة من أصل ${plannedLarge.toLocaleString()} كرتونة مخطط).\n\nهل ترغب في متابعة التشغيل وتسجيل البالتات في حدود الرصيد المتاح؟`
-            : `Available floor stock can produce ${maxCartons} cartons, while remaining to produce is ${targetQtyToCheck} cartons (already produced ${actualProducedLarge} of ${plannedLarge}). Proceed in available limits?`,
-          confirmText: isAr ? 'متابعة بالرصيد المتاح' : 'Proceed',
+            ? `لا يتوفر رصيد كافٍ من خامة (${zeroComponent || 'بعض الخامات'}) بصالة الإنتاج لخصم الباليتة فوراً (رصيد الصالة الحالي = 0).\n\nيمكنك المتابعة وتسجيل الباليتة بحالة «بانتظار توفر الخامات» دون خصم مخزني، وتأكيد صرفها لاحقاً فور توفر الرصيد.\n\nهل ترغب في فتح نموذج الباليتة؟`
+            : `Available floor stock is 0 for (${zeroComponent || 'some materials'}). You can register this pallet in "Waiting Materials" status without stock deduction. Proceed to open pallet form?`,
+          confirmText: isAr ? 'متابعة (تسجيل بانتظار الخامات)' : 'Proceed as Waiting',
           cancelText: isAr ? 'إلغاء' : 'Cancel',
           variant: 'warning'
         });
         if (!proceed) return;
+      } else {
+        const targetQtyToCheck = remainingLarge > 0 ? remainingLarge : plannedLarge;
+        if (maxCartons < targetQtyToCheck) {
+          const proceed = await showConfirm({
+            title: isAr ? 'تنبيه رصيد جزئي بصالة الإنتاج' : 'Partial Floor Stock Alert',
+            message: isAr
+              ? `الخامات المتوفرة حالياً بصالة الإنتاج تكفي لإنتاج (${maxCartons.toLocaleString()} كرتونة) فقط، بينما الكمية المتبقية لإتمام أمر التشغيل هي (${targetQtyToCheck.toLocaleString()} كرتونة).\n(تم إنجاز ${actualProducedLarge.toLocaleString()} كرتونة من أصل ${plannedLarge.toLocaleString()} كرتونة مخطط).\n\nهل ترغب في متابعة التشغيل وتسجيل البالتات في حدود الرصيد المتاح؟`
+              : `Available floor stock can produce ${maxCartons} cartons, while remaining to produce is ${targetQtyToCheck} cartons (already produced ${actualProducedLarge} of ${plannedLarge}). Proceed in available limits?`,
+            confirmText: isAr ? 'متابعة بالرصيد المتاح' : 'Proceed',
+            cancelText: isAr ? 'إلغاء' : 'Cancel',
+            variant: 'warning'
+          });
+          if (!proceed) return;
+        }
       }
     }
 
@@ -4465,6 +5812,16 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
     if (Array.isArray(order.stepStaffing) && order.stepStaffing.length > 0) {
       initialStaffing = JSON.parse(JSON.stringify(order.stepStaffing));
+    } else if (order.isRework) {
+      initialStaffing = [
+        {
+          stepNum: 1,
+          stepName: '',
+          stepDesc: '',
+          mandatory: false,
+          workers: [],
+        },
+      ];
     } else {
       let proc = productionProcesses.find((p) => p.id === selectedProcId || p.processCode === selectedProcCode);
       if (!proc) {
@@ -4632,8 +5989,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   };
 
   const handleOpenAdminPalletMenu = (order, pallet, pIdx) => {
-    if (!isGeneralAdmin) {
-      alert(isAr ? 'هذا الإجراء محصور بالمسؤول العام للنظام فقط.' : 'This action is restricted to General Admin.');
+    if (!isGeneralAdmin && !canAdminModifyPallet && !canReverse) {
+      alert(isAr ? 'هذا الإجراء محصور بالمسؤولين المعتمدين.' : 'This action is restricted to authorized personnel.');
       return;
     }
     const { hasBlockers, blockers } = checkPalletDownstreamDependencies(order, pallet);
@@ -4660,6 +6017,10 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
   const handleOpenAdminPalletEdit = (order, pallet, pIdx) => {
     setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 });
+    if (!canAdminModifyPallet) {
+      alert(isAr ? 'ليس لديك صلاحية لتعديل بيانات الباليتة.' : 'You do not have permission to modify pallets.');
+      return;
+    }
     const { hasBlockers, blockers } = checkPalletDownstreamDependencies(order, pallet);
     if (hasBlockers) {
       setAdminDependencyModal({
@@ -4681,6 +6042,10 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
   const handleOpenAdminPalletReversal = (order, pallet, pIdx) => {
     setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 });
+    if (!canReverse) {
+      alert(isAr ? 'ليس لديك صلاحية لإلغاء وعكس الباليتة.' : 'You do not have permission to reverse pallets.');
+      return;
+    }
     const { hasBlockers, blockers } = checkPalletDownstreamDependencies(order, pallet);
     if (hasBlockers) {
       setAdminDependencyModal({
@@ -4948,12 +6313,15 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       crew: pallet.crew || [],
       notes: pallet.notes || '',
       imageUrl: pallet.imageUrl || '',
+      stagingStatus: pallet.stagingStatus || 'staged_on_floor',
+      isWaitingMaterials: !!(pallet.isWaitingMaterials || pallet.status === 'waiting_materials' || pallet.stagingStatus === 'waiting_materials'),
+      waitingMaterialsShortages: pallet.waitingMaterialsShortages || null,
     });
     setShowPalletModal(true);
   };
 
-  const handleSavePalletPassport = async (e) => {
-    e.preventDefault();
+  const handleSavePalletPassport = async (forceWaitingMaterials = false, explicitShortages = [], e = null) => {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
     if (!canRegisterPallet) {
       alert(isAr ? 'ليس لديك صلاحية تسجيل واعتماد باليتات الصالة وإصدار الجواز.' : 'You do not have permission to register floor pallets or issue passports.');
       return;
@@ -5005,11 +6373,14 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
     // Strict Pallet Save Gate: Verify that saving this pallet does not exceed available floor stock (virgin orders only)
     const recipe = bomRecipes.find((b) => b.code === palletTargetOrder.bomRecipeId || b.id === palletTargetOrder.bomRecipeId);
-    if (!palletTargetOrder.isRework && recipe && Array.isArray(recipe.components)) {
+    const isWaitingSave = Boolean(forceWaitingMaterials);
+    let capturedShortages = Array.isArray(explicitShortages) ? [...explicitShortages] : [];
+
+    if (!palletTargetOrder.isRework && recipe && Array.isArray(recipe.components) && !isWaitingSave) {
       const pallets = palletTargetOrder.pallets || [];
-      const priorSavedLarge = editingPalletIndex !== null && editingPalletIndex >= 0
-        ? Number(pallets[editingPalletIndex]?.qtyLarge || 0)
-        : 0;
+      const editingPallet = editingPalletIndex !== null && editingPalletIndex >= 0 ? pallets[editingPalletIndex] : null;
+      const priorWasWaiting = editingPallet?.isWaitingMaterials || editingPallet?.status === 'waiting_materials' || editingPallet?.stagingStatus === 'waiting_materials';
+      const priorSavedLarge = (editingPallet && !priorWasWaiting) ? Number(editingPallet.qtyLarge || 0) : 0;
       const currentPalletLarge = Number(palletFormData.qtyLarge || 0);
       const incrementalLargeNeeded = Math.max(0, currentPalletLarge - priorSavedLarge);
 
@@ -5026,47 +6397,61 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           floorLiquidVessels.some((v) => v.materialCode === comp.itemId || v.id === comp.itemId) ||
           ((comp.unit || itemDoc?.smallUnit || '').includes('لتر') && (comp.materialNameAr || itemDoc?.nameAr || '').includes('خل'));
 
-        // Continuous pipe-feeding materials are tracked via floor vessels and not restricted by warehouse floor stock gate
-        if (isPipeFeeding) continue;
+        let availableFloor = floorStock;
+        if (isPipeFeeding) {
+          const vessel = floorLiquidVessels.find((v) => v.materialCode === comp.itemId || v.id === comp.itemId);
+          const activeVesselLiters = (vessel?.activeTanks || []).reduce((s, t) => s + (Number(t.remainingVolume) || 0), 0);
+          availableFloor = Math.max(Number(floorStock || 0), Number(activeVesselLiters || 0));
+        }
 
-        if (neededForThisPallet > floorStock) {
+        if (neededForThisPallet > availableFloor) {
           shortComponents.push({
             comp,
             itemDoc,
+            itemId: comp.itemId,
+            itemNameAr: comp.materialNameAr || itemDoc?.nameAr || comp.itemId,
+            nameAr: comp.materialNameAr || itemDoc?.nameAr || comp.itemId,
+            unit: comp.unit || itemDoc?.smallUnit || (isPipeFeeding ? 'لتر' : 'عبوة'),
             needed: neededForThisPallet,
-            floorStock,
+            requiredTotal: neededForThisPallet,
+            availableFloor,
+            available: availableFloor,
+            floorStock: availableFloor,
             totalCompanyStock,
-            deficit: neededForThisPallet - floorStock,
-            availableInWarehouse: Math.max(0, totalCompanyStock - floorStock),
+            deficit: Number((neededForThisPallet - availableFloor).toFixed(2)),
+            floorDeficit: Number((neededForThisPallet - availableFloor).toFixed(2)),
+            companyTotal: totalCompanyStock,
+            availableInWarehouse: Math.max(0, totalCompanyStock - availableFloor),
+            isPipeFeeding,
           });
         }
       }
 
       if (shortComponents.length > 0) {
+        capturedShortages = shortComponents;
         const canFulfillFromCompany = shortComponents.every((sc) => sc.totalCompanyStock >= sc.needed);
-        if (canFulfillFromCompany) {
-          setAdminTransferGuidanceModal({
-            open: true,
-            shortComponents,
-            order: palletTargetOrder,
-            pallet: editingPalletIndex !== null ? palletTargetOrder.pallets?.[editingPalletIndex] : null,
-            requiredCartons: currentPalletLarge,
-          });
-          return;
-        } else {
-          const deficitList = shortComponents
-            .filter((sc) => sc.totalCompanyStock < sc.needed)
-            .map((sc) => `• ${sc.comp.materialNameAr || sc.comp.itemId}: المطلوب (${sc.needed}) - الإجمالي بالشركة (${sc.totalCompanyStock})`)
-            .join('\n');
-          showAlert({
-            title: isAr ? 'عجز كلي في خامات الشركة' : 'Total Company Stock Deficit',
-            message: isAr
-              ? `🚫 لا يمكن حفظ/تعديل الباليتة لأن إجمالي رصيد الخامات في كافة مستودعات الشركة غير كافٍ:\n\n${deficitList}\n\nتم إلغاء التعديل والحفاظ على الحالة الأصلية للباليتة دون تغيير.`
-              : `Company stock is completely insufficient for this operation. Original pallet preserved.\n\n${deficitList}`,
-            variant: 'error',
-          });
-          return;
-        }
+        setWaitingMaterialsPromptModal({
+          open: true,
+          shortComponents,
+          order: palletTargetOrder,
+          palletFormData,
+          requiredCartons: currentPalletLarge,
+          onConfirmWaiting: () => {
+            setWaitingMaterialsPromptModal(null);
+            handleSavePalletPassport(true, shortComponents);
+          },
+          onOpenAdminTransfer: canFulfillFromCompany ? () => {
+            setWaitingMaterialsPromptModal(null);
+            setAdminTransferGuidanceModal({
+              open: true,
+              shortComponents,
+              order: palletTargetOrder,
+              pallet: editingPalletIndex !== null ? palletTargetOrder.pallets?.[editingPalletIndex] : null,
+              requiredCartons: currentPalletLarge,
+            });
+          } : null,
+        });
+        return;
       }
     }
 
@@ -5098,6 +6483,11 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       const optMaster = prodMaster?.packagingOptions?.find((o) => o.suffix === palletTargetOrder.packagingOptionSuffix || o.code === palletTargetOrder.packagingOptionCode);
       const effectiveProductImage = pImage || optMaster?.imageFile || prodMaster?.imageFile || '';
 
+      const isWaiting = Boolean(isWaitingSave || (editingPalletIndex !== null && palletTargetOrder.pallets?.[editingPalletIndex]?.isWaitingMaterials && isWaitingSave));
+      const finalShortages = capturedShortages.length > 0
+        ? capturedShortages
+        : (editingPalletIndex !== null ? palletTargetOrder.pallets?.[editingPalletIndex]?.waitingMaterialsShortages || [] : []);
+
       const palletPayload = {
         palletId: `PAL-${palletTargetOrder.orderNumber}-P${String(palletFormData.palletNumber).padStart(2, '0')}`,
         palletNumber: Number(palletFormData.palletNumber),
@@ -5110,7 +6500,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         batchStart: batchInfo.startBatch,
         batchEnd: batchInfo.endBatch,
         batchRangeDisplay: batchInfo.displayRange,
-        status: palletFormData.status,
+        status: isWaiting ? 'waiting_materials' : palletFormData.status,
         qcStatus: palletFormData.qcStatus,
         processId: palletFormData.processId || '',
         processCode: palletFormData.processCode || '',
@@ -5123,7 +6513,9 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         productionDate: pDate,
         imageUrl: palletFormData.imageUrl || '',
         imageFile: effectiveProductImage,
-        stagingStatus: 'staged_on_floor',
+        stagingStatus: isWaiting ? 'waiting_materials' : (palletFormData.stagingStatus || 'staged_on_floor'),
+        isWaitingMaterials: isWaiting,
+        waitingMaterialsShortages: isWaiting ? finalShortages : null,
       };
 
       if (editingPalletIndex !== null) {
@@ -5133,8 +6525,13 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           await deleteDoc(doc(db, 'staged_floor_pallets', oldPalletId)).catch(() => {});
           await deleteDoc(doc(db, 'production_transformations', `TRANS-PAL-${oldPalletId}`)).catch(() => {});
         }
-        // Retain staging status if already set
-        palletPayload.stagingStatus = pallets[editingPalletIndex]?.stagingStatus || 'staged_on_floor';
+        if (isWaiting) {
+          await deleteDoc(doc(db, 'staged_floor_pallets', newPalletId)).catch(() => {});
+          await deleteDoc(doc(db, 'production_transformations', `TRANS-PAL-${newPalletId}`)).catch(() => {});
+          palletPayload.stagingStatus = 'waiting_materials';
+        } else {
+          palletPayload.stagingStatus = pallets[editingPalletIndex]?.stagingStatus || 'staged_on_floor';
+        }
         palletPayload.transferId = pallets[editingPalletIndex]?.transferId || null;
         pallets[editingPalletIndex] = palletPayload;
       } else {
@@ -5209,6 +6606,15 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           const pTransId = `TRANS-PAL-${pId}`;
           const pQtyLarge = Number(p.qtyLarge || 0);
           const pQtySmall = Number(p.qtySmall || (pQtyLarge * ratio) || 0);
+
+          // CRITICAL: If pallet is waiting_materials, skip consumption and staged_floor_pallets sync completely!
+          if (p.isWaitingMaterials || p.stagingStatus === 'waiting_materials' || p.status === 'waiting_materials') {
+            if (isTargetPallet) {
+              await deleteDoc(doc(db, 'staged_floor_pallets', pId)).catch(() => {});
+              await deleteDoc(doc(db, 'production_transformations', pTransId)).catch(() => {});
+            }
+            continue;
+          }
 
           if (pQtyLarge > 0) {
             let palletIntermediateTanks = (Array.isArray(p.intermediateLiquidTanks) && p.intermediateLiquidTanks.length > 0)
@@ -5470,6 +6876,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
               outputSmallUnit: palletTargetOrder.outputSmallUnit || 'عبوة',
               qtyLarge: p.qtyLarge,
               qtySmall: p.qtySmall,
+              wrappingMachine: p.wrappingMachine || palletFormData.wrappingMachine || 'wrapping_1',
               startTime: p.startTime,
               endTime: p.endTime,
               batchStart: p.batchStart,
@@ -5516,6 +6923,48 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           }, { merge: true });
         }
 
+        // Two-Way Sync for Rework orders & Autosave custom rework process
+        let reworkOrderUpdates = {};
+        if (palletTargetOrder.isRework && Array.isArray(palletFormData.stepStaffing)) {
+          let pStaffing = palletFormData.stepStaffing;
+          let pProcId = palletFormData.processId || palletTargetOrder.processId || '';
+          let pProcCode = palletFormData.processCode || palletTargetOrder.processCode || '';
+          let pProcNameAr = palletFormData.processNameAr || palletTargetOrder.processNameAr || '';
+          let pProcNameEn = palletFormData.processNameEn || palletTargetOrder.processNameEn || '';
+
+          if (palletAutosaveRework && pStaffing.length > 0) {
+            const validSteps = pStaffing.filter((s) => (s.stepName || s.name || '').trim() !== '');
+            if (validSteps.length > 0 && !palletFormData.processId) {
+              try {
+                const targetProd = finishedProducts.find((p) => p.code === (palletTargetOrder.finishedProductId || palletTargetOrder.productCode));
+                const savedProc = await saveCustomReworkProcess({
+                  targetProduct: targetProd || { code: palletTargetOrder.finishedProductId, nameAr: palletTargetOrder.productNameAr },
+                  lineKey: targetProd?.productionLine || palletTargetOrder.productionLine || 'white_o',
+                  faultTags: palletTargetOrder.reworkFaultTags || [],
+                  steps: validSteps,
+                });
+                if (savedProc) {
+                  pProcId = savedProc.id;
+                  pProcCode = savedProc.processCode;
+                  pProcNameAr = savedProc.nameAr;
+                  pProcNameEn = savedProc.nameEn;
+                  pStaffing = savedProc.steps;
+                }
+              } catch (procErr) {
+                console.error('Error autosaving rework process from pallet:', procErr);
+              }
+            }
+          }
+
+          reworkOrderUpdates = {
+            stepStaffing: pStaffing,
+            ...(pProcId ? { processId: pProcId } : {}),
+            ...(pProcCode ? { processCode: pProcCode } : {}),
+            ...(pProcNameAr ? { processNameAr: pProcNameAr } : {}),
+            ...(pProcNameEn ? { processNameEn: pProcNameEn } : {}),
+          };
+        }
+
         // If admin action, record audit log on work order
         if (isAdminPalletAction) {
           const auditEntry = {
@@ -5527,11 +6976,14 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
             timestamp: nowIso,
           };
           const existingAudit = Array.isArray(palletTargetOrder.auditTrail) ? palletTargetOrder.auditTrail : [];
-          await setDoc(orderRef, { pallets, auditTrail: [auditEntry, ...existingAudit].slice(0, 40) }, { merge: true });
+          await setDoc(orderRef, { pallets, ...reworkOrderUpdates, auditTrail: [auditEntry, ...existingAudit].slice(0, 40) }, { merge: true });
         } else {
           // Update work order with enriched pallets containing intermediateLiquidTanks
-          await setDoc(orderRef, { pallets }, { merge: true });
+          await setDoc(orderRef, { pallets, ...reworkOrderUpdates }, { merge: true });
         }
+        try {
+          await setDoc(doc(db, 'production_work_orders', palletTargetOrder.id), { pallets, ...reworkOrderUpdates }, { merge: true });
+        } catch (_) {}
       }
 
       setShowPalletModal(false);
@@ -5550,6 +7002,12 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
               status: chosenStatus,
               updatedAt: serverTimestamp(),
             });
+            try {
+              await updateDoc(doc(db, 'production_work_orders', palletTargetOrder.id), {
+                status: chosenStatus,
+                updatedAt: serverTimestamp(),
+              });
+            } catch (_) {}
             setAdminOrderStatusPromptModal({ open: false, order: null, newCompletionPct: 0, onChoice: null });
             toast.success(
               isAr ? 'تم تحديث حالة أمر التشغيل وحفظ الباليتة بنجاح.' : 'Order status updated and pallet saved successfully.',
@@ -5559,9 +7017,13 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         });
       } else {
         toast.success(
-          isAr
-            ? (wasAdmin ? 'تم اعتماد وحفظ التعديل الإداري للباليتة بنجاح.' : 'تم حفظ واعتماد جواز الباليتة بنجاح.')
-            : 'Pallet passport saved successfully.',
+          isWaiting
+            ? (isAr
+                ? `تم حفظ الباليتة #${palletPayload.palletNumber} بحالة «بانتظار توفر الخامات» دون خصم مخزني.`
+                : `Pallet #${palletPayload.palletNumber} saved as Waiting Materials (no stock deducted).`)
+            : (isAr
+                ? (wasAdmin ? 'تم اعتماد وحفظ التعديل الإداري للباليتة بنجاح.' : 'تم حفظ واعتماد جواز الباليتة بنجاح.')
+                : 'Pallet passport saved successfully.'),
           isAr ? 'تم الحفظ' : 'Saved'
         );
       }
@@ -5799,23 +7261,85 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   // ----------------------------------------------------
   // WORK ORDER EXECUTION CONTROLS & DYNAMIC CREW LOGIC
   // ----------------------------------------------------
+  // Deduplicated SOP Assigned Workers List & Count (names repeated across steps counted only once)
+  const getOrderSopUniqueWorkers = (order) => {
+    if (!order) return [];
+    const steps = Array.isArray(order.stepStaffing) ? order.stepStaffing : [];
+    const idToWorker = new Map();
+    const nameToWorker = new Map();
+    const uniqueWorkers = [];
+
+    steps.forEach((s) => {
+      (s.workers || []).forEach((w) => {
+        if (!w) return;
+        const rawName = typeof w === 'string' ? w : (w.workerName || w.name || '');
+        const rawId = typeof w === 'object' ? (w.workerId || w.id || '') : '';
+        const normName = rawName.trim().replace(/\s+/g, ' ').toLowerCase();
+        const normId = rawId ? rawId.toString().trim() : '';
+
+        if (!normName && !normId) return;
+
+        // Check if already matched by ID or Name across any step
+        const existingById = normId ? idToWorker.get(normId) : null;
+        const existingByName = normName ? nameToWorker.get(normName) : null;
+        const existing = existingById || existingByName;
+
+        if (existing) {
+          if (normId && !existing.id) {
+            existing.id = normId;
+            idToWorker.set(normId, existing);
+          }
+          if (normName && !existing.normName) {
+            existing.normName = normName;
+            existing.name = rawName;
+            nameToWorker.set(normName, existing);
+          }
+          return;
+        }
+
+        const workerObj = {
+          id: normId,
+          name: rawName || normId,
+          normName: normName,
+          isManual: typeof w === 'object' ? !!w.isManual : false,
+        };
+
+        if (normId) idToWorker.set(normId, workerObj);
+        if (normName) nameToWorker.set(normName, workerObj);
+        uniqueWorkers.push(workerObj);
+      });
+    });
+
+    return uniqueWorkers;
+  };
+
+  const getOrderSopUniqueCrewCount = (order) => {
+    return getOrderSopUniqueWorkers(order).length;
+  };
+
   const getOrderCrewCount = (order) => {
+    if (!order) return 6;
+    const sopCount = getOrderSopUniqueCrewCount(order);
+
+    // If user explicitly customized the crew count using +/- buttons:
+    if (order.hasCustomCrewCount && order.crewCount != null && Number(order.crewCount) > 0) {
+      return Number(order.crewCount);
+    }
+
+    // Default to SOP unique count if SOP has assigned staff
+    if (sopCount > 0) {
+      return sopCount;
+    }
+
+    // If explicit crew count is recorded and not a default fallback
     if (order.crewCount != null && Number(order.crewCount) > 0) {
       return Number(order.crewCount);
     }
-    if (Array.isArray(order.stepStaffing)) {
-      const workerIds = new Set();
-      order.stepStaffing.forEach((s) => {
-        (s.workers || []).forEach((w) => {
-          if (w.workerId) workerIds.add(w.workerId);
-          else if (w.workerName) workerIds.add(w.workerName);
-        });
-      });
-      if (workerIds.size > 0) return workerIds.size;
-    }
+
     if (Array.isArray(order.crew) && order.crew.length > 0) {
       return order.crew.length;
     }
+
     return 6;
   };
 
@@ -5951,6 +7475,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       actionTime: customTime || minsToTime(timeToMins(new Date().toTimeString().slice(0, 5))),
     });
   };
+  const handleOpenCompletePrompt = handleInitiateCompleteOrder;
 
   const handleConfirmCompleteWithoutPallet = async () => {
     const { order, actionTime } = completePromptModal;
@@ -6023,15 +7548,33 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
   const handleUpdateCrewCount = async (order, delta) => {
     if (isOrderLocked(order)) return;
+    const sopCount = getOrderSopUniqueCrewCount(order);
     const currentCount = getOrderCrewCount(order);
     const newCount = Math.max(1, currentCount + delta);
     try {
       await updateDoc(doc(db, 'work_orders', order.id), {
         crewCount: newCount,
+        hasCustomCrewCount: sopCount > 0 ? (newCount !== sopCount) : true,
         updatedAt: serverTimestamp(),
       });
     } catch (err) {
       console.error('Error updating crew count:', err);
+    }
+  };
+
+  const handleResetCrewToSop = async (order) => {
+    if (isOrderLocked(order)) return;
+    const sopCount = getOrderSopUniqueCrewCount(order);
+    if (sopCount <= 0) return;
+    try {
+      await updateDoc(doc(db, 'work_orders', order.id), {
+        crewCount: sopCount,
+        hasCustomCrewCount: false,
+        updatedAt: serverTimestamp(),
+      });
+      toast.success(isAr ? `تمت استعادة عدد طاقم الـ SOP المعتمد (${sopCount} عمال)` : `Reset crew count to SOP (${sopCount})`);
+    } catch (err) {
+      console.error('Error resetting crew count to SOP:', err);
     }
   };
 
@@ -6276,10 +7819,10 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         order.finishedProductId?.toLowerCase().includes(q);
 
       const matchStatus = statusFilter === 'all' || order.status === statusFilter;
-      const matchLine = lineFilter === 'all' || order.productionLine === lineFilter;
+      const matchProduct = productFilter === 'all' || order.finishedProductId === productFilter;
       const matchPriority = priorityFilter === 'all' || order.priority === priorityFilter;
 
-      return matchDate && matchSearch && matchStatus && matchLine && matchPriority;
+      return matchDate && matchSearch && matchStatus && matchProduct && matchPriority;
     });
 
     list.sort((a, b) => {
@@ -6290,7 +7833,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     });
 
     return list;
-  }, [workOrders, selectedPlanDate, searchTerm, statusFilter, lineFilter, priorityFilter]);
+  }, [workOrders, selectedPlanDate, searchTerm, statusFilter, productFilter, priorityFilter]);
 
   // Subtab 2 Specific Hierarchy: Running ('in_progress') first -> Ready / Paused -> Completed last (each tier ordered by plan sequence)
   const sortedSubtab2Orders = useMemo(() => {
@@ -6335,6 +7878,1779 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     return pins.sort((a, b) => a.timeMins - b.timeMins);
   }, [filteredPlanOrders]);
 
+  // Days difference utility
+  const getDaysDiff = (dateStr1, dateStr2) => {
+    if (!dateStr1 || !dateStr2) return 0;
+    const d1 = new Date(dateStr1 + 'T00:00:00');
+    const d2 = new Date(dateStr2 + 'T00:00:00');
+    return Math.round((d1 - d2) / (1000 * 60 * 60 * 24));
+  };
+
+  // Shift Closure Record & Effective Present Era Date
+  const todayShiftRecord = useMemo(() => {
+    return productionShifts.find(
+      (s) => (s.id === `SHIFT-${todayCalendarDateStr}` || s.date === todayCalendarDateStr) && s.status === 'ended'
+    );
+  }, [productionShifts, todayCalendarDateStr]);
+
+  const isTodayShiftEnded = Boolean(todayShiftRecord);
+
+  // Next work order date (if today's shift has ended)
+  const nextWorkOrderDate = useMemo(() => {
+    const futureActiveOrders = workOrders.filter(
+      (o) => o.planDate > todayCalendarDateStr && o.status !== 'cancelled'
+    );
+    const uniqueDates = Array.from(new Set(futureActiveOrders.map((o) => o.planDate))).sort();
+    return uniqueDates.length > 0 ? uniqueDates[0] : null;
+  }, [workOrders, todayCalendarDateStr]);
+
+  const effectivePresentDate = useMemo(() => {
+    if (isTodayShiftEnded && nextWorkOrderDate) {
+      return nextWorkOrderDate;
+    }
+    return todayCalendarDateStr;
+  }, [isTodayShiftEnded, nextWorkOrderDate, todayCalendarDateStr]);
+
+  // Global Sequence Counts by Date (for duplicate sequence detection in any era)
+  const sequenceCountsByDate = useMemo(() => {
+    const counts = {};
+    workOrders
+      .filter((o) => o.status !== 'cancelled')
+      .forEach((o) => {
+        const key = `${o.planDate}_${Number(o.importanceRank) || 1}`;
+        counts[key] = (counts[key] || 0) + 1;
+      });
+    return counts;
+  }, [workOrders]);
+
+  // Subtab 1: Multi-Era Categorization & Sub-Grouping
+  const eraGroupedOrders = useMemo(() => {
+    const filtered = workOrders.filter((order) => {
+      if (order.status === 'cancelled') return false;
+      const q = searchTerm.toLowerCase().trim();
+      const matchSearch =
+        !q ||
+        order.orderNumber?.toLowerCase().includes(q) ||
+        order.productNameAr?.includes(q) ||
+        order.productNameEn?.toLowerCase().includes(q) ||
+        order.finishedProductId?.toLowerCase().includes(q);
+
+      const matchStatus = statusFilter === 'all' || order.status === statusFilter;
+      const matchProduct = productFilter === 'all' || order.finishedProductId === productFilter;
+      const matchPriority = priorityFilter === 'all' || order.priority === priorityFilter;
+
+      const matchDateFrom = !filterDateFrom || (order.planDate && order.planDate >= filterDateFrom);
+      const matchDateTo = !filterDateTo || (order.planDate && order.planDate <= filterDateTo);
+
+      return matchSearch && matchStatus && matchProduct && matchPriority && matchDateFrom && matchDateTo;
+    });
+
+    const sortWithinGroup = (list) => {
+      return [...list].sort((a, b) => {
+        const rankA = Number(a.importanceRank) || 0;
+        const rankB = Number(b.importanceRank) || 0;
+        if (rankA !== rankB) return rankA - rankB;
+        return (a.orderNumber || '').localeCompare(b.orderNumber || '');
+      });
+    };
+
+    // 1. PRESENT
+    const presentOrders = sortWithinGroup(filtered.filter((o) => o.planDate === effectivePresentDate));
+
+    // 2. FUTURE (o.planDate > effectivePresentDate)
+    const allFutureOrders = filtered
+      .filter((o) => o.planDate > effectivePresentDate)
+      .sort((a, b) => a.planDate.localeCompare(b.planDate));
+
+    const futureDates = Array.from(new Set(allFutureOrders.map((o) => o.planDate))).sort();
+    const nearestFutureDate = futureDates.length > 0 ? futureDates[0] : null;
+
+    const futureNearest = sortWithinGroup(allFutureOrders.filter((o) => o.planDate === nearestFutureDate));
+    const futureWeek = sortWithinGroup(
+      allFutureOrders.filter((o) => o.planDate !== nearestFutureDate && getDaysDiff(o.planDate, effectivePresentDate) <= 7)
+    );
+    const futureBeyond = sortWithinGroup(
+      allFutureOrders.filter((o) => getDaysDiff(o.planDate, effectivePresentDate) > 7)
+    );
+
+    // 3. PAST (o.planDate < effectivePresentDate)
+    const allPastOrders = filtered
+      .filter((o) => o.planDate < effectivePresentDate)
+      .sort((a, b) => b.planDate.localeCompare(a.planDate));
+
+    const pastDates = Array.from(new Set(allPastOrders.map((o) => o.planDate))).sort((a, b) => b.localeCompare(a));
+    const nearestPastDate = pastDates.length > 0 ? pastDates[0] : null;
+
+    const pastNearest = sortWithinGroup(allPastOrders.filter((o) => o.planDate === nearestPastDate));
+    const pastWeek = sortWithinGroup(
+      allPastOrders.filter((o) => o.planDate !== nearestPastDate && getDaysDiff(effectivePresentDate, o.planDate) <= 7)
+    );
+    const pastBeyond = sortWithinGroup(
+      allPastOrders.filter((o) => getDaysDiff(effectivePresentDate, o.planDate) > 7)
+    );
+
+    return {
+      present: presentOrders,
+      future: {
+        all: allFutureOrders,
+        nearestDate: nearestFutureDate,
+        nearest: futureNearest,
+        week: futureWeek,
+        beyond: futureBeyond,
+      },
+      past: {
+        all: allPastOrders,
+        nearestDate: nearestPastDate,
+        nearest: pastNearest,
+        week: pastWeek,
+        beyond: pastBeyond,
+      },
+      totalCount: filtered.length,
+    };
+  }, [workOrders, effectivePresentDate, searchTerm, statusFilter, productFilter, priorityFilter, filterDateFrom, filterDateTo]);
+
+  // Count of scheduled orders for active present shift (Today or Next Working Day)
+  const presentOrdersCount = useMemo(() => {
+    return workOrders.filter(
+      (o) => o.planDate === effectivePresentDate && o.status !== 'cancelled'
+    ).length;
+  }, [workOrders, effectivePresentDate]);
+
+  // Unique finished products list for filter dropdown
+  const availableFilterProducts = useMemo(() => {
+    const pMap = new Map();
+    (finishedProducts || []).forEach((p) => {
+      const pid = p.id || p.code;
+      if (pid && !pMap.has(pid)) {
+        pMap.set(pid, {
+          id: pid,
+          nameAr: p.nameAr || p.name || pid,
+          nameEn: p.nameEn || p.name || pid,
+        });
+      }
+    });
+    workOrders.forEach((o) => {
+      if (o.finishedProductId && !pMap.has(o.finishedProductId)) {
+        pMap.set(o.finishedProductId, {
+          id: o.finishedProductId,
+          nameAr: o.productNameAr || o.finishedProductId,
+          nameEn: o.productNameEn || o.finishedProductId,
+        });
+      }
+    });
+    return Array.from(pMap.values());
+  }, [finishedProducts, workOrders]);
+
+  // Pallet Shrink Machine Resolver: ensures factory default (م ١) is used when unspecified, or correct machine mapping
+  const resolvePalletShrinkMachine = (pallet, order) => {
+    let val = pallet?.wrappingMachine || pallet?.shrinkMachine;
+    if (!val && order && Array.isArray(order.pallets)) {
+      const pId = pallet?.palletId || pallet?.id;
+      const match = order.pallets.find((op) => (op.palletId || op.id) === pId || op.palletNumber === pallet?.palletNumber);
+      if (match) {
+        val = match.wrappingMachine || match.shrinkMachine;
+      }
+    }
+    if (!val && order?.wrappingMachine) {
+      val = order.wrappingMachine;
+    }
+    const s = String(val || '').trim().toLowerCase();
+    if (s === 'no_shrink' || s === 'none' || s === 'بدون' || s === 'بدون شرنك' || s === 'حر') {
+      return '-';
+    }
+    if (s === 'wrapping_2' || s === '2' || s === 'م2' || s === 'م ٢' || s === 'machine_2') {
+      return 'م ٢';
+    }
+    if (s === 'wrapping_1' || s === '1' || s === 'م1' || s === 'م ١' || s === 'machine_1') {
+      return 'م ١';
+    }
+    // Default to Line 1 (م ١) for undefined/unspecified shrink machine
+    return 'م ١';
+  };
+
+  // Pallet Packaging Option Resolver: determines if product has multiple options and extracts clean display name (without the word "خيار" / "Option")
+  const resolvePalletPackagingOptionInfo = (pallet, order) => {
+    const prodId = order?.finishedProductId || pallet?.finishedProductId;
+    const prodCode = order?.productCode || pallet?.productCode;
+    const prod = finishedProducts.find((fp) => fp.id === prodId || fp.code === prodCode || fp.id === prodCode);
+    const hasMultiplePackaging = Array.isArray(prod?.packagingOptions) && prod.packagingOptions.length > 1;
+    const suffix = pallet?.packagingOptionSuffix || order?.packagingOptionSuffix || 'A';
+    const opt = (prod?.packagingOptions || []).find((o) => o.suffix === suffix || o.code === suffix);
+    const rawName = opt?.nameAr || pallet?.packagingOptionNameAr || order?.packagingOptionNameAr || suffix;
+    
+    // Strip "خيار" and "option" prefixes completely
+    let displayName = String(rawName || '')
+      .replace(/^خيار\s*[:\-_]?\s*/i, '')
+      .replace(/^option\s*[:\-_]?\s*/i, '')
+      .trim();
+    if (!displayName) displayName = suffix;
+
+    return {
+      hasMultiplePackaging,
+      suffix,
+      displayName,
+    };
+  };
+
+  const buildPalletPassportUrl = (palletId) => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
+    return `${origin}${pathname}#fg_inward?palletId=${encodeURIComponent(palletId)}`;
+  };
+
+  // Pallet Thermal Sticker Printing Handlers
+  const handleOpenPalletSticker = async (arg1, arg2, pIdx) => {
+    if (!canPrintPalletThermal) {
+      toast.error(isAr ? 'ليس لديك صلاحية لطباعة استيكرات الباليتات.' : 'You do not have permission to print pallet labels.');
+      return;
+    }
+    try {
+      const isFirstPallet = arg1 && (arg1.palletId || arg1.palletNumber !== undefined || (arg1.qtyLarge !== undefined && !arg1.plannedOutputQtyLarge));
+      const pallet = isFirstPallet ? arg1 : arg2;
+      let order = isFirstPallet ? arg2 : arg1;
+      if (!order && pallet) {
+        order = workOrders.find((o) => o.id === pallet.workOrderId || String(o.orderNumber) === String(pallet.orderNumber));
+      }
+      if (!pallet) return;
+
+      const printCount = Number(pallet.printCount || 0);
+      const copyLabel = printCount >= 1
+        ? (isAr ? `نسخة ${printCount + 1}` : `Copy ${printCount + 1}`)
+        : (isAr ? 'أصل' : 'Original');
+
+      const palletId = pallet.palletId || pallet.id || (order?.orderNumber ? `PAL-${order.orderNumber}-P${String(pallet.palletNumber || 1).padStart(2, '0')}` : `PAL-${pallet.palletNumber || 1}`);
+      const passportUrl = buildPalletPassportUrl(palletId);
+      const qrDataUrl = await generateQRCodeDataURL(passportUrl, { width: 400, errorCorrectionLevel: 'L', margin: 1 });
+
+      setActivePreviewQr(qrDataUrl);
+      setPalletThermalModal({
+        items: [{
+          order,
+          pallet,
+          pIdx,
+          copyLabel,
+          palletId,
+          passportUrl,
+          qrDataUrl,
+        }],
+        activePreviewIndex: 0,
+      });
+    } catch (err) {
+      console.error('Error preparing pallet sticker:', err);
+      toast.error(isAr ? 'فشل تجهيز ملصق الباليت.' : 'Failed to prepare pallet label.');
+    }
+  };
+
+  const handleOpenBatchPrintStickers = async (palletsList) => {
+    if (!palletsList || palletsList.length === 0) return;
+    if (!canPrintPalletThermal) {
+      toast.error(isAr ? 'ليس لديك صلاحية لطباعة استيكرات الباليتات.' : 'You do not have permission to print pallet labels.');
+      return;
+    }
+    try {
+      const items = await Promise.all(
+        palletsList.map(async (p, pIdx) => {
+          const printCount = Number(p.printCount || 0);
+          const copyLabel = printCount >= 1
+            ? (isAr ? `نسخة ${printCount + 1}` : `Copy ${printCount + 1}`)
+            : (isAr ? 'أصل' : 'Original');
+          const linkedOrder = workOrders.find((o) => o.id === p.workOrderId || String(o.orderNumber) === String(p.orderNumber));
+          const palletId = p.palletId || p.id || (linkedOrder?.orderNumber ? `PAL-${linkedOrder.orderNumber}-P${String(p.palletNumber || (pIdx + 1)).padStart(2, '0')}` : `PAL-${p.palletNumber || (pIdx + 1)}`);
+          const passportUrl = buildPalletPassportUrl(palletId);
+          const qrDataUrl = await generateQRCodeDataURL(passportUrl, { width: 400, errorCorrectionLevel: 'L', margin: 1 });
+          return {
+            pallet: p,
+            order: linkedOrder,
+            pIdx,
+            copyLabel,
+            palletId,
+            passportUrl,
+            qrDataUrl,
+          };
+        })
+      );
+      if (items[0]?.qrDataUrl) {
+        setActivePreviewQr(items[0].qrDataUrl);
+      }
+      setPalletThermalModal({
+        items,
+        activePreviewIndex: 0,
+      });
+    } catch (err) {
+      console.error('Error batch preparing pallet stickers:', err);
+      toast.error(isAr ? 'فشل إعداد ملصقات الباليتات للطباعة الجماعية.' : 'Failed to prepare batch pallet labels.');
+    }
+  };
+
+  // Sync active preview QR code when activePreviewIndex changes
+  useEffect(() => {
+    if (!palletThermalModal || !palletThermalModal.items || palletThermalModal.items.length === 0) {
+      setActivePreviewQr('');
+      return;
+    }
+    const currentItem = palletThermalModal.items[palletThermalModal.activePreviewIndex || 0];
+    if (currentItem?.qrDataUrl) {
+      setActivePreviewQr(currentItem.qrDataUrl);
+      return;
+    }
+    if (currentItem) {
+      const p = currentItem.pallet || {};
+      const o = currentItem.order || {};
+      const palletId = currentItem.palletId || p.palletId || p.id || (o?.orderNumber ? `PAL-${o.orderNumber}-P${String(p.palletNumber || 1).padStart(2, '0')}` : `PAL-${p.palletNumber || 1}`);
+      const passportUrl = buildPalletPassportUrl(palletId);
+      generateQRCodeDataURL(passportUrl, { width: 400, errorCorrectionLevel: 'L', margin: 1 }).then((url) => {
+        if (url) setActivePreviewQr(url);
+      });
+    }
+  }, [palletThermalModal?.activePreviewIndex, palletThermalModal]);
+
+  const handleApplyPalletPreset = (presetId) => {
+    const preset = PALLET_THERMAL_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    setPalletThermalConfig((prev) => ({
+      ...prev,
+      widthMm: preset.widthMm,
+      heightMm: preset.heightMm,
+      orientation: preset.orientation,
+      gapMm: preset.gapMm,
+      preset: preset.id,
+    }));
+  };
+
+  const handlePalletOrientationChange = (newOrientation) => {
+    setPalletThermalConfig((prev) => {
+      let newWidth = prev.widthMm;
+      let newHeight = prev.heightMm;
+      if (newOrientation === 'portrait' && newWidth > newHeight) {
+        newWidth = prev.heightMm;
+        newHeight = prev.widthMm;
+      } else if (newOrientation === 'landscape' && newWidth < newHeight) {
+        newWidth = prev.heightMm;
+        newHeight = prev.widthMm;
+      }
+      return {
+        ...prev,
+        orientation: newOrientation,
+        widthMm: newWidth,
+        heightMm: newHeight,
+        preset: 'custom',
+      };
+    });
+  };
+
+  const handleSavePalletThermalConfig = () => {
+    saveStoredPalletThermalConfig(palletThermalConfig);
+    toast.success(isAr ? 'تم حفظ إعدادات رول الباليت كافتراضي للمحطة بنجاح!' : 'Pallet thermal settings saved as default!');
+  };
+
+  /**
+   * Unified Pallet Print Status Resolver
+   * Accurately synchronizes print state between Subtab 3 (Floor Staging) and Subtab 4 (Analytics)
+   */
+  const resolvePalletPrintStatus = (pallet, order, stagedPalletsList = stagedFloorPallets) => {
+    if (!pallet) return { isPrinted: false, printCount: 0 };
+    const palletId =
+      pallet.palletId ||
+      pallet.id ||
+      (order?.orderNumber ? `PAL-${order.orderNumber}-P${String(pallet.palletNumber || 1).padStart(2, '0')}` : null);
+    const palletNum = pallet.palletNumber !== undefined ? Number(pallet.palletNumber) : null;
+
+    // 1. Direct flags on the passed pallet object
+    const directPrinted = Boolean(pallet.isPrinted || Number(pallet.printCount) > 0);
+    const directCount = Number(pallet.printCount) || 0;
+
+    // 2. Matching staged pallet document
+    const staged = Array.isArray(stagedPalletsList)
+      ? stagedPalletsList.find((sp) =>
+          (palletId && (sp.id === palletId || sp.palletId === palletId)) ||
+          (pallet.id && sp.id === pallet.id) ||
+          (order?.id && sp.workOrderId === order.id && palletNum !== null && Number(sp.palletNumber) === palletNum) ||
+          (order?.orderNumber && sp.workOrderNumber === order.orderNumber && palletNum !== null && Number(sp.palletNumber) === palletNum)
+        )
+      : null;
+    const stagedPrinted = Boolean(staged?.isPrinted || Number(staged?.printCount) > 0);
+    const stagedCount = Number(staged?.printCount) || 0;
+
+    // 3. Matching pallet in order.pallets
+    const orderPallets = Array.isArray(order?.pallets) ? order.pallets : [];
+    const matchedOrderPallet = orderPallets.find((lp) =>
+      (palletId && (lp.palletId === palletId || lp.id === palletId)) ||
+      (palletNum !== null && Number(lp.palletNumber) === palletNum)
+    );
+    const orderPrinted = Boolean(matchedOrderPallet?.isPrinted || Number(matchedOrderPallet?.printCount) > 0);
+    const orderCount = Number(matchedOrderPallet?.printCount) || 0;
+
+    const isPrinted = directPrinted || stagedPrinted || orderPrinted;
+    const printCount = Math.max(directCount, stagedCount, orderCount) || (isPrinted ? 1 : 0);
+
+    return { isPrinted, printCount, stagedMatch: staged, orderMatch: matchedOrderPallet };
+  };
+
+  const handleTogglePalletPrinted = async (pallet, order) => {
+    try {
+      const { isPrinted: isCurrentlyPrinted } = resolvePalletPrintStatus(pallet, order, stagedFloorPallets);
+      const palletId = pallet.palletId || pallet.id || (order?.orderNumber ? `PAL-${order.orderNumber}-P${String(pallet.palletNumber || 1).padStart(2, '0')}` : `PAL-${pallet.palletNumber || 1}`);
+
+      if (!isCurrentlyPrinted) {
+        await markPalletsAsPrintedInDb([{ pallet, order, palletId }], { currentUserId, currentUserName });
+        toast.success(isAr ? 'تم تأكيد طباعة الاستيكر بنجاح.' : 'Pallet marked as printed.');
+      } else {
+        const stagedRef = doc(db, 'staged_floor_pallets', palletId);
+        await setDoc(stagedRef, { isPrinted: false, printCount: 0, updatedAt: serverTimestamp() }, { merge: true });
+        if (pallet.id && pallet.id !== palletId) {
+          try {
+            await setDoc(doc(db, 'staged_floor_pallets', pallet.id), { isPrinted: false, printCount: 0, updatedAt: serverTimestamp() }, { merge: true });
+          } catch (_) {}
+        }
+        if (order?.id) {
+          for (const col of ['work_orders', 'production_work_orders']) {
+            try {
+              const orderRef = doc(db, col, order.id);
+              const orderSnap = await getDoc(orderRef);
+              if (orderSnap.exists() && Array.isArray(orderSnap.data().pallets)) {
+                const updatedPallets = orderSnap.data().pallets.map((pl) => {
+                  if (pl.palletId === palletId || (pallet.palletNumber !== undefined && Number(pl.palletNumber) === Number(pallet.palletNumber))) {
+                    return { ...pl, isPrinted: false, printCount: 0 };
+                  }
+                  return pl;
+                });
+                await updateDoc(orderRef, { pallets: updatedPallets, updatedAt: serverTimestamp() });
+              }
+            } catch (_) {}
+          }
+        }
+        toast.success(isAr ? 'تم إلغاء حالة الطباعة.' : 'Print status cleared.');
+      }
+    } catch (err) {
+      console.error('Error toggling pallet print status:', err);
+      toast.error(isAr ? 'حدث خطأ أثناء تعديل حالة الطباعة.' : 'Error updating print status.');
+    }
+  };
+
+  // End Shift Handlers
+  const handleOpenEndShiftModal = () => {
+    if (!canCloseShift) {
+      toast.error(isAr ? 'ليس لديك صلاحية لإنهاء الوردية وتوثيق الإغلاق اليومي.' : 'You do not have permission to end shift.');
+      return;
+    }
+    setEndShiftStep(1);
+    setEndShiftBreakEndTime(minsToTime(timeToMins(new Date().toTimeString().slice(0, 5))));
+    setEndShiftNotes('');
+    setShowEndShiftModal(true);
+  };
+
+  const handleCloseEndShiftBreak = async (breakItem) => {
+    if (!endShiftBreakEndTime) {
+      alert(isAr ? 'يرجى تحديد وقت نهاية الاستراحة أولاً.' : 'Please specify break end time first.');
+      return;
+    }
+    const sM = timeToMins(breakItem.startTime);
+    const eM = timeToMins(endShiftBreakEndTime);
+    if (eM <= sM) {
+      alert(isAr ? 'وقت نهاية الاستراحة يجب أن يكون بعد وقت البدء.' : 'Break end time must be after start time.');
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      const dur = calculateDuration(breakItem.startTime, endShiftBreakEndTime);
+      await updateDoc(doc(db, 'production_breaks', breakItem.id), {
+        endTime: endShiftBreakEndTime,
+        durationMins: dur,
+        status: 'completed',
+      });
+      toast.success(isAr ? 'تم إغلاق وقت الاستراحة بنجاح.' : 'Break closed successfully.');
+    } catch (err) {
+      console.error('Error closing break during end shift:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleConfirmEndShift = async () => {
+    try {
+      setIsSealingShift(true);
+      const shiftDocId = `SHIFT-${todayCalendarDateStr}`;
+
+      let totalCartons = 0;
+      let totalPallets = 0;
+      const productsMap = new Map();
+
+      workOrders
+        .filter((o) => o.planDate === todayCalendarDateStr && o.status !== 'cancelled')
+        .forEach((o) => {
+          const finished = Number(o.finishedQtyLarge || 0);
+          totalCartons += finished;
+          const palletsCount = Array.isArray(o.pallets) ? o.pallets.filter((p) => p.endTime).length : 0;
+          totalPallets += palletsCount;
+
+          const existing = productsMap.get(o.finishedProductId) || {
+            productId: o.finishedProductId,
+            productNameAr: o.productNameAr,
+            productNameEn: o.productNameEn,
+            totalCartons: 0,
+            totalPallets: 0,
+          };
+          existing.totalCartons += finished;
+          existing.totalPallets += palletsCount;
+          productsMap.set(o.finishedProductId, existing);
+        });
+
+      await setDoc(doc(db, 'production_shifts', shiftDocId), {
+        id: shiftDocId,
+        date: todayCalendarDateStr,
+        status: 'ended',
+        endedAt: new Date().toISOString(),
+        endedBy: {
+          id: currentUserId,
+          name: currentUserName,
+        },
+        notes: endShiftNotes || '',
+        summary: {
+          totalCartons,
+          totalPallets,
+          products: Array.from(productsMap.values()),
+          totalProdMins: shiftKpis.totalProdMins,
+          totalBreakMins: shiftKpis.totalBreakMins,
+          totalWasteMins: shiftKpis.totalWasteMins,
+          overtimeMins: shiftKpis.overtimeMins,
+          timeEfficiencyPct: shiftKpis.timeEfficiencyPct,
+          shiftStart: shiftKpis.shiftStartDisplay,
+          shiftEnd: shiftKpis.shiftEndDisplay,
+        },
+      });
+
+      setShowEndShiftModal(false);
+      toast.success(
+        isAr
+          ? 'تم إنهاء وردية اليوم بنجاح وتقدم تاريخ الحاضر ليوم العمل القادم.'
+          : 'Today\'s shift sealed successfully. Present era advanced to next work order date.'
+      );
+    } catch (err) {
+      console.error('Error sealing shift:', err);
+      toast.error(isAr ? 'فشل إنهاء الوردية.' : 'Failed to seal shift.');
+    } finally {
+      setIsSealingShift(false);
+    }
+  };
+
+  const handleReopenTodayShift = async () => {
+    const confirmed = await showConfirm({
+      title: isAr ? 'إعادة فتح وردية اليوم' : 'Reopen Today Shift',
+      message: isAr
+        ? 'هل أنت متأكد من إعادة فتح وردية اليوم؟ سيتم إلغاء حالة الإغلاق والختم وإتاحة العمل والترحيل مجدداً.'
+        : 'Are you sure you want to reopen today\'s shift? This will clear sealed status and enable production actions.',
+      confirmText: isAr ? 'إعادة الفتح' : 'Reopen',
+      variant: 'warning',
+    });
+    if (!confirmed) return;
+
+    try {
+      setIsSaving(true);
+      await deleteDoc(doc(db, 'production_shifts', `SHIFT-${todayCalendarDateStr}`));
+      toast.success(isAr ? 'تم إعادة فتح وردية اليوم بنجاح.' : 'Today\'s shift reopened successfully.');
+    } catch (err) {
+      console.error('Error reopening shift:', err);
+      toast.error(isAr ? 'فشل إعادة فتح الوردية.' : 'Failed to reopen shift.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Subtab 4 Analytics computations
+  const analyticsBreaks = useMemo(() => {
+    return globalBreaks.filter((b) => b.date === analyticsDate);
+  }, [globalBreaks, analyticsDate]);
+
+  const analyticsFilteredOrders = useMemo(() => {
+    return workOrders.filter((order) => {
+      if (order.status === 'cancelled') return false;
+      const matchDate = order.planDate === analyticsDate;
+      const matchLine = analyticsLineFilter === 'all' || order.productionLine === analyticsLineFilter;
+      const matchProduct = analyticsProductFilter === 'all' || order.finishedProductId === analyticsProductFilter;
+      return matchDate && matchLine && matchProduct;
+    });
+  }, [workOrders, analyticsDate, analyticsLineFilter, analyticsProductFilter]);
+
+  const analyticsTimelineData = useMemo(() => {
+    const segments = [];
+    const nowTimeStr = minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)));
+
+    analyticsFilteredOrders.forEach((order) => {
+      (order.segments || []).forEach((seg, sIdx) => {
+        if (seg.date === analyticsDate && seg.status !== 'Cancelled') {
+          const sTime = seg.startTime;
+          const eTime = seg.endTime || (seg.status === 'Active' ? nowTimeStr : sTime);
+          const dur = calculateDuration(sTime, eTime);
+          segments.push({
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            productNameAr: order.productNameAr,
+            segmentId: seg.segmentId || `${order.id}-${sIdx}`,
+            startTime: sTime,
+            endTime: eTime,
+            isActive: seg.status === 'Active' || !seg.endTime,
+            status: seg.status,
+            durationMins: dur,
+            netDurationMins: dur,
+            crewCount: getOrderCrewCount(order),
+          });
+        }
+      });
+    });
+    return segments;
+  }, [analyticsFilteredOrders, analyticsDate]);
+
+  const analyticsPallets = useMemo(() => {
+    const pins = [];
+    analyticsFilteredOrders.forEach((order) => {
+      (order.pallets || []).forEach((pallet, pIdx) => {
+        if (pallet.endTime) {
+          const { isPrinted, printCount } = resolvePalletPrintStatus(pallet, order, stagedFloorPallets);
+          pins.push({
+            pallet,
+            order,
+            pIdx,
+            orderNumber: order.orderNumber,
+            palletId: pallet.palletId,
+            wrappingMachine: pallet.wrappingMachine || 'wrapping_1',
+            palletNumber: pallet.palletNumber || pIdx + 1,
+            time: pallet.endTime,
+            timeMins: timeToMins(pallet.endTime),
+            qtyLarge: pallet.qtyLarge,
+            qtySmall: pallet.qtySmall,
+            productNameAr: order.productNameAr,
+            isPrinted,
+            printCount,
+          });
+        }
+      });
+    });
+    return pins.sort((a, b) => a.timeMins - b.timeMins);
+  }, [analyticsFilteredOrders, stagedFloorPallets]);
+
+  const analyticsShiftKpis = useMemo(() => {
+    const shiftStart = 480; // 08:00
+    const shiftEnd = 990;   // 16:30
+    const nowTimeStr = minsToTime(timeToMins(new Date().toTimeString().slice(0, 5)));
+    const nowM = timeToMins(nowTimeStr);
+    const isToday = analyticsDate === todayCalendarDateStr;
+    const latestEvalTime = isToday ? Math.min(shiftEnd, nowM) : shiftEnd;
+
+    const occupiedTimeline = new Array(1440).fill(false);
+    let actualFirstStart = 1440;
+    let actualLastEnd = 0;
+    let totalProdMins = 0;
+    let totalBreakMins = 0;
+
+    analyticsBreaks.forEach((b) => {
+      const bDur = b.durationMins || 0;
+      totalBreakMins += bDur;
+      const sM = timeToMins(b.startTime);
+      const eM = b.endTime ? timeToMins(b.endTime) : sM + bDur;
+      const absEM = eM < sM ? eM + 1440 : eM;
+      for (let m = sM; m < absEM; m++) {
+        occupiedTimeline[m % 1440] = true;
+      }
+    });
+
+    analyticsTimelineData.forEach((s) => {
+      const sM = timeToMins(s.startTime);
+      const eM = timeToMins(s.endTime);
+      const absEM = eM < sM ? eM + 1440 : eM;
+      if (sM < actualFirstStart) actualFirstStart = sM;
+      if (eM > actualLastEnd) actualLastEnd = eM;
+
+      for (let m = sM; m < absEM; m++) {
+        occupiedTimeline[m % 1440] = true;
+      }
+      totalProdMins += (s.durationMins || 0);
+    });
+
+    const wasteGaps = [];
+    if (!(isToday && nowM < shiftStart)) {
+      let inGap = false;
+      let gapStart = 0;
+      for (let m = shiftStart; m <= latestEvalTime; m++) {
+        if (!occupiedTimeline[m] && m !== latestEvalTime) {
+          if (!inGap) {
+            inGap = true;
+            gapStart = m;
+          }
+        } else {
+          if (inGap) {
+            if (m - gapStart > 0) {
+              wasteGaps.push({
+                startMin: gapStart,
+                endMin: m,
+                startTime: minsToTime(gapStart),
+                endTime: minsToTime(m),
+                durationMins: m - gapStart,
+              });
+            }
+            inGap = false;
+          }
+        }
+      }
+    }
+
+    const totalWasteMins = wasteGaps.reduce((acc, g) => acc + g.durationMins, 0);
+    const displayStart = actualFirstStart === 1440 ? 480 : actualFirstStart;
+    const displayEnd = actualLastEnd === 0 ? 990 : actualLastEnd;
+    const overtimeMins = Math.max(0, displayEnd - shiftEnd);
+
+    const timeEfficiencyPct = (totalProdMins + totalWasteMins) > 0
+      ? Number(((totalProdMins / (totalProdMins + totalWasteMins)) * 100).toFixed(1))
+      : 100;
+
+    return {
+      shiftStartDisplay: minsToTime(displayStart),
+      shiftEndDisplay: minsToTime(displayEnd),
+      totalProdMins,
+      totalBreakMins,
+      totalWasteMins,
+      overtimeMins,
+      timeEfficiencyPct,
+      wasteGaps,
+    };
+  }, [analyticsBreaks, analyticsTimelineData, analyticsDate, todayCalendarDateStr]);
+
+  const analyticsOrdersSummary = useMemo(() => {
+    let totalCartons = 0;
+    let totalPallets = 0;
+    analyticsFilteredOrders.forEach((o) => {
+      totalCartons += Number(o.finishedQtyLarge || 0);
+      totalPallets += Array.isArray(o.pallets) ? o.pallets.filter((p) => p.endTime).length : 0;
+    });
+    return { totalCartons, totalPallets };
+  }, [analyticsFilteredOrders]);
+
+  // Export Shift Report to Excel (xlsx)
+  const handleExportShiftToExcel = () => {
+    try {
+      const summaryData = [
+        {
+          [isAr ? 'تاريخ الوردية' : 'Shift Date']: analyticsDate,
+          [isAr ? 'بداية الوردية' : 'Shift Start']: analyticsShiftKpis.shiftStartDisplay,
+          [isAr ? 'نهاية الوردية' : 'Shift End']: analyticsShiftKpis.shiftEndDisplay,
+          [isAr ? 'صافي وقت الإنتاج (دقيقة)' : 'Prod Mins']: analyticsShiftKpis.totalProdMins,
+          [isAr ? 'وقت الراحة (دقيقة)' : 'Break Mins']: analyticsShiftKpis.totalBreakMins,
+          [isAr ? 'الوقت المهدر (دقيقة)' : 'Waste Mins']: analyticsShiftKpis.totalWasteMins,
+          [isAr ? 'الوقت الإضافي (دقيقة)' : 'Overtime Mins']: analyticsShiftKpis.overtimeMins,
+          [isAr ? 'كفاءة الوقت (OEE %)' : 'Efficiency %']: `${analyticsShiftKpis.timeEfficiencyPct}%`,
+          [isAr ? 'إجمالي الكراتين التامة' : 'Total Cartons']: analyticsOrdersSummary.totalCartons,
+          [isAr ? 'إجمالي الباليتات المنجزة' : 'Total Pallets']: analyticsOrdersSummary.totalPallets,
+        }
+      ];
+
+      const ordersData = analyticsFilteredOrders.map((ord) => ({
+        [isAr ? 'رقم الأمر' : 'Order #']: ord.orderNumber,
+        [isAr ? 'اسم المنتج' : 'Product']: ord.productNameAr,
+        [isAr ? 'خيار التعبئة' : 'Packaging Option']: ord.packagingOptionNameAr || '—',
+        [isAr ? 'خط الإنتاج' : 'Line']: ord.productionLine || '—',
+        [isAr ? 'الأولوية' : 'Priority']: ord.priority || '—',
+        [isAr ? 'الحالة' : 'Status']: ord.status,
+        [isAr ? 'المخطط بالكرتونة' : 'Planned Cartons']: ord.plannedQtyLarge,
+        [isAr ? 'المنجز بالكرتونة' : 'Finished Cartons']: ord.finishedQtyLarge || 0,
+        [isAr ? 'المخطط بالعبوة' : 'Planned Units']: ord.plannedQtySmall,
+        [isAr ? 'المنجز بالعبوة' : 'Finished Units']: ord.finishedQtySmall || 0,
+        [isAr ? 'عدد العمالة' : 'Crew Count']: getOrderCrewCount(ord),
+        [isAr ? 'تاريخ الخطة' : 'Plan Date']: ord.planDate,
+      }));
+
+      const palletsData = analyticsPallets.map((p, idx) => ({
+        [isAr ? 'تسلسل' : '#']: idx + 1,
+        [isAr ? 'رقم الباليت' : 'Pallet #']: `P${p.palletNumber || idx + 1}`,
+        [isAr ? 'معرف الباليت' : 'Pallet ID']: p.palletId || '—',
+        [isAr ? 'أمر التشغيل' : 'Order #']: p.orderNumber,
+        [isAr ? 'اسم المنتج' : 'Product']: p.productNameAr,
+        [isAr ? 'الكمية (كرتونة)' : 'Cartons']: p.qtyLarge,
+        [isAr ? 'الكمية (عبوة)' : 'Units']: p.qtySmall,
+        [isAr ? 'ماكينة التغليف' : 'Wrapping']: p.wrappingMachine === 'wrapping_2' ? 'ماكينة 2' : p.wrappingMachine === 'no_shrink' ? 'بدون شرنك' : 'ماكينة 1',
+        [isAr ? 'وقت الإنجاز' : 'Completion Time']: p.time || '—',
+        [isAr ? 'حالة الطباعة' : 'Printed']: (p.isPrinted || Number(p.printCount) > 0) ? (isAr ? 'نعم' : 'Yes') : (isAr ? 'لا' : 'No'),
+        [isAr ? 'عدد مرات الطباعة' : 'Print Count']: p.printCount || 0,
+      }));
+
+      const gapsData = (analyticsShiftKpis.wasteGaps || []).map((g, idx) => ({
+        [isAr ? 'تسلسل' : '#']: idx + 1,
+        [isAr ? 'وقت البدء' : 'Start Time']: g.startTime,
+        [isAr ? 'وقت الانتهاء' : 'End Time']: g.endTime,
+        [isAr ? 'المدة (دقيقة)' : 'Duration (mins)']: g.durationMins,
+        [isAr ? 'النوع' : 'Type']: isAr ? 'وقت مهدر / توقف' : 'Waste / Downtime',
+      }));
+
+      const wb = XLSX.utils.book_new();
+      const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+      const wsOrders = XLSX.utils.json_to_sheet(ordersData.length > 0 ? ordersData : [{ [isAr ? 'ملاحظة' : 'Note']: isAr ? 'لا توجد أوامر' : 'No orders' }]);
+      const wsPallets = XLSX.utils.json_to_sheet(palletsData.length > 0 ? palletsData : [{ [isAr ? 'ملاحظة' : 'Note']: isAr ? 'لا توجد باليتات' : 'No pallets' }]);
+      const wsGaps = XLSX.utils.json_to_sheet(gapsData.length > 0 ? gapsData : [{ [isAr ? 'ملاحظة' : 'Note']: isAr ? 'لا يوجد وقت مهدر' : 'No gaps' }]);
+
+      XLSX.utils.book_append_sheet(wb, wsSummary, isAr ? 'ملخص الوردية' : 'Summary');
+      XLSX.utils.book_append_sheet(wb, wsOrders, isAr ? 'أوامر التشغيل' : 'Orders');
+      XLSX.utils.book_append_sheet(wb, wsPallets, isAr ? 'الباليتات' : 'Pallets');
+      XLSX.utils.book_append_sheet(wb, wsGaps, isAr ? 'فترات التوقف' : 'Downtime');
+
+      XLSX.writeFile(wb, `Shift_Report_${analyticsDate}.xlsx`);
+      toast.success(isAr ? 'تم تصدير تقرير الوردية بنجاح إلى ملف إكسل.' : 'Shift report exported to Excel successfully.');
+    } catch (err) {
+      console.error('Error exporting shift report to Excel:', err);
+      toast.error(isAr ? 'فشل تصدير ملف الإكسل.' : 'Failed to export Excel report.');
+    }
+  };
+
+  const getOrderPriorityInfo = (orderOrPriority, isArLang) => {
+    const priority = typeof orderOrPriority === 'string' ? orderOrPriority : (orderOrPriority?.priority || 'today');
+    switch (priority) {
+      case 'urgent':
+        return {
+          label: isArLang ? 'أولوية: مستعجل' : 'Priority: Urgent',
+          cls: 'bg-rose-50 text-rose-800 border-rose-200',
+          icon: <Flame className="h-3 w-3 text-rose-600 shrink-0" />
+        };
+      case 'important':
+        return {
+          label: isArLang ? 'أولوية: مهم' : 'Priority: Important',
+          cls: 'bg-amber-50 text-amber-900 border-amber-200',
+          icon: <Star className="h-3 w-3 text-amber-600 shrink-0" />
+        };
+      case 'prep_and_run':
+        return {
+          label: isArLang ? 'تجهيز وتشغيل' : 'Prep & Run',
+          cls: 'bg-indigo-50 text-indigo-900 border-indigo-200',
+          icon: <Wrench className="h-3 w-3 text-indigo-600 shrink-0" />
+        };
+      case 'prep_only':
+        return {
+          label: isArLang ? 'تجهيز فقط' : 'Prep Only',
+          cls: 'bg-slate-100 text-slate-800 border-slate-200',
+          icon: <Clock className="h-3 w-3 text-slate-500 shrink-0" />
+        };
+      case 'today':
+      default:
+        return {
+          label: isArLang ? 'خلال اليوم' : 'Today',
+          cls: 'bg-blue-50 text-blue-800 border-blue-200',
+          icon: <Calendar className="h-3 w-3 text-blue-600 shrink-0" />
+        };
+    }
+  };
+
+  const getOrderExactnessInfo = (orderOrExactness, isArLang) => {
+    const exactness = typeof orderOrExactness === 'string' ? orderOrExactness : (orderOrExactness?.qtyExactness || 'approximate');
+    switch (exactness) {
+      case 'exact':
+        return {
+          label: isArLang ? 'مطابقة: بالظبط' : 'Exact Match',
+          cls: 'bg-purple-50 text-purple-900 border-purple-200',
+          icon: <Target className="h-3 w-3 text-purple-600 shrink-0" />
+        };
+      case 'at_least':
+        return {
+          label: isArLang ? 'مطابقة: لا يقل عن' : 'At Least',
+          cls: 'bg-teal-50 text-teal-900 border-teal-200',
+          icon: <ArrowUpRight className="h-3 w-3 text-teal-600 shrink-0" />
+        };
+      case 'at_most':
+        return {
+          label: isArLang ? 'مطابقة: لا يزيد عن' : 'At Most',
+          cls: 'bg-orange-50 text-orange-900 border-orange-200',
+          icon: <ArrowDownRight className="h-3 w-3 text-orange-600 shrink-0" />
+        };
+      case 'as_per_materials':
+        return {
+          label: isArLang ? 'حسب الخامات' : 'Per Materials',
+          cls: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+          icon: <Boxes className="h-3 w-3 text-emerald-600 shrink-0" />
+        };
+      case 'as_per_time':
+        return {
+          label: isArLang ? 'حسب الوقت' : 'Per Time',
+          cls: 'bg-cyan-50 text-cyan-900 border-cyan-200',
+          icon: <Clock className="h-3 w-3 text-cyan-600 shrink-0" />
+        };
+      case 'approximate':
+      default:
+        return {
+          label: isArLang ? 'مطابقة: تقريبي' : 'Approximate',
+          cls: 'bg-slate-100 text-slate-700 border-slate-200',
+          icon: <Scale className="h-3 w-3 text-slate-500 shrink-0" />
+        };
+    }
+  };
+
+  const getOrderStatusInfo = (order, isArLang) => {
+    const status = order?.status || 'scheduled';
+    const ratio = Number(order?.packagingRatio) || 12;
+    const pallets = Array.isArray(order?.pallets) ? order.pallets : [];
+
+    const actualProducedLarge = order?.totalProducedQtyLarge != null
+      ? Number(order.totalProducedQtyLarge)
+      : (pallets.length > 0
+          ? pallets.reduce((sum, p) => sum + (Number(p.qtyLarge) || (Number(p.qtySmall || 0) / ratio) || 0), 0)
+          : (Number(order?.totalProducedQtySmall || 0) / ratio));
+
+    const plannedLarge = Number(order?.plannedQtyLarge) || (Number(order?.plannedQtySmall || 0) / ratio) || 0;
+    const roundedActualLarge = Number(actualProducedLarge.toFixed(2));
+    const roundedPlannedLarge = Number(plannedLarge.toFixed(2));
+
+    let completionPct = plannedLarge > 0 && actualProducedLarge > 0
+      ? Math.min(100, Math.round((actualProducedLarge / plannedLarge) * 100))
+      : (Number(order?.completionPercentage) || 0);
+
+    if (status === 'completed' && completionPct === 0 && actualProducedLarge === 0) {
+      completionPct = 100;
+    }
+
+    const largeUnit = order?.outputLargeUnit || (isArLang ? 'كرتونة' : 'Carton');
+
+    switch (status) {
+      case 'in_progress':
+        return {
+          status,
+          label: isArLang ? 'قيد التشغيل' : 'In Progress',
+          cls: 'bg-emerald-50 text-emerald-800 border-emerald-200/90',
+          dotCls: 'bg-emerald-500 animate-pulse',
+          completionPct,
+          qtyCompleted: roundedActualLarge,
+          targetQty: roundedPlannedLarge,
+          largeUnit,
+          isScheduled: false,
+        };
+      case 'paused':
+        return {
+          status,
+          label: isArLang ? 'متوقف مؤقتاً' : 'Paused',
+          cls: 'bg-amber-50 text-amber-900 border-amber-200/90',
+          dotCls: 'bg-amber-500',
+          completionPct,
+          qtyCompleted: roundedActualLarge,
+          targetQty: roundedPlannedLarge,
+          largeUnit,
+          isScheduled: false,
+        };
+      case 'completed':
+        return {
+          status,
+          label: isArLang ? 'مكتمل' : 'Completed',
+          cls: 'bg-blue-50 text-blue-800 border-blue-200/90',
+          dotCls: 'bg-blue-500',
+          completionPct,
+          qtyCompleted: roundedActualLarge,
+          targetQty: roundedPlannedLarge,
+          largeUnit,
+          isScheduled: false,
+        };
+      case 'cancelled':
+        return {
+          status,
+          label: isArLang ? 'ملغي' : 'Cancelled',
+          cls: 'bg-rose-50 text-rose-800 border-rose-200/90',
+          dotCls: 'bg-rose-500',
+          completionPct,
+          qtyCompleted: roundedActualLarge,
+          targetQty: roundedPlannedLarge,
+          largeUnit,
+          isScheduled: false,
+        };
+      case 'scheduled':
+      default:
+        return {
+          status: 'scheduled',
+          label: isArLang ? 'مجدول' : 'Scheduled',
+          cls: 'bg-slate-100 text-slate-700 border-slate-200',
+          dotCls: 'bg-slate-400',
+          completionPct: 0,
+          qtyCompleted: 0,
+          targetQty: roundedPlannedLarge,
+          largeUnit,
+          isScheduled: true,
+        };
+    }
+  };
+
+  const renderOrderStatusChip = (order) => {
+    const statusInfo = getOrderStatusInfo(order, isAr);
+
+    if (statusInfo.isScheduled) {
+      return (
+        <span
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border shadow-2xs whitespace-nowrap ${statusInfo.cls}`}
+          title={statusInfo.label}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusInfo.dotCls}`} />
+          <span>{statusInfo.label}</span>
+        </span>
+      );
+    }
+
+    const tooltipTitle = isAr
+      ? `${statusInfo.label}: تم إنجاز ${statusInfo.qtyCompleted.toLocaleString()} من أصل ${statusInfo.targetQty.toLocaleString()} ${statusInfo.largeUnit} (${statusInfo.completionPct}%)`
+      : `${statusInfo.label}: Completed ${statusInfo.qtyCompleted.toLocaleString()} of ${statusInfo.targetQty.toLocaleString()} ${statusInfo.largeUnit} (${statusInfo.completionPct}%)`;
+
+    return (
+      <span
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border shadow-2xs whitespace-nowrap ${statusInfo.cls}`}
+        title={tooltipTitle}
+      >
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusInfo.dotCls}`} />
+        <span>{statusInfo.label}</span>
+        <span className="opacity-35 font-normal">•</span>
+        <span className="font-mono font-black">{statusInfo.completionPct}%</span>
+        {statusInfo.qtyCompleted > 0 || statusInfo.status !== 'completed' ? (
+          <span className="font-mono text-[9.5px] font-semibold opacity-90">
+            ({statusInfo.qtyCompleted.toLocaleString(undefined, { maximumFractionDigits: 1 })} {statusInfo.largeUnit})
+          </span>
+        ) : null}
+      </span>
+    );
+  };
+
+  const resolveStaffingSummary = (order) => {
+    let steps = Array.isArray(order.stepStaffing) && order.stepStaffing.length > 0 ? order.stepStaffing : [];
+    if (steps.length === 0 && (order.processId || order.processCode)) {
+      const proc = productionProcesses.find((p) => (p.id || p.processCode) === (order.processId || order.processCode));
+      if (proc && Array.isArray(proc.steps)) {
+        steps = proc.steps.map((s) => ({
+          stepNum: s.stepNum,
+          stepName: s.name,
+          stepDesc: s.desc || '',
+          mandatory: !!s.mandatory,
+          workers: [],
+        }));
+      }
+    }
+
+    const totalSteps = steps.length;
+    const assignedSteps = steps.filter((s) => Array.isArray(s.workers) && s.workers.length > 0).length;
+    const assignedWorkersCount = getOrderSopUniqueCrewCount(order);
+    const unassignedMandatoryCount = steps.filter((s) => s.mandatory && (!Array.isArray(s.workers) || s.workers.length === 0)).length;
+
+    return {
+      steps,
+      totalSteps,
+      assignedSteps,
+      assignedWorkersCount,
+      unassignedMandatoryCount,
+      hasSteps: totalSteps > 0,
+    };
+  };
+
+  // Auto-close floating action menu on window scroll or resize
+  useEffect(() => {
+    if (!activeActionMenu) return;
+    const handleClose = () => setActiveActionMenu(null);
+    window.addEventListener('resize', handleClose);
+    window.addEventListener('scroll', handleClose, true);
+    return () => {
+      window.removeEventListener('resize', handleClose);
+      window.removeEventListener('scroll', handleClose, true);
+    };
+  }, [activeActionMenu]);
+
+  const handleToggleActionMenu = (e, order) => {
+    e.stopPropagation();
+    if (activeActionMenu?.order?.id === order.id) {
+      setActiveActionMenu(null);
+      return;
+    }
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const windowWidth = window.innerWidth;
+    const windowHeight = window.innerHeight;
+    const menuWidth = 180;
+
+    let left = isAr ? (rect.right - menuWidth) : rect.left;
+    left = Math.max(10, Math.min(left, windowWidth - menuWidth - 10));
+
+    const spaceBelow = windowHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const openUp = spaceBelow < 220 && spaceAbove > spaceBelow;
+
+    const style = {
+      position: 'fixed',
+      left: `${Math.round(left)}px`,
+      width: `${menuWidth}px`,
+      zIndex: 9999,
+    };
+
+    if (openUp) {
+      style.bottom = `${Math.round(windowHeight - rect.top + 6)}px`;
+    } else {
+      style.top = `${Math.round(rect.bottom + 6)}px`;
+    }
+
+    setActiveActionMenu({ order, style });
+  };
+
+  const renderEraOrdersTable = (ordersList, emptyMessage) => {
+    if (!ordersList || ordersList.length === 0) {
+      return (
+        <div className="p-8 bg-slate-50 border border-slate-200 rounded-2xl text-center text-xs text-slate-400">
+          {emptyMessage || (isAr ? 'لا توجد أوامر تشغيل في هذا القسم.' : 'No work orders in this section.')}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-3.5 relative">
+
+        {/* Desktop Table View */}
+        <div className="hidden md:block overflow-x-auto border border-slate-200 rounded-2xl shadow-xs bg-white min-h-[160px]">
+          <table className="w-full text-start border-collapse text-xs">
+            <thead>
+              <tr className="bg-slate-100/90 text-slate-700 font-bold border-b border-slate-200">
+                <th className="p-3 text-center w-10">#</th>
+                <th className="p-3 text-start">{isAr ? 'أمر التشغيل' : 'Order #'}</th>
+                <th className="p-3 text-start">{isAr ? 'المنتج وخيار التعبئة' : 'Finished Good & Option'}</th>
+                <th className="p-3 text-start">{isAr ? 'الأولوية ومطابقة الكمية' : 'Priority & Exactness'}</th>
+                <th className="p-3 text-center">{isAr ? 'الكمية المستهدفة' : 'Target Quantity'}</th>
+                <th className="p-3 text-start">{isAr ? 'مسار التشغيل والطاقم' : 'Process & Staffing'}</th>
+                <th className="p-3 text-center">{isAr ? 'جاهزية الخامات (BOM Feasibility)' : 'BOM Feasibility'}</th>
+                <th className="p-3 text-start">{isAr ? 'حالة الخطة' : 'Status'}</th>
+                <th className="p-3 text-center w-12">{isAr ? 'إجراءات' : 'Actions'}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {ordersList.map((order, idx) => {
+                const feasibility = sequentialPlanFeasibilityMap[order.id] || evaluateBomFeasibility(order.bomRecipeId, order.plannedQtyLarge, order.componentSelections);
+                const currentSeq = Number(order.importanceRank) || 1;
+                const isDuplicate = (sequenceCountsByDate[`${order.planDate}_${currentSeq}`] || 0) > 1;
+                const priorityInfo = getOrderPriorityInfo(order, isAr);
+                const exactnessInfo = getOrderExactnessInfo(order, isAr);
+                const procName = order.processNameAr || order.processNameEn || order.processCode;
+                const staffing = resolveStaffingSummary(order);
+
+                const orderRowActions = [
+                  ...(!isOrderLocked(order) && canEdit ? [
+                    {
+                      id: 'edit',
+                      label: 'تعديل الخطة',
+                      labelAr: 'تعديل الخطة',
+                      labelEn: 'Edit Plan',
+                      icon: Edit3,
+                      onClick: () => handleOpenEditPlan(order)
+                    },
+                    {
+                      id: 'clone',
+                      label: 'نسخ للصنف',
+                      labelAr: 'نسخ للصنف',
+                      labelEn: 'Duplicate Order',
+                      icon: Copy,
+                      onClick: () => handleClonePlan(order)
+                    }
+                  ] : []),
+                  {
+                    id: 'audit',
+                    label: 'سجل المراجعة',
+                    labelAr: 'سجل المراجعة',
+                    labelEn: 'Audit Trail',
+                    icon: History,
+                    onClick: () => setAuditOrderData(order)
+                  },
+                  ...(canCancel && !isOrderLocked(order) ? [
+                    {
+                      id: 'delete',
+                      label: 'حذف من الخطة',
+                      labelAr: 'حذف من الخطة',
+                      labelEn: 'Delete Order',
+                      icon: Trash2,
+                      variant: 'danger',
+                      onClick: () => handleDeletePlanOrder(order.id, order.orderNumber)
+                    }
+                  ] : [])
+                ];
+                registerRowActions(order.id, orderRowActions);
+
+                return (
+                  <tr
+                    key={order.id}
+                    id={`wo-row-${order.id}`}
+                    data-comment-doc={order.id}
+                    data-comment-number={order.orderNumber || order.id}
+                    data-comment-tab="work_orders"
+                    data-comment-module="production"
+                    data-comment-type="table_row"
+                    className="hover:bg-slate-50/70 transition"
+                  >
+                    <td className="p-3 text-center align-top">
+                      <div className="flex flex-col items-center justify-center gap-1">
+                        <div
+                          className={`px-2 py-0.5 rounded-lg font-mono font-extrabold text-xs flex items-center justify-center gap-1 border shadow-2xs transition ${
+                            isDuplicate
+                              ? 'bg-amber-100 text-amber-950 border-amber-300 ring-2 ring-amber-200'
+                              : 'bg-slate-100 text-slate-800 border-slate-200'
+                          }`}
+                          title={isDuplicate ? (isAr ? `تنبيه: يوجد (${sequenceCountsByDate[`${order.planDate}_${currentSeq}`]}) أوامر تشغيل بنفس الترتيب (#${currentSeq}) لهذا اليوم` : `Concurrency: ${sequenceCountsByDate[`${order.planDate}_${currentSeq}`]} orders share #${currentSeq}`) : undefined}
+                        >
+                          <span>#{currentSeq}</span>
+                        </div>
+                        {canEdit && (
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleQuickStepSequence(order, -1);
+                              }}
+                              disabled={currentSeq <= 1}
+                              className="p-0.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded disabled:opacity-20 cursor-pointer"
+                              title={isAr ? 'تقديم الترتيب' : 'Move Up'}
+                            >
+                              <ChevronDown className="h-3 w-3 rotate-180" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleQuickStepSequence(order, 1);
+                              }}
+                              className="p-0.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded cursor-pointer"
+                              title={isAr ? 'تأخير الترتيب' : 'Move Down'}
+                            >
+                              <ChevronDown className="h-3 w-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+
+                    <td className="p-3 align-top">
+                      <div className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5">
+                        <Calendar className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                        <span>{order.planDate}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="font-mono text-[10px] text-slate-400 font-medium">
+                          {order.orderNumber}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(order.orderNumber);
+                            setCopiedId(order.orderNumber);
+                            setTimeout(() => setCopiedId(null), 1800);
+                          }}
+                          className="p-0.5 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded transition cursor-pointer"
+                          title={isAr ? 'نسخ رقم الأمر' : 'Copy Order ID'}
+                        >
+                          {copiedId === order.orderNumber ? (
+                            <Check className="h-3 w-3 text-emerald-600" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
+                        {copiedId === order.orderNumber && (
+                          <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200 animate-in fade-in">
+                            {isAr ? 'تم النسخ' : 'Copied'}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+
+                    <td className="p-3 align-top">
+                      {(() => {
+                        const prod = finishedProducts.find((p) => p.code === order.finishedProductId);
+                        const opt = (prod?.packagingOptions || []).find((o) => o.suffix === order.packagingOptionSuffix);
+                        const resolvedImg = opt?.imageFile || prod?.imageFile || '';
+
+                        return (
+                          <div className="flex items-start gap-2.5">
+                            {resolvedImg ? (
+                              <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-200/90 shadow-2xs flex items-center justify-center p-0.5 shrink-0 overflow-hidden group/img mt-0.5">
+                                <img
+                                  src={resolvedImg}
+                                  alt={order.productNameAr}
+                                  onClick={() => setImagePreviewModal({
+                                    url: resolvedImg,
+                                    title: `${order.productNameAr} - ${order.packagingOptionNameAr || ''}`,
+                                    subtitle: `${order.finishedProductId} • ${order.packagingOptionCode || ''}`
+                                  })}
+                                  className="w-full h-full object-contain cursor-pointer hover:scale-110 transition duration-150"
+                                  title={isAr ? 'انقر لعرض الصورة بالحجم الكامل' : 'Click to preview image'}
+                                />
+                              </div>
+                            ) : (
+                              <div className="w-10 h-10 rounded-xl bg-blue-50/70 border border-blue-200 flex items-center justify-center text-blue-600 shrink-0 shadow-2xs mt-0.5">
+                                <Package className="h-5 w-5" />
+                              </div>
+                            )}
+
+                            <div className="space-y-1">
+                              <div>
+                                <div className="font-bold text-slate-900 leading-snug">{order.productNameAr}</div>
+                                <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    [{order.finishedProductId}] • {order.packagingOptionNameAr}
+                                  </span>
+                                </div>
+                                {order.isRework && (
+                                  <div className="flex flex-wrap items-center gap-1 mt-1">
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-amber-50 text-amber-900 border border-amber-300">
+                                      <Wrench className="h-2.5 w-2.5 text-amber-700" />
+                                      <span>{isAr ? 'أمر تصليح' : 'Rework'}</span>
+                                    </span>
+                                  </div>
+                                )}
+                                {order.isComplementary && (
+                                  <div className="flex flex-wrap items-center gap-1 mt-1">
+                                    <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-purple-50 text-purple-900 border border-purple-200">
+                                      {isAr ? `تشغيلة مكملة (${order.parentOrderId || 'أصل'})` : `Complementary (${order.parentOrderId || 'Parent'})`}
+                                    </span>
+                                    {order.lotAutoBound ? (
+                                      <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                        {isAr ? `تم ربط اللوط (${order.autoBoundLotNo})` : `Bound LOT (${order.autoBoundLotNo})`}
+                                      </span>
+                                    ) : order.awaitingReplenishment ? (
+                                      <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
+                                        {isAr ? 'في انتظار توريد خامات (GRN)' : 'Awaiting Replenishment'}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                )}
+                              </div>
+
+                              {order.notes && (
+                                <div className="relative inline-block">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveNotePopoverId(activeNotePopoverId === order.id ? null : order.id);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-300 shadow-2xs hover:bg-amber-100 transition cursor-pointer"
+                                    title={isAr ? 'انقر لعرض ملاحظات التشغيل' : 'Click to view order notes'}
+                                  >
+                                    <MessageSquareText className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                                    <span>{isAr ? 'ملاحظة' : 'Note'}</span>
+                                  </button>
+
+                                  {activeNotePopoverId === order.id && (
+                                    <div
+                                      className="absolute start-0 top-full mt-1.5 z-50 w-72 bg-slate-900 text-white rounded-2xl p-3 shadow-2xl border border-slate-700 animate-in fade-in zoom-in-95 duration-150 text-xs select-text"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <div className="flex items-center justify-between border-b border-slate-700 pb-1.5 mb-1.5">
+                                        <span className="font-extrabold text-amber-400 text-[11px] flex items-center gap-1">
+                                          <MessageSquareText className="h-3.5 w-3.5" />
+                                          <span>{isAr ? 'ملاحظات وتوجيهات التشغيل' : 'Production Notes'}</span>
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setActiveNotePopoverId(null)}
+                                          className="p-0.5 text-slate-400 hover:text-white rounded transition cursor-pointer"
+                                        >
+                                          <X className="h-3.5 w-3.5" />
+                                        </button>
+                                      </div>
+                                      <p className="text-[11px] text-slate-200 leading-relaxed font-medium whitespace-pre-wrap">
+                                        {order.notes}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </td>
+
+                    <td className="p-3 align-top">
+                      <div className="flex flex-col gap-1.5 justify-center items-start shrink-0">
+                        {/* Upper chip: Priority */}
+                        <div
+                          className={`h-[24px] px-2 border rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-2xs whitespace-nowrap ${priorityInfo.cls}`}
+                          title={isAr ? `أولوية الخطة: ${priorityInfo.label}` : `Plan Priority: ${priorityInfo.label}`}
+                        >
+                          {priorityInfo.icon}
+                          <span>{priorityInfo.label}</span>
+                        </div>
+
+                        {/* Lower chip: Quantity Exactness */}
+                        <div
+                          className={`h-[24px] px-2 border rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-2xs whitespace-nowrap ${exactnessInfo.cls}`}
+                          title={isAr ? `معيار مطابقة الكمية: ${exactnessInfo.label}` : `Quantity Exactness: ${exactnessInfo.label}`}
+                        >
+                          {exactnessInfo.icon}
+                          <span>{exactnessInfo.label}</span>
+                        </div>
+                      </div>
+                    </td>
+
+                    <td className="p-3 text-center align-top">
+                      <div className="font-mono font-black text-sm text-slate-900 leading-tight">
+                        {order.plannedQtyLarge} {order.outputLargeUnit}
+                      </div>
+                      <div className="font-mono text-[11px] text-slate-500 font-bold mt-1 leading-tight">
+                        {Number(order.plannedQtySmall).toLocaleString()} {order.outputSmallUnit}
+                      </div>
+                      {order.isRework && (() => {
+                        const orig = getOriginalReturnQty(order);
+                        if (!orig) return null;
+                        return (
+                          <div
+                            className="text-[9px] font-mono text-purple-800 font-bold bg-purple-50 rounded px-1.5 py-0.5 mt-1.5 inline-block border border-purple-200"
+                            title={isAr ? 'الكمية المرتجعة المستلمة بالأصل' : 'Originally Returned'}
+                          >
+                            {isAr ? 'أصل:' : 'Orig:'} {orig.qtyLarge} {orig.largeUnit} ({Number(orig.qtySmall).toLocaleString()} {orig.smallUnit})
+                          </div>
+                        );
+                      })()}
+                    </td>
+
+                    <td className="p-3 align-top">
+                      <div className="space-y-1.5 max-w-[190px]">
+                        {procName ? (
+                          <div
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg font-bold text-[10px] bg-cyan-50 text-cyan-900 border border-cyan-200 shadow-2xs max-w-full truncate"
+                            title={order.processCode ? `[${order.processCode}] ${procName}` : procName}
+                          >
+                            <Workflow className="h-3 w-3 text-cyan-600 shrink-0" />
+                            <span className="truncate">{procName}</span>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400 italic">
+                            {isAr ? 'بدون مسار محدد' : 'No process'}
+                          </span>
+                        )}
+
+                        {staffing.hasSteps ? (
+                          <div className="space-y-1">
+                            <div className="text-[10px] text-slate-700 font-bold flex items-center gap-1">
+                              <Users className="h-3 w-3 text-slate-400 shrink-0" />
+                              <span>
+                                {staffing.assignedWorkersCount} {isAr ? 'عمال' : 'workers'} ({staffing.assignedSteps}/{staffing.totalSteps} {isAr ? 'خطوة' : 'steps'})
+                              </span>
+                            </div>
+                            {staffing.unassignedMandatoryCount > 0 ? (
+                              <div className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded-md border border-amber-200">
+                                <AlertTriangle className="h-2.5 w-2.5 text-amber-600 shrink-0" />
+                                <span>
+                                  {isAr
+                                    ? `متبقي ${staffing.unassignedMandatoryCount} خطوة إلزامية`
+                                    : `${staffing.unassignedMandatoryCount} mandatory step remaining`}
+                                </span>
+                              </div>
+                            ) : staffing.assignedWorkersCount > 0 ? (
+                              <div className="inline-flex items-center gap-1 text-[9px] font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-200">
+                                <Check className="h-2.5 w-2.5 text-emerald-600 shrink-0" />
+                                <span>{isAr ? 'طاقم مكتمل' : 'Staffing complete'}</span>
+                              </div>
+                            ) : (
+                              <div className="text-[9px] text-slate-400 font-medium">
+                                {isAr ? 'لم يُوزع طاقم' : 'No staff assigned'}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-slate-400">
+                            {isAr ? 'بدون خطوات' : 'No steps'}
+                          </div>
+                        )}
+                      </div>
+                    </td>
+
+                    <td className="p-3 text-center align-top">
+                      <button
+                        type="button"
+                        onClick={() => setFeasibilityModalData({ order, feasibility })}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all shadow-2xs hover:scale-105 cursor-pointer ${
+                          feasibility.status === 'floor_ready'
+                            ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
+                            : feasibility.status === 'transfer_needed'
+                            ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+                            : feasibility.status === 'shortage'
+                            ? 'bg-rose-50 hover:bg-rose-100 text-rose-900 border border-rose-300 animate-pulse'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300'
+                        }`}
+                        title={isAr ? 'انقر لعرض بيان وتفاصيل توفر الخامات (BOM Audit)' : 'Click to inspect raw material availability'}
+                      >
+                        <CircleDot className={`h-3 w-3 ${
+                          feasibility.status === 'floor_ready' ? 'text-emerald-600' :
+                          feasibility.status === 'transfer_needed' ? 'text-amber-600' :
+                          feasibility.status === 'shortage' ? 'text-rose-600' : 'text-slate-400'
+                        }`} />
+                        <span>{feasibility.labelAr}</span>
+                        <Eye className="h-3 w-3 opacity-60 ms-0.5" />
+                      </button>
+                    </td>
+
+                    <td className="p-3 align-top">
+                      {renderOrderStatusChip(order)}
+                    </td>
+
+                    <td className="p-3 text-center align-top">
+                      <div className="flex items-center justify-center gap-1">
+                        {/* Quick Row Comment Button */}
+                        <RowCommentButton
+                          docId={order.id}
+                          docNumber={order.orderNumber || order.id}
+                          tab="work_orders"
+                          module="production"
+                          hideIfEmpty
+                        />
+
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleActionMenu(e, order)}
+                          className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                            activeActionMenu?.order?.id === order.id
+                              ? 'bg-blue-50 text-blue-600 border-blue-200 shadow-2xs'
+                              : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100 border-transparent hover:border-slate-200'
+                          }`}
+                          title={isAr ? 'خيارات وإجراءات' : 'Actions'}
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile Screen Adaptation */}
+        <div className="md:hidden space-y-3.5">
+          {ordersList.map((order, idx) => {
+            const feasibility = sequentialPlanFeasibilityMap[order.id] || evaluateBomFeasibility(order.bomRecipeId, order.plannedQtyLarge, order.componentSelections);
+            const currentSeq = Number(order.importanceRank) || 1;
+            const isDuplicate = (sequenceCountsByDate[`${order.planDate}_${currentSeq}`] || 0) > 1;
+            const prod = finishedProducts.find((p) => p.code === order.finishedProductId);
+            const opt = (prod?.packagingOptions || []).find((o) => o.suffix === order.packagingOptionSuffix);
+            const resolvedImg = opt?.imageFile || prod?.imageFile || '';
+            const priorityInfo = getOrderPriorityInfo(order, isAr);
+            const exactnessInfo = getOrderExactnessInfo(order, isAr);
+            const procName = order.processNameAr || order.processNameEn || order.processCode;
+            const staffing = resolveStaffingSummary(order);
+
+            return (
+              <div
+                key={order.id}
+                className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-xs space-y-3 relative"
+              >
+                {/* Mobile Header: Sequence, Status, and Actions 3-dots */}
+                <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <div
+                      className={`px-2.5 py-1 rounded-xl font-mono font-extrabold text-xs flex items-center justify-center gap-1 border shadow-2xs ${
+                        isDuplicate
+                          ? 'bg-amber-100 text-amber-950 border-amber-300 ring-1 ring-amber-200'
+                          : 'bg-slate-100 text-slate-800 border-slate-200'
+                      }`}
+                    >
+                      <span>#{currentSeq}</span>
+                    </div>
+
+                    {canEdit && (
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => handleQuickStepSequence(order, -1)}
+                          disabled={currentSeq <= 1}
+                          className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg disabled:opacity-20 cursor-pointer"
+                          title={isAr ? 'تقديم الترتيب' : 'Move Up'}
+                        >
+                          <ChevronDown className="h-3.5 w-3.5 rotate-180" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickStepSequence(order, 1)}
+                          className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+                          title={isAr ? 'تأخير الترتيب' : 'Move Down'}
+                        >
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {renderOrderStatusChip(order)}
+
+                    {/* Mobile Row Comment Button (prominent only when thread exists) */}
+                    <RowCommentButton
+                      docId={order.id}
+                      docNumber={order.orderNumber || order.id}
+                      tab="work_orders"
+                      module="production"
+                      hideIfEmpty
+                    />
+
+                    {/* Mobile 3-Dots Action Button */}
+                    <button
+                      type="button"
+                      onClick={(e) => handleToggleActionMenu(e, order)}
+                      className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                        activeActionMenu?.order?.id === order.id
+                          ? 'bg-blue-50 text-blue-600 border-blue-200 shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100 border-transparent hover:border-slate-200'
+                      }`}
+                      title={isAr ? 'خيارات وإجراءات' : 'Actions'}
+                    >
+                      <MoreVertical className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Product Identity and Info */}
+                <div className="flex items-start gap-3">
+                  {resolvedImg ? (
+                    <div className="w-12 h-12 rounded-xl bg-slate-50 border border-slate-200 shadow-2xs flex items-center justify-center p-1 shrink-0 overflow-hidden mt-0.5">
+                      <img
+                        src={resolvedImg}
+                        alt={order.productNameAr}
+                        onClick={() => setImagePreviewModal({
+                          url: resolvedImg,
+                          title: `${order.productNameAr} - ${order.packagingOptionNameAr || ''}`,
+                          subtitle: `${order.finishedProductId} • ${order.packagingOptionCode || ''}`
+                        })}
+                        className="w-full h-full object-contain cursor-pointer"
+                      />
+                    </div>
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shrink-0 shadow-2xs mt-0.5">
+                      <Package className="h-6 w-6" />
+                    </div>
+                  )}
+
+                  <div className="flex-1 min-w-0">
+                    <h4 className="font-extrabold text-sm text-slate-900 leading-snug">{order.productNameAr}</h4>
+                    <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                      {order.packagingOptionNameAr} • <span className="font-mono">{order.finishedProductId}</span>
+                    </p>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1 font-mono text-[10px] text-slate-500">
+                      <span className="font-bold text-slate-700">{order.planDate}</span>
+                      <span>•</span>
+                      <span>#{order.orderNumber}</span>
+                    </div>
+                    {order.isRework && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md text-[9px] font-bold bg-amber-50 text-amber-900 border border-amber-300 mt-1">
+                        <Wrench className="h-2.5 w-2.5 text-amber-700" />
+                        <span>{isAr ? 'أمر تصليح' : 'Rework'}</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Priority & Exactness Chips Row */}
+                <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                  <div
+                    className={`h-[24px] px-2 border rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-2xs whitespace-nowrap ${priorityInfo.cls}`}
+                    title={isAr ? `أولوية الخطة: ${priorityInfo.label}` : `Plan Priority: ${priorityInfo.label}`}
+                  >
+                    {priorityInfo.icon}
+                    <span>{priorityInfo.label}</span>
+                  </div>
+
+                  <div
+                    className={`h-[24px] px-2 border rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-2xs whitespace-nowrap ${exactnessInfo.cls}`}
+                    title={isAr ? `معيار مطابقة الكمية: ${exactnessInfo.label}` : `Quantity Exactness: ${exactnessInfo.label}`}
+                  >
+                    {exactnessInfo.icon}
+                    <span>{exactnessInfo.label}</span>
+                  </div>
+                </div>
+
+                {/* Merged Target Quantity and Process & Staffing */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-xs">
+                  <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
+                    <span className="text-[10px] text-slate-500 font-semibold block">{isAr ? 'الكمية المستهدفة' : 'Target Quantity'}</span>
+                    <div className="font-mono font-black text-base text-slate-900 mt-0.5">
+                      {order.plannedQtyLarge} {order.outputLargeUnit}
+                    </div>
+                    <div className="font-mono text-xs text-slate-600 font-bold mt-0.5">
+                      {Number(order.plannedQtySmall).toLocaleString()} {order.outputSmallUnit}
+                    </div>
+                    {order.isRework && (() => {
+                      const orig = getOriginalReturnQty(order);
+                      if (!orig) return null;
+                      return (
+                        <div className="text-[9px] font-mono text-purple-800 font-bold bg-purple-50 rounded px-1.5 py-0.5 mt-1 border border-purple-200">
+                          {isAr ? 'أصل:' : 'Orig:'} {orig.qtyLarge} {orig.largeUnit} ({Number(orig.qtySmall).toLocaleString()} {orig.smallUnit})
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="p-2.5 bg-cyan-50/50 rounded-xl border border-cyan-100 space-y-1">
+                    <span className="text-[10px] text-cyan-800 font-semibold block">{isAr ? 'مسار التشغيل والطاقم' : 'Process & Staffing'}</span>
+                    {procName ? (
+                      <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-bold text-[10px] bg-white text-cyan-900 border border-cyan-200 shadow-2xs max-w-full truncate">
+                        <Workflow className="h-3 w-3 text-cyan-600 shrink-0" />
+                        <span className="truncate">{procName}</span>
+                      </div>
+                    ) : (
+                      <span className="text-[10px] text-slate-400 italic block">{isAr ? 'بدون مسار' : 'No process'}</span>
+                    )}
+
+                    {staffing.hasSteps && (
+                      <div className="space-y-0.5 pt-0.5">
+                        <div className="text-[10px] text-slate-700 font-bold flex items-center gap-1">
+                          <Users className="h-3 w-3 text-slate-400 shrink-0" />
+                          <span>{staffing.assignedWorkersCount} {isAr ? 'عمال' : 'workers'} ({staffing.assignedSteps}/{staffing.totalSteps} {isAr ? 'خطوة' : 'steps'})</span>
+                        </div>
+                        {staffing.unassignedMandatoryCount > 0 ? (
+                          <div className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                            <AlertTriangle className="h-2.5 w-2.5 text-amber-600 shrink-0" />
+                            <span>{isAr ? `متبقي ${staffing.unassignedMandatoryCount} خطوة إجبارية` : `${staffing.unassignedMandatoryCount} mandatory`}</span>
+                          </div>
+                        ) : staffing.assignedWorkersCount > 0 ? (
+                          <div className="inline-flex items-center gap-1 text-[9px] font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                            <Check className="h-2.5 w-2.5 text-emerald-600 shrink-0" />
+                            <span>{isAr ? 'طاقم مكتمل' : 'Staffing complete'}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Card Footer: Feasibility & Notes */}
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setFeasibilityModalData({ order, feasibility })}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold ${
+                      feasibility.status === 'floor_ready'
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+                        : feasibility.status === 'transfer_needed'
+                        ? 'bg-amber-50 text-amber-900 border border-amber-300'
+                        : feasibility.status === 'shortage'
+                        ? 'bg-rose-50 text-rose-900 border border-rose-300 animate-pulse'
+                        : 'bg-slate-100 text-slate-600 border border-slate-300'
+                    }`}
+                  >
+                    <CircleDot className={`h-3 w-3 ${
+                      feasibility.status === 'floor_ready' ? 'text-emerald-600' :
+                      feasibility.status === 'transfer_needed' ? 'text-amber-600' :
+                      feasibility.status === 'shortage' ? 'text-rose-600' : 'text-slate-400'
+                    }`} />
+                    <span>{feasibility.labelAr}</span>
+                  </button>
+
+                  {order.notes && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveNotePopoverId(activeNotePopoverId === order.id ? null : order.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-300 shadow-2xs hover:bg-amber-100 transition cursor-pointer"
+                    >
+                      <MessageSquareText className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                      <span>{isAr ? 'ملاحظة' : 'Note'}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-5 select-none">
       {isSaving && (
@@ -6345,25 +9661,30 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         />
       )}
 
-      {/* Top 3-Sub-Tab Navigation Bar (Wider, Centered, High-Contrast) */}
-      <div className="w-full max-w-4xl mx-auto my-1">
-        <div className="bg-slate-200/90 p-1.5 rounded-2xl border border-slate-300 shadow-inner flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-1.5">
+      {/* Top 4-Sub-Tab Navigation Bar */}
+      <div className="w-full max-w-5xl mx-auto my-2">
+        <div className="bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-1.5">
           <button
             type="button"
             onClick={() => setActiveSubTab('plan')}
-            className={`flex-1 min-h-[46px] px-4 py-2.5 rounded-xl transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 select-none ${
+            className={`relative flex-1 min-h-[44px] px-3.5 py-2 rounded-xl transition-all duration-150 cursor-pointer flex items-center justify-center gap-2 select-none border ${
               activeSubTab === 'plan'
-                ? 'bg-indigo-600 text-white font-black shadow-md ring-2 ring-indigo-300 scale-[1.01]'
-                : 'bg-white/80 hover:bg-white text-slate-700 hover:text-indigo-900 font-extrabold shadow-2xs'
+                ? 'bg-white text-indigo-700 font-extrabold shadow-xs border-slate-200/90'
+                : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-white/60 font-bold border-transparent'
             }`}
           >
-            <Calendar className={`h-4 w-4 ${activeSubTab === 'plan' ? 'text-white' : 'text-blue-600'}`} />
-            <span className="text-xs sm:text-sm">{isAr ? '١- خطة الإنتاج (Plan)' : '1. Production Plan'}</span>
-            {filteredPlanOrders.length > 0 && (
-              <span className={`px-2 py-0.5 rounded-full font-mono text-[11px] font-black ${
-                activeSubTab === 'plan' ? 'bg-white/20 text-white border border-white/30' : 'bg-blue-100 text-blue-900'
-              }`}>
-                {filteredPlanOrders.length}
+            <Calendar className={`h-4 w-4 ${activeSubTab === 'plan' ? 'text-indigo-600' : 'text-slate-400'}`} />
+            <span className="text-xs sm:text-sm">{isAr ? '١- خطة الإنتاج' : '1. Plan'}</span>
+            {presentOrdersCount > 0 && (
+              <span
+                className={`absolute -top-1.5 -end-1.5 px-2 py-0.5 rounded-full font-mono text-[10px] font-black border shadow-2xs transition-transform ${
+                  activeSubTab === 'plan'
+                    ? 'bg-indigo-600 text-white border-white scale-105'
+                    : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                }`}
+                title={isAr ? `أوامر تشغيل الحاضر (${effectivePresentDate}): ${presentOrdersCount}` : `Present orders (${effectivePresentDate}): ${presentOrdersCount}`}
+              >
+                {presentOrdersCount}
               </span>
             )}
           </button>
@@ -6371,34 +9692,68 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           <button
             type="button"
             onClick={() => setActiveSubTab('today_prod')}
-            className={`flex-1 min-h-[46px] px-4 py-2.5 rounded-xl transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 select-none ${
+            className={`relative flex-1 min-h-[44px] px-3.5 py-2 rounded-xl transition-all duration-150 cursor-pointer flex items-center justify-center gap-2 select-none border ${
               activeSubTab === 'today_prod'
-                ? 'bg-indigo-600 text-white font-black shadow-md ring-2 ring-indigo-300 scale-[1.01]'
-                : 'bg-white/80 hover:bg-white text-slate-700 hover:text-indigo-900 font-extrabold shadow-2xs'
+                ? 'bg-white text-indigo-700 font-extrabold shadow-xs border-slate-200/90'
+                : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-white/60 font-bold border-transparent'
             }`}
           >
-            <Boxes className={`h-4 w-4 ${activeSubTab === 'today_prod' ? 'text-white' : 'text-indigo-600'}`} />
-            <span className="text-xs sm:text-sm">{isAr ? '٢- تشغيل اليوم والبالتات' : '2. Floor Pallets & Execution'}</span>
+            <Boxes className={`h-4 w-4 ${activeSubTab === 'today_prod' ? 'text-indigo-600' : 'text-slate-400'}`} />
+            <span className="text-xs sm:text-sm">{isAr ? '٢- تشغيل اليوم والبالتات' : '2. Execution'}</span>
+            {presentOrdersCount > 0 && (
+              <span
+                className={`absolute -top-1.5 -end-1.5 px-2 py-0.5 rounded-full font-mono text-[10px] font-black border shadow-2xs transition-transform ${
+                  activeSubTab === 'today_prod'
+                    ? 'bg-indigo-600 text-white border-white scale-105'
+                    : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                }`}
+                title={isAr ? `أوامر تشغيل الحاضر (${effectivePresentDate}): ${presentOrdersCount}` : `Present orders (${effectivePresentDate}): ${presentOrdersCount}`}
+              >
+                {presentOrdersCount}
+              </span>
+            )}
           </button>
 
           <button
             type="button"
             onClick={() => setActiveSubTab('live_tracking')}
-            className={`flex-1 min-h-[46px] px-4 py-2.5 rounded-xl transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 select-none ${
+            className={`relative flex-1 min-h-[44px] px-3.5 py-2 rounded-xl transition-all duration-150 cursor-pointer flex items-center justify-center gap-2 select-none border ${
               activeSubTab === 'live_tracking'
-                ? 'bg-indigo-600 text-white font-black shadow-md ring-2 ring-indigo-300 scale-[1.01]'
-                : 'bg-white/80 hover:bg-white text-slate-700 hover:text-indigo-900 font-extrabold shadow-2xs'
+                ? 'bg-white text-indigo-700 font-extrabold shadow-xs border-slate-200/90'
+                : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-white/60 font-bold border-transparent'
             }`}
           >
-            <PackageCheck className={`h-4 w-4 ${activeSubTab === 'live_tracking' ? 'text-white' : 'text-emerald-600'}`} />
-            <span className="text-xs sm:text-sm">{isAr ? '٣- منقولات وعهدة الصالة' : '3. Floor Staged Inventory'}</span>
+            <PackageCheck className={`h-4 w-4 ${activeSubTab === 'live_tracking' ? 'text-indigo-600' : 'text-slate-400'}`} />
+            <span className="text-xs sm:text-sm">{isAr ? '٣- عهدة الصالة وإغلاق الوردية' : '3. Staged & Closure'}</span>
             {(activeStagedFloorPallets.length > 0 || activeStagedFloorMaterials.length > 0) && (
-              <span className={`px-2 py-0.5 rounded-full font-mono text-[11px] font-black ${
-                activeSubTab === 'live_tracking' ? 'bg-white/20 text-white border border-white/30' : 'bg-emerald-100 text-emerald-900'
-              }`}>
+              <span
+                className={`absolute -top-1.5 -end-1.5 px-2 py-0.5 rounded-full font-mono text-[10px] font-black border shadow-2xs transition-transform ${
+                  activeSubTab === 'live_tracking'
+                    ? 'bg-emerald-600 text-white border-white scale-105'
+                    : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                }`}
+              >
                 {activeStagedFloorPallets.length + activeStagedFloorMaterials.length}
               </span>
             )}
+            {isTodayShiftEnded && (
+              <span className="px-1.5 py-0.2 bg-rose-50 text-rose-700 border border-rose-200 rounded font-bold text-[10px] ms-1" title={isAr ? 'تم إغلاق وردية اليوم' : 'Shift Ended'}>
+                ✓ {isAr ? 'مغلقة' : 'Closed'}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('shift_analytics')}
+            className={`relative flex-1 min-h-[44px] px-3.5 py-2 rounded-xl transition-all duration-150 cursor-pointer flex items-center justify-center gap-2 select-none border ${
+              activeSubTab === 'shift_analytics'
+                ? 'bg-white text-indigo-700 font-extrabold shadow-xs border-slate-200/90'
+                : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-white/60 font-bold border-transparent'
+            }`}
+          >
+            <FileSpreadsheet className={`h-4 w-4 ${activeSubTab === 'shift_analytics' ? 'text-indigo-600' : 'text-slate-400'}`} />
+            <span className="text-xs sm:text-sm">{isAr ? '٤- الجدول الزمني والتقارير' : '4. Timeline & Reports'}</span>
           </button>
         </div>
       </div>
@@ -6708,704 +10063,412 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
             </div>
           )}
 
-          {/* Desktop Table View (hidden on mobile) */}
-          <div className="hidden md:block overflow-x-auto border border-slate-200 rounded-2xl shadow-xs bg-white min-h-[360px]">
-            <table className="w-full text-start border-collapse text-xs">
-              <thead>
-                <tr className="bg-slate-100/90 text-slate-700 font-bold border-b border-slate-200">
-                  <th className="p-3 text-center w-10">#</th>
-                  <th className="p-3 text-start">{isAr ? 'أمر التشغيل' : 'Order #'}</th>
-                  <th className="p-3 text-start">{isAr ? 'المنتج وخيار التعبئة' : 'Finished Good & Option'}</th>
-                  <th className="p-3 text-start">{isAr ? 'الخط والأولوية' : 'Line & Priority'}</th>
-                  <th className="p-3 text-center">{isAr ? 'المخطط بالكرتونة' : 'Cartons Target'}</th>
-                  <th className="p-3 text-center">{isAr ? 'المخطط بالعبوات' : 'Units Target'}</th>
-                  <th className="p-3 text-center">{isAr ? 'جاهزية الخامات (BOM Feasibility)' : 'BOM Feasibility'}</th>
-                  <th className="p-3 text-start">{isAr ? 'حالة الخطة' : 'Status'}</th>
-                  <th className="p-3 text-center">{isAr ? 'إجراءات' : 'Actions'}</th>
-                </tr>
-              </thead>
+          {/* Multi-Filter & Search Bar for Production Plan */}
+          <div className="p-3 bg-white border border-slate-200 rounded-2xl shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex-1 min-w-[220px] relative">
+              <Search className="h-4 w-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder={isAr ? 'بحث برقم الأمر أو اسم المنتج أو الكود...' : 'Search by order #, product name, code...'}
+                className="w-full ps-9 pe-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 focus:bg-white focus:outline-none transition"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute end-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
 
-              <tbody className="divide-y divide-slate-100">
-                {filteredPlanOrders.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="p-12 text-center text-slate-400">
-                      {isAr ? 'لا توجد أصناف مدرجة في خطة الإنتاج لهذا التاريخ.' : 'No orders in production plan for this date.'}
-                    </td>
-                  </tr>
-                ) : (
-                  filteredPlanOrders.map((order, idx) => {
-                    const feasibility = sequentialPlanFeasibilityMap[order.id] || evaluateBomFeasibility(order.bomRecipeId, order.plannedQtyLarge, order.componentSelections);
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Product Filter (Replaces Line Filter) */}
+              <div className="w-48 sm:w-56">
+                <SearchableSelect
+                  value={productFilter === 'all' ? '' : productFilter}
+                  onChange={(val) => setProductFilter(val || 'all')}
+                  options={availableFilterProducts.map((p) => ({
+                    value: p.id,
+                    label: isAr ? p.nameAr : (p.nameEn || p.nameAr),
+                    sublabel: p.id,
+                  }))}
+                  placeholder={isAr ? 'جميع المنتجات' : 'All Products'}
+                  isAr={isAr}
+                />
+              </div>
 
-                    return (
-                      <tr key={order.id} className="hover:bg-slate-50/70 transition">
-                        {/* Column 0: Suggested Execution Sequence with Concurrency Warning Highlighting */}
-                        <td className="p-3 text-center align-top">
-                          {(() => {
-                            const currentSeq = Number(order.importanceRank) || 1;
-                            const isDuplicate = (sequenceCountsOnSelectedDate[currentSeq] || 0) > 1;
-
-                            return (
-                              <div className="flex flex-col items-center justify-center gap-1">
-                                <div
-                                  className={`px-2 py-0.5 rounded-lg font-mono font-extrabold text-xs flex items-center justify-center gap-1 border shadow-2xs transition ${
-                                    isDuplicate
-                                      ? 'bg-amber-100 text-amber-950 border-amber-300 ring-2 ring-amber-200'
-                                      : 'bg-slate-100 text-slate-800 border-slate-200'
-                                  }`}
-                                  title={isDuplicate ? (isAr ? `تنبيه: يوجد (${sequenceCountsOnSelectedDate[currentSeq]}) أوامر تشغيل بنفس الترتيب (#${currentSeq}) لهذا اليوم` : `Concurrency: ${sequenceCountsOnSelectedDate[currentSeq]} orders share #${currentSeq}`) : undefined}
-                                >
-                                  <span>#{currentSeq}</span>
-                                </div>
-
-                                {canEdit && (
-                                  <div className="flex items-center gap-0.5">
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleQuickStepSequence(order, -1);
-                                      }}
-                                      disabled={currentSeq <= 1}
-                                      className="p-0.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded disabled:opacity-20 cursor-pointer"
-                                      title={isAr ? 'تقديم الترتيب' : 'Move Up'}
-                                    >
-                                      <ChevronDown className="h-3 w-3 rotate-180" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleQuickStepSequence(order, 1);
-                                      }}
-                                      className="p-0.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded cursor-pointer"
-                                      title={isAr ? 'تأخير الترتيب' : 'Move Down'}
-                                    >
-                                      <ChevronDown className="h-3 w-3" />
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })()}
-                        </td>
-
-                        {/* Column 1: Prominent Date + Subdued Record ID with Copy Icon */}
-                        <td className="p-3 align-top">
-                          <div className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5">
-                            <Calendar className="h-3.5 w-3.5 text-blue-600 shrink-0" />
-                            <span>{order.planDate}</span>
-                          </div>
-
-                          <div className="flex items-center gap-1.5 mt-1">
-                            <span className="font-mono text-[10px] text-slate-400 font-medium">
-                              {order.orderNumber}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                navigator.clipboard.writeText(order.orderNumber);
-                                setCopiedId(order.orderNumber);
-                                setTimeout(() => setCopiedId(null), 1800);
-                              }}
-                              className="p-0.5 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded transition cursor-pointer"
-                              title={isAr ? 'نسخ رقم الأمر' : 'Copy Order ID'}
-                            >
-                              {copiedId === order.orderNumber ? (
-                                <Check className="h-3 w-3 text-emerald-600" />
-                              ) : (
-                                <Copy className="h-3 w-3" />
-                              )}
-                            </button>
-                            {copiedId === order.orderNumber && (
-                              <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200 animate-in fade-in">
-                                {isAr ? 'تم النسخ' : 'Copied'}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-
-                        {/* Column 2: Product, Packaging Option & Prominent Comments/Notes Tooltip */}
-                        <td className="p-3 align-top">
-                          {(() => {
-                            const prod = finishedProducts.find((p) => p.code === order.finishedProductId);
-                            const opt = (prod?.packagingOptions || []).find((o) => o.suffix === order.packagingOptionSuffix);
-                            const resolvedImg = opt?.imageFile || prod?.imageFile || '';
-
-                            return (
-                              <div className="flex items-start gap-2.5">
-                                {resolvedImg ? (
-                                  <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-200/90 shadow-2xs flex items-center justify-center p-0.5 shrink-0 overflow-hidden group/img mt-0.5">
-                                    <img
-                                      src={resolvedImg}
-                                      alt={order.productNameAr}
-                                      onClick={() => setImagePreviewModal({
-                                        url: resolvedImg,
-                                        title: `${order.productNameAr} - ${order.packagingOptionNameAr || ''}`,
-                                        subtitle: `${order.finishedProductId} • ${order.packagingOptionCode || ''}`
-                                      })}
-                                      className="w-full h-full object-contain cursor-pointer hover:scale-110 transition duration-150"
-                                      title={isAr ? 'انقر لعرض الصورة بالحجم الكامل' : 'Click to preview image'}
-                                    />
-                                  </div>
-                                ) : (
-                                  <div className="w-10 h-10 rounded-xl bg-blue-50/70 border border-blue-200 flex items-center justify-center text-blue-600 shrink-0 shadow-2xs mt-0.5">
-                                    <Package className="h-5 w-5" />
-                                  </div>
-                                )}
-
-                                <div className="space-y-1">
-                                  <div>
-                                    <div className="font-bold text-slate-900 leading-snug">{order.productNameAr}</div>
-                                    <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
-                                      <span className="text-[10px] text-slate-400 font-mono">
-                                        [{order.finishedProductId}] • {order.packagingOptionNameAr}
-                                      </span>
-                                      {(order.processNameAr || order.processCode) && (
-                                        <span
-                                          className="px-1.5 py-0.2 bg-cyan-50 text-cyan-800 border border-cyan-200 font-bold rounded text-[9px] flex items-center gap-0.5"
-                                          title={order.processCode ? `[${order.processCode}]` : ''}
-                                        >
-                                          <Workflow className="h-2.5 w-2.5 text-cyan-600" />
-                                          <span>{order.processNameAr || order.processNameEn || order.processCode}</span>
-                                        </span>
-                                      )}
-                                    </div>
-                                    {order.isRework && (
-                                      <div className="flex flex-wrap items-center gap-1 mt-1">
-                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-amber-50 text-amber-900 border border-amber-300">
-                                          <Wrench className="h-2.5 w-2.5 text-amber-700" />
-                                          <span>{isAr ? 'أمر تصليح' : 'Rework'}</span>
-                                        </span>
-                                      </div>
-                                    )}
-                                    {order.isComplementary && (
-                                      <div className="flex flex-wrap items-center gap-1 mt-1">
-                                        <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-purple-50 text-purple-900 border border-purple-200">
-                                          {isAr ? `تشغيلة مكملة (${order.parentOrderId || 'أصل'})` : `Complementary (${order.parentOrderId || 'Parent'})`}
-                                        </span>
-                                        {order.lotAutoBound ? (
-                                          <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                                            {isAr ? `تم ربط اللوط (${order.autoBoundLotNo})` : `Bound LOT (${order.autoBoundLotNo})`}
-                                          </span>
-                                        ) : order.awaitingReplenishment ? (
-                                          <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
-                                            {isAr ? 'في انتظار توريد خامات (GRN)' : 'Awaiting Replenishment'}
-                                          </span>
-                                        ) : null}
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  {/* Prominent Notes / Comments Icon with Modern Interactive Tooltip */}
-                                  {order.notes && (
-                                    <div className="relative inline-block">
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setActiveNotePopoverId(activeNotePopoverId === order.id ? null : order.id);
-                                        }}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-300 shadow-2xs hover:bg-amber-100 transition cursor-pointer"
-                                        title={isAr ? 'انقر لعرض ملاحظات التشغيل' : 'Click to view order notes'}
-                                      >
-                                        <MessageSquareText className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-                                        <span>{isAr ? 'ملاحظة' : 'Note'}</span>
-                                      </button>
-
-                                      {/* Modern Interactive Tooltip Popover */}
-                                      {activeNotePopoverId === order.id && (
-                                        <div
-                                          className="absolute start-0 top-full mt-1.5 z-50 w-72 bg-slate-900 text-white rounded-2xl p-3 shadow-2xl border border-slate-700 animate-in fade-in zoom-in-95 duration-150 text-xs select-text"
-                                          onClick={(e) => e.stopPropagation()}
-                                        >
-                                          <div className="flex items-center justify-between border-b border-slate-700 pb-1.5 mb-1.5">
-                                            <span className="font-extrabold text-amber-400 text-[11px] flex items-center gap-1">
-                                              <MessageSquareText className="h-3.5 w-3.5" />
-                                              <span>{isAr ? 'ملاحظات وتوجيهات التشغيل' : 'Production Notes'}</span>
-                                            </span>
-                                            <button
-                                              type="button"
-                                              onClick={() => setActiveNotePopoverId(null)}
-                                              className="p-0.5 text-slate-400 hover:text-white rounded transition cursor-pointer"
-                                            >
-                                              <X className="h-3.5 w-3.5" />
-                                            </button>
-                                          </div>
-                                          <p className="text-[11px] text-slate-200 leading-relaxed font-medium whitespace-pre-wrap">
-                                            {order.notes}
-                                          </p>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })()}
-                        </td>
-                        <td className="p-3 align-top">
-                          {(() => {
-                            switch (order.priority) {
-                              case 'urgent':
-                                return (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-rose-50 text-rose-800 border border-rose-200 rounded-lg text-[10px] font-bold">
-                                    <Flame className="h-3 w-3 text-rose-600" />
-                                    <span>{isAr ? 'مستعجل' : 'Urgent'}</span>
-                                  </span>
-                                );
-                              case 'important':
-                                return (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-900 border border-amber-200 rounded-lg text-[10px] font-bold">
-                                    <Star className="h-3 w-3 text-amber-600" />
-                                    <span>{isAr ? 'مهم' : 'Important'}</span>
-                                  </span>
-                                );
-                              case 'prep_and_run':
-                                return (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-900 border border-indigo-200 rounded-lg text-[10px] font-bold">
-                                    <Wrench className="h-3 w-3 text-indigo-600" />
-                                    <span>{isAr ? 'تجهيز وتشغيل' : 'Prep & Run'}</span>
-                                  </span>
-                                );
-                              case 'prep_only':
-                                return (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-50 text-purple-900 border border-purple-200 rounded-lg text-[10px] font-bold">
-                                    <Boxes className="h-3 w-3 text-purple-600" />
-                                    <span>{isAr ? 'تجهيز فقط' : 'Prep Only'}</span>
-                                  </span>
-                                );
-                              case 'today':
-                              default:
-                                return (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-900 border border-blue-200 rounded-lg text-[10px] font-bold">
-                                    <Clock className="h-3 w-3 text-blue-600" />
-                                    <span>{isAr ? 'خلال اليوم' : 'Today'}</span>
-                                  </span>
-                                );
-                            }
-                          })()}
-                        </td>
-                        <td className="p-3 text-center">
-                          <div className="font-mono font-bold text-slate-900">
-                            {order.plannedQtyLarge} {order.outputLargeUnit}
-                          </div>
-                          {order.isRework && (() => {
-                            const orig = getOriginalReturnQty(order);
-                            if (!orig) return null;
-                            return (
-                              <div className="text-[10px] font-mono text-purple-800 font-bold bg-purple-50 rounded px-1 mt-0.5 inline-block border border-purple-200" title={isAr ? 'الكمية المرتجعة المستلمة بالأصل' : 'Originally Returned'}>
-                                {isAr ? 'أصل:' : 'Orig:'} {orig.qtyLarge} {orig.largeUnit}
-                              </div>
-                            );
-                          })()}
-                        </td>
-                        <td className="p-3 text-center">
-                          <div className="font-mono font-bold text-blue-700">
-                            {Number(order.plannedQtySmall).toLocaleString()} {order.outputSmallUnit}
-                          </div>
-                          {order.isRework && (() => {
-                            const orig = getOriginalReturnQty(order);
-                            if (!orig) return null;
-                            return (
-                              <div className="text-[10px] font-mono text-purple-800 font-bold bg-purple-50 rounded px-1 mt-0.5 inline-block border border-purple-200" title={isAr ? 'الكمية المرتجعة المستلمة بالأصل' : 'Originally Returned'}>
-                                {isAr ? 'أصل:' : 'Orig:'} {orig.qtySmall} {orig.smallUnit}
-                              </div>
-                            );
-                          })()}
-                        </td>
-                        <td className="p-3 text-center">
-                          <button
-                            type="button"
-                            onClick={() => setFeasibilityModalData({ order, feasibility })}
-                            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all shadow-2xs hover:scale-105 cursor-pointer ${
-                              feasibility.status === 'floor_ready'
-                                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                : feasibility.status === 'transfer_needed'
-                                ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
-                                : feasibility.status === 'shortage'
-                                ? 'bg-rose-50 hover:bg-rose-100 text-rose-900 border border-rose-300 animate-pulse'
-                                : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300'
-                            }`}
-                            title={isAr ? 'انقر لعرض بيان وتفاصيل توفر الخامات (BOM Audit)' : 'Click to inspect raw material availability'}
-                          >
-                            <CircleDot className={`h-3 w-3 ${
-                              feasibility.status === 'floor_ready' ? 'text-emerald-600' :
-                              feasibility.status === 'transfer_needed' ? 'text-amber-600' :
-                              feasibility.status === 'shortage' ? 'text-rose-600' : 'text-slate-400'
-                            }`} />
-                            <span>{feasibility.labelAr}</span>
-                            <Eye className="h-3 w-3 opacity-60 ms-0.5" />
-                          </button>
-                        </td>
-                        <td className="p-3">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-800">
-                            {order.status === 'scheduled' ? (isAr ? 'مجدول' : 'Scheduled') :
-                             order.status === 'in_progress' ? (isAr ? 'قيد التشغيل' : 'In Progress') :
-                             order.status === 'completed' ? (isAr ? 'مكتمل' : 'Completed') : order.status}
-                          </span>
-                        </td>
-                        <td className="p-3 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            {isOrderLocked(order) ? (
-                              <span className="p-1 text-slate-400" title={isAr ? 'أمر سابق مؤرشف (للقراءة فقط)' : 'Past order (Locked)'}>
-                                <Lock className="h-3.5 w-3.5 text-slate-400" />
-                              </span>
-                            ) : (
-                              <>
-                                {canEdit && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenEditPlan(order)}
-                                    className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                                    title={isAr ? 'تعديل الخطة' : 'Edit Plan'}
-                                  >
-                                    <Edit3 className="h-3.5 w-3.5" />
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => handleClonePlan(order)}
-                                  className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
-                                  title={isAr ? 'نسخ للصنف' : 'Duplicate Order'}
-                                >
-                                  <Copy className="h-3.5 w-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setAuditOrderData(order)}
-                                  className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
-                                  title={isAr ? 'سجل المراجعة' : 'Audit Trail'}
-                                >
-                                  <History className="h-3.5 w-3.5" />
-                                </button>
-                                {canCancel && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeletePlanOrder(order.id, order.orderNumber)}
-                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                                    title={isAr ? 'حذف من الخطة' : 'Delete Order'}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
-                                )}
-                              </>
-                            )}
-                            {isGeneralAdmin && isOrderPastDate(order) && (
-                              <span className="px-1 py-0.5 bg-amber-50 text-amber-900 border border-amber-300 rounded text-[9px] font-bold" title={isAr ? 'صلاحية المسؤول العام' : 'General Admin'}>
-                                <Unlock className="h-2.5 w-2.5 text-amber-700" />
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
+              {/* Date Range Filter */}
+              <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200 text-xs">
+                <Calendar className="h-3.5 w-3.5 text-slate-400 ms-1 shrink-0" />
+                <input
+                  type="date"
+                  value={filterDateFrom}
+                  onChange={(e) => setFilterDateFrom(e.target.value)}
+                  className="bg-transparent text-[11px] font-bold font-mono text-slate-800 focus:outline-none py-0.5 px-1"
+                  title={isAr ? 'من تاريخ' : 'From Date'}
+                />
+                <ArrowRight className="h-3.5 w-3.5 text-slate-400 shrink-0 rtl:rotate-180" />
+                <input
+                  type="date"
+                  value={filterDateTo}
+                  onChange={(e) => setFilterDateTo(e.target.value)}
+                  className="bg-transparent text-[11px] font-bold font-mono text-slate-800 focus:outline-none py-0.5 px-1"
+                  title={isAr ? 'إلى تاريخ' : 'To Date'}
+                />
+                {(filterDateFrom || filterDateTo) && (
+                  <button
+                    type="button"
+                    onClick={() => { setFilterDateFrom(''); setFilterDateTo(''); }}
+                    className="p-0.5 text-slate-400 hover:text-slate-600 rounded-md hover:bg-slate-200 transition shrink-0"
+                    title={isAr ? 'إلغاء فلتر التاريخ' : 'Clear Date Filter'}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
                 )}
-              </tbody>
-            </table>
+              </div>
+
+              <select
+                value={priorityFilter}
+                onChange={(e) => setPriorityFilter(e.target.value)}
+                className="p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">{isAr ? 'جميع الأولويات' : 'All Priorities'}</option>
+                <option value="urgent">{isAr ? 'مستعجل' : 'Urgent'}</option>
+                <option value="important">{isAr ? 'مهم' : 'Important'}</option>
+                <option value="prep_and_run">{isAr ? 'تجهيز وتشغيل' : 'Prep & Run'}</option>
+                <option value="prep_only">{isAr ? 'تجهيز فقط' : 'Prep Only'}</option>
+                <option value="today">{isAr ? 'خلال اليوم' : 'Today'}</option>
+              </select>
+
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">{isAr ? 'جميع الحالات' : 'All Statuses'}</option>
+                <option value="scheduled">{isAr ? 'مجدول' : 'Scheduled'}</option>
+                <option value="in_progress">{isAr ? 'قيد التشغيل' : 'In Progress'}</option>
+                <option value="paused">{isAr ? 'متوقف مؤقتاً' : 'Paused'}</option>
+                <option value="completed">{isAr ? 'مكتمل' : 'Completed'}</option>
+              </select>
+
+              {(searchTerm || productFilter !== 'all' || priorityFilter !== 'all' || statusFilter !== 'all' || filterDateFrom || filterDateTo) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchTerm('');
+                    setProductFilter('all');
+                    setPriorityFilter('all');
+                    setStatusFilter('all');
+                    setFilterDateFrom('');
+                    setFilterDateTo('');
+                  }}
+                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-[11px] font-bold transition flex items-center gap-1 cursor-pointer"
+                  title={isAr ? 'إعادة ضبط كافة الفلاتر' : 'Reset All Filters'}
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  <span>{isAr ? 'إعادة ضبط' : 'Reset'}</span>
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Mobile Screen Adaptation: Touch-Optimized Production Cards (md:hidden) */}
-          <div className="md:hidden space-y-3.5">
-            {filteredPlanOrders.length === 0 ? (
-              <div className="p-8 bg-slate-50 border border-slate-200 rounded-2xl text-center text-xs text-slate-400">
-                {isAr ? 'لا توجد أصناف مدرجة في خطة الإنتاج لهذا التاريخ.' : 'No orders in production plan for this date.'}
+          {/* ================================================================= */}
+          {/* ERA 1: PRESENT (الحاضر: اليوم أو يوم العمل القادم عند الإغلاق)    */}
+          {/* ================================================================= */}
+          <div className="p-4 bg-white border border-blue-200 rounded-3xl shadow-sm space-y-3.5 ring-1 ring-blue-100">
+            <div
+              onClick={() => setEraExpandedSections((prev) => ({ ...prev, present: !prev.present }))}
+              className="flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-600 text-white rounded-2xl shadow-xs">
+                  <Sun className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
+                    <span>
+                      {isTodayShiftEnded
+                        ? (isAr ? '١- الحاضر: خطة يوم العمل القادم' : '1. Present: Next Working Day Plan')
+                        : (isAr ? '١- الحاضر: خطة وردية اليوم' : '1. Present: Today\'s Shift Plan')}
+                    </span>
+                    <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-lg border border-blue-200">
+                      {effectivePresentDate}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {isTodayShiftEnded
+                      ? (isAr ? 'تم ختم وإغلاق وردية اليوم؛ يظهر هنا خطة يوم العمل القادم لتجهيز الخامات والتشغيل.' : 'Today\'s shift sealed. Displaying next scheduled production day for floor staging.')
+                      : (isAr ? 'الأوامر المستهدفة للتشغيل الفعلي خلال وردية اليوم.' : 'Active production orders target for execution during today\'s shift.')}
+                  </p>
+                </div>
               </div>
-            ) : (
-              filteredPlanOrders.map((order, idx) => {
-                const feasibility = sequentialPlanFeasibilityMap[order.id] || evaluateBomFeasibility(order.bomRecipeId, order.plannedQtyLarge, order.componentSelections);
-                const currentSeq = Number(order.importanceRank) || 1;
-                const isDuplicate = (sequenceCountsOnSelectedDate[currentSeq] || 0) > 1;
-                const prod = finishedProducts.find((p) => p.code === order.finishedProductId);
-                const opt = (prod?.packagingOptions || []).find((o) => o.suffix === order.packagingOptionSuffix);
-                const resolvedImg = opt?.imageFile || prod?.imageFile || '';
 
-                return (
+              <div className="flex items-center gap-2">
+                <span className="px-3 py-1 bg-blue-50 text-blue-800 border border-blue-200 rounded-xl font-mono text-xs font-black">
+                  {eraGroupedOrders.present.length} {isAr ? 'أوامر' : 'orders'}
+                </span>
+                <div className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition">
+                  {eraExpandedSections.present ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </div>
+              </div>
+            </div>
+
+            {eraExpandedSections.present && (
+              <div className="pt-2 border-t border-slate-100 animate-in fade-in duration-150">
+                {renderEraOrdersTable(
+                  eraGroupedOrders.present,
+                  isAr ? `لا توجد أوامر تشغيل مدرجة لتاريخ الحاضر (${effectivePresentDate}).` : `No orders for present date (${effectivePresentDate}).`
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ================================================================= */}
+          {/* ERA 2: FUTURE (المستقبل: مرتبة من القريب إلى البعيد)               */}
+          {/* ================================================================= */}
+          <div className="p-4 bg-white border border-emerald-200 rounded-3xl shadow-sm space-y-3.5">
+            <div
+              onClick={() => setEraExpandedSections((prev) => ({ ...prev, future: !prev.future }))}
+              className="flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-emerald-600 text-white rounded-2xl shadow-xs">
+                  <Calendar className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
+                    <span>{isAr ? '٢- المستقبل: الأوامر والخطط القادمة' : '2. Future: Upcoming Production Plans'}</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {isAr
+                      ? 'مرتبة زمنياً تصاعدياً من الأقرب للأبعد، مقسمة إلى: أقرب يوم، الأيام السبعة القادمة، وما بعد ذلك.'
+                      : 'Chronological near-to-far schedule, grouped into: Nearest day, Next 7 days, and Beyond.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="px-3 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl font-mono text-xs font-black">
+                  {eraGroupedOrders.future.all.length} {isAr ? 'أوامر قادمة' : 'upcoming'}
+                </span>
+                <div className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition">
+                  {eraExpandedSections.future ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </div>
+              </div>
+            </div>
+
+            {eraExpandedSections.future && (
+              <div className="pt-2 border-t border-slate-100 space-y-4 animate-in fade-in duration-150">
+                {/* 2.A: Nearest Upcoming Day */}
+                <div className="p-3.5 bg-emerald-50/40 border border-emerald-200/80 rounded-2xl space-y-3">
                   <div
-                    key={order.id}
-                    className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-xs space-y-3 relative"
+                    onClick={() => setEraExpandedSections((prev) => ({ ...prev, future_nearest: !prev.future_nearest }))}
+                    className="flex items-center justify-between cursor-pointer select-none"
                   >
-                    {/* Top Status & Sequence Bar */}
-                    <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                      {/* Sequence Badge with Quick Stepper */}
-                      <div className="flex items-center gap-1.5">
-                        <div
-                          className={`px-2.5 py-1 rounded-xl font-mono font-extrabold text-xs flex items-center justify-center gap-1 border shadow-2xs ${
-                            isDuplicate
-                              ? 'bg-amber-100 text-amber-950 border-amber-300 ring-1 ring-amber-200'
-                              : 'bg-slate-100 text-slate-800 border-slate-200'
-                          }`}
-                        >
-                          <span>#{currentSeq}</span>
-                        </div>
-
-                        {canEdit && (
-                          <div className="flex items-center gap-0.5">
-                            <button
-                              type="button"
-                              onClick={() => handleQuickStepSequence(order, -1)}
-                              disabled={currentSeq <= 1}
-                              className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg disabled:opacity-20 cursor-pointer"
-                              title={isAr ? 'تقديم الترتيب' : 'Move Up'}
-                            >
-                              <ChevronDown className="h-3.5 w-3.5 rotate-180" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleQuickStepSequence(order, 1)}
-                              className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
-                              title={isAr ? 'تأخير الترتيب' : 'Move Down'}
-                            >
-                              <ChevronDown className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Priority & Status Badges */}
-                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
-                        {order.priority === 'urgent' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-rose-50 text-rose-800 border border-rose-200 rounded-lg text-[10px] font-bold">
-                            <Flame className="h-3 w-3 text-rose-600" />
-                            <span>{isAr ? 'مستعجل' : 'Urgent'}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block"></span>
+                      <h4 className="font-bold text-xs text-slate-900">
+                        {isAr ? 'أ) أقرب يوم عمل قادم' : 'A) Nearest Upcoming Day'}
+                        {eraGroupedOrders.future.nearestDate && (
+                          <span className="ms-2 font-mono text-[11px] text-emerald-800 bg-white px-2 py-0.5 rounded border border-emerald-200">
+                            {eraGroupedOrders.future.nearestDate}
                           </span>
                         )}
-                        {order.priority === 'important' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-900 border border-amber-200 rounded-lg text-[10px] font-bold">
-                            <Star className="h-3 w-3 text-amber-600" />
-                            <span>{isAr ? 'مهم' : 'Important'}</span>
-                          </span>
-                        )}
-                        <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                          {order.status === 'scheduled' ? (isAr ? 'مجدول' : 'Scheduled') :
-                           order.status === 'in_progress' ? (isAr ? 'قيد التشغيل' : 'In Progress') :
-                           order.status === 'completed' ? (isAr ? 'مكتمل' : 'Completed') : order.status}
-                        </span>
-                      </div>
+                      </h4>
                     </div>
-
-                    {/* Primary Product Identity Anchor (Name is Primary) */}
-                    <div className="flex items-start gap-3">
-                      {resolvedImg ? (
-                        <div className="w-12 h-12 rounded-xl bg-slate-50 border border-slate-200 shadow-2xs flex items-center justify-center p-1 shrink-0 overflow-hidden mt-0.5">
-                          <img
-                            src={resolvedImg}
-                            alt={order.productNameAr}
-                            onClick={() => setImagePreviewModal({
-                              url: resolvedImg,
-                              title: `${order.productNameAr} - ${order.packagingOptionNameAr || ''}`,
-                              subtitle: `${order.finishedProductId} • ${order.packagingOptionCode || ''}`
-                            })}
-                            className="w-full h-full object-contain cursor-pointer"
-                          />
-                        </div>
-                      ) : (
-                        <div className="w-12 h-12 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shrink-0 shadow-2xs mt-0.5">
-                          <Package className="h-6 w-6" />
-                        </div>
-                      )}
-
-                      <div className="flex-1 min-w-0">
-                        {/* Primary: Name of Product */}
-                        <h4 className="font-extrabold text-slate-900 text-base leading-snug">
-                          {order.productNameAr}
-                        </h4>
-
-                        {/* Secondary: SKU Code, Packaging Option, Order Number, Process */}
-                        <div className="text-xs text-slate-500 font-mono mt-0.5 flex flex-wrap items-center gap-1.5">
-                          <span className="text-slate-600 font-semibold">{order.packagingOptionNameAr}</span>
-                          <span>•</span>
-                          <span className="text-slate-400">[{order.finishedProductId}]</span>
-                          <span>•</span>
-                          <span className="text-blue-700 font-bold">أمر #{order.orderNumber}</span>
-                          {(order.processNameAr || order.processCode) && (
-                            <>
-                              <span>•</span>
-                              <span
-                                className="px-2 py-0.5 bg-cyan-50 text-cyan-800 border border-cyan-200 font-bold rounded-md text-[10px] flex items-center gap-1 shadow-2xs"
-                                title={order.processCode ? `[${order.processCode}]` : ''}
-                              >
-                                <Workflow className="h-3 w-3 text-cyan-600" />
-                                <span>{order.processNameAr || order.processNameEn || order.processCode}</span>
-                              </span>
-                            </>
-                          )}
-                        </div>
-
-                        {/* Production Line Badge */}
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg">
-                            <Factory className="h-3 w-3 text-indigo-600" />
-                            <span>{order.productionLine}</span>
-                          </span>
-
-                          {order.notes && (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-md">
-                              <MessageSquareText className="h-3 w-3 text-amber-600" />
-                              <span>{order.notes}</span>
-                            </span>
-                          )}
-                        </div>
-
-                        {order.isComplementary && (
-                          <div className="mt-1 flex flex-wrap items-center gap-1">
-                            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-purple-50 text-purple-900 border border-purple-200">
-                              {isAr ? `تشغيلة مكملة (${order.parentOrderId || 'أصل'})` : `Complementary (${order.parentOrderId || 'Parent'})`}
-                            </span>
-                            {order.lotAutoBound ? (
-                              <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                                {isAr ? `تم ربط اللوط (${order.autoBoundLotNo})` : `Bound LOT (${order.autoBoundLotNo})`}
-                              </span>
-                            ) : order.awaitingReplenishment ? (
-                              <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
-                                {isAr ? 'في انتظار توريد خامات (GRN)' : 'Awaiting Replenishment'}
-                              </span>
-                            ) : null}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Target Quantities Metric Block */}
-                    <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80 text-xs space-y-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'المخطط بالكرتونة:' : 'Cartons Target:'}</span>
-                          <span className="font-mono font-extrabold text-sm text-slate-900">
-                            {order.plannedQtyLarge} {order.outputLargeUnit}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'المخطط بالعبوات:' : 'Units Target:'}</span>
-                          <span className="font-mono font-extrabold text-sm text-blue-700">
-                            {Number(order.plannedQtySmall).toLocaleString()} {order.outputSmallUnit}
-                          </span>
-                        </div>
-                      </div>
-
-                      {order.isRework && (() => {
-                        const orig = getOriginalReturnQty(order);
-                        if (!orig) return null;
-                        return (
-                          <div className="pt-2 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-1 text-[11px] bg-purple-50/70 p-2 rounded-lg border border-purple-200">
-                            <span className="text-purple-900 font-bold flex items-center gap-1">
-                              <Wrench className="h-3 w-3 text-purple-700" />
-                              <span>{isAr ? 'المرتجع المستلم بالأصل:' : 'Orig Return:'}</span>
-                            </span>
-                            <span className="font-mono font-black text-purple-950">
-                              {orig.qtyLarge} {orig.largeUnit} ({orig.qtySmall} {orig.smallUnit})
-                            </span>
-                            {orig.missingSmall > 0 && (
-                              <span className="w-full text-end text-[10px] text-purple-700 font-bold font-mono">
-                                +{orig.missingSmall} {isAr ? 'نواقص لإكمال الكرتونة الكسر' : 'top-up units'}
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </div>
-
-                    {/* BOM Raw Materials Feasibility Strip */}
-                    <div className="space-y-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setFeasibilityModalData({ order, feasibility })}
-                        className={`w-full min-h-[40px] flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold transition shadow-2xs cursor-pointer ${
-                          feasibility.status === 'floor_ready'
-                            ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300'
-                            : feasibility.status === 'transfer_needed'
-                            ? 'bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300'
-                            : feasibility.status === 'shortage'
-                            ? 'bg-rose-50 hover:bg-rose-100 text-rose-950 border border-rose-300'
-                            : 'bg-slate-100 text-slate-700 border border-slate-300'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <CircleDot className={`h-4 w-4 ${
-                            feasibility.status === 'floor_ready' ? 'text-emerald-600' :
-                            feasibility.status === 'transfer_needed' ? 'text-amber-600' :
-                            feasibility.status === 'shortage' ? 'text-rose-600' : 'text-slate-400'
-                          }`} />
-                          <span>{feasibility.labelAr}</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-[11px] font-normal text-slate-600">
-                          <span>{isAr ? 'فحص الخامات' : 'Inspect'}</span>
-                          <Eye className="h-3.5 w-3.5" />
-                        </div>
-                      </button>
-
-                      {feasibility.status === 'transfer_needed' && (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenStagingRequest(order)}
-                          className="w-full min-h-[38px] flex items-center justify-center gap-1.5 py-1.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
-                        >
-                          <Boxes className="h-3.5 w-3.5" />
-                          <span>{isAr ? 'طلب تحويل الخامات الناقصة لصالة الإنتاج' : 'Request Floor Transfer'}</span>
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Touch-Friendly Actions Row */}
-                    <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
-                      <button
-                        type="button"
-                        onClick={() => setActiveSubTab('today_prod')}
-                        className="flex-1 min-h-[42px] bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-2 cursor-pointer"
-                      >
-                        <Boxes className="h-4 w-4" />
-                        <span>{isAr ? 'تشغيل وتكويد بالتات' : 'Start Pallets'}</span>
-                      </button>
-
-                      <div className="flex items-center gap-1 shrink-0">
-                        {isOrderLocked(order) ? (
-                          <div className="flex items-center gap-1 px-3 py-2 bg-slate-100 border border-slate-300 rounded-xl text-slate-500 font-bold text-xs" title={isAr ? 'أمر سابق مؤرشف (للقراءة فقط)' : 'Past order (Locked)'}>
-                            <Lock className="h-4 w-4 text-slate-400" />
-                            <span>{isAr ? 'مؤرشف' : 'Locked'}</span>
-                          </div>
-                        ) : (
-                          <>
-                            {canEdit && (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenEditPlan(order)}
-                                className="min-h-[42px] min-w-[42px] flex items-center justify-center text-slate-600 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 rounded-xl transition cursor-pointer"
-                                title={isAr ? 'تعديل الخطة' : 'Edit Plan'}
-                              >
-                                <Edit3 className="h-4 w-4" />
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => handleClonePlan(order)}
-                              className="min-h-[42px] min-w-[42px] flex items-center justify-center text-slate-600 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 rounded-xl transition cursor-pointer"
-                              title={isAr ? 'نسخ أمر التشغيل' : 'Duplicate'}
-                            >
-                              <Copy className="h-4 w-4" />
-                            </button>
-                            {canCancel && (
-                              <button
-                                type="button"
-                                onClick={() => handleDeletePlanOrder(order.id, order.orderNumber)}
-                                className="min-h-[42px] min-w-[42px] flex items-center justify-center text-slate-400 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 rounded-xl transition cursor-pointer"
-                                title={isAr ? 'حذف من الخطة' : 'Delete'}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            )}
-                          </>
-                        )}
-                        {isGeneralAdmin && isOrderPastDate(order) && (
-                          <span className="px-1.5 py-1 bg-amber-50 text-amber-900 border border-amber-300 rounded-lg text-[10px] font-bold" title={isAr ? 'صلاحية المسؤول العام' : 'General Admin'}>
-                            <Unlock className="h-3 w-3 text-amber-700" />
-                          </span>
-                        )}
-                      </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-mono font-bold text-emerald-900 bg-emerald-100/80 px-2 py-0.5 rounded-lg">
+                        {eraGroupedOrders.future.nearest.length}
+                      </span>
+                      {eraExpandedSections.future_nearest ? <ChevronUp className="h-3.5 w-3.5 text-slate-500" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-500" />}
                     </div>
                   </div>
-                );
-              })
+                  {eraExpandedSections.future_nearest && (
+                    <div className="pt-2 border-t border-emerald-100">
+                      {renderEraOrdersTable(eraGroupedOrders.future.nearest, isAr ? 'لا توجد أوامر لأقرب يوم قادم.' : 'No orders for nearest upcoming day.')}
+                    </div>
+                  )}
+                </div>
+
+                {/* 2.B: Next 7 Days */}
+                <div className="p-3.5 bg-teal-50/30 border border-teal-200/80 rounded-2xl space-y-3">
+                  <div
+                    onClick={() => setEraExpandedSections((prev) => ({ ...prev, future_week: !prev.future_week }))}
+                    className="flex items-center justify-between cursor-pointer select-none"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-teal-600 inline-block"></span>
+                      <h4 className="font-bold text-xs text-slate-900">
+                        {isAr ? 'ب) الأيام السبعة القادمة (خلال أسبوع)' : 'B) Subsequent 7 Days'}
+                      </h4>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-mono font-bold text-teal-900 bg-teal-100/80 px-2 py-0.5 rounded-lg">
+                        {eraGroupedOrders.future.week.length}
+                      </span>
+                      {eraExpandedSections.future_week ? <ChevronUp className="h-3.5 w-3.5 text-slate-500" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-500" />}
+                    </div>
+                  </div>
+                  {eraExpandedSections.future_week && (
+                    <div className="pt-2 border-t border-teal-100">
+                      {renderEraOrdersTable(eraGroupedOrders.future.week, isAr ? 'لا توجد أوامر مجدولة خلال الأيام السبعة القادمة.' : 'No orders scheduled in the next 7 days.')}
+                    </div>
+                  )}
+                </div>
+
+                {/* 2.C: Beyond 7 Days */}
+                <div className="p-3.5 bg-slate-50/60 border border-slate-200 rounded-2xl space-y-3">
+                  <div
+                    onClick={() => setEraExpandedSections((prev) => ({ ...prev, future_beyond: !prev.future_beyond }))}
+                    className="flex items-center justify-between cursor-pointer select-none"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-slate-500 inline-block"></span>
+                      <h4 className="font-bold text-xs text-slate-900">
+                        {isAr ? 'ج) ما بعد ذلك (الخطط المستقبلية البعيدة)' : 'C) Beyond 7 Days (Longer Outlook)'}
+                      </h4>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-mono font-bold text-slate-700 bg-slate-200 px-2 py-0.5 rounded-lg">
+                        {eraGroupedOrders.future.beyond.length}
+                      </span>
+                      {eraExpandedSections.future_beyond ? <ChevronUp className="h-3.5 w-3.5 text-slate-500" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-500" />}
+                    </div>
+                  </div>
+                  {eraExpandedSections.future_beyond && (
+                    <div className="pt-2 border-t border-slate-200">
+                      {renderEraOrdersTable(eraGroupedOrders.future.beyond, isAr ? 'لا توجد خطط مستقبلية بعيدة مسجلة.' : 'No long-range future plans recorded.')}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ================================================================= */}
+          {/* ERA 3: PAST (الماضي: مرتبة من القريب إلى البعيد - الأحدث أولاً)   */}
+          {/* ================================================================= */}
+          <div className="p-4 bg-white border border-slate-300 rounded-3xl shadow-sm space-y-3.5">
+            <div
+              onClick={() => setEraExpandedSections((prev) => ({ ...prev, past: !prev.past }))}
+              className="flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-slate-700 text-white rounded-2xl shadow-xs">
+                  <History className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
+                    <span>{isAr ? '٣- الماضي: أرشيف الأوامر والورديات السابقة' : '3. Past: Completed & Historical Orders'}</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {isAr
+                      ? 'مرتبة تنازلياً من الأقرب للماضي (أمس) فالأبعد، مقسمة إلى: أقرب يوم، الأيام السبعة الماضية، والأرشيف الأقدم.'
+                      : 'Reverse chronological from nearest past (yesterday) to older, grouped into 3 distinct tiers.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="px-3 py-1 bg-slate-100 text-slate-800 border border-slate-200 rounded-xl font-mono text-xs font-black">
+                  {eraGroupedOrders.past.all.length} {isAr ? 'أوامر سابقة' : 'past orders'}
+                </span>
+                <div className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition">
+                  {eraExpandedSections.past ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </div>
+              </div>
+            </div>
+
+            {eraExpandedSections.past && (
+              <div className="pt-2 border-t border-slate-100 space-y-4 animate-in fade-in duration-150">
+                {/* 3.A: Nearest Past Day */}
+                <div className="p-3.5 bg-slate-50/70 border border-slate-200 rounded-2xl space-y-3">
+                  <div
+                    onClick={() => setEraExpandedSections((prev) => ({ ...prev, past_nearest: !prev.past_nearest }))}
+                    className="flex items-center justify-between cursor-pointer select-none"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-slate-700 inline-block"></span>
+                      <h4 className="font-bold text-xs text-slate-900">
+                        {isAr ? 'أ) أقرب يوم سابق (أمس / آخر وردية)' : 'A) Nearest Past Day (Yesterday / Latest Past)'}
+                        {eraGroupedOrders.past.nearestDate && (
+                          <span className="ms-2 font-mono text-[11px] text-slate-800 bg-white px-2 py-0.5 rounded border border-slate-300">
+                            {eraGroupedOrders.past.nearestDate}
+                          </span>
+                        )}
+                      </h4>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-mono font-bold text-slate-800 bg-slate-200 px-2 py-0.5 rounded-lg">
+                        {eraGroupedOrders.past.nearest.length}
+                      </span>
+                      {eraExpandedSections.past_nearest ? <ChevronUp className="h-3.5 w-3.5 text-slate-500" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-500" />}
+                    </div>
+                  </div>
+                  {eraExpandedSections.past_nearest && (
+                    <div className="pt-2 border-t border-slate-200">
+                      {renderEraOrdersTable(eraGroupedOrders.past.nearest, isAr ? 'لا توجد أوامر لأقرب يوم سابق.' : 'No orders for nearest past day.')}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3.B: Past 7 Days */}
+                <div className="p-3.5 bg-slate-50/50 border border-slate-200 rounded-2xl space-y-3">
+                  <div
+                    onClick={() => setEraExpandedSections((prev) => ({ ...prev, past_week: !prev.past_week }))}
+                    className="flex items-center justify-between cursor-pointer select-none"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-slate-600 inline-block"></span>
+                      <h4 className="font-bold text-xs text-slate-900">
+                        {isAr ? 'ب) الأيام السبعة السابقة (أسبوع سابق)' : 'B) Past 7 Days'}
+                      </h4>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-mono font-bold text-slate-800 bg-slate-200 px-2 py-0.5 rounded-lg">
+                        {eraGroupedOrders.past.week.length}
+                      </span>
+                      {eraExpandedSections.past_week ? <ChevronUp className="h-3.5 w-3.5 text-slate-500" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-500" />}
+                    </div>
+                  </div>
+                  {eraExpandedSections.past_week && (
+                    <div className="pt-2 border-t border-slate-200">
+                      {renderEraOrdersTable(eraGroupedOrders.past.week, isAr ? 'لا توجد أوامر خلال الأيام السبعة السابقة.' : 'No orders in the past 7 days.')}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3.C: Older History */}
+                <div className="p-3.5 bg-slate-50/30 border border-slate-200 rounded-2xl space-y-3">
+                  <div
+                    onClick={() => setEraExpandedSections((prev) => ({ ...prev, past_beyond: !prev.past_beyond }))}
+                    className="flex items-center justify-between cursor-pointer select-none"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-slate-400 inline-block"></span>
+                      <h4 className="font-bold text-xs text-slate-900">
+                        {isAr ? 'ج) الأرشيف الأقدم (ما قبل ٧ أيام)' : 'C) Older History (Beyond 7 Days)'}
+                      </h4>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-mono font-bold text-slate-700 bg-slate-200 px-2 py-0.5 rounded-lg">
+                        {eraGroupedOrders.past.beyond.length}
+                      </span>
+                      {eraExpandedSections.past_beyond ? <ChevronUp className="h-3.5 w-3.5 text-slate-500" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-500" />}
+                    </div>
+                  </div>
+                  {eraExpandedSections.past_beyond && (
+                    <div className="pt-2 border-t border-slate-200">
+                      {renderEraOrdersTable(eraGroupedOrders.past.beyond, isAr ? 'لا توجد سجلات مؤرشفة أقدم.' : 'No older archived records.')}
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -7639,85 +10702,9 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
 
               const currentSeq = order.importanceRank || (orderIdx + 1);
 
-              // Priority Badge Info
-              const priorityInfo = (() => {
-                switch (order.priority) {
-                  case 'urgent':
-                    return {
-                      label: isAr ? 'أولوية: مستعجل' : 'Priority: Urgent',
-                      cls: 'bg-rose-50 text-rose-800 border-rose-200',
-                      icon: <Flame className="h-3 w-3 text-rose-600 shrink-0" />
-                    };
-                  case 'important':
-                    return {
-                      label: isAr ? 'أولوية: مهم' : 'Priority: Important',
-                      cls: 'bg-amber-50 text-amber-900 border-amber-200',
-                      icon: <Star className="h-3 w-3 text-amber-600 shrink-0" />
-                    };
-                  case 'prep_and_run':
-                    return {
-                      label: isAr ? 'تجهيز وتشغيل' : 'Prep & Run',
-                      cls: 'bg-indigo-50 text-indigo-900 border-indigo-200',
-                      icon: <Wrench className="h-3 w-3 text-indigo-600 shrink-0" />
-                    };
-                  case 'prep_only':
-                    return {
-                      label: isAr ? 'تجهيز فقط' : 'Prep Only',
-                      cls: 'bg-slate-100 text-slate-800 border-slate-200',
-                      icon: <Clock className="h-3 w-3 text-slate-500 shrink-0" />
-                    };
-                  case 'today':
-                  default:
-                    return {
-                      label: isAr ? 'خلال اليوم' : 'Today',
-                      cls: 'bg-blue-50 text-blue-800 border-blue-200',
-                      icon: <Calendar className="h-3 w-3 text-blue-600 shrink-0" />
-                    };
-                }
-              })();
-
-              // Quantity Exactness Badge Info
-              const exactnessInfo = (() => {
-                switch (order.qtyExactness) {
-                  case 'exact':
-                    return {
-                      label: isAr ? 'مطابقة: بالظبط' : 'Exact Match',
-                      cls: 'bg-purple-50 text-purple-900 border-purple-200',
-                      icon: <Target className="h-3 w-3 text-purple-600 shrink-0" />
-                    };
-                  case 'at_least':
-                    return {
-                      label: isAr ? 'مطابقة: لا يقل عن' : 'At Least',
-                      cls: 'bg-teal-50 text-teal-900 border-teal-200',
-                      icon: <ArrowUpRight className="h-3 w-3 text-teal-600 shrink-0" />
-                    };
-                  case 'at_most':
-                    return {
-                      label: isAr ? 'مطابقة: لا يزيد عن' : 'At Most',
-                      cls: 'bg-orange-50 text-orange-900 border-orange-200',
-                      icon: <ArrowDownRight className="h-3 w-3 text-orange-600 shrink-0" />
-                    };
-                  case 'as_per_materials':
-                    return {
-                      label: isAr ? 'حسب الخامات' : 'Per Materials',
-                      cls: 'bg-emerald-50 text-emerald-900 border-emerald-200',
-                      icon: <Boxes className="h-3 w-3 text-emerald-600 shrink-0" />
-                    };
-                  case 'as_per_time':
-                    return {
-                      label: isAr ? 'حسب الوقت' : 'Per Time',
-                      cls: 'bg-cyan-50 text-cyan-900 border-cyan-200',
-                      icon: <Clock className="h-3 w-3 text-cyan-600 shrink-0" />
-                    };
-                  case 'approximate':
-                  default:
-                    return {
-                      label: isAr ? 'مطابقة: تقريبي' : 'Approximate',
-                      cls: 'bg-slate-100 text-slate-700 border-slate-200',
-                      icon: <Scale className="h-3 w-3 text-slate-500 shrink-0" />
-                    };
-                }
-              })();
+              // Priority & Quantity Exactness Badge Info
+              const priorityInfo = getOrderPriorityInfo(order, isAr);
+              const exactnessInfo = getOrderExactnessInfo(order, isAr);
 
               const isNotesExpanded = !!expandedNotesOrders[order.id];
 
@@ -8078,38 +11065,117 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                           </div>
                         )}
 
-                        {/* Crew Count Adjuster */}
-                        <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs">
-                          <span className="text-[11px] font-bold text-slate-600 flex items-center gap-1">
-                            <Users className="h-3.5 w-3.5 text-indigo-600" />
-                            <span>{isAr ? 'طاقم العمل:' : 'Crew:'}</span>
-                          </span>
-                          {!isOrderLocked(order) && order.status !== 'completed' && (
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateCrewCount(order, -1)}
-                              disabled={getOrderCrewCount(order) <= 1}
-                              className="w-5 h-5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs disabled:opacity-30 cursor-pointer transition"
-                              title={isAr ? 'تقليل العمالة' : 'Decrease crew'}
+                        {/* Crew Count Adjuster with Distinctive SOP Styling */}
+                        {(() => {
+                          const currentCrewCount = getOrderCrewCount(order);
+                          const sopUniqueWorkers = getOrderSopUniqueWorkers(order);
+                          const sopUniqueCount = sopUniqueWorkers.length;
+                          const isMatchingSop = sopUniqueCount > 0 && currentCrewCount === sopUniqueCount;
+                          const isCustomizedFromSop = sopUniqueCount > 0 && currentCrewCount !== sopUniqueCount;
+                          const isLocked = isOrderLocked(order) || order.status === 'completed';
+
+                          const sopNamesList = sopUniqueWorkers.map((w) => w.name).filter(Boolean).join(isAr ? '، ' : ', ');
+
+                          return (
+                            <div
+                              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl transition-all shadow-2xs border ${
+                                isMatchingSop
+                                  ? 'bg-linear-to-r from-indigo-50/90 via-purple-50/60 to-indigo-50/90 border-indigo-200/90 ring-1 ring-indigo-200/60'
+                                  : isCustomizedFromSop
+                                  ? 'bg-amber-50/60 border-amber-200/80 text-slate-700'
+                                  : 'bg-white border-slate-200 text-slate-700'
+                              }`}
+                              title={
+                                isMatchingSop
+                                  ? (isAr
+                                      ? `طاقم العمل مطابق للعمال المعينين في خطوات التشغيل (SOP) بدون تكرار (${sopUniqueCount} عمال): ${sopNamesList}`
+                                      : `Crew matches SOP assigned staff (${sopUniqueCount} unique staff): ${sopNamesList}`)
+                                  : isCustomizedFromSop
+                                  ? (isAr
+                                      ? `تم تعديل الطاقم يدوياً إلى (${currentCrewCount} عمال)، بينما طاقم الـ SOP المعتمد هو (${sopUniqueCount} عمال): ${sopNamesList}`
+                                      : `Manually adjusted to (${currentCrewCount} workers), SOP assigned crew is (${sopUniqueCount}): ${sopNamesList}`)
+                                  : (isAr ? 'عدد طاقم العمل المسجل' : 'Crew count')
+                              }
                             >
-                              -
-                            </button>
-                          )}
-                          <span className="font-mono font-black text-xs px-1 text-indigo-950 min-w-5 text-center">
-                            {getOrderCrewCount(order)}
-                          </span>
-                          {!isOrderLocked(order) && order.status !== 'completed' && (
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateCrewCount(order, 1)}
-                              className="w-5 h-5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold flex items-center justify-center text-xs cursor-pointer transition"
-                              title={isAr ? 'زيادة العمالة' : 'Increase crew'}
-                            >
-                              +
-                            </button>
-                          )}
-                          <span className="text-[10px] text-slate-400 font-semibold">{isAr ? 'عمال' : 'workers'}</span>
-                        </div>
+                              <span className="text-[11px] font-bold flex items-center gap-1">
+                                <Users className={`h-3.5 w-3.5 ${isMatchingSop ? 'text-indigo-600' : 'text-slate-500'}`} />
+                                <span className={isMatchingSop ? 'text-indigo-950 font-extrabold' : 'text-slate-600'}>
+                                  {isAr ? 'طاقم العمل:' : 'Crew:'}
+                                </span>
+                              </span>
+
+                              {isMatchingSop && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded-md text-[9px] font-black tracking-wider uppercase bg-indigo-600 text-white shadow-2xs select-none"
+                                  title={isAr ? `طاقم مطابق لخطوات الـ SOP (${sopUniqueCount} عمال)` : `Matches SOP (${sopUniqueCount} staff)`}
+                                >
+                                  SOP
+                                </span>
+                              )}
+
+                              {!isLocked && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateCrewCount(order, -1)}
+                                  disabled={currentCrewCount <= 1}
+                                  className={`w-5 h-5 rounded-md border font-bold flex items-center justify-center text-xs disabled:opacity-30 cursor-pointer transition shadow-2xs ${
+                                    isMatchingSop
+                                      ? 'bg-white hover:bg-indigo-50 text-indigo-950 border-indigo-200'
+                                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                                  }`}
+                                  title={isAr ? 'تقليل العمالة' : 'Decrease crew'}
+                                >
+                                  -
+                                </button>
+                              )}
+
+                              <span
+                                className={`font-mono font-black text-xs px-1.5 py-0.5 rounded-md min-w-5 text-center transition ${
+                                  isMatchingSop
+                                    ? 'bg-white text-indigo-950 border border-indigo-200 shadow-2xs font-extrabold'
+                                    : 'text-slate-900'
+                                }`}
+                              >
+                                {currentCrewCount}
+                              </span>
+
+                              {!isLocked && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateCrewCount(order, 1)}
+                                  className={`w-5 h-5 rounded-md border font-bold flex items-center justify-center text-xs cursor-pointer transition shadow-2xs ${
+                                    isMatchingSop
+                                      ? 'bg-white hover:bg-indigo-50 text-indigo-950 border-indigo-200'
+                                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                                  }`}
+                                  title={isAr ? 'زيادة العمالة' : 'Increase crew'}
+                                >
+                                  +
+                                </button>
+                              )}
+
+                              <span
+                                className={`text-[10px] font-semibold ${
+                                  isMatchingSop ? 'text-indigo-700' : 'text-slate-400'
+                                }`}
+                              >
+                                {isAr ? 'عمال' : 'workers'}
+                              </span>
+
+                              {isCustomizedFromSop && !isLocked && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleResetCrewToSop(order)}
+                                  className="ms-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition flex items-center gap-0.5 cursor-pointer shadow-2xs"
+                                  title={isAr ? `استعادة طاقم الـ SOP المعتمد (${sopUniqueCount} عمال)` : `Reset to SOP crew (${sopUniqueCount} workers)`}
+                                >
+                                  <RotateCcw className="h-2.5 w-2.5" />
+                                  <span>{isAr ? `SOP: ${sopUniqueCount}` : `SOP: ${sopUniqueCount}`}</span>
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* Runtime Counter */}
                         {(() => {
@@ -8207,36 +11273,84 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                       <div className="flex flex-wrap gap-2.5">
                         {pallets.map((pallet, pIdx) => {
                           const isTransferred = pallet.stagingStatus === 'transferred_to_fg' || pallet.status === 'transferred_to_fg';
+                          const isWaiting = Boolean(pallet.isWaitingMaterials || pallet.status === 'waiting_materials' || pallet.stagingStatus === 'waiting_materials');
+                          const stockCheck = isWaiting ? checkPalletStockAvailability(order, pallet) : null;
+                          const isSufficient = stockCheck ? stockCheck.isSufficient : false;
+
+                          let cardBorderBg = 'bg-white hover:bg-indigo-50/50 border-2 border-slate-200 hover:border-indigo-500';
+                          if (isWaiting) {
+                            cardBorderBg = isSufficient
+                              ? 'bg-emerald-50/40 hover:bg-emerald-50/70 border-2 border-dashed border-emerald-500'
+                              : 'bg-amber-50/40 hover:bg-amber-50/70 border-2 border-dashed border-amber-500';
+                          }
 
                           return (
                             <div
                               key={pallet.palletId || pIdx}
                               onClick={() => setInspectPalletModal({ order, pallet, pIdx })}
-                              className="w-24 h-24 sm:w-28 sm:h-28 aspect-square p-2 bg-white hover:bg-indigo-50/50 border-2 border-slate-200 hover:border-indigo-500 rounded-2xl shadow-2xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between select-none group"
-                              title={isAr ? `انقر لعرض تفاصيل الباليتة #${pallet.palletNumber || pIdx + 1}` : `Click to inspect Pallet #${pallet.palletNumber || pIdx + 1}`}
+                              className={`w-28 min-h-28 p-2 rounded-2xl shadow-2xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between select-none group relative ${cardBorderBg}`}
+                              title={
+                                isWaiting
+                                  ? (isSufficient
+                                      ? (isAr ? `الباليتة #${pallet.palletNumber || pIdx + 1}: الخامات أصبحت متوفرة وجاهزة للصرف!` : `Pallet #${pallet.palletNumber || pIdx + 1}: Stock Ready!`)
+                                      : (isAr ? `الباليتة #${pallet.palletNumber || pIdx + 1}: عجز خامات - انقر لعرض التفاصيل` : `Pallet #${pallet.palletNumber || pIdx + 1}: Material Shortage - Click to inspect`))
+                                  : (isAr ? `انقر لعرض تفاصيل الباليتة #${pallet.palletNumber || pIdx + 1}` : `Click to inspect Pallet #${pallet.palletNumber || pIdx + 1}`)
+                              }
                             >
-                              {/* Top Row: Pallet Number + QC status indicator / locked / photo icon */}
-                              <div className="flex items-center justify-between w-full">
-                                <span className="font-mono font-black text-xs text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded-md group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                              {/* Top Row: Pallet Number + QC status indicator / locked / photo icon / Waiting Materials Chip */}
+                              <div className="flex items-center justify-between w-full gap-1">
+                                <span className={`font-mono font-black text-xs px-1.5 py-0.5 rounded-md transition-colors ${
+                                  isWaiting
+                                    ? (isSufficient ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800')
+                                    : 'text-indigo-700 bg-indigo-50 group-hover:bg-indigo-600 group-hover:text-white'
+                                }`}>
                                   #{pallet.palletNumber || pIdx + 1}
                                 </span>
+
                                 <div className="flex items-center gap-1">
-                                  {pallet.imageUrl && (
-                                    <Camera className="h-3 w-3 text-emerald-600" title={isAr ? 'تحتوي صورة' : 'Has photo'} />
-                                  )}
-                                  {isTransferred ? (
-                                    <Lock className="h-3 w-3 text-slate-400" title={isAr ? 'بالمستودع (مقفل)' : 'In FG'} />
+                                  {isWaiting ? (
+                                    !isSufficient ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleShowPalletShortagesAlert(pallet, stockCheck);
+                                        }}
+                                        className="relative flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-black shadow-xs cursor-pointer animate-pulse transition shrink-0"
+                                        title={isAr ? 'عجز خامات! انقر لعرض تفاصيل النواقص بالضبط' : 'Material Deficit! Click to see exact shortage'}
+                                      >
+                                        <span className="w-1.5 h-1.5 rounded-full bg-white shrink-0 animate-ping" />
+                                        <span>{isAr ? 'عجز خامات' : 'Shortage'}</span>
+                                      </button>
+                                    ) : (
+                                      <div
+                                        className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-600 text-white text-[9px] font-black shadow-xs shrink-0"
+                                        title={isAr ? 'الخامات متوفرة الآن وجاهزة للصرف' : 'Materials now available on floor'}
+                                      >
+                                        <span className="w-1.5 h-1.5 rounded-full bg-white shrink-0" />
+                                        <span>{isAr ? 'جاهز' : 'Ready'}</span>
+                                      </div>
+                                    )
                                   ) : (
-                                    <span
-                                      className={`h-2 w-2 rounded-full ${pallet.qcStatus === 'passed' ? 'bg-emerald-500' : 'bg-amber-500'}`}
-                                      title={pallet.qcStatus === 'passed' ? 'QC Passed' : (pallet.qcStatus || 'QC')}
-                                    />
+                                    <>
+                                      {pallet.imageUrl && (
+                                        <Camera className="h-3 w-3 text-emerald-600" title={isAr ? 'تحتوي صورة' : 'Has photo'} />
+                                      )}
+                                      {isTransferred ? (
+                                        <Lock className="h-3 w-3 text-slate-400" title={isAr ? 'بالمستودع (مقفل)' : 'In FG'} />
+                                      ) : (
+                                        <span
+                                          className={`h-2 w-2 rounded-full ${pallet.qcStatus === 'passed' ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                                          title={pallet.qcStatus === 'passed' ? 'QC Passed' : (pallet.qcStatus || 'QC')}
+                                        />
+                                      )}
+                                    </>
                                   )}
                                 </div>
                               </div>
 
                               {/* Middle: Quantity */}
-                              <div className="text-center my-auto">
+                              <div className="text-center my-1">
                                 <div className="font-mono font-black text-sm text-slate-900 leading-tight">
                                   {pallet.qtyLarge}
                                 </div>
@@ -8245,31 +11359,53 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                                 </div>
                               </div>
 
-                              {/* Bottom: Completion Time & Wrapping Machine */}
-                              <div className="flex items-center justify-between gap-1 text-[10px] font-mono text-slate-500 bg-slate-50 rounded-md px-1 py-0.5 w-full">
-                                <span className="flex items-center gap-0.5 truncate">
-                                  <Clock className="h-2.5 w-2.5 text-slate-400 shrink-0" />
-                                  <span>{pallet.endTime || pallet.startTime || '--:--'}</span>
-                                </span>
-                                <span
-                                  className={`text-[9px] px-1 py-0.2 rounded font-bold shrink-0 ${
-                                    pallet.wrappingMachine === 'wrapping_2'
-                                      ? 'bg-purple-100 text-purple-800'
-                                      : pallet.wrappingMachine === 'no_shrink'
-                                      ? 'bg-amber-100 text-amber-800'
-                                      : 'bg-blue-100 text-blue-800'
-                                  }`}
-                                  title={
-                                    pallet.wrappingMachine === 'wrapping_2'
-                                      ? (isAr ? 'ماكينة تغليف 2' : 'Wrapping Machine 2')
-                                      : pallet.wrappingMachine === 'no_shrink'
-                                      ? (isAr ? 'بدون شرنك' : 'No Shrink')
-                                      : (isAr ? 'ماكينة تغليف 1' : 'Wrapping Machine 1')
-                                  }
+                              {/* Bottom: Action Button if Sufficient OR Normal Meta */}
+                              {isWaiting && isSufficient ? (
+                                <button
+                                  type="button"
+                                  disabled={isSaving}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeductAndStagePallet(order, pallet, pIdx);
+                                  }}
+                                  className="w-full py-1 px-1 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-[10px] font-black shadow-xs flex items-center justify-center gap-1 transition cursor-pointer disabled:opacity-40"
+                                  title={isAr ? 'انقر لصرف الخامات ونقل الباليتة للتام الجاهز للترحيل' : 'Click to deduct materials and stage to FG'}
                                 >
-                                  {pallet.wrappingMachine === 'wrapping_2' ? 'م2' : pallet.wrappingMachine === 'no_shrink' ? 'حر' : 'م1'}
-                                </span>
-                              </div>
+                                  <Zap className="h-3 w-3 text-amber-300 shrink-0" />
+                                  <span className="truncate">{isAr ? 'صرف وترحيل' : 'Stage to FG'}</span>
+                                </button>
+                              ) : (
+                                <div className="flex items-center justify-between gap-1 text-[10px] font-mono text-slate-500 bg-slate-50/80 rounded-md px-1 py-0.5 w-full">
+                                  <span className="flex items-center gap-0.5 truncate">
+                                    <Clock className="h-2.5 w-2.5 text-slate-400 shrink-0" />
+                                    <span>{pallet.endTime || pallet.startTime || '--:--'}</span>
+                                  </span>
+                                  {isWaiting ? (
+                                    <span className="text-[9px] px-1 py-0.2 rounded font-bold shrink-0 bg-amber-100 text-amber-800" title={isAr ? 'بانتظار توفر الخامات' : 'Waiting Materials'}>
+                                      {isAr ? 'معلقة' : 'Wait'}
+                                    </span>
+                                  ) : (
+                                    <span
+                                      className={`text-[9px] px-1 py-0.2 rounded font-bold shrink-0 ${
+                                        pallet.wrappingMachine === 'wrapping_2'
+                                          ? 'bg-purple-100 text-purple-800'
+                                          : pallet.wrappingMachine === 'no_shrink'
+                                          ? 'bg-amber-100 text-amber-800'
+                                          : 'bg-blue-100 text-blue-800'
+                                      }`}
+                                      title={
+                                        pallet.wrappingMachine === 'wrapping_2'
+                                          ? (isAr ? 'ماكينة تغليف 2' : 'Wrapping Machine 2')
+                                          : pallet.wrappingMachine === 'no_shrink'
+                                          ? (isAr ? 'بدون شرنك' : 'No Shrink')
+                                          : (isAr ? 'ماكينة تغليف 1' : 'Wrapping Machine 1')
+                                      }
+                                    >
+                                      {pallet.wrappingMachine === 'wrapping_2' ? 'م2' : pallet.wrappingMachine === 'no_shrink' ? 'حر' : 'م1'}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -8382,241 +11518,121 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
             </div>
           </div>
 
-          {/* Collapsible Live Floor Timeline & Shift Scorecard (Relocated to Top beneath Dashboard) */}
-          <div className="p-5 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-blue-50 text-blue-700 rounded-2xl">
-                  <Activity className="h-5 w-5" />
+                    {/* Shift Status & End Shift Control Panel */}
+          {isTodayShiftEnded ? (
+            <div className="p-5 bg-linear-to-r from-emerald-50 via-teal-50 to-slate-50 border-2 border-emerald-300 rounded-3xl shadow-sm space-y-3 animate-in fade-in">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-3 bg-emerald-600 text-white rounded-2xl shadow-xs">
+                    <ShieldCheck className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-black text-base text-slate-900">
+                        {isAr ? 'تم ختم وإغلاق وردية اليوم بنجاح' : "Today's Shift Has Been Sealed & Ended"}
+                      </h3>
+                      <span className="px-2.5 py-0.5 bg-emerald-100 text-emerald-900 font-mono text-xs font-black rounded-full border border-emerald-200">
+                        {todayCalendarDateStr}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 font-medium mt-0.5">
+                      {isAr
+                        ? `تم الإغلاق بواسطة (${todayShiftRecord.endedBy?.name || 'المسؤول'}) في تمام الساعة ${todayShiftRecord.endedAt ? new Date(todayShiftRecord.endedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : '—'}.`
+                        : `Closed by (${todayShiftRecord.endedBy?.name || 'Admin'}) at ${todayShiftRecord.endedAt ? new Date(todayShiftRecord.endedAt).toLocaleTimeString() : '—'}.`}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveSubTab('shift_analytics')}
+                    className="px-3.5 py-2 bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold transition shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                    <span>{isAr ? 'عرض تقرير وإحصائيات الوردية' : 'View Shift Report'}</span>
+                  </button>
+
+                  {isGeneralAdmin && (
+                    <button
+                      type="button"
+                      onClick={handleReopenTodayShift}
+                      className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                      title={isAr ? 'إعادة فتح الوردية وإلغاء حالة الختم (صلاحية المسؤول العام)' : 'Reopen shift (General Admin)'}
+                    >
+                      <Unlock className="h-4 w-4 text-amber-700" />
+                      <span>{isAr ? 'إعادة فتح الوردية' : 'Reopen Shift'}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Shift Summary Badges */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2 border-t border-emerald-200/60 text-xs">
+                <div className="p-2.5 bg-white/90 rounded-xl border border-emerald-100">
+                  <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'إجمالي الكراتين التامة' : 'Total Cartons'}</span>
+                  <span className="font-mono font-extrabold text-base text-emerald-800">{todayShiftRecord.summary?.totalCartons || 0}</span>
+                </div>
+                <div className="p-2.5 bg-white/90 rounded-xl border border-emerald-100">
+                  <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'إجمالي البالتات المنجزة' : 'Total Pallets'}</span>
+                  <span className="font-mono font-extrabold text-base text-indigo-800">{todayShiftRecord.summary?.totalPallets || 0}</span>
+                </div>
+                <div className="p-2.5 bg-white/90 rounded-xl border border-emerald-100">
+                  <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'كفاءة الوقت (OEE)' : 'OEE Efficiency'}</span>
+                  <span className="font-mono font-extrabold text-base text-blue-800">{todayShiftRecord.summary?.timeEfficiencyPct || 100}%</span>
+                </div>
+                <div className="p-2.5 bg-white/90 rounded-xl border border-emerald-100">
+                  <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'ساعات التشغيل الفعلي' : 'Active Runtime'}</span>
+                  <span className="font-mono font-extrabold text-base text-purple-800">{formatDuration(todayShiftRecord.summary?.totalProdMins, isAr)}</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="p-5 bg-white border border-slate-200 rounded-3xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-linear-to-br from-indigo-500 to-blue-600 text-white rounded-2xl shadow-xs">
+                  <Gauge className="h-6 w-6" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-sm text-slate-900">
-                    {isAr ? 'الخط الزمني المباشر ومؤشرات الوردية' : 'Live Floor Timeline & Shift Scorecard'}
+                  <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
+                    <span>{isAr ? 'إدارة تشغيل الوردية اليومية وإغلاق الصالة' : 'Daily Shift Management & Closure'}</span>
+                    <span className="px-2 py-0.5 bg-blue-50 text-blue-700 font-mono text-xs font-bold rounded-lg border border-blue-200">
+                      {todayCalendarDateStr}
+                    </span>
                   </h3>
-                  <p className="text-xs text-slate-500">
-                    {isAr ? 'متابعة أوقات التشغيل والراحة والوقت الإضافي لخطوط الإنتاج.' : 'Floor line runtime, breaks, and shift metrics.'}
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {isAr
+                      ? 'التحقق من أوامر التشغيل الجارية، والتأكد من طباعة ملصقات البالتات وإغلاق الاستراحات قبل اعتماد إغلاق الوردية.'
+                      : 'Audit running orders, print pending labels, and close open breaks before final sealing.'}
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <button
                   type="button"
                   onClick={() => setShowBreakModal(true)}
-                  className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                  className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
                 >
-                  <Coffee className="h-3.5 w-3.5 text-amber-600" />
+                  <Coffee className="h-4 w-4 text-amber-600" />
                   <span>{isAr ? 'تسجيل استراحة / راحة' : 'Log Break'}</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => setShowShiftTimelineSection(!showShiftTimelineSection)}
-                  className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition cursor-pointer"
-                  title={showShiftTimelineSection ? (isAr ? 'إخفاء' : 'Collapse') : (isAr ? 'عرض' : 'Expand')}
-                >
-                  {showShiftTimelineSection ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
-                </button>
+                {canCloseShift && (
+                  <button
+                    type="button"
+                    onClick={handleOpenEndShiftModal}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 active:scale-[0.98] text-white rounded-xl text-xs font-black transition shadow-md flex items-center gap-2 cursor-pointer"
+                  >
+                    <PowerOff className="h-4 w-4" />
+                    <span>{isAr ? 'إنهاء الوردية وإغلاق اليوم' : 'End Shift & Close Day'}</span>
+                  </button>
+                )}
               </div>
             </div>
+          )}
 
-            {showShiftTimelineSection && (
-              <div className="space-y-4 animate-in fade-in duration-150">
-                {/* Shift Scores */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
-                  <div className="p-3 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
-                    <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'بداية الوردية' : 'Shift Start'}</span>
-                    <span className="font-mono font-extrabold text-sm text-slate-900 block">{shiftKpis.shiftStartDisplay}</span>
-                  </div>
-
-                  <div className="p-3 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
-                    <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'صافي الإنتاج' : 'Production'}</span>
-                    <span className="font-mono font-extrabold text-sm text-emerald-700 block">{formatDuration(shiftKpis.totalProdMins, isAr)}</span>
-                  </div>
-
-                  <div className="p-3 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
-                    <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'وقت الراحة' : 'Breaks'}</span>
-                    <span className="font-mono font-extrabold text-sm text-amber-700 block">{formatDuration(shiftKpis.totalBreakMins, isAr)}</span>
-                  </div>
-
-                  <div className="p-3 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
-                    <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'الوقت المهدر' : 'Downtime'}</span>
-                    <span className="font-mono font-extrabold text-sm text-rose-700 block">{formatDuration(shiftKpis.totalWasteMins, isAr)}</span>
-                  </div>
-
-                  <div className="p-3 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
-                    <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'نهاية الوردية' : 'Shift End'}</span>
-                    <span className="font-mono font-extrabold text-sm text-slate-900 block">{shiftKpis.shiftEndDisplay}</span>
-                  </div>
-
-                  <div className="p-3 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
-                    <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'الوقت الإضافي' : 'Overtime'}</span>
-                    <span className="font-mono font-extrabold text-sm text-purple-700 block">{formatDuration(shiftKpis.overtimeMins, isAr)}</span>
-                  </div>
-
-                  <div className="p-3 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
-                    <span className="text-[10px] font-bold text-slate-500 block">{isAr ? 'كفاءة الوقت (OEE)' : 'Efficiency'}</span>
-                    <span className="font-mono font-extrabold text-sm text-blue-700 block">{shiftKpis.timeEfficiencyPct}%</span>
-                  </div>
-                </div>
-
-                {/* Timeline Canvas & Legend */}
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
-                  {/* Legend & Summary Info */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pb-1 border-b border-slate-200/80">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <span className="flex items-center gap-1.5 font-bold text-slate-700">
-                        <span className="w-3 h-3 rounded-md bg-blue-600 inline-block shadow-2xs"></span>
-                        <span>{isAr ? 'تشغيل إنتاج' : 'Production'}</span>
-                      </span>
-                      <span className="flex items-center gap-1.5 font-bold text-slate-700">
-                        <span className="w-3 h-3 rounded-md bg-amber-400 inline-block shadow-2xs"></span>
-                        <span>{isAr ? 'استراحة / راحة' : 'Break'}</span>
-                      </span>
-                      <span className="flex items-center gap-1.5 font-bold text-slate-700">
-                        <span className="w-3 h-3 rounded-md bg-rose-200 border border-rose-400 inline-block shadow-2xs"></span>
-                        <span>{isAr ? 'وقت مهدر' : 'Downtime / Waste'}</span>
-                      </span>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-semibold text-slate-500">{isAr ? 'نقاط فحص البالتات:' : 'Pallet Pins:'}</span>
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold text-[10px]">
-                        🏷️ {isAr ? 'ماكينة 1' : 'Wrap 1'}
-                      </span>
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 font-bold text-[10px]">
-                        🏷️ {isAr ? 'ماكينة 2' : 'Wrap 2'}
-                      </span>
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold text-[10px]">
-                        🏷️ {isAr ? 'بدون شرنك' : 'No Shrink'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Visual Pallet Pins Track (Above the Timeline Bar) */}
-                  {todayPalletCheckpoints.length > 0 && (
-                    <div className="relative w-full h-7">
-                      {todayPalletCheckpoints.map((pin, pIdx) => {
-                        const shiftSpan = Math.max(510, (timeToMins(shiftKpis.shiftEndDisplay) - 480));
-                        const leftPct = Math.max(0, Math.min(98, ((pin.timeMins - 480) / shiftSpan) * 100));
-
-                        return (
-                          <div
-                            key={pin.pallet.palletId || pIdx}
-                            style={{ left: `${leftPct}%` }}
-                            onClick={() => setInspectPalletModal({ order: pin.order, pallet: pin.pallet, pIdx: pin.pIdx })}
-                            className={`absolute -top-0.5 -translate-x-1/2 px-1.5 py-0.5 rounded-md font-mono text-[9px] font-black cursor-pointer shadow-xs transition hover:scale-110 hover:z-30 flex items-center gap-0.5 border ${
-                              pin.wrappingMachine === 'wrapping_2'
-                                ? 'bg-purple-600 text-white border-purple-700'
-                                : pin.wrappingMachine === 'no_shrink'
-                                ? 'bg-amber-600 text-white border-amber-700'
-                                : 'bg-blue-600 text-white border-blue-700'
-                            }`}
-                            title={
-                              isAr
-                                ? `بالتة #${pin.palletNumber} - ${pin.productNameAr} (${pin.qtyLarge} كرتونة) • ${pin.wrappingMachine === 'wrapping_2' ? 'ماكينة 2' : pin.wrappingMachine === 'no_shrink' ? 'بدون شرنك' : 'ماكينة 1'} • الساعة ${pin.time}`
-                                : `Pallet #${pin.palletNumber} - ${pin.productNameAr} (${pin.qtyLarge} ctns) @ ${pin.time}`
-                            }
-                          >
-                            <span>🏷️</span>
-                            <span>P{pin.palletNumber}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Main Shift Timeline Bar */}
-                  <div className="relative w-full h-11 bg-slate-200/90 rounded-2xl overflow-hidden shadow-inner flex items-center">
-                    {/* 1. Automated Waste Gaps (Underlay) */}
-                    {(shiftKpis.wasteGaps || []).map((gap, gIdx) => {
-                      const shiftSpan = Math.max(510, (timeToMins(shiftKpis.shiftEndDisplay) - 480));
-                      const leftPct = Math.max(0, Math.min(100, ((gap.startMin - 480) / shiftSpan) * 100));
-                      const widthPct = Math.max(1, Math.min(100 - leftPct, (gap.durationMins / shiftSpan) * 100));
-
-                      return (
-                        <div
-                          key={`waste-${gIdx}`}
-                          style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                          className="absolute h-full bg-rose-100 border-x border-rose-300 text-rose-800 text-[10px] font-bold flex items-center justify-center px-1 overflow-hidden opacity-90 hover:opacity-100 transition"
-                          title={isAr ? `وقت مهدر: ${gap.startTime} - ${gap.endTime} (${gap.durationMins} دقيقة)` : `Downtime: ${gap.startTime} - ${gap.endTime} (${gap.durationMins}m)`}
-                        >
-                          <span className="truncate text-[9px] text-rose-700 font-bold opacity-80">
-                            {gap.durationMins >= 15 ? (isAr ? `مهدر (${gap.durationMins}د)` : `Waste ${gap.durationMins}m`) : ''}
-                          </span>
-                        </div>
-                      );
-                    })}
-
-                    {/* 2. Production Order Segments */}
-                    {todayTimelineData.map((seg, sIdx) => {
-                      const sM = timeToMins(seg.startTime);
-                      const eM = timeToMins(seg.endTime);
-                      const dur = eM < sM ? (eM + 1440 - sM) : (eM - sM);
-                      const shiftSpan = Math.max(510, (timeToMins(shiftKpis.shiftEndDisplay) - 480));
-                      const leftPct = Math.max(0, Math.min(100, ((sM - 480) / shiftSpan) * 100));
-                      const widthPct = Math.max(2, Math.min(100 - leftPct, (dur / shiftSpan) * 100));
-
-                      return (
-                        <div
-                          key={seg.segmentId || sIdx}
-                          style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                          className={`absolute h-9 rounded-xl text-white text-[10px] font-bold flex items-center justify-between px-2 truncate shadow-xs border border-white z-10 ${
-                            seg.isActive
-                              ? 'bg-blue-600 ring-2 ring-emerald-400 ring-offset-1 animate-pulse'
-                              : 'bg-blue-600 hover:bg-blue-700'
-                          }`}
-                          title={
-                            isAr
-                              ? `${seg.productNameAr} • أمر #${seg.orderNumber} (${seg.startTime} - ${seg.endTime}) • عمالة: ${seg.crewCount}`
-                              : `${seg.productNameAr} • #${seg.orderNumber} (${seg.startTime} - ${seg.endTime}) • Crew: ${seg.crewCount}`
-                          }
-                        >
-                          <span className="truncate">{seg.productNameAr}</span>
-                          <span className="text-[9px] opacity-90 font-mono ms-1 shrink-0">👥{seg.crewCount}</span>
-                        </div>
-                      );
-                    })}
-
-                    {/* 3. Shift Breaks */}
-                    {todayBreaks.map((b, bIdx) => {
-                      const sM = timeToMins(b.startTime);
-                      const eM = timeToMins(b.endTime);
-                      const dur = eM < sM ? (eM + 1440 - sM) : (eM - sM);
-                      const shiftSpan = Math.max(510, (timeToMins(shiftKpis.shiftEndDisplay) - 480));
-                      const leftPct = Math.max(0, Math.min(100, ((sM - 480) / shiftSpan) * 100));
-                      const widthPct = Math.max(2, Math.min(100 - leftPct, (dur / shiftSpan) * 100));
-
-                      return (
-                        <div
-                          key={b.id || bIdx}
-                          style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                          className="absolute h-9 rounded-xl bg-amber-400 text-amber-950 text-[10px] font-bold flex items-center justify-center px-1 truncate shadow-xs border border-white z-20"
-                          title={`استراحة (${b.startTime} - ${b.endTime})`}
-                        >
-                          <span>☕ {b.notes || (isAr ? 'راحة' : 'Break')}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Hours Axis underneath */}
-                  <div className="flex justify-between items-center text-[10px] font-mono text-slate-500 px-1 pt-0.5">
-                    <span>08:00</span>
-                    <span>10:00</span>
-                    <span>12:00</span>
-                    <span>14:00</span>
-                    <span>16:30</span>
-                    {timeToMins(shiftKpis.shiftEndDisplay) > 990 && (
-                      <span className="text-purple-700 font-bold">{shiftKpis.shiftEndDisplay} (إضافي)</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* PANEL A: Staged Finished Products on Floor (Grouped by Product & Packaging Option) */}
+{/* PANEL A: Staged Finished Products on Floor (Grouped by Product & Packaging Option) */}
           <div className="p-5 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2.5">
@@ -8638,16 +11654,33 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 </div>
               </div>
 
-              {activeStagedFloorPallets.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => handleOpenTransferFgModal(null)}
-                  className="px-3.5 py-1.5 bg-slate-100 hover:bg-indigo-600 text-slate-600 hover:text-white border border-slate-200 hover:border-indigo-600 rounded-xl text-xs font-semibold hover:font-bold transition-all duration-200 shadow-none hover:shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
-                >
-                  <ArrowLeftRight className="h-4 w-4" />
-                  <span>{isAr ? 'ترحيل الكل لمستودع التام' : 'Transfer All to FG WH'}</span>
-                </button>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {activeStagedFloorPallets.some((p) => !isFloorPalletPrinted(p)) && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenBatchPrintStickers(activeStagedFloorPallets.filter((p) => !isFloorPalletPrinted(p)))}
+                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0 animate-pulse"
+                    title={isAr ? 'طباعة ملصقات الباركود وQR لكافة البالتات المعلقة دفعة واحدة' : 'Print all pending pallet stickers in batch'}
+                  >
+                    <Printer className="h-4 w-4" />
+                    <span>{isAr ? 'طباعة الملصقات المعلقة' : 'Print Pending Labels'}</span>
+                    <span className="px-1.5 py-0.2 bg-white text-amber-950 rounded-full font-mono text-[10px] font-black">
+                      {activeStagedFloorPallets.filter((p) => !isFloorPalletPrinted(p)).length}
+                    </span>
+                  </button>
+                )}
+
+                {activeStagedFloorPallets.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenTransferFgModal(null)}
+                    className="px-3.5 py-1.5 bg-slate-100 hover:bg-indigo-600 text-slate-600 hover:text-white border border-slate-200 hover:border-indigo-600 rounded-xl text-xs font-semibold hover:font-bold transition-all duration-200 shadow-none hover:shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <ArrowLeftRight className="h-4 w-4" />
+                    <span>{isAr ? 'ترحيل الكل لمستودع التام' : 'Transfer All to FG WH'}</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             {groupedStagedPallets.length === 0 ? (
@@ -8797,7 +11830,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                                       )}
                                     </>
                                   )}
-                                  {isGeneralAdmin && linkedOrder && (
+                                  {(isGeneralAdmin || canAdminModifyPallet || canReverse) && linkedOrder && (
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -8834,7 +11867,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                                     <Printer className="h-3 w-3 text-slate-400" />
                                     <span>{isAr ? 'التشغيلة:' : 'Batch:'}</span>
                                   </span>
-                                  <span className="font-bold text-rose-700">{p.batchRangeDisplay}</span>
+                                  <BatchRangeDisplay range={p.batchRangeDisplay} start={p.batchStart} end={p.batchEnd} className="text-rose-700 font-bold" />
                                 </div>
                               )}
 
@@ -8874,16 +11907,78 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                                 );
                               })()}
 
-                              {!isTransferred && !isOrderLocked(linkedOrder) && (
-                                <div className="pt-2 border-t border-slate-100">
+                              {!isTransferred && !isOrderLocked(linkedOrder) && (() => {
+                                const { isPrinted: isPalletPrinted, printCount } = resolvePalletPrintStatus(p, linkedOrder, stagedFloorPallets);
+
+                                return (
+                                  <div className="pt-2 border-t border-slate-100 flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenPalletSticker(p, linkedOrder)}
+                                      className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-black tracking-wide transition-all shadow-xs flex items-center justify-center gap-1 cursor-pointer border ${
+                                        isPalletPrinted
+                                          ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                                          : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 animate-pulse'
+                                      }`}
+                                      title={isPalletPrinted ? (isAr ? `طُبعت (${printCount} مرات) - انقر لإعادة الطباعة` : `Printed (${printCount}x) - Click to reprint`) : (isAr ? 'طباعة استيكر الباليتة (إلزامي قبل الترحيل)' : 'Print Pallet Sticker (Mandatory before transfer)')}
+                                    >
+                                      {isPalletPrinted ? <PrinterCheck className="h-3 w-3 text-emerald-600" /> : <Printer className="h-3 w-3 text-amber-600" />}
+                                      <span>
+                                        {isPalletPrinted
+                                          ? (isAr ? `مطبوع (${printCount})` : `Printed (${printCount})`)
+                                          : (isAr ? 'طباعة الاستيكر' : 'Print Label')}
+                                      </span>
+                                    </button>
+
+                                    {/* Manual Print Confirmation / Toggle Button */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleTogglePalletPrinted(p, linkedOrder)}
+                                      className={`p-1.5 rounded-lg border transition cursor-pointer shrink-0 ${
+                                        isPalletPrinted
+                                          ? 'bg-emerald-100/70 border-emerald-300 text-emerald-800 hover:bg-emerald-200'
+                                          : 'bg-slate-100 border-slate-200 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50'
+                                      }`}
+                                      title={isPalletPrinted ? (isAr ? 'تم تأكيد الطباعة - انقر للإلغاء' : 'Print confirmed - Click to clear') : (isAr ? 'تأكيد الطباعة يدوياً' : 'Confirm printed manually')}
+                                    >
+                                      <CheckCheck className={`h-3.5 w-3.5 ${isPalletPrinted ? 'text-emerald-700' : 'text-slate-400'}`} />
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenTransferSinglePallet(group, p)}
+                                      disabled={!isPalletPrinted}
+                                      className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-black tracking-wide transition-all shadow-xs flex items-center justify-center gap-1 cursor-pointer ${
+                                        isPalletPrinted
+                                          ? 'bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white'
+                                          : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
+                                      }`}
+                                      title={
+                                        !isPalletPrinted
+                                          ? (isAr ? 'يجب طباعة الاستيكر أولاً قبل ترحيل الباليتة' : 'Must print label before transferring')
+                                          : (isAr ? 'ترحيل هذه الباليتة منفردة لمستودع التام' : 'Transfer this single pallet to FG')
+                                      }
+                                    >
+                                      <ArrowLeftRight className="h-3 w-3" />
+                                      <span>{isAr ? 'ترحيل للتام' : 'Transfer'}</span>
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+                              {isTransferred && (
+                                <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
+                                    <CheckCircle2 className="h-3 w-3" />
+                                    {isAr ? 'تم الترحيل للتام' : 'Transferred to FG'}
+                                  </span>
                                   <button
                                     type="button"
-                                    onClick={() => handleOpenTransferSinglePallet(group, p)}
-                                    className="w-full py-1.5 px-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white rounded-lg text-[11px] font-black tracking-wide transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
-                                    title={isAr ? 'ترحيل هذه الباليتة منفردة لمستودع التام' : 'Transfer this single pallet to FG'}
+                                    onClick={() => handleOpenPalletSticker(p, linkedOrder)}
+                                    className="text-[10px] font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded flex items-center gap-1 cursor-pointer border border-slate-200"
+                                    title={isAr ? 'إعادة طباعة الاستيكر' : 'Reprint Label'}
                                   >
-                                    <ArrowLeftRight className="h-3 w-3" />
-                                    <span>{isAr ? 'ترحيل الباليتة للتام' : 'Transfer Pallet'}</span>
+                                    <Printer className="h-2.5 w-2.5" />
+                                    <span>{isAr ? 'إعادة طباعة' : 'Reprint'}</span>
                                   </button>
                                 </div>
                               )}
@@ -9004,11 +12099,593 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         </div>
       )}
 
+      {/* SUB-TAB 4: SHIFT TIMELINE & ANALYTICS REPORT */}
+      {activeSubTab === 'shift_analytics' && (() => {
+        const selectedShiftRecord = productionShifts.find((s) => s.shiftDate === analyticsDate && s.status === 'closed');
+        const isSelectedShiftClosed = Boolean(selectedShiftRecord);
+
+        // Timeline Ruler Calculations
+        const startMins = Math.min(480, timeToMins(analyticsShiftKpis.shiftStartDisplay || '08:00'));
+        const endMins = Math.max(1020, timeToMins(analyticsShiftKpis.shiftEndDisplay || '17:00'));
+        const totalSpan = Math.max(60, endMins - startMins);
+        const getPct = (m) => Math.max(0, Math.min(100, ((m - startMins) / totalSpan) * 100));
+
+        // Generate hourly markers
+        const hourMarkers = [];
+        const firstHour = Math.floor(startMins / 60) * 60;
+        for (let hm = firstHour; hm <= endMins; hm += 60) {
+          hourMarkers.push({
+            min: hm,
+            label: minsToTime(hm),
+            pct: getPct(hm),
+          });
+        }
+
+        // Available products for filter dropdown
+        const availableProducts = Array.from(
+          new Set(workOrders.filter((o) => o.planDate === analyticsDate).map((o) => o.finishedProductId))
+        ).filter(Boolean);
+
+        return (
+          <div className="space-y-6 animate-in fade-in duration-200">
+            {/* 1. Header & Filter Bar */}
+            <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl border border-indigo-100 shrink-0">
+                  <Activity className="h-6 w-6" />
+                </div>
+                <div>
+                  <h2 className="font-black text-lg text-slate-900 flex items-center gap-2">
+                    <span>{isAr ? 'الجدول الزمني وسجل تحليلات الوردية' : 'Shift Timeline & Analytics'}</span>
+                    {isSelectedShiftClosed ? (
+                      <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3" />
+                        <span>{isAr ? 'وردية مقفلة وموثقة' : 'Shift Sealed'}</span>
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-bold text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200 flex items-center gap-1">
+                        <Clock className="h-3 w-3" />
+                        <span>{isAr ? 'وردية نشطة / مفتوحة' : 'Active Shift'}</span>
+                      </span>
+                    )}
+                  </h2>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {isAr
+                      ? 'متابعة الخط الزمني الحي لإنتاج الصالة، محطات تسليم الباليتات، التوقفات، وتصدير تقرير شامل للوردية.'
+                      : 'Live production timeline, pallet checkpoints, downtime analysis, and comprehensive Excel export.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Filter controls */}
+              <div className="flex flex-wrap items-center gap-2.5">
+                {/* Date Picker & Today Button */}
+                <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200">
+                  <Calendar className="h-4 w-4 text-slate-400 ms-1.5" />
+                  <input
+                    type="date"
+                    value={analyticsDate}
+                    onChange={(e) => setAnalyticsDate(e.target.value)}
+                    className="bg-transparent text-xs font-bold font-mono text-slate-800 focus:outline-hidden py-1 px-1.5"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setAnalyticsDate(todayCalendarDateStr)}
+                    className="px-2 py-1 bg-white hover:bg-slate-200 text-slate-700 text-[11px] font-bold rounded-lg border border-slate-200 shadow-2xs transition cursor-pointer"
+                  >
+                    {isAr ? 'اليوم' : 'Today'}
+                  </button>
+                </div>
+
+                {/* Line Filter */}
+                <select
+                  value={analyticsLineFilter}
+                  onChange={(e) => setAnalyticsLineFilter(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="all">{isAr ? 'جميع خطوط الإنتاج' : 'All Lines'}</option>
+                  {productionProcesses.map((p) => (
+                    <option key={p.id} value={p.processCode || p.id}>
+                      {isAr ? p.nameAr : (p.nameEn || p.nameAr)}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Product Filter */}
+                <div className="w-48 sm:w-56">
+                  <SearchableSelect
+                    value={analyticsProductFilter === 'all' ? '' : analyticsProductFilter}
+                    onChange={(val) => setAnalyticsProductFilter(val || 'all')}
+                    options={availableProducts.map((pId) => {
+                      const item = itemsMaster.find((itm) => itm.id === pId || itm.code === pId);
+                      return {
+                        value: pId,
+                        label: isAr ? (item?.nameAr || pId) : (item?.nameEn || item?.nameAr || pId),
+                        sublabel: pId,
+                      };
+                    })}
+                    placeholder={isAr ? 'جميع المنتجات' : 'All Products'}
+                    isAr={isAr}
+                  />
+                </div>
+
+                {/* Export to Excel Button */}
+                <button
+                  type="button"
+                  onClick={handleExportShiftToExcel}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-black rounded-xl shadow-xs flex items-center gap-2 transition cursor-pointer"
+                  title={isAr ? 'تصدير التقرير الكامل بصيغة Excel' : 'Export Full Shift Report to Excel'}
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  <span>{isAr ? 'تصدير إكسيل (XLSX)' : 'Export Excel'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 2. Shift Seal Status Banner (if closed) */}
+            {selectedShiftRecord && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-emerald-100 text-emerald-800 rounded-xl">
+                    <ShieldCheck className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <div className="font-extrabold text-emerald-950 text-sm">
+                      {isAr ? 'تم إغلاق وتوثيق هذه الوردية بنجاح' : 'This shift has been officially sealed'}
+                    </div>
+                    <div className="text-emerald-700 font-medium mt-0.5">
+                      {isAr ? 'أُغلقت في:' : 'Sealed at:'} <b className="font-mono">{new Date(selectedShiftRecord.endedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b>
+                      {' '}• {isAr ? 'بواسطة:' : 'By:'} <b className="font-semibold">{selectedShiftRecord.endedBy}</b>
+                      {selectedShiftRecord.notes && ` • "${selectedShiftRecord.notes}"`}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 text-emerald-900 font-mono font-bold bg-white/80 px-3 py-1.5 rounded-xl border border-emerald-200 shrink-0">
+                  <div>
+                    <span className="text-[10px] text-emerald-600 block">{isAr ? 'الكراتين المعتمدة' : 'Cartons'}</span>
+                    <span className="text-sm font-black">{selectedShiftRecord.totalCartonsLarge}</span>
+                  </div>
+                  <div className="border-s border-emerald-200 ps-4">
+                    <span className="text-[10px] text-emerald-600 block">{isAr ? 'الباليتات' : 'Pallets'}</span>
+                    <span className="text-sm font-black">{selectedShiftRecord.totalPallets}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 3. KPI Scorecards */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {/* Total Cartons */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
+                <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+                  <Package className="h-3.5 w-3.5 text-indigo-500" />
+                  <span>{isAr ? 'إجمالي الكراتين' : 'Total Cartons'}</span>
+                </span>
+                <div className="text-xl font-black font-mono text-slate-900">
+                  {analyticsOrdersSummary.totalCartons.toLocaleString()}
+                </div>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  {isAr ? 'وحدات كبرى معبأة' : 'Large units produced'}
+                </span>
+              </div>
+
+              {/* Total Pallets */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
+                <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+                  <Boxes className="h-3.5 w-3.5 text-cyan-500" />
+                  <span>{isAr ? 'الباليتات المنجزة' : 'Total Pallets'}</span>
+                </span>
+                <div className="text-xl font-black font-mono text-slate-900">
+                  {analyticsOrdersSummary.totalPallets}
+                </div>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  {isAr ? 'محطات تسليم تامة' : 'Completed checkpoints'}
+                </span>
+              </div>
+
+              {/* Net Prod Time */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
+                <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+                  <Play className="h-3.5 w-3.5 text-emerald-500" />
+                  <span>{isAr ? 'وقت التشغيل الفعلي' : 'Net Production'}</span>
+                </span>
+                <div className="text-xl font-black font-mono text-emerald-700">
+                  {Math.floor(analyticsShiftKpis.totalProdMins / 60)}h {analyticsShiftKpis.totalProdMins % 60}m
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  {analyticsShiftKpis.totalProdMins} {isAr ? 'دقيقة' : 'mins'}
+                </span>
+              </div>
+
+              {/* Breaks */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
+                <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+                  <Coffee className="h-3.5 w-3.5 text-amber-500" />
+                  <span>{isAr ? 'فترات الراحة' : 'Breaks'}</span>
+                </span>
+                <div className="text-xl font-black font-mono text-amber-700">
+                  {analyticsShiftKpis.totalBreakMins} {isAr ? 'د' : 'm'}
+                </div>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  {analyticsBreaks.length} {isAr ? 'فترات مسجلة' : 'logged breaks'}
+                </span>
+              </div>
+
+              {/* Downtime / Gaps */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
+                <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+                  <AlertTriangle className="h-3.5 w-3.5 text-rose-500" />
+                  <span>{isAr ? 'الوقت غير المستغل' : 'Downtime / Idle'}</span>
+                </span>
+                <div className="text-xl font-black font-mono text-rose-700">
+                  {analyticsShiftKpis.totalWasteMins} {isAr ? 'د' : 'm'}
+                </div>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  {analyticsShiftKpis.wasteGaps.length} {isAr ? 'فجوات تشغيل' : 'unplanned gaps'}
+                </span>
+              </div>
+
+              {/* OEE / Efficiency */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-1">
+                <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+                  <Gauge className="h-3.5 w-3.5 text-purple-500" />
+                  <span>{isAr ? 'كفاءة الوقت (OEE)' : 'Time Efficiency'}</span>
+                </span>
+                <div className={`text-xl font-black font-mono ${analyticsShiftKpis.timeEfficiencyPct >= 85 ? 'text-emerald-700' : analyticsShiftKpis.timeEfficiencyPct >= 70 ? 'text-amber-700' : 'text-rose-700'}`}>
+                  {analyticsShiftKpis.timeEfficiencyPct}%
+                </div>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  {isAr ? 'نسبة استغلال الساعات' : 'Operational utilization'}
+                </span>
+              </div>
+            </div>
+
+            {/* 4. Interactive Shift Timeline Canvas */}
+            <div className="p-5 bg-white border border-slate-200 rounded-3xl shadow-xs space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <Clock className="h-5 w-5 text-indigo-600" />
+                  <h3 className="font-extrabold text-base text-slate-900">
+                    {isAr ? 'الخط الزمني المرئي لإنتاج الوردية' : 'Visual Production Timeline'}
+                  </h3>
+                  <span className="text-xs font-mono font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-lg border border-slate-200">
+                    {minsToTime(startMins)} {isAr ? '←' : '➔'} {minsToTime(endMins)}
+                  </span>
+                </div>
+
+                {/* Timeline Legend */}
+                <div className="flex flex-wrap items-center gap-3 text-[11px] font-bold text-slate-600">
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded bg-indigo-500 inline-block" />
+                    <span>{isAr ? 'تشغيل فعلي' : 'Production'}</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded-full bg-cyan-600 inline-block border-2 border-white shadow-xs" />
+                    <span>{isAr ? 'نقطة باليتة (P#)' : 'Pallet Pin'}</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded bg-amber-400 inline-block" />
+                    <span>{isAr ? 'استراحة' : 'Break'}</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded bg-rose-300 inline-block" />
+                    <span>{isAr ? 'توقف / فراغ' : 'Idle Gap'}</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Timeline Container */}
+              <div className="pt-8 pb-4 px-2 overflow-x-auto">
+                <div className="min-w-[800px] relative">
+                  {/* Time Ruler (Hour marks) */}
+                  <div className="relative h-6 border-b border-slate-200 mb-6">
+                    {hourMarkers.map((hm) => (
+                      <div
+                        key={hm.min}
+                        className="absolute -top-1 -translate-x-1/2 flex flex-col items-center"
+                        style={{ left: `${hm.pct}%` }}
+                      >
+                        <span className="text-[10px] font-mono font-bold text-slate-400">{hm.label}</span>
+                        <div className="h-2 w-px bg-slate-300 mt-0.5" />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Lane 1: Pallet Checkpoint Pins */}
+                  <div className="relative h-12 mb-3 bg-slate-50/70 border border-slate-200/80 rounded-2xl px-2">
+                    <span className="absolute -top-3 start-3 text-[10px] font-black text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200 flex items-center gap-1">
+                      <QrCode className="h-3 w-3" />
+                      <span>{isAr ? 'محطات إنجاز الباليتات (Checkpoints)' : 'Pallet Checkpoints'}</span>
+                    </span>
+
+                    {analyticsPallets.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-[11px] text-slate-400 font-semibold">
+                        {isAr ? 'لا توجد باليتات مكتملة مسجلة في هذا التاريخ' : 'No completed pallets on this date'}
+                      </div>
+                    ) : (
+                      analyticsPallets.map((p, idx) => {
+                        const pct = getPct(p.timeMins);
+                        return (
+                          <div
+                            key={p.palletId || idx}
+                            className="absolute top-2 -translate-x-1/2 group cursor-pointer"
+                            style={{ left: `${pct}%` }}
+                            onClick={() => handleOpenPalletSticker(p.pallet, p.order)}
+                          >
+                            <div className="flex flex-col items-center">
+                              <span className="px-1.5 py-0.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[10px] font-mono font-black shadow-xs transition group-hover:scale-110 flex items-center gap-0.5">
+                                <span>P#{p.palletNumber}</span>
+                                {p.isPrinted && <Check className="h-2.5 w-2.5 text-emerald-300" />}
+                              </span>
+                              <div className="h-3 w-0.5 bg-indigo-600 mt-0.5" />
+                            </div>
+
+                            {/* Hover tooltip */}
+                            <div className="hidden group-hover:block absolute bottom-full mb-1 start-1/2 -translate-x-1/2 z-20 w-44 p-2 bg-slate-900 text-white rounded-xl shadow-xl text-[10px] space-y-1 pointer-events-none">
+                              <div className="font-extrabold text-indigo-300 border-b border-slate-700 pb-1 flex justify-between">
+                                <span>باليتة #{p.palletNumber}</span>
+                                <span className="font-mono">{p.time}</span>
+                              </div>
+                              <div className="truncate font-semibold">{p.productNameAr}</div>
+                              <div className="flex justify-between text-slate-400 font-mono">
+                                <span>{p.qtyLarge} كرتونة</span>
+                                <span>أمر #{p.orderNumber}</span>
+                              </div>
+                              <div className="text-[9px] text-emerald-400 font-bold">
+                                {p.isPrinted ? '✓ مطبوع الاستيكر' : '⚠ بانتظار الطباعة'}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Lane 2: Production Segments & Gaps */}
+                  <div className="relative h-12 bg-slate-100/80 border border-slate-200 rounded-2xl overflow-hidden">
+                    {/* Render Waste Gaps */}
+                    {analyticsShiftKpis.wasteGaps.map((g, gIdx) => {
+                      const left = getPct(g.startMin);
+                      const right = getPct(g.endMin);
+                      const width = Math.max(0.8, right - left);
+                      return (
+                        <div
+                          key={`gap-${gIdx}`}
+                          className="absolute top-0 bottom-0 bg-rose-200/60 border-x border-rose-300 flex items-center justify-center overflow-hidden"
+                          style={{ left: `${left}%`, width: `${width}%` }}
+                          title={isAr ? `توقف غير مجدول: ${g.durationMins} دقيقة (${g.startTime} - ${g.endTime})` : `Unplanned gap: ${g.durationMins}m`}
+                        >
+                          {width > 4 && (
+                            <span className="text-[9px] font-mono font-bold text-rose-800 truncate px-1">
+                              {g.durationMins}د
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Render Breaks */}
+                    {analyticsBreaks.map((b, bIdx) => {
+                      const sM = timeToMins(b.startTime);
+                      const eM = b.endTime ? timeToMins(b.endTime) : sM + (b.durationMins || 0);
+                      const left = getPct(sM);
+                      const right = getPct(eM);
+                      const width = Math.max(1, right - left);
+                      return (
+                        <div
+                          key={`break-${b.id || bIdx}`}
+                          className="absolute top-0 bottom-0 bg-amber-300/80 border-x border-amber-400 flex items-center justify-center overflow-hidden z-10"
+                          style={{ left: `${left}%`, width: `${width}%` }}
+                          title={isAr ? `استراحة: ${b.name || 'راحة'} (${b.durationMins} دقيقة)` : `Break: ${b.durationMins}m`}
+                        >
+                          {width > 3 && (
+                            <div className="flex items-center gap-1 text-[9px] font-bold text-amber-950 px-1 truncate">
+                              <Coffee className="h-3 w-3 shrink-0" />
+                              <span>{b.name || 'راحة'}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Render Order Segments */}
+                    {analyticsTimelineData.map((seg, sIdx) => {
+                      const sM = timeToMins(seg.startTime);
+                      const eM = timeToMins(seg.endTime);
+                      const left = getPct(sM);
+                      const right = getPct(eM);
+                      const width = Math.max(1, right - left);
+                      return (
+                        <div
+                          key={seg.segmentId || sIdx}
+                          className="absolute top-1 bottom-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-2 flex items-center justify-between text-[10px] font-bold shadow-xs transition z-10 overflow-hidden cursor-pointer"
+                          style={{ left: `${left}%`, width: `${width}%` }}
+                          title={`${seg.productNameAr} (أمر #${seg.orderNumber}) [${seg.startTime} - ${seg.endTime}]`}
+                        >
+                          <span className="truncate flex items-center gap-1">
+                            <span className="font-mono">#{seg.orderNumber}</span>
+                            <span className="opacity-90">{seg.productNameAr}</span>
+                          </span>
+                          {width > 6 && (
+                            <span className="font-mono text-[9px] opacity-80 shrink-0 ms-1">
+                              {seg.durationMins}د
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 5. Tabular Breakdown Panels */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Panel A: Executed Work Orders Breakdown */}
+              <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-indigo-50 text-indigo-700 rounded-xl">
+                      <Layers className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-sm text-slate-900">
+                        {isAr ? 'أوامر التشغيل المجدولة والمنفذة' : 'Executed Work Orders'}
+                      </h4>
+                      <span className="text-[11px] text-slate-400 font-medium">
+                        {analyticsFilteredOrders.length} {isAr ? 'أوامر تشغيل' : 'orders'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {analyticsFilteredOrders.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 text-xs font-semibold">
+                    {isAr ? 'لا توجد أوامر تشغيل مطابقة للفلاتر في هذا التاريخ.' : 'No matching work orders.'}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
+                    {analyticsFilteredOrders.map((ord) => {
+                      const plannedLarge = ord.plannedOutputQtyLarge || ord.targetQtyLarge || 0;
+                      const finishedLarge = ord.finishedQtyLarge || 0;
+                      const pct = plannedLarge > 0 ? Math.min(100, Math.round((finishedLarge / plannedLarge) * 100)) : 0;
+
+                      return (
+                        <div key={ord.id} className="py-3 flex items-center justify-between gap-3 text-xs">
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-black text-indigo-700">#{ord.orderNumber}</span>
+                              <span className="font-bold text-slate-900 truncate">{ord.productNameAr}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono">
+                              <span>{ord.productionLine || 'خط رئيسي'}</span>
+                              <span>•</span>
+                              <span>{finishedLarge} / {plannedLarge} {ord.outputLargeUnit || 'كرتونة'}</span>
+                              <span>({pct}%)</span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <div className="w-16 bg-slate-100 rounded-full h-2 overflow-hidden">
+                              <div
+                                className={`h-full ${pct >= 100 ? 'bg-emerald-500' : pct > 0 ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              ord.status === 'completed'
+                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                : ord.status === 'in_progress'
+                                ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                                : 'bg-slate-100 text-slate-600 border border-slate-200'
+                            }`}>
+                              {ord.status === 'completed' ? (isAr ? 'مكتمل' : 'Completed') : ord.status === 'in_progress' ? (isAr ? 'قيد التنفيذ' : 'Running') : (isAr ? 'مجدول' : 'Planned')}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Panel B: Pallets Checkpoints Log */}
+              <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-cyan-50 text-cyan-700 rounded-xl">
+                      <QrCode className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-sm text-slate-900">
+                        {isAr ? 'سجل الباليتات والتشغيلات' : 'Pallets & Batches Log'}
+                      </h4>
+                      <span className="text-[11px] text-slate-400 font-medium">
+                        {analyticsPallets.length} {isAr ? 'باليتة منتجة' : 'pallets produced'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {analyticsPallets.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 text-xs font-semibold">
+                    {isAr ? 'لا توجد باليتات مكتملة في هذا التاريخ.' : 'No pallets logged.'}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
+                    {analyticsPallets.map((p, idx) => (
+                      <div key={p.palletId || idx} className="py-2.5 flex items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono font-black text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 shrink-0">
+                            P#{p.palletNumber}
+                          </span>
+                          <div className="min-w-0">
+                            <span className="font-bold text-slate-900 truncate block text-[11px]">{p.productNameAr}</span>
+                            <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono">
+                              <span>أمر #{p.orderNumber}</span>
+                              <span>•</span>
+                              <span>{p.qtyLarge} كرتونة</span>
+                              <span>•</span>
+                              <span>{p.time}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {p.isPrinted ? (
+                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-full text-[10px] font-bold flex items-center gap-1">
+                              <PrinterCheck className="h-2.5 w-2.5" />
+                              <span>{isAr ? `مطبوع (${p.printCount})` : `Printed (${p.printCount})`}</span>
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-full text-[10px] font-bold flex items-center gap-1">
+                              <Printer className="h-2.5 w-2.5" />
+                              <span>{isAr ? 'بانتظار الطباعة' : 'Unprinted'}</span>
+                            </span>
+                          )}
+
+                          {/* Manual Print Confirmation / Toggle Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePalletPrinted(p.pallet, p.order)}
+                            className={`p-1.5 rounded-lg border transition cursor-pointer shrink-0 ${
+                              p.isPrinted
+                                ? 'bg-emerald-100/70 border-emerald-300 text-emerald-800 hover:bg-emerald-200'
+                                : 'bg-slate-100 border-slate-200 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50'
+                            }`}
+                            title={p.isPrinted ? (isAr ? 'تم تأكيد الطباعة - انقر للإلغاء' : 'Print confirmed - Click to clear') : (isAr ? 'تأكيد الطباعة يدوياً' : 'Confirm printed manually')}
+                          >
+                            <CheckCheck className={`h-3 w-3 ${p.isPrinted ? 'text-emerald-700' : 'text-slate-400'}`} />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleOpenPalletSticker(p.pallet, p.order)}
+                            className="p-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition cursor-pointer"
+                            title={isAr ? 'عرض وطباعة الاستيكر' : 'View Sticker'}
+                          >
+                            <Printer className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* PALLET PASSPORT INSPECTION MODAL (Sub-Tab 2: Detailed Pop-up) */}
       {inspectPalletModal && (() => {
         const { order, pallet, pIdx } = inspectPalletModal;
         const isLocked = isOrderLocked(order);
         const isTransferred = pallet.stagingStatus === 'transferred_to_fg' || pallet.status === 'transferred_to_fg';
+
+        const isWaiting = Boolean(pallet.isWaitingMaterials || pallet.status === 'waiting_materials' || pallet.stagingStatus === 'waiting_materials');
+        const stockCheck = isWaiting ? checkPalletStockAvailability(order, pallet) : null;
+        const isSufficient = stockCheck ? stockCheck.isSufficient : false;
 
         const targetProc = productionProcesses.find(
           (p) => (p.id || p.processCode) === (pallet.processId || pallet.processCode || order.processId || order.processCode)
@@ -9035,18 +12712,27 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
               {/* Header */}
               <div className="flex justify-between items-start border-b border-slate-100 pb-3">
                 <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-indigo-50 text-indigo-700 rounded-2xl border border-indigo-200">
+                  <div className={`p-2.5 rounded-2xl border ${isWaiting ? (isSufficient ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-amber-50 text-amber-700 border-amber-300') : 'bg-indigo-50 text-indigo-700 border-indigo-200'}`}>
                     <QrCode className="h-6 w-6" />
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <h3 className="font-extrabold text-base text-slate-900">
                         {isAr ? `جواز سفر الباليتة #${pallet.palletNumber || pIdx + 1}` : `Pallet Passport #${pallet.palletNumber || pIdx + 1}`}
                       </h3>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border flex items-center gap-1.5 ${qcConfig.bg}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${qcConfig.dot}`} />
-                        <span>{qcConfig.label}</span>
-                      </span>
+                      {isWaiting ? (
+                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black border flex items-center gap-1.5 ${
+                          isSufficient ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-amber-50 text-amber-800 border-amber-300'
+                        }`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${isSufficient ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
+                          <span>{isSufficient ? (isAr ? 'جاهز للصرف' : 'Stock Ready') : (isAr ? 'بانتظار توفر الخامات' : 'Waiting Materials')}</span>
+                        </span>
+                      ) : (
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border flex items-center gap-1.5 ${qcConfig.bg}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${qcConfig.dot}`} />
+                          <span>{qcConfig.label}</span>
+                        </span>
+                      )}
                       {isTransferred && (
                         <span className="px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded-full text-[10px] font-bold flex items-center gap-1">
                           <Lock className="h-2.5 w-2.5 text-slate-500" />
@@ -9078,6 +12764,70 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                   <X className="h-5 w-5" />
                 </button>
               </div>
+
+              {/* Waiting Materials Status Banner (Conditional) */}
+              {isWaiting && (
+                !isSufficient ? (
+                  <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0" />
+                        <span className="font-extrabold text-xs text-amber-950">
+                          {isAr ? '⚠️ باليتة معلقة بحالة «بانتظار توفر الخامات»' : '⚠️ Pallet in "Waiting Materials" Status'}
+                        </span>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-200 text-amber-900">
+                        {isAr ? 'لم تخصم من المخزون' : 'No Stock Deducted'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-amber-900 leading-relaxed">
+                      {isAr
+                        ? 'تم تسجيل هذه الباليتة دون خصم خامات من الصالة لعدم كفاية الرصيد وقت الإنتاج. تفاصيل عجز الخامات بالصالة حالياً:'
+                        : 'Saved without stock deduction due to shortage at registration time. Current floor shortages:'}
+                    </p>
+                    <div className="space-y-1 font-mono text-[11px] bg-white/80 p-2.5 rounded-xl border border-amber-200">
+                      {(stockCheck?.shortages || pallet.waitingMaterialsShortages || []).map((s, sIdx) => (
+                        <div key={sIdx} className="flex items-center justify-between text-slate-800">
+                          <span className="font-sans font-bold text-slate-900">
+                            • {s.nameAr || s.comp?.materialNameAr || s.itemId} {s.isPipeFeeding ? (isAr ? '(خزان سائل)' : '(Liquid Tank)') : ''}
+                          </span>
+                          <span className="text-rose-600 font-bold">
+                            {isAr ? 'عجز' : 'Deficit'}: {Number(s.deficit || 0).toFixed(1)} {s.unit || 'وحدة'} 
+                            <span className="text-slate-400 font-normal ms-1 text-[10px]">
+                              ({isAr ? 'المطلوب' : 'Req'} {Number(s.needed || 0).toFixed(1)} | {isAr ? 'المتاح' : 'Avail'} {Number(s.available || 0).toFixed(1)})
+                            </span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 bg-emerald-100 text-emerald-700 rounded-xl shrink-0">
+                        <CheckCircle2 className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <span className="font-extrabold text-xs text-emerald-950 block">
+                          {isAr ? 'الخامات متوفرة الآن بالكامل بصالة الإنتاج!' : 'Materials are now available on floor!'}
+                        </span>
+                        <span className="text-[11px] text-emerald-800">
+                          {isAr ? 'يمكنك الآن صرف الخامات بنقرة واحدة ونقل الباليتة للتام الجاهز للترحيل.' : 'You can now deduct stock and stage this pallet in 1-click.'}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isSaving}
+                      onClick={() => handleDeductAndStagePallet(order, pallet, pIdx)}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer shrink-0 disabled:opacity-40"
+                    >
+                      <Zap className="h-4 w-4 text-amber-300" />
+                      <span>{isAr ? 'صرف وترحيل للتام' : 'Stage to FG'}</span>
+                    </button>
+                  </div>
+                )
+              )}
 
               {/* Human-Readable Process Name (Highlighted Banner) */}
               <div className="p-3.5 bg-linear-to-r from-indigo-50 to-blue-50 rounded-2xl border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
@@ -9117,7 +12867,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                   </div>
                 </div>
                 <div className="font-mono font-bold text-xs text-rose-700 bg-white px-3 py-1.5 rounded-xl border border-rose-200 shadow-2xs text-center shrink-0">
-                  {displayBatchCode}
+                  <BatchRangeDisplay range={displayBatchCode} start={pallet.batchStart || bRange?.startBatch} end={pallet.batchEnd || bRange?.endBatch} />
                 </div>
               </div>
 
@@ -9337,7 +13087,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 </button>
 
                 <div className="flex items-center gap-2">
-                  {isGeneralAdmin && (
+                  {(isGeneralAdmin || canAdminModifyPallet || canReverse) && (
                     <button
                       type="button"
                       onClick={() => {
@@ -9368,6 +13118,19 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                     </button>
                   )}
 
+                  {isWaiting && isSufficient && (
+                    <button
+                      type="button"
+                      disabled={isSaving}
+                      onClick={() => handleDeductAndStagePallet(order, pallet, pIdx)}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+                      title={isAr ? 'صرف الخامات بالكامل ونقل الباليتة للتام الجاهز للترحيل' : 'Deduct stock and stage to FG'}
+                    >
+                      <Zap className="h-4 w-4 text-amber-300" />
+                      <span>{isAr ? 'صرف وترحيل للتام' : 'Stage to FG'}</span>
+                    </button>
+                  )}
+
                   {!isTransferred && (
                     <button
                       type="button"
@@ -9393,7 +13156,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       {/* PALLET PASSPORT MODAL (Sub-Tab 2) */}
       {showPalletModal && palletTargetOrder && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-3xl w-full p-5 sm:p-6 shadow-2xl border border-slate-200 space-y-4 my-6 max-h-[92vh] overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-5 sm:p-6 shadow-2xl border border-slate-200 space-y-4 my-6 max-h-[92vh] overflow-y-auto">
             <div className="sticky -top-6 -mt-6 pt-6 bg-white z-20 flex justify-between items-center border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-indigo-50 text-indigo-700 rounded-xl">
@@ -9431,7 +13194,20 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
               </button>
             </div>
 
-            <form onSubmit={handleSavePalletPassport} className="space-y-4 text-xs">
+            <form onSubmit={(e) => handleSavePalletPassport(false, [], e)} className="space-y-4 text-xs">
+              {palletFormData.isWaitingMaterials && (
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl flex items-center gap-2.5 text-xs text-amber-900">
+                  <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0" />
+                  <div>
+                    <span className="font-bold block">
+                      {isAr ? '⚠️ هذه الباليتة مسجلة بحالة «بانتظار توفر الخامات» (لم تُخصم من المخزون)' : '⚠️ This pallet is registered in "Waiting Materials" status (no stock deducted)'}
+                    </span>
+                    <span className="text-[11px] text-amber-800">
+                      {isAr ? 'عند الضغط على «حفظ وتأكيد الباليتة»، سيتم فحص الرصيد وصرفها إذا توفر، أو يمكنك النقر على «حفظ بحالة بانتظار الخامات» للإبقاء عليها كمعلقة.' : 'Submitting will verify if stock is now available, or you can click "Save as Waiting Materials" to keep it as waiting.'}
+                    </span>
+                  </div>
+                </div>
+              )}
               {isAdminPalletAction && (
                 <div className="p-3 bg-purple-50 border border-purple-200 rounded-2xl flex items-center gap-2.5 text-xs text-purple-900">
                   <ShieldAlert className="h-5 w-5 text-purple-600 shrink-0" />
@@ -9619,45 +13395,134 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                       </div>
                     </div>
                     <div className="font-mono font-bold text-xs text-rose-700 bg-white px-3 py-1.5 rounded-xl border border-rose-200 shadow-2xs text-center shrink-0">
-                      {bRange.displayRange}
+                      <BatchRangeDisplay range={bRange.displayRange} start={bRange.startBatch} end={bRange.endBatch} />
                     </div>
                   </div>
                 );
               })()}
 
               {/* CONFIRMED PRODUCTION PROCESS & STEP STAFFING */}
-              <div className="p-4 bg-indigo-50/50 rounded-2xl border border-indigo-200 space-y-3">
+              <div className={`p-4 rounded-2xl border space-y-3 ${
+                palletTargetOrder?.isRework ? 'bg-amber-50/50 border-amber-300' : 'bg-indigo-50/50 border-indigo-200'
+              }`}>
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-indigo-200/70 pb-2.5">
                   <div className="flex items-center gap-2">
-                    <Workflow className="h-4 w-4 text-indigo-700" />
+                    {palletTargetOrder?.isRework ? (
+                      <Sparkles className="h-4 w-4 text-amber-700 shrink-0" />
+                    ) : (
+                      <Workflow className="h-4 w-4 text-indigo-700 shrink-0" />
+                    )}
                     <div>
                       <span className="font-extrabold text-xs text-indigo-950 block">
-                        {isAr ? 'مسار التشغيل المعتمد للباليتة (Confirmed Process):' : 'Confirmed Production Process:'}
+                        {palletTargetOrder?.isRework
+                          ? (isAr ? 'مسار إعادة التشغيل المعتمد للباليتة (Rework SOP):' : 'Confirmed Rework Process:')
+                          : (isAr ? 'مسار التشغيل المعتمد للباليتة (Confirmed Process):' : 'Confirmed Production Process:')}
                       </span>
                       <span className="text-[10px] text-indigo-700">
-                        {palletTargetOrder.processCode ? (isAr ? `المحدد بالخطة: [${palletTargetOrder.processCode}] ${palletTargetOrder.processNameAr}` : `Planned: ${palletTargetOrder.processCode}`) : (isAr ? 'لم يحدد بالخطة' : 'Not set in plan')}
+                        {palletTargetOrder?.isRework
+                          ? (isAr ? 'يمكنك استيراد مسار سابق أو تعديل الخطوات وتوزيع العمال مباشرة' : 'Import past rework process or adjust steps & crew directly')
+                          : palletTargetOrder.processCode
+                          ? (isAr ? `المحدد بالخطة: [${palletTargetOrder.processCode}] ${palletTargetOrder.processNameAr}` : `Planned: ${palletTargetOrder.processCode}`)
+                          : (isAr ? 'لم يحدد بالخطة' : 'Not set in plan')}
                       </span>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <select
-                      value={palletFormData.processId}
-                      onChange={(e) => handlePalletProcessChange(e.target.value)}
-                      className="p-2 text-xs font-bold border border-indigo-300 rounded-xl bg-white text-indigo-950 focus:ring-2 focus:ring-indigo-500 shadow-2xs"
-                    >
-                      <option value="">{isAr ? '-- اختر مسار التشغيل --' : '-- Select Process --'}</option>
-                      {productionProcesses.filter((p) => p.status !== 'inactive').map((p) => (
-                        <option key={p.id || p.processCode} value={p.id || p.processCode}>
-                          [{p.processCode}] {p.nameAr || p.nameEn}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="w-64 max-w-full">
+                      <SearchableSelect
+                        options={palletProcessOptions}
+                        value={palletFormData.processId}
+                        onChange={(val) => {
+                          if (palletTargetOrder?.isRework) {
+                            handleSelectPalletReworkProcess(val);
+                          } else {
+                            handlePalletProcessChange(val);
+                          }
+                        }}
+                        placeholder={palletTargetOrder?.isRework ? (isAr ? '-- استيراد مسار سابق --' : '-- Import Past Rework --') : (isAr ? '-- اختر مسار التشغيل --' : '-- Select Process --')}
+                        searchPlaceholder={isAr ? 'ابحث في مسارات التشغيل...' : 'Search processes...'}
+                        emptyText={isAr ? 'لا توجد مسارات تشغيل مطابقة' : 'No matching processes'}
+                      />
+                    </div>
+
+                    {palletTargetOrder?.isRework && (
+                      <button
+                        type="button"
+                        onClick={() => handleSelectPalletReworkProcess('')}
+                        className="px-2.5 py-1.5 text-xs font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-xl flex items-center gap-1 transition cursor-pointer shadow-2xs shrink-0"
+                        title={isAr ? 'مسار خطوات جديدة فارغة' : 'New empty steps'}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        <span>{isAr ? 'جديد' : 'New'}</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                {/* Mandatory Step Completion Status Alert */}
-                {(() => {
+                {/* Library Preview & Autosave Bar (Rework Mode) */}
+                {palletTargetOrder?.isRework && (
+                  <div className="p-2.5 bg-amber-100/70 border border-amber-300/80 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs shadow-2xs">
+                    <div className="flex items-center gap-2 text-amber-950 font-bold min-w-0">
+                      <span className="text-[10px] bg-amber-200/90 text-amber-950 px-2 py-0.5 rounded-full shrink-0 font-mono font-bold">
+                        {isAr ? 'معاينة اسم المسار:' : 'Library Name:'}
+                      </span>
+                      <span className="truncate text-xs font-black">{palletReworkPreviewName}</span>
+                    </div>
+
+                    <div className="flex items-center gap-3 shrink-0 text-xs">
+                      {palletFormData.processId && (
+                        <label className="flex items-center gap-1.5 cursor-pointer font-bold text-amber-900 hover:text-amber-950">
+                          <input
+                            type="checkbox"
+                            checked={inheritReworkWithCrew}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setInheritReworkWithCrew(checked);
+                              if (palletFormData.processId) {
+                                handleSelectPalletReworkProcess(palletFormData.processId, checked);
+                              }
+                            }}
+                            className="rounded text-amber-600 focus:ring-amber-500 h-3.5 w-3.5"
+                          />
+                          <span>{isAr ? 'استيراد طاقم العمل' : 'Load crew'}</span>
+                        </label>
+                      )}
+
+                      <label className="flex items-center gap-1.5 cursor-pointer font-bold text-amber-900 hover:text-amber-950">
+                        <input
+                          type="checkbox"
+                          checked={palletAutosaveRework}
+                          onChange={(e) => setPalletAutosaveRework(e.target.checked)}
+                          className="rounded text-amber-600 focus:ring-amber-500 h-3.5 w-3.5"
+                        />
+                        <span>{isAr ? 'حفظ تلقائي لمكتبة الخط' : 'Autosave to line'}</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* Status / Alert Banner */}
+                {palletTargetOrder?.isRework ? (
+                  <div className="p-2.5 bg-amber-50 border border-amber-300 rounded-xl flex items-center justify-between gap-2 text-amber-900 text-xs shadow-2xs">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-amber-600 shrink-0" />
+                      <span className="font-bold">
+                        {isAr
+                          ? `أمر إعادة تشغيل (${palletFormData.stepStaffing?.length || 0} خطوات): يمكنك تعديل الخطوات وإسناد العمال؛ التعديلات تُحفظ للباليتة وتُزامن مع أمر التشغيل.`
+                          : `Rework order (${palletFormData.stepStaffing?.length || 0} steps): Customize steps & workers; changes save to pallet and two-way sync with the parent order.`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAddPalletReworkStep}
+                      className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition shrink-0 cursor-pointer shadow-2xs"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>{isAr ? 'إضافة خطوة' : 'Add Step'}</span>
+                    </button>
+                  </div>
+                ) : (() => {
                   const staffing = palletFormData.stepStaffing || [];
                   const missingMandatory = staffing.filter((s) => s.mandatory && (!s.workers || s.workers.length === 0));
                   if (missingMandatory.length > 0) {
@@ -9682,124 +13547,426 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                   );
                 })()}
 
-                {/* Step Staffing List */}
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {/* Active Crew Clipboard Banner */}
+                {copiedStepCrew && copiedStepCrew.length > 0 && (
+                  <div className="p-2 px-3 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center justify-between gap-2 text-xs text-emerald-900 shadow-2xs">
+                    <div className="flex items-center gap-2 truncate">
+                      <ClipboardPaste className="h-4 w-4 text-emerald-700 shrink-0" />
+                      <span className="font-bold">{isAr ? 'الحافظة نشطة:' : 'Clipboard active:'}</span>
+                      <span className="truncate text-[11px] text-emerald-800">
+                        {isAr
+                          ? `تم نسخ طاقم مكون من (${copiedStepCrew.length}) عمال [${copiedStepCrew.map((w) => w.workerName).join('، ')}]. اضغط "لصق" على أي خطوة لإضافتهم لطاقمها.`
+                          : `Copied crew with (${copiedStepCrew.length}) workers [${copiedStepCrew.map((w) => w.workerName).join(', ')}]. Click "Paste" on any step to append them.`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCopiedStepCrew(null)}
+                      className="text-[10px] text-emerald-700 hover:text-emerald-950 font-bold px-2 py-0.5 rounded hover:bg-emerald-100 transition shrink-0 cursor-pointer"
+                    >
+                      {isAr ? 'إلغاء' : 'Clear'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Step Staffing List Grouped by Mandatoriness */}
+                <div className="space-y-4 max-h-[420px] overflow-y-auto pr-1">
                   {(!palletFormData.stepStaffing || palletFormData.stepStaffing.length === 0) ? (
-                    <div className="p-4 text-center text-slate-400 bg-white rounded-xl border border-slate-200 text-xs">
-                      {isAr ? 'يرجى اختيار مسار تشغيل لعرض خطواته وتعيين الطاقم.' : 'Please select a process to view steps.'}
+                    <div className="p-5 text-center text-slate-400 bg-white rounded-2xl border border-slate-200 text-xs space-y-2">
+                      <div>
+                        {palletTargetOrder?.isRework
+                          ? (isAr ? 'لم تتم إضافة خطوات لإعادة التشغيل بعد.' : 'No rework steps defined yet.')
+                          : (isAr ? 'يرجى اختيار مسار تشغيل لعرض خطواته وتعيين الطاقم.' : 'Please select a process to view steps.')}
+                      </div>
+                      {palletTargetOrder?.isRework && (
+                        <button
+                          type="button"
+                          onClick={handleAddPalletReworkStep}
+                          className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer hover:bg-amber-700 shadow-2xs"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>{isAr ? 'إضافة أول خطوة' : 'Add First Step'}</span>
+                        </button>
+                      )}
                     </div>
                   ) : (
-                    palletFormData.stepStaffing.map((step) => {
-                      const isStepAssigned = (step.workers || []).length > 0;
-                      return (
-                        <div
-                          key={step.stepNum}
-                          className={`p-3 rounded-xl border transition-all ${
-                            step.mandatory && !isStepAssigned
-                              ? 'bg-rose-50/50 border-rose-300 shadow-2xs'
-                              : 'bg-white border-slate-200'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <span className={`w-6 h-6 rounded-full font-mono font-bold text-xs flex items-center justify-center shrink-0 ${
-                                step.mandatory && !isStepAssigned
-                                  ? 'bg-rose-600 text-white'
-                                  : 'bg-slate-100 text-slate-700'
-                              }`}>
-                                {step.stepNum}
-                              </span>
-                              <div>
-                                <span className="font-bold text-slate-900 text-xs">{step.stepName}</span>
-                                {step.stepDesc && (
-                                  <span className="text-[10px] text-slate-400 block font-normal">{step.stepDesc}</span>
+                    (() => {
+                      const mandatorySteps = palletFormData.stepStaffing.filter((s) => s.mandatory);
+                      const optionalSteps = palletFormData.stepStaffing.filter((s) => !s.mandatory);
+
+                      const renderPalletReworkStepCard = (step, idx) => {
+                        const isStepAssigned = (step.workers || []).length > 0;
+                        const isCopiedFromThis = lastCopiedStepNum === step.stepNum;
+                        const canPaste = Boolean(copiedStepCrew && copiedStepCrew.length > 0);
+
+                        return (
+                          <div
+                            key={step.stepNum || idx}
+                            className="p-3.5 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 transition-all flex flex-col justify-between gap-3 shadow-2xs"
+                          >
+                            <div className="space-y-2.5">
+                              {/* Step Top Bar: Badge, Step Name Input, Actions */}
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <span className="w-6 h-6 rounded-lg font-mono font-bold text-xs flex items-center justify-center shrink-0 bg-amber-100 text-amber-900 border border-amber-300">
+                                    {step.stepNum || idx + 1}
+                                  </span>
+                                  <input
+                                    type="text"
+                                    value={step.stepName || step.name || ''}
+                                    onChange={(e) => handleUpdatePalletReworkStepName(idx, e.target.value)}
+                                    placeholder={isAr ? `اسم خطوة إعادة التشغيل #${idx + 1}...` : `Rework step #${idx + 1} name...`}
+                                    className="w-full text-xs font-bold text-slate-800 bg-amber-50/40 border border-amber-200 focus:border-amber-500 focus:bg-white rounded-lg px-2.5 py-1 outline-none transition"
+                                  />
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {/* Subtle Copy Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyStepCrew(step)}
+                                    disabled={!isStepAssigned}
+                                    title={isStepAssigned ? (isAr ? 'نسخ طاقم هذه الخطوة' : 'Copy this step crew') : (isAr ? 'لا يوجد طاقم لنسخه' : 'No crew to copy')}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                      isCopiedFromThis
+                                        ? 'bg-emerald-600 text-white shadow-2xs'
+                                        : isStepAssigned
+                                        ? 'bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 border border-slate-200 hover:border-indigo-200'
+                                        : 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed'
+                                    }`}
+                                  >
+                                    <Copy className="h-3 w-3" />
+                                    <span>{isCopiedFromThis ? (isAr ? 'تم!' : 'Copied!') : (isAr ? 'نسخ' : 'Copy')}</span>
+                                  </button>
+
+                                  {/* Subtle Paste Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePasteStepCrewInPallet(step.stepNum)}
+                                    disabled={!canPaste}
+                                    title={canPaste ? (isAr ? `إضافة الطاقم المنسوخ (${copiedStepCrew.length} عمال) إلى طاقم هذه الخطوة` : `Append copied crew (${copiedStepCrew.length} workers) to this step`) : (isAr ? 'انسخ طاقماً من أي خطوة أولاً لتفعيله' : 'Copy a crew first')}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                      canPaste
+                                        ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-300 shadow-2xs'
+                                        : 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed opacity-50'
+                                    }`}
+                                  >
+                                    <ClipboardPaste className="h-3 w-3" />
+                                    <span>{isAr ? 'لصق' : 'Paste'}</span>
+                                  </button>
+
+                                  {/* Delete Step Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemovePalletReworkStep(idx)}
+                                    disabled={(palletFormData.stepStaffing || []).length <= 1}
+                                    title={isAr ? 'حذف هذه الخطوة' : 'Remove step'}
+                                    className="p-1 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Assigned Workers Chips */}
+                              <div className="flex flex-wrap items-center gap-1 min-h-[30px] p-1.5 bg-slate-50/80 rounded-xl border border-dashed border-slate-200">
+                                {!isStepAssigned ? (
+                                  <span className="text-[10px] text-slate-400 italic px-1">
+                                    {isAr ? 'لم يُسند عمال بعد' : 'No workers assigned yet'}
+                                  </span>
+                                ) : (
+                                  (step.workers || []).map((w) => (
+                                    <span
+                                      key={w.workerId}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-md text-[10px] font-bold shadow-2xs"
+                                    >
+                                      <User className="h-2.5 w-2.5 text-indigo-600 shrink-0" />
+                                      <span className="truncate max-w-[110px]">{w.workerName}</span>
+                                      {w.isManual && <span className="text-[8px] text-amber-600 font-mono">({isAr ? 'مؤقت' : 'M'})</span>}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleWorkerInPalletStep(step.stepNum, { id: w.workerId, name: w.workerName, isManual: w.isManual })}
+                                        className="hover:text-rose-600 p-0.5 cursor-pointer text-slate-400 hover:bg-rose-50 rounded"
+                                        title={isAr ? 'إزالة العامل من هذه الخطوة' : 'Remove worker'}
+                                      >
+                                        <X className="h-3 w-3" />
+                                      </button>
+                                    </span>
+                                  ))
                                 )}
                               </div>
                             </div>
 
-                            <div>
-                              {step.mandatory ? (
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold flex items-center gap-1 ${
-                                  isStepAssigned
-                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                    : 'bg-rose-100 text-rose-800 border border-rose-300'
-                                }`}>
-                                  {isAr ? (isStepAssigned ? '✓ إلزامي (مكتمل)' : '⚠️ إلزامي (مطلوب)') : (isStepAssigned ? '✓ Mandatory' : '⚠️ Mandatory')}
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
-                                  {isAr ? 'اختياري' : 'Optional'}
-                                </span>
-                              )}
+                            {/* Card Bottom: SearchableSelect to add worker + Quick Add */}
+                            <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                              <div className="flex-1 min-w-0">
+                                <SearchableSelect
+                                  options={getWorkerOptionsForStep(step.workers, palletFormData.processId, step.stepNum)}
+                                  value=""
+                                  onChange={(workerId) => {
+                                    if (!workerId) return;
+                                    const found = combinedWorkerPool.find((w) => w.id === workerId);
+                                    if (found) handleToggleWorkerInPalletStep(step.stepNum, found);
+                                  }}
+                                  placeholder={isAr ? '+ إضافة عامل للخطوة...' : '+ Assign worker...'}
+                                  searchPlaceholder={isAr ? 'ابحث عن عامل...' : 'Search worker...'}
+                                  emptyText={isAr ? 'لا يوجد عمال مطابقين' : 'No workers found'}
+                                />
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickWorkerTargetContext({ type: 'pallet', stepNum: step.stepNum });
+                                  setShowQuickWorkerModal(true);
+                                }}
+                                className="p-2 text-indigo-600 hover:bg-indigo-50 border border-indigo-200 rounded-xl text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-2xs"
+                                title={isAr ? 'إضافة عامل مؤقت جديد' : 'Quick add worker'}
+                              >
+                                <UserPlus className="h-3.5 w-3.5" />
+                                <span>{isAr ? 'جديد' : 'New'}</span>
+                              </button>
                             </div>
                           </div>
+                        );
+                      };
 
-                          {/* Assigned Worker Badges */}
-                          <div className="flex flex-wrap items-center gap-1.5 min-h-[32px] p-1.5 bg-slate-50 rounded-lg border border-dashed border-slate-200 mb-2">
-                            {(step.workers || []).length === 0 ? (
-                              <span className="text-[11px] text-slate-400 italic">
-                                {step.mandatory ? (isAr ? '⚠️ يجب تعيين عامل واحد على الأقل' : 'Must assign at least 1 worker') : (isAr ? 'لم يُسند عمال (اختياري)' : 'Optional')}
-                              </span>
-                            ) : (
-                              (step.workers || []).map((w) => (
-                                <span
-                                  key={w.workerId}
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-md text-[11px] font-bold"
-                                >
-                                  <User className="h-3 w-3 text-indigo-600" />
-                                  <span>{w.workerName}</span>
-                                  {w.isManual && <span className="text-[9px] text-amber-600 font-mono">({isAr ? 'مؤقت' : 'manual'})</span>}
+                      const renderPalletStepCard = (step) => {
+                        const isStepAssigned = (step.workers || []).length > 0;
+                        const isCopiedFromThis = lastCopiedStepNum === step.stepNum;
+                        const canPaste = Boolean(copiedStepCrew && copiedStepCrew.length > 0);
+
+                        return (
+                          <div
+                            key={step.stepNum}
+                            className={`p-3 rounded-2xl border transition-all flex flex-col justify-between gap-2.5 shadow-2xs ${
+                              step.mandatory && !isStepAssigned
+                                ? 'bg-rose-50/50 border-rose-300 ring-1 ring-rose-200'
+                                : step.mandatory && isStepAssigned
+                                ? 'bg-white border-emerald-300 ring-1 ring-emerald-200/50'
+                                : 'bg-white border-slate-200 hover:border-slate-300'
+                            }`}
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span
+                                    className={`w-6 h-6 rounded-lg font-mono font-bold text-xs flex items-center justify-center shrink-0 ${
+                                      step.mandatory && !isStepAssigned
+                                        ? 'bg-rose-600 text-white'
+                                        : step.mandatory && isStepAssigned
+                                        ? 'bg-emerald-100 text-emerald-900 border border-emerald-200'
+                                        : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                    }`}
+                                  >
+                                    {step.stepNum}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <span className="font-extrabold text-slate-900 text-xs block truncate" title={step.stepName}>
+                                      {step.stepName}
+                                    </span>
+                                    {step.stepDesc && (
+                                      <span className="text-[10px] text-slate-400 block truncate" title={step.stepDesc}>
+                                        {step.stepDesc}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {step.mandatory ? (
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold flex items-center gap-0.5 ${
+                                        isStepAssigned
+                                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                          : 'bg-rose-100 text-rose-800 border border-rose-300'
+                                      }`}
+                                    >
+                                      {isAr ? (isStepAssigned ? '✓ مُكتمل' : '⚠️ مطلوب') : (isStepAssigned ? '✓ Done' : '⚠️ Required')}
+                                    </span>
+                                  ) : (
+                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                                      {isAr ? 'اختياري' : 'Optional'}
+                                    </span>
+                                  )}
+
+                                  {/* Subtle Copy Button */}
                                   <button
                                     type="button"
-                                    onClick={() => handleToggleWorkerInPalletStep(step.stepNum, { id: w.workerId, name: w.workerName, isManual: w.isManual })}
-                                    className="hover:text-rose-600 p-0.5 cursor-pointer"
-                                    title={isAr ? 'إزالة العامل من هذه الخطوة' : 'Remove worker'}
+                                    onClick={() => handleCopyStepCrew(step)}
+                                    disabled={!isStepAssigned}
+                                    title={isStepAssigned ? (isAr ? 'نسخ طاقم هذه الخطوة' : 'Copy this step crew') : (isAr ? 'لا يوجد طاقم لنسخه' : 'No crew to copy')}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                      isCopiedFromThis
+                                        ? 'bg-emerald-600 text-white shadow-2xs'
+                                        : isStepAssigned
+                                        ? 'bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 border border-slate-200 hover:border-indigo-200'
+                                        : 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed'
+                                    }`}
                                   >
-                                    <X className="h-3 w-3" />
+                                    <Copy className="h-3 w-3" />
+                                    <span>{isCopiedFromThis ? (isAr ? 'تم!' : 'Copied!') : (isAr ? 'نسخ' : 'Copy')}</span>
                                   </button>
-                                </span>
-                              ))
-                            )}
+
+                                  {/* Subtle Paste Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePasteStepCrewInPallet(step.stepNum)}
+                                    disabled={!canPaste}
+                                    title={canPaste ? (isAr ? `إضافة الطاقم المنسوخ (${copiedStepCrew.length} عمال) إلى طاقم هذه الخطوة` : `Append copied crew (${copiedStepCrew.length} workers) to this step`) : (isAr ? 'انسخ طاقماً من أي خطوة أولاً لتفعيله' : 'Copy a crew first')}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                      canPaste
+                                        ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-300 shadow-2xs'
+                                        : 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed opacity-50'
+                                    }`}
+                                  >
+                                    <ClipboardPaste className="h-3 w-3" />
+                                    <span>{isAr ? 'لصق' : 'Paste'}</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Assigned Workers Chips */}
+                              <div className="flex flex-wrap items-center gap-1 min-h-[30px] p-1.5 bg-slate-50/80 rounded-xl border border-dashed border-slate-200 mt-2">
+                                {!isStepAssigned ? (
+                                  <span className="text-[10px] text-slate-400 italic px-1">
+                                    {step.mandatory
+                                      ? (isAr ? '⚠️ يجب تعيين عامل واحد على الأقل' : 'Must assign at least 1 worker')
+                                      : (isAr ? 'لم يُسند عمال (اختياري)' : 'Optional')}
+                                  </span>
+                                ) : (
+                                  (step.workers || []).map((w) => (
+                                    <span
+                                      key={w.workerId}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-md text-[10px] font-bold shadow-2xs"
+                                    >
+                                      <User className="h-2.5 w-2.5 text-indigo-600 shrink-0" />
+                                      <span className="truncate max-w-[110px]">{w.workerName}</span>
+                                      {w.isManual && <span className="text-[8px] text-amber-600 font-mono">({isAr ? 'مؤقت' : 'M'})</span>}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleWorkerInPalletStep(step.stepNum, { id: w.workerId, name: w.workerName, isManual: w.isManual })}
+                                        className="hover:text-rose-600 p-0.5 cursor-pointer text-slate-400 hover:bg-rose-50 rounded"
+                                        title={isAr ? 'إزالة العامل من هذه الخطوة' : 'Remove worker'}
+                                      >
+                                        <X className="h-3 w-3" />
+                                      </button>
+                                    </span>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Card Bottom: SearchableSelect to add worker + Quick Add */}
+                            <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                              <div className="flex-1 min-w-0">
+                                <SearchableSelect
+                                  options={getWorkerOptionsForStep(step.workers, palletFormData.processId, step.stepNum)}
+                                  value=""
+                                  onChange={(workerId) => {
+                                    if (!workerId) return;
+                                    const found = combinedWorkerPool.find((w) => w.id === workerId);
+                                    if (found) handleToggleWorkerInPalletStep(step.stepNum, found);
+                                  }}
+                                  placeholder={isAr ? '+ إضافة عامل للخطوة...' : '+ Assign worker...'}
+                                  searchPlaceholder={isAr ? 'ابحث عن عامل...' : 'Search worker...'}
+                                  emptyText={isAr ? 'لا يوجد عمال مطابقين' : 'No workers found'}
+                                />
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickWorkerTargetContext({ type: 'pallet', stepNum: step.stepNum });
+                                  setShowQuickWorkerModal(true);
+                                }}
+                                className="p-2 text-indigo-600 hover:bg-indigo-50 border border-indigo-200 rounded-xl text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-2xs"
+                                title={isAr ? 'إضافة عامل مؤقت جديد' : 'Quick add worker'}
+                              >
+                                <UserPlus className="h-3.5 w-3.5" />
+                                <span>{isAr ? 'جديد' : 'New'}</span>
+                              </button>
+                            </div>
                           </div>
+                        );
+                      };
 
-                          {/* Dropdown to assign worker + Quick Add */}
-                          <div className="flex items-center gap-2">
-                            <select
-                              value=""
-                              onChange={(e) => {
-                                if (!e.target.value) return;
-                                const found = combinedWorkerPool.find((w) => w.id === e.target.value);
-                                if (found) handleToggleWorkerInPalletStep(step.stepNum, found);
-                              }}
-                              className="flex-1 p-1.5 text-[11px] border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-indigo-500"
-                            >
-                              <option value="">{isAr ? '+ إضافة عامل للخطوة...' : '+ Assign worker to step...'}</option>
-                              {combinedWorkerPool.map((w) => {
-                                const isAlreadyAssigned = (step.workers || []).some((sw) => sw.workerId === w.id);
-                                return (
-                                  <option key={w.id} value={w.id} disabled={isAlreadyAssigned}>
-                                    {isAlreadyAssigned ? '✓ ' : ''}{w.name} {w.isManual ? (isAr ? '(مؤقت)' : '(manual)') : `[${w.role || w.department}]`}
-                                  </option>
-                                );
-                              })}
-                            </select>
-
+                      if (palletTargetOrder?.isRework) {
+                        return (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                              <span className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                                <Layers className="h-3.5 w-3.5 text-amber-600" />
+                                <span>{isAr ? 'خطوات مسار إعادة التشغيل للباليتة:' : 'Pallet Rework Steps:'}</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleAddPalletReworkStep}
+                                className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-2xs transition cursor-pointer"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                <span>{isAr ? 'إضافة خطوة' : 'Add Step'}</span>
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {palletFormData.stepStaffing.map((step, idx) => renderPalletReworkStepCard(step, idx))}
+                            </div>
                             <button
                               type="button"
-                              onClick={() => {
-                                setQuickWorkerTargetContext({ type: 'pallet', stepNum: step.stepNum });
-                                setShowQuickWorkerModal(true);
-                              }}
-                              className="p-1.5 text-indigo-600 hover:bg-indigo-50 border border-indigo-200 rounded-lg text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
-                              title={isAr ? 'إضافة عامل مؤقت جديد' : 'Quick add worker'}
+                              onClick={handleAddPalletReworkStep}
+                              className="w-full py-2.5 bg-amber-50 hover:bg-amber-100/80 text-amber-900 border border-dashed border-amber-300 rounded-2xl text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer shadow-2xs"
                             >
-                              <UserPlus className="h-3.5 w-3.5" />
-                              <span>{isAr ? 'جديد' : 'New'}</span>
+                              <Plus className="h-4 w-4 text-amber-600" />
+                              <span>{isAr ? '➕ إضافة خطوة جديدة لمسار إعادة التشغيل' : '➕ Add Custom Rework Step'}</span>
                             </button>
                           </div>
+                        );
+                      }
+
+                      return (
+                        <div className="space-y-4">
+                          {/* Mandatory Steps Group (On Top) */}
+                          {mandatorySteps.length > 0 && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between px-1">
+                                <span className="text-xs font-black text-indigo-950 flex items-center gap-1.5">
+                                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+                                  <span>{isAr ? 'خطوات التشغيل الإلزامية (Mandatory Steps):' : 'Mandatory Production Steps:'}</span>
+                                </span>
+                                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                                  mandatorySteps.every((s) => (s.workers || []).length > 0)
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : 'bg-rose-50 text-rose-700 border-rose-200'
+                                }`}>
+                                  {isAr ? `${mandatorySteps.filter((s) => (s.workers || []).length > 0).length} من ${mandatorySteps.length} مُعيّن` : `${mandatorySteps.filter((s) => (s.workers || []).length > 0).length} of ${mandatorySteps.length} assigned`}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {mandatorySteps.map(renderPalletStepCard)}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Optional Steps Group (Below) */}
+                          {optionalSteps.length > 0 && (
+                            <div className="space-y-2 pt-2 border-t border-indigo-200/60">
+                              <div className="flex items-center justify-between px-1">
+                                <span className="text-xs font-black text-slate-600 flex items-center gap-1.5">
+                                  <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                                  <span>{isAr ? 'خطوات التشغيل الاختيارية (Optional Steps):' : 'Optional Production Steps:'}</span>
+                                </span>
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                                  {isAr ? `${optionalSteps.length} خطوة` : `${optionalSteps.length} steps`}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {optionalSteps.map(renderPalletStepCard)}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
-                    })
+                    })()
                   )}
                 </div>
               </div>
@@ -9933,7 +14100,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => {
@@ -9945,6 +14112,19 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 >
                   {isAr ? 'إلغاء' : 'Cancel'}
                 </button>
+
+                {!isAdminPalletAction && (
+                  <button
+                    type="button"
+                    disabled={isSaving}
+                    onClick={() => handleSavePalletPassport(true, [])}
+                    className="px-4 py-2 border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+                    title={isAr ? 'حفظ الباليتة كمعلقة بانتظار توفر الخامات دون خصم مخزني' : 'Save pallet as waiting materials without inventory deduction'}
+                  >
+                    <Clock className="h-4 w-4 text-amber-600" />
+                    <span>{isAr ? 'حفظ بحالة «بانتظار الخامات»' : 'Save as Waiting Materials'}</span>
+                  </button>
+                )}
 
                 <button
                   type="submit"
@@ -10406,176 +14586,608 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
               </div>
 
               {/* SECTION 4: PRODUCTION PROCESS & STEP STAFFING (مسار التشغيل وتعيين الطاقم) */}
-              <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-200/90 shadow-2xs space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/80 pb-2">
+              <div className={`p-4 rounded-2xl border shadow-2xs space-y-3 ${planFormData.isRework ? 'bg-amber-50/40 border-amber-200' : 'bg-slate-50/80 border-slate-200/90'}`}>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/80 pb-2.5">
                   <span className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5">
-                    <Workflow className="h-4 w-4 text-cyan-600" />
-                    <span>{isAr ? '٤. مسار التشغيل وتعيين طاقم العمل (Production Process & SOP):' : '4. Production Process & SOP Staffing:'}</span>
+                    {planFormData.isRework ? (
+                      <Wrench className="h-4 w-4 text-amber-600" />
+                    ) : (
+                      <Workflow className="h-4 w-4 text-cyan-600" />
+                    )}
+                    <span>
+                      {planFormData.isRework
+                        ? (isAr ? '٤. مسار خطوات التصليح المخصصة (Rework SOP & Staffing):' : '4. Custom Rework SOP & Staffing:')
+                        : (isAr ? '٤. مسار التشغيل وتعيين طاقم العمل (Production Process & SOP):' : '4. Production Process & SOP Staffing:')}
+                    </span>
                   </span>
 
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-500 font-semibold">{isAr ? 'المسار المفضل:' : 'Preferred Process:'}</span>
-                    <select
-                      value={planFormData.processId}
-                      onChange={(e) => handlePlanProcessChange(e.target.value)}
-                      className="p-1.5 text-xs font-bold border border-cyan-300 rounded-xl bg-white text-slate-900 focus:ring-2 focus:ring-cyan-500 shadow-2xs"
-                    >
-                      <option value="">{isAr ? '-- اختر مسار التشغيل --' : '-- Select Process --'}</option>
-                      {(() => {
-                        const compProcs = getCompatibleProcesses(planFormData.finishedProductId);
-                        const compIds = new Set(compProcs.map((p) => p.id || p.processCode));
-                        const otherProcs = productionProcesses.filter((p) => p.status !== 'inactive' && !compIds.has(p.id || p.processCode));
-
-                        return (
-                          <>
-                            {compProcs.length > 0 && (
-                              <optgroup label={isAr ? 'مسارات متوافقة مع الصنف' : 'Compatible Processes'}>
-                                {compProcs.map((p) => (
-                                  <option key={p.id || p.processCode} value={p.id || p.processCode}>
-                                    [{p.processCode}] {p.nameAr || p.nameEn}
-                                  </option>
-                                ))}
-                              </optgroup>
-                            )}
-                            {otherProcs.length > 0 && (
-                              <optgroup label={isAr ? 'مسارات تشغيل أخرى' : 'Other Processes'}>
-                                {otherProcs.map((p) => (
-                                  <option key={p.id || p.processCode} value={p.id || p.processCode}>
-                                    [{p.processCode}] {p.nameAr || p.nameEn}
-                                  </option>
-                                ))}
-                              </optgroup>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </select>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {planFormData.isRework ? (
+                      <>
+                        <span className="text-[11px] text-amber-900 font-semibold">{isAr ? 'مسارات سابقة:' : 'Past Rework:'}</span>
+                        <div className="w-56 max-w-full">
+                          <SearchableSelect
+                            options={availablePlanReworkProcesses}
+                            value={planFormData.processId}
+                            onChange={(val) => handleSelectPlanReworkProcess(val, inheritReworkWithCrew)}
+                            placeholder={isAr ? '-- اختر مسار تصليح سابق --' : '-- Select Past Rework SOP --'}
+                            searchPlaceholder={isAr ? 'ابحث في مسارات التصليح...' : 'Search rework SOPs...'}
+                            emptyText={isAr ? 'لا توجد مسارات تصليح سابقة' : 'No past rework SOPs'}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleSelectPlanReworkProcess('');
+                            handleAddPlanReworkStep();
+                          }}
+                          className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer transition shadow-2xs"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>{isAr ? 'خطوات جديدة' : 'New Steps'}</span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-[11px] text-slate-500 font-semibold">{isAr ? 'المسار المفضل:' : 'Preferred Process:'}</span>
+                        <div className="w-64 max-w-full">
+                          <SearchableSelect
+                            options={planProcessOptions}
+                            value={planFormData.processId}
+                            onChange={(val) => handlePlanProcessChange(val)}
+                            placeholder={isAr ? '-- اختر مسار التشغيل --' : '-- Select Process --'}
+                            searchPlaceholder={isAr ? 'ابحث في مسارات التشغيل...' : 'Search processes...'}
+                            emptyText={isAr ? 'لا توجد مسارات تشغيل مطابقة' : 'No matching processes'}
+                          />
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
-                {/* Optional note explaining planning vs pallet execution */}
-                <div className="p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-xl flex items-start gap-2 text-blue-900 text-[11px]">
-                  <Sparkles className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold">{isAr ? 'مرونة التخطيط المسبق:' : 'Flexible Planning Rule:'} </span>
-                    <span>
+                {/* Rework Library Preview & Controls Bar */}
+                {planFormData.isRework && (
+                  <div className="p-3 bg-amber-100/60 border border-amber-200 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Sparkles className="h-4 w-4 text-amber-700 shrink-0" />
+                      <div className="min-w-0">
+                        <span className="font-bold text-amber-950 block text-[11px]">
+                          {isAr ? 'اسم المسار التلقائي في مكتبة الخط:' : 'Line Library Process Name Preview:'}
+                        </span>
+                        <span className="text-[11px] font-mono font-extrabold text-amber-900 truncate block">
+                          {planReworkPreviewName || (isAr ? 'بدون اسم' : 'Unnamed')}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 shrink-0 text-[11px]">
+                      {planFormData.processId && (
+                        <label className="flex items-center gap-1.5 cursor-pointer font-bold text-amber-900 hover:text-amber-950">
+                          <input
+                            type="checkbox"
+                            checked={inheritReworkWithCrew}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setInheritReworkWithCrew(checked);
+                              if (planFormData.processId) {
+                                handleSelectPlanReworkProcess(planFormData.processId, checked);
+                              }
+                            }}
+                            className="rounded text-amber-600 focus:ring-amber-500 h-3.5 w-3.5"
+                          />
+                          <span>{isAr ? 'استيراد طاقم العمل السابق أيضاً' : 'Also load previous crew'}</span>
+                        </label>
+                      )}
+
+                      <label className="flex items-center gap-1.5 cursor-pointer font-bold text-amber-900 hover:text-amber-950">
+                        <input
+                          type="checkbox"
+                          checked={autosaveReworkProcess}
+                          onChange={(e) => setAutosaveReworkProcess(e.target.checked)}
+                          className="rounded text-amber-600 focus:ring-amber-500 h-3.5 w-3.5"
+                        />
+                        <span>{isAr ? 'حفظ تلقائي للمسار في مكتبة الخط' : 'Autosave to line library'}</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* Staff Inheritance Quick Option (If candidate orders exist for this SOP process) */}
+                {!planFormData.isRework && eligibleInheritanceOrders.orders.length > 0 && (
+                  <div className="p-3 bg-gradient-to-r from-amber-50/90 via-orange-50/50 to-amber-50/90 border border-amber-200/90 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-2xs">
+                    <div className="flex items-start sm:items-center gap-2.5">
+                      <div className="p-1.5 bg-amber-100 text-amber-800 rounded-lg shrink-0 mt-0.5 sm:mt-0">
+                        <Users className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold text-amber-950">
+                            {eligibleInheritanceOrders.isFallback
+                              ? (isAr ? `استيراد طاقم من تاريخ سابق (${eligibleInheritanceOrders.fallbackDate}):` : `Inherit Crew from Recent Order (${eligibleInheritanceOrders.fallbackDate}):`)
+                              : (isAr ? 'استيراد طاقم عمل مسار مماثل (اليوم):' : 'Inherit Crew from Same-Day Order:')}
+                          </span>
+                          <span className="text-[10px] font-semibold bg-amber-200/70 text-amber-900 px-1.5 py-0.2 rounded-full">
+                            {eligibleInheritanceOrders.orders.length} {isAr ? 'أمر متاح' : 'available'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-amber-800/90 leading-tight mt-0.5">
+                          {isAr
+                            ? 'يمكنك استيراد وتطبيق توزيع العمال فوراً من أمر تشغيل آخر استخدم نفس مسار التشغيل.'
+                            : 'Quickly copy and apply the crew assignment roster from another order using this same process.'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 w-full md:w-auto shrink-0">
+                      <div className="w-full md:w-72 max-w-full">
+                        <SearchableSelect
+                          options={inheritOrderOptions}
+                          value={selectedInheritOrderId}
+                          onChange={(val) => setSelectedInheritOrderId(val)}
+                          placeholder={isAr ? '-- اختر أمر التشغيل المصدر --' : '-- Select Source Order --'}
+                          searchPlaceholder={isAr ? 'ابحث بالمنتج أو رقم الأمر...' : 'Search product or order #...'}
+                          emptyText={isAr ? 'لا توجد أوامر مطابقة' : 'No matching orders'}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleApplyStaffInheritance}
+                        disabled={!selectedInheritOrderId}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition shrink-0 cursor-pointer shadow-2xs ${
+                          selectedInheritOrderId
+                            ? 'bg-amber-600 hover:bg-amber-700 text-white shadow-amber-200 active:scale-95'
+                            : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
+                        }`}
+                        title={!selectedInheritOrderId ? (isAr ? 'اختر أمر تشغيل أولاً' : 'Select an order first') : ''}
+                      >
+                        <Users className="h-3.5 w-3.5" />
+                        <span>{isAr ? 'استيراد الطاقم' : 'Inherit Crew'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Staff Inheritance Success Feedback Toast/Banner */}
+                {!planFormData.isRework && inheritFeedback && (
+                  <div className="p-2.5 px-3 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center gap-2 text-xs text-emerald-900 shadow-2xs animate-in fade-in duration-200">
+                    <Check className="h-4 w-4 text-emerald-600 shrink-0" />
+                    <span className="font-bold">
                       {isAr
-                        ? 'يمكنك توزيع وتعيين طاقم العمل على خطوات مسار التشغيل الآن أو تركها ليتم تحديدها بصالة الإنتاج. تعيين عمال للخطوات الإلزامية اختياري هنا بالخطة، ولكنه إلزامي قطعي عند اعتماد كل باليتة.'
-                        : 'Staffing can be assigned in advance or left for floor completion. Mandatory steps are skippable during planning, but strictly enforced on pallet completion.'}
+                        ? 'تم استيراد طاقم العمل وتحديث الذاكرة اللحظية للخطوات بنجاح!'
+                        : 'Crew assigned successfully and global step memory updated!'}
                     </span>
                   </div>
-                </div>
+                )}
 
-                {/* Steps and Multi-Worker Staffing Grid */}
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {/* Optional note explaining planning vs pallet execution */}
+                {!planFormData.isRework && (
+                  <div className="p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-xl flex items-start gap-2 text-blue-900 text-[11px]">
+                    <Sparkles className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold">{isAr ? 'مرونة التخطيط المسبق:' : 'Flexible Planning Rule:'} </span>
+                      <span>
+                        {isAr
+                          ? 'يمكنك توزيع وتعيين طاقم العمل على خطوات مسار التشغيل الآن أو تركها ليتم تحديدها بصالة الإنتاج. تعيين عمال للخطوات الإلزامية اختياري هنا بالخطة، ولكنه إلزامي قطعي عند اعتماد كل باليتة.'
+                          : 'Staffing can be assigned in advance or left for floor completion. Mandatory steps are skippable during planning, but strictly enforced on pallet completion.'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Active Crew Clipboard Banner */}
+                {copiedStepCrew && copiedStepCrew.length > 0 && (
+                  <div className="p-2 px-3 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center justify-between gap-2 text-xs text-emerald-900 shadow-2xs">
+                    <div className="flex items-center gap-2 truncate">
+                      <ClipboardPaste className="h-4 w-4 text-emerald-700 shrink-0" />
+                      <span className="font-bold">{isAr ? 'الحافظة نشطة:' : 'Clipboard active:'}</span>
+                      <span className="truncate text-[11px] text-emerald-800">
+                        {isAr
+                          ? `تم نسخ طاقم مكون من (${copiedStepCrew.length}) عمال [${copiedStepCrew.map((w) => w.workerName).join('، ')}]. اضغط "لصق" على أي خطوة لإضافتهم لطاقمها.`
+                          : `Copied crew with (${copiedStepCrew.length}) workers [${copiedStepCrew.map((w) => w.workerName).join(', ')}]. Click "Paste" on any step to append them.`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCopiedStepCrew(null)}
+                      className="text-[10px] text-emerald-700 hover:text-emerald-950 font-bold px-2 py-0.5 rounded hover:bg-emerald-100 transition shrink-0 cursor-pointer"
+                    >
+                      {isAr ? 'إلغاء' : 'Clear'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Steps and Multi-Worker Staffing Grid Grouped by Mandatoriness */}
+                <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
                   {(!planFormData.stepStaffing || planFormData.stepStaffing.length === 0) ? (
-                    <div className="p-4 text-center text-slate-400 bg-white rounded-xl border border-slate-200 text-xs">
-                      {isAr ? 'لم يتم تحديد مسار تشغيل. اختر مسار تشغيل من القائمة أعلاه لعرض خطواته وتوزيع الطاقم.' : 'No process selected. Choose a process to view its steps.'}
+                    <div className="p-5 text-center text-slate-400 bg-white rounded-2xl border border-slate-200 text-xs space-y-2">
+                      <div>
+                        {planFormData.isRework
+                          ? (isAr ? 'لم تتم إضافة خطوات لإعادة التشغيل بعد.' : 'No rework steps defined yet.')
+                          : (isAr ? 'لم يتم تحديد مسار تشغيل. اختر مسار تشغيل من القائمة أعلاه لعرض خطواته وتوزيع الطاقم.' : 'No process selected. Choose a process to view its steps.')}
+                      </div>
+                      {planFormData.isRework && (
+                        <button
+                          type="button"
+                          onClick={handleAddPlanReworkStep}
+                          className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer hover:bg-amber-700 shadow-2xs"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>{isAr ? 'إضافة أول خطوة' : 'Add First Step'}</span>
+                        </button>
+                      )}
                     </div>
                   ) : (
-                    planFormData.stepStaffing.map((step) => {
-                      const isStepAssigned = (step.workers || []).length > 0;
-                      return (
-                        <div
-                          key={step.stepNum}
-                          className="p-3 bg-white rounded-xl border border-slate-200 hover:border-slate-300 transition-all space-y-2"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-700 font-mono font-bold text-xs flex items-center justify-center shrink-0">
-                                {step.stepNum}
-                              </span>
-                              <div>
-                                <span className="font-bold text-slate-900 text-xs">{step.stepName}</span>
-                                {step.stepDesc && (
-                                  <span className="text-[10px] text-slate-400 block font-normal">{step.stepDesc}</span>
+                    (() => {
+                      const mandatorySteps = planFormData.stepStaffing.filter((s) => s.mandatory);
+                      const optionalSteps = planFormData.stepStaffing.filter((s) => !s.mandatory);
+
+                      const renderPlanReworkStepCard = (step, idx) => {
+                        const isStepAssigned = (step.workers || []).length > 0;
+                        const isCopiedFromThis = lastCopiedStepNum === step.stepNum;
+                        const canPaste = Boolean(copiedStepCrew && copiedStepCrew.length > 0);
+
+                        return (
+                          <div
+                            key={step.stepNum || idx}
+                            className="p-3.5 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 transition-all flex flex-col justify-between gap-3 shadow-2xs"
+                          >
+                            <div className="space-y-2.5">
+                              {/* Step Top Bar: Badge, Step Name Input, Actions */}
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <span className="w-6 h-6 rounded-lg font-mono font-bold text-xs flex items-center justify-center shrink-0 bg-amber-100 text-amber-900 border border-amber-300">
+                                    {step.stepNum || idx + 1}
+                                  </span>
+                                  <input
+                                    type="text"
+                                    value={step.stepName || step.name || ''}
+                                    onChange={(e) => handleUpdatePlanReworkStepName(idx, e.target.value)}
+                                    placeholder={isAr ? `اسم خطوة إعادة التشغيل #${idx + 1}...` : `Rework step #${idx + 1} name...`}
+                                    className="w-full text-xs font-bold text-slate-800 bg-amber-50/40 border border-amber-200 focus:border-amber-500 focus:bg-white rounded-lg px-2.5 py-1 outline-none transition"
+                                  />
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {/* Subtle Copy Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyStepCrew(step)}
+                                    disabled={!isStepAssigned}
+                                    title={isStepAssigned ? (isAr ? 'نسخ طاقم هذه الخطوة' : 'Copy this step crew') : (isAr ? 'لا يوجد طاقم لنسخه' : 'No crew to copy')}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                      isCopiedFromThis
+                                        ? 'bg-emerald-600 text-white shadow-2xs'
+                                        : isStepAssigned
+                                        ? 'bg-slate-100 hover:bg-cyan-50 text-slate-700 hover:text-cyan-700 border border-slate-200 hover:border-cyan-200'
+                                        : 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed'
+                                    }`}
+                                  >
+                                    <Copy className="h-3 w-3" />
+                                    <span>{isCopiedFromThis ? (isAr ? 'تم!' : 'Copied!') : (isAr ? 'نسخ' : 'Copy')}</span>
+                                  </button>
+
+                                  {/* Subtle Paste Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePasteStepCrewInPlan(step.stepNum)}
+                                    disabled={!canPaste}
+                                    title={canPaste ? (isAr ? `إضافة الطاقم المنسوخ (${copiedStepCrew.length} عمال) إلى طاقم هذه الخطوة` : `Append copied crew (${copiedStepCrew.length} workers) to this step`) : (isAr ? 'انسخ طاقماً من أي خطوة أولاً لتفعيله' : 'Copy a crew first')}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                      canPaste
+                                        ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-300 shadow-2xs'
+                                        : 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed opacity-50'
+                                    }`}
+                                  >
+                                    <ClipboardPaste className="h-3 w-3" />
+                                    <span>{isAr ? 'لصق' : 'Paste'}</span>
+                                  </button>
+
+                                  {/* Delete Step Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemovePlanReworkStep(idx)}
+                                    disabled={(planFormData.stepStaffing || []).length <= 1}
+                                    title={isAr ? 'حذف هذه الخطوة' : 'Remove step'}
+                                    className="p-1 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Assigned Workers Chips */}
+                              <div className="flex flex-wrap items-center gap-1 min-h-[30px] p-1.5 bg-slate-50/80 rounded-xl border border-dashed border-slate-200">
+                                {!isStepAssigned ? (
+                                  <span className="text-[10px] text-slate-400 italic px-1">
+                                    {isAr ? 'لم يُسند عمال بعد (اختياري بالخطة)' : 'No workers assigned yet'}
+                                  </span>
+                                ) : (
+                                  (step.workers || []).map((w) => (
+                                    <span
+                                      key={w.workerId}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-md text-[10px] font-bold shadow-2xs"
+                                    >
+                                      <User className="h-2.5 w-2.5 text-indigo-600 shrink-0" />
+                                      <span className="truncate max-w-[110px]">{w.workerName}</span>
+                                      {w.isManual && <span className="text-[8px] text-amber-600 font-mono">({isAr ? 'مؤقت' : 'M'})</span>}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleWorkerInPlanStep(step.stepNum, { id: w.workerId, name: w.workerName, isManual: w.isManual })}
+                                        className="hover:text-rose-600 p-0.5 cursor-pointer text-slate-400 hover:bg-rose-50 rounded"
+                                        title={isAr ? 'إزالة العامل' : 'Remove worker'}
+                                      >
+                                        <X className="h-3 w-3" />
+                                      </button>
+                                    </span>
+                                  ))
                                 )}
                               </div>
                             </div>
 
-                            <div>
-                              {step.mandatory ? (
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 ${
-                                  isStepAssigned
-                                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                    : 'bg-amber-50 text-amber-800 border border-amber-200'
-                                }`}>
-                                  {isAr ? (isStepAssigned ? '✓ إلزامي (مُعيّن)' : 'إلزامي (مؤجل)') : (isStepAssigned ? '✓ Mandatory' : 'Mandatory (Later)')}
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
-                                  {isAr ? 'اختياري' : 'Optional'}
-                                </span>
-                              )}
+                            {/* Card Bottom: SearchableSelect to add worker + Quick Add */}
+                            <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                              <div className="flex-1 min-w-0">
+                                <SearchableSelect
+                                  options={getWorkerOptionsForStep(step.workers, planFormData.processId, step.stepNum)}
+                                  value=""
+                                  onChange={(workerId) => {
+                                    if (!workerId) return;
+                                    const found = combinedWorkerPool.find((w) => w.id === workerId);
+                                    if (found) handleToggleWorkerInPlanStep(step.stepNum, found);
+                                  }}
+                                  placeholder={isAr ? '+ إضافة عامل للخطوة...' : '+ Assign worker...'}
+                                  searchPlaceholder={isAr ? 'ابحث عن عامل...' : 'Search worker...'}
+                                  emptyText={isAr ? 'لا يوجد عمال مطابقين' : 'No workers found'}
+                                />
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickWorkerTargetContext({ type: 'plan', stepNum: step.stepNum });
+                                  setShowQuickWorkerModal(true);
+                                }}
+                                className="p-2 text-cyan-700 hover:bg-cyan-50 border border-cyan-300 rounded-xl text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-2xs"
+                                title={isAr ? 'إضافة عامل مؤقت جديد' : 'Quick add worker'}
+                              >
+                                <UserPlus className="h-3.5 w-3.5" />
+                                <span>{isAr ? 'جديد' : 'New'}</span>
+                              </button>
                             </div>
                           </div>
+                        );
+                      };
 
-                          {/* Assigned Workers Chips */}
-                          <div className="flex flex-wrap items-center gap-1.5 min-h-[30px] p-1.5 bg-slate-50 rounded-lg border border-dashed border-slate-200">
-                            {(step.workers || []).length === 0 ? (
-                              <span className="text-[11px] text-slate-400 italic">
-                                {isAr ? 'لم يُسند عمال بعد' : 'No workers assigned yet'}
-                              </span>
-                            ) : (
-                              (step.workers || []).map((w) => (
-                                <span
-                                  key={w.workerId}
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-md text-[11px] font-bold"
-                                >
-                                  <User className="h-3 w-3 text-indigo-600" />
-                                  <span>{w.workerName}</span>
-                                  {w.isManual && <span className="text-[9px] text-amber-600 font-mono">({isAr ? 'مؤقت' : 'manual'})</span>}
+                      const renderPlanStepCard = (step) => {
+                        const isStepAssigned = (step.workers || []).length > 0;
+                        const isCopiedFromThis = lastCopiedStepNum === step.stepNum;
+                        const canPaste = Boolean(copiedStepCrew && copiedStepCrew.length > 0);
+
+                        return (
+                          <div
+                            key={step.stepNum}
+                            className={`p-3 rounded-2xl border transition-all flex flex-col justify-between gap-2.5 shadow-2xs ${
+                              step.mandatory
+                                ? isStepAssigned
+                                  ? 'bg-white border-emerald-300 ring-1 ring-emerald-200/50'
+                                  : 'bg-amber-50/40 border-amber-300'
+                                : 'bg-white border-slate-200 hover:border-slate-300'
+                            }`}
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span
+                                    className={`w-6 h-6 rounded-lg font-mono font-bold text-xs flex items-center justify-center shrink-0 ${
+                                      step.mandatory
+                                        ? isStepAssigned
+                                          ? 'bg-emerald-100 text-emerald-900 border border-emerald-200'
+                                          : 'bg-amber-100 text-amber-900 border border-amber-300'
+                                        : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                    }`}
+                                  >
+                                    {step.stepNum}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <span className="font-extrabold text-slate-900 text-xs block truncate" title={step.stepName}>
+                                      {step.stepName}
+                                    </span>
+                                    {step.stepDesc && (
+                                      <span className="text-[10px] text-slate-400 block truncate" title={step.stepDesc}>
+                                        {step.stepDesc}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {step.mandatory ? (
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold flex items-center gap-0.5 ${
+                                        isStepAssigned
+                                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                          : 'bg-amber-50 text-amber-800 border border-amber-200'
+                                      }`}
+                                    >
+                                      {isAr ? (isStepAssigned ? '✓ مُعيّن' : 'مؤجل') : (isStepAssigned ? '✓ Assigned' : 'Pending')}
+                                    </span>
+                                  ) : (
+                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                                      {isAr ? 'اختياري' : 'Optional'}
+                                    </span>
+                                  )}
+
+                                  {/* Subtle Copy Button */}
                                   <button
                                     type="button"
-                                    onClick={() => handleToggleWorkerInPlanStep(step.stepNum, { id: w.workerId, name: w.workerName, isManual: w.isManual })}
-                                    className="hover:text-rose-600 p-0.5 cursor-pointer"
-                                    title={isAr ? 'إزالة العامل' : 'Remove worker'}
+                                    onClick={() => handleCopyStepCrew(step)}
+                                    disabled={!isStepAssigned}
+                                    title={isStepAssigned ? (isAr ? 'نسخ طاقم هذه الخطوة' : 'Copy this step crew') : (isAr ? 'لا يوجد طاقم لنسخه' : 'No crew to copy')}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                      isCopiedFromThis
+                                        ? 'bg-emerald-600 text-white shadow-2xs'
+                                        : isStepAssigned
+                                        ? 'bg-slate-100 hover:bg-cyan-50 text-slate-700 hover:text-cyan-700 border border-slate-200 hover:border-cyan-200'
+                                        : 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed'
+                                    }`}
                                   >
-                                    <X className="h-3 w-3" />
+                                    <Copy className="h-3 w-3" />
+                                    <span>{isCopiedFromThis ? (isAr ? 'تم!' : 'Copied!') : (isAr ? 'نسخ' : 'Copy')}</span>
                                   </button>
-                                </span>
-                              ))
-                            )}
+
+                                  {/* Subtle Paste Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePasteStepCrewInPlan(step.stepNum)}
+                                    disabled={!canPaste}
+                                    title={canPaste ? (isAr ? `إضافة الطاقم المنسوخ (${copiedStepCrew.length} عمال) إلى طاقم هذه الخطوة` : `Append copied crew (${copiedStepCrew.length} workers) to this step`) : (isAr ? 'انسخ طاقماً من أي خطوة أولاً لتفعيله' : 'Copy a crew first')}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                      canPaste
+                                        ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-300 shadow-2xs'
+                                        : 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed opacity-50'
+                                    }`}
+                                  >
+                                    <ClipboardPaste className="h-3 w-3" />
+                                    <span>{isAr ? 'لصق' : 'Paste'}</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Assigned Workers Chips */}
+                              <div className="flex flex-wrap items-center gap-1 min-h-[30px] p-1.5 bg-slate-50/80 rounded-xl border border-dashed border-slate-200 mt-2">
+                                {!isStepAssigned ? (
+                                  <span className="text-[10px] text-slate-400 italic px-1">
+                                    {isAr ? 'لم يُسند عمال بعد' : 'No workers assigned'}
+                                  </span>
+                                ) : (
+                                  (step.workers || []).map((w) => (
+                                    <span
+                                      key={w.workerId}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-md text-[10px] font-bold shadow-2xs"
+                                    >
+                                      <User className="h-2.5 w-2.5 text-indigo-600 shrink-0" />
+                                      <span className="truncate max-w-[110px]">{w.workerName}</span>
+                                      {w.isManual && <span className="text-[8px] text-amber-600 font-mono">({isAr ? 'مؤقت' : 'M'})</span>}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleWorkerInPlanStep(step.stepNum, { id: w.workerId, name: w.workerName, isManual: w.isManual })}
+                                        className="hover:text-rose-600 p-0.5 cursor-pointer text-slate-400 hover:bg-rose-50 rounded"
+                                        title={isAr ? 'إزالة العامل' : 'Remove worker'}
+                                      >
+                                        <X className="h-3 w-3" />
+                                      </button>
+                                    </span>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Card Bottom: SearchableSelect to add worker + Quick Add */}
+                            <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                              <div className="flex-1 min-w-0">
+                                <SearchableSelect
+                                  options={getWorkerOptionsForStep(step.workers, planFormData.processId, step.stepNum)}
+                                  value=""
+                                  onChange={(workerId) => {
+                                    if (!workerId) return;
+                                    const found = combinedWorkerPool.find((w) => w.id === workerId);
+                                    if (found) handleToggleWorkerInPlanStep(step.stepNum, found);
+                                  }}
+                                  placeholder={isAr ? '+ إضافة عامل للخطوة...' : '+ Assign worker...'}
+                                  searchPlaceholder={isAr ? 'ابحث عن عامل...' : 'Search worker...'}
+                                  emptyText={isAr ? 'لا يوجد عمال مطابقين' : 'No workers found'}
+                                />
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickWorkerTargetContext({ type: 'plan', stepNum: step.stepNum });
+                                  setShowQuickWorkerModal(true);
+                                }}
+                                className="p-2 text-cyan-700 hover:bg-cyan-50 border border-cyan-300 rounded-xl text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-2xs"
+                                title={isAr ? 'إضافة عامل مؤقت جديد' : 'Quick add worker'}
+                              >
+                                <UserPlus className="h-3.5 w-3.5" />
+                                <span>{isAr ? 'جديد' : 'New'}</span>
+                              </button>
+                            </div>
                           </div>
+                        );
+                      };
 
-                          {/* Dropdown to assign worker + Quick Add */}
-                          <div className="flex items-center gap-2">
-                            <select
-                              value=""
-                              onChange={(e) => {
-                                if (!e.target.value) return;
-                                const found = combinedWorkerPool.find((w) => w.id === e.target.value);
-                                if (found) handleToggleWorkerInPlanStep(step.stepNum, found);
-                              }}
-                              className="flex-1 p-1.5 text-[11px] border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-cyan-500"
-                            >
-                              <option value="">{isAr ? '+ إضافة عامل للخطوة بالخطة...' : '+ Assign worker to step...'}</option>
-                              {combinedWorkerPool.map((w) => {
-                                const isAlreadyAssigned = (step.workers || []).some((sw) => sw.workerId === w.id);
-                                return (
-                                  <option key={w.id} value={w.id} disabled={isAlreadyAssigned}>
-                                    {isAlreadyAssigned ? '✓ ' : ''}{w.name} {w.isManual ? (isAr ? '(مؤقت)' : '(manual)') : `[${w.role || w.department}]`}
-                                  </option>
-                                );
-                              })}
-                            </select>
-
+                      if (planFormData.isRework) {
+                        return (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                              <span className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                                <Layers className="h-3.5 w-3.5 text-amber-600" />
+                                <span>{isAr ? 'خطوات أمر إعادة التشغيل المخصصة:' : 'Custom Rework Steps:'}</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleAddPlanReworkStep}
+                                className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-2xs transition cursor-pointer"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                <span>{isAr ? 'إضافة خطوة جديدة' : 'Add Step'}</span>
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {planFormData.stepStaffing.map((step, idx) => renderPlanReworkStepCard(step, idx))}
+                            </div>
                             <button
                               type="button"
-                              onClick={() => {
-                                setQuickWorkerTargetContext({ type: 'plan', stepNum: step.stepNum });
-                                setShowQuickWorkerModal(true);
-                              }}
-                              className="p-1.5 text-cyan-700 hover:bg-cyan-50 border border-cyan-300 rounded-lg text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
-                              title={isAr ? 'إضافة عامل مؤقت جديد' : 'Quick add worker'}
+                              onClick={handleAddPlanReworkStep}
+                              className="w-full py-2.5 bg-amber-50 hover:bg-amber-100/80 text-amber-900 border border-dashed border-amber-300 rounded-2xl text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer shadow-2xs"
                             >
-                              <UserPlus className="h-3.5 w-3.5" />
-                              <span>{isAr ? 'جديد' : 'New'}</span>
+                              <Plus className="h-4 w-4 text-amber-600" />
+                              <span>{isAr ? '➕ إضافة خطوة جديدة لمسار إعادة التشغيل' : '➕ Add Custom Rework Step'}</span>
                             </button>
                           </div>
+                        );
+                      }
+
+                      return (
+                        <div className="space-y-4">
+                          {/* Mandatory Steps Group (On Top) */}
+                          {mandatorySteps.length > 0 && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between px-1">
+                                <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+                                  <span>{isAr ? 'خطوات التشغيل الإلزامية (Mandatory Steps):' : 'Mandatory Production Steps:'}</span>
+                                </span>
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+                                  {isAr ? `${mandatorySteps.filter((s) => (s.workers || []).length > 0).length} من ${mandatorySteps.length} مُعيّن` : `${mandatorySteps.filter((s) => (s.workers || []).length > 0).length} of ${mandatorySteps.length} assigned`}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {mandatorySteps.map(renderPlanStepCard)}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Optional Steps Group (Below) */}
+                          {optionalSteps.length > 0 && (
+                            <div className="space-y-2 pt-2 border-t border-slate-200/80">
+                              <div className="flex items-center justify-between px-1">
+                                <span className="text-xs font-black text-slate-600 flex items-center gap-1.5">
+                                  <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                                  <span>{isAr ? 'خطوات التشغيل الاختيارية (Optional Steps):' : 'Optional Production Steps:'}</span>
+                                </span>
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                                  {isAr ? `${optionalSteps.length} خطوة` : `${optionalSteps.length} steps`}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {optionalSteps.map(renderPlanStepCard)}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
-                    })
+                    })()
                   )}
                 </div>
               </div>
@@ -12194,6 +16806,105 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         </>
       )}
 
+      {/* Fixed Floating Action Menu Portal (Escapes table overflow-x-auto & clipping) */}
+      {activeActionMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-[9998] bg-transparent"
+            onClick={() => setActiveActionMenu(null)}
+          />
+          <div
+            style={activeActionMenu.style}
+            className="bg-white rounded-2xl shadow-2xl border border-slate-200/90 py-1.5 animate-in fade-in zoom-in-95 duration-100 text-xs select-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Quick Comment Trigger inside 3-dots (Grouped here when no comments yet) */}
+            <RowCommentMenuItem
+              docId={activeActionMenu.order.id}
+              docNumber={activeActionMenu.order.orderNumber || activeActionMenu.order.id}
+              tab="work_orders"
+              module="production"
+              onAction={() => setActiveActionMenu(null)}
+              className="px-3.5"
+            />
+
+            {isOrderLocked(activeActionMenu.order) ? (
+              <div className="px-3.5 py-2 text-[11px] text-slate-400 flex items-center gap-2">
+                <Lock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                <span>{isAr ? 'أمر مؤرشف ومقفل' : 'Past order (Locked)'}</span>
+              </div>
+            ) : (
+              <>
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetOrder = activeActionMenu.order;
+                      setActiveActionMenu(null);
+                      handleOpenEditPlan(targetOrder);
+                    }}
+                    className="w-full text-start px-3.5 py-2 hover:bg-blue-50 text-slate-700 hover:text-blue-600 flex items-center gap-2.5 font-medium transition cursor-pointer"
+                  >
+                    <Edit3 className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                    <span>{isAr ? 'تعديل الخطة' : 'Edit Plan'}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetOrder = activeActionMenu.order;
+                    setActiveActionMenu(null);
+                    handleClonePlan(targetOrder);
+                  }}
+                  className="w-full text-start px-3.5 py-2 hover:bg-indigo-50 text-slate-700 hover:text-indigo-600 flex items-center gap-2.5 font-medium transition cursor-pointer"
+                >
+                  <Copy className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                  <span>{isAr ? 'نسخ للصنف' : 'Duplicate Order'}</span>
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                const targetOrder = activeActionMenu.order;
+                setActiveActionMenu(null);
+                setAuditOrderData(targetOrder);
+              }}
+              className="w-full text-start px-3.5 py-2 hover:bg-slate-50 text-slate-700 hover:text-slate-900 flex items-center gap-2.5 font-medium transition cursor-pointer"
+            >
+              <History className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+              <span>{isAr ? 'سجل المراجعة' : 'Audit Trail'}</span>
+            </button>
+
+            {canCancel && !isOrderLocked(activeActionMenu.order) && (
+              <>
+                <div className="my-1 border-t border-slate-100" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetOrder = activeActionMenu.order;
+                    setActiveActionMenu(null);
+                    handleDeletePlanOrder(targetOrder.id, targetOrder.orderNumber);
+                  }}
+                  className="w-full text-start px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5 font-medium transition cursor-pointer"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                  <span>{isAr ? 'حذف من الخطة' : 'Delete Order'}</span>
+                </button>
+              </>
+            )}
+
+            {isGeneralAdmin && isOrderPastDate(activeActionMenu.order) && (
+              <div className="mt-1 pt-1 border-t border-slate-100 px-3.5 py-1.5 bg-amber-50 text-[10px] text-amber-900 font-bold flex items-center gap-1.5">
+                <Unlock className="h-3 w-3 text-amber-700 shrink-0" />
+                <span>{isAr ? 'صلاحية مسؤول عام' : 'Admin Override'}</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       {/* High-Resolution In-App Image Preview Lightbox Popover */}
       {imagePreviewModal && (
         <div
@@ -13295,34 +18006,32 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                 <label className="block font-bold text-slate-700 mb-1">
                   {isAr ? 'الخامة التالفة (من تركيبة هذا المنتج): *' : 'Material (from Product BOM): *'}
                 </label>
-                <select
+                <SearchableSelect
                   value={scrapLogFormData.itemId}
-                  onChange={(e) => {
-                    const selId = e.target.value;
+                  onChange={(selId) => {
                     const defaults = resolveScrapMaterialDefaults(selId, scrapLogOrder);
                     setScrapLogFormData({
                       ...scrapLogFormData,
                       ...defaults,
                     });
                   }}
-                  className="w-full p-2 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 focus:ring-2 focus:ring-rose-500"
-                  required
-                >
-                  <option value="">{isAr ? '-- اختر الخامة من تركيبة الإنتاج --' : '-- Select Material from BOM --'}</option>
-                  {(() => {
+                  options={(() => {
                     const recipe = bomRecipes.find((b) => b.id === scrapLogOrder?.bomRecipeId || b.code === scrapLogOrder?.bomRecipeId);
                     const comps = recipe?.components || [];
                     const bomItemIds = new Set(comps.map((c) => c.itemId || c.itemCode).filter(Boolean));
                     const materialsToRender = itemsMaster.filter((i) => bomItemIds.has(i.id) || bomItemIds.has(i.code));
                     const finalMaterialsList = materialsToRender.length > 0 ? materialsToRender : itemsMaster;
 
-                    return finalMaterialsList.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.code ? `[${item.code}] ` : ''}{isAr ? item.nameAr : item.nameEn || item.nameAr}
-                      </option>
-                    ));
+                    return finalMaterialsList.map((item) => ({
+                      value: item.id,
+                      label: isAr ? item.nameAr : (item.nameEn || item.nameAr),
+                      sublabel: item.code,
+                    }));
                   })()}
-                </select>
+                  placeholder={isAr ? '-- اختر الخامة من تركيبة الإنتاج --' : '-- Select Material from BOM --'}
+                  isAr={isAr}
+                  required
+                />
               </div>
 
               {/* Variant & LOT Selection for Floor Scrap */}
@@ -14020,71 +18729,77 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
             {/* Actions List */}
             <div className="space-y-2.5">
               {/* Option A: Admin Edit */}
-              <button
-                type="button"
-                onClick={() => handleOpenAdminPalletEdit(adminPalletActionsMenuModal.order, adminPalletActionsMenuModal.pallet, adminPalletActionsMenuModal.pIdx)}
-                className="w-full text-start p-3 bg-white hover:bg-purple-50 border border-slate-200 hover:border-purple-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
-              >
-                <div className="p-2 bg-indigo-50 group-hover:bg-indigo-600 text-indigo-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
-                  <Edit3 className="h-4 w-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-xs text-slate-900 group-hover:text-indigo-900">
-                    {isAr ? 'تعديل بيانات الباليتة (إعادة موازنة آلية)' : 'Admin Edit (Atomic Re-balance)'}
+              {canAdminModifyPallet && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenAdminPalletEdit(adminPalletActionsMenuModal.order, adminPalletActionsMenuModal.pallet, adminPalletActionsMenuModal.pIdx)}
+                  className="w-full text-start p-3 bg-white hover:bg-purple-50 border border-slate-200 hover:border-purple-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+                >
+                  <div className="p-2 bg-indigo-50 group-hover:bg-indigo-600 text-indigo-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
+                    <Edit3 className="h-4 w-4" />
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                    {isAr
-                      ? 'تعديل الكمية أو التوقيتات مع إلغاء استهلاك المواد والتنكات السابق تلقائياً وإعادة تطبيقه بدقة.'
-                      : 'Modify quantity or times with clean rollback of old allocations and re-application.'}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-xs text-slate-900 group-hover:text-indigo-900">
+                      {isAr ? 'تعديل بيانات الباليتة (إعادة موازنة آلية)' : 'Admin Edit (Atomic Re-balance)'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      {isAr
+                        ? 'تعديل الكمية أو التوقيتات مع إلغاء استهلاك المواد والتنكات السابق تلقائياً وإعادة تطبيقه بدقة.'
+                        : 'Modify quantity or times with clean rollback of old allocations and re-application.'}
+                    </div>
                   </div>
-                </div>
-              </button>
+                </button>
+              )}
 
               {/* Option B: Admin Reversal */}
-              <button
-                type="button"
-                onClick={() => handleOpenAdminPalletReversal(adminPalletActionsMenuModal.order, adminPalletActionsMenuModal.pallet, adminPalletActionsMenuModal.pIdx)}
-                className="w-full text-start p-3 bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
-              >
-                <div className="p-2 bg-rose-50 group-hover:bg-rose-600 text-rose-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
-                  <RotateCcw className="h-4 w-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-xs text-slate-900 group-hover:text-rose-900">
-                    {isAr ? 'إلغاء واسترجاع الباليتة بالكامل (Admin Reversal)' : 'Admin Pallet Reversal'}
+              {canReverse && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenAdminPalletReversal(adminPalletActionsMenuModal.order, adminPalletActionsMenuModal.pallet, adminPalletActionsMenuModal.pIdx)}
+                  className="w-full text-start p-3 bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+                >
+                  <div className="p-2 bg-rose-50 group-hover:bg-rose-600 text-rose-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
+                    <RotateCcw className="h-4 w-4" />
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                    {isAr
-                      ? 'إرجاع المواد الخام لصالة الإنتاج وإعادة السائل للتنكات، وتوثيق سبب الإلغاء بالسجل المالي.'
-                      : 'Restores raw materials to floor, returns liquid to active tanks, and stamps audit log.'}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-xs text-slate-900 group-hover:text-rose-900">
+                      {isAr ? 'إلغاء واسترجاع الباليتة بالكامل (Admin Reversal)' : 'Admin Pallet Reversal'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      {isAr
+                        ? 'إرجاع المواد الخام لصالة الإنتاج وإعادة السائل للتنكات، وتوثيق سبب الإلغاء بالسجل المالي.'
+                        : 'Restores raw materials to floor, returns liquid to active tanks, and stamps audit log.'}
+                    </div>
                   </div>
-                </div>
-              </button>
+                </button>
+              )}
 
               {/* Option C: Tank Override */}
-              <button
-                type="button"
-                onClick={() => {
-                  const p = adminPalletActionsMenuModal.pallet;
-                  setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 });
-                  handleOpenTankOverride(p);
-                }}
-                className="w-full text-start p-3 bg-white hover:bg-cyan-50 border border-slate-200 hover:border-cyan-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
-              >
-                <div className="p-2 bg-cyan-50 group-hover:bg-cyan-600 text-cyan-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
-                  <Activity className="h-4 w-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-xs text-slate-900 group-hover:text-cyan-900">
-                    {isAr ? 'تعديل أرقام التانكات المرتبطة يدوياً' : 'Override Linked Tank Numbers'}
+              {(isGeneralAdmin || permissions?.actions?.canAdminOverrideTanks) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const p = adminPalletActionsMenuModal.pallet;
+                    setAdminPalletActionsMenuModal({ open: false, order: null, pallet: null, pIdx: -1 });
+                    handleOpenTankOverrideModal(p);
+                  }}
+                  className="w-full text-start p-3 bg-white hover:bg-cyan-50 border border-slate-200 hover:border-cyan-300 rounded-2xl transition cursor-pointer group flex items-start gap-3"
+                >
+                  <div className="p-2 bg-cyan-50 group-hover:bg-cyan-600 text-cyan-600 group-hover:text-white rounded-xl transition shrink-0 mt-0.5">
+                    <Activity className="h-4 w-4" />
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                    {isAr
-                      ? 'تعديل أرقام تشغيلات التانكات المغذية للباليتة ومزامنتها لحظياً.'
-                      : 'Manually specify feeding liquid tank numbers for this pallet.'}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-xs text-slate-900 group-hover:text-cyan-900">
+                      {isAr ? 'تعديل أرقام التانكات المرتبطة يدوياً' : 'Override Linked Tank Numbers'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      {isAr
+                        ? 'تعديل أرقام تشغيلات التانكات المغذية للباليتة ومزامنتها لحظياً.'
+                        : 'Manually specify feeding liquid tank numbers for this pallet.'}
+                    </div>
                   </div>
-                </div>
-              </button>
+                </button>
+              )}
             </div>
 
             <div className="pt-2 border-t border-slate-100 flex justify-end">
@@ -14390,6 +19105,113 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         </div>
       )}
 
+      {/* 4.5 WAITING MATERIALS PROMPT MODAL */}
+      {waitingMaterialsPromptModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-5 sm:p-6 shadow-2xl border border-amber-300 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-100 text-amber-700 rounded-xl">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900">
+                    {isAr ? 'عجز خامات بالصالة - حفظ بحالة «بانتظار توفر الخامات»' : 'Floor Shortage - Save as Waiting Materials'}
+                  </h3>
+                  <span className="text-[11px] text-amber-600 font-bold">
+                    {isAr ? 'الرصيد المتاح حالياً بصالة الإنتاج لا يغطي كمية هذه الباليتة' : 'Floor stock is insufficient for this pallet'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWaitingMaterialsPromptModal(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {isAr
+                ? 'لا يتوفر رصيد كافٍ من الخامات بصالة الإنتاج لخصم هذه الباليتة في الوقت الحالي. يمكنك حفظ الباليتة كمعلقة («بانتظار توفر الخامات») دون خصم أي خامات ودون ترحيلها للتام، أو طلب تحويل خامات من المستودعات المركزية:'
+                : 'Insufficient floor stock to deduct this pallet right now. You can save it as "Waiting Materials" (no stock deducted & not staged to FG), or request warehouse transfer:'}
+            </p>
+
+            {/* Breakdown Table */}
+            <div className="border border-slate-200 rounded-2xl overflow-hidden text-xs">
+              <table className="w-full text-start">
+                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200 text-[11px]">
+                  <tr>
+                    <th className="p-2 text-start">{isAr ? 'الخامة' : 'Material'}</th>
+                    <th className="p-2 text-center">{isAr ? 'المطلوب للباليتة' : 'Required'}</th>
+                    <th className="p-2 text-center">{isAr ? 'المتاح بالصالة' : 'Floor Stock'}</th>
+                    <th className="p-2 text-center text-rose-600">{isAr ? 'العجز' : 'Deficit'}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-mono">
+                  {(waitingMaterialsPromptModal.shortComponents || []).map((sc, scIdx) => (
+                    <tr key={scIdx} className="hover:bg-slate-50/50">
+                      <td className="p-2 font-sans font-medium text-slate-900">
+                        {sc.itemNameAr || sc.nameAr || sc.itemId}
+                        {sc.isPipeFeeding && (
+                          <span className="text-[10px] text-indigo-600 font-bold ms-1">
+                            {isAr ? '(خزان سائل)' : '(Liquid Tank)'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-2 text-center text-slate-800 font-bold">{Number(sc.needed || sc.requiredTotal || 0).toFixed(1)} {sc.unit}</td>
+                      <td className="p-2 text-center text-slate-600">{Number(sc.availableFloor ?? sc.available ?? 0).toFixed(1)} {sc.unit}</td>
+                      <td className="p-2 text-center text-rose-600 font-bold">-{Number(sc.deficit || sc.floorDeficit || 0).toFixed(1)} {sc.unit}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-2xl text-[11px] text-blue-900 leading-relaxed flex items-start gap-2">
+              <HelpCircle className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+              <span>
+                {isAr
+                  ? 'عند حفظ الباليتة بحالة «بانتظار توفر الخامات»، ستظهر على بطاقة التشغيل بإطار برتقالي وشارة نبض تشير للنواقص. وفور ضخ أو تحويل الخامات وتوفرها بالصالة، سيتحول الإطار للأخضر ويظهر زر ترحيل الباليتة بنقرة واحدة.'
+                  : 'Saving as "Waiting Materials" preserves the pallet record with a pulsing shortage chip without deducting inventory. Once stock is replenished, a 1-click stage button appears.'}
+              </span>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setWaitingMaterialsPromptModal(null)}
+                className="px-4 py-2 border border-slate-300 rounded-xl text-slate-700 text-xs font-bold hover:bg-slate-50 transition cursor-pointer"
+              >
+                {isAr ? 'إلغاء والتراجع' : 'Cancel'}
+              </button>
+
+              <div className="flex items-center gap-2">
+                {waitingMaterialsPromptModal.onOpenAdminTransfer && (
+                  <button
+                    type="button"
+                    onClick={waitingMaterialsPromptModal.onOpenAdminTransfer}
+                    className="px-3.5 py-2 border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-bold transition cursor-pointer"
+                  >
+                    {isAr ? 'طلب تحويل مستودعي' : 'Transfer Request'}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={waitingMaterialsPromptModal.onConfirmWaiting}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Clock className="h-4 w-4" />
+                  <span>{isAr ? 'حفظ بحالة «بانتظار توفر الخامات»' : 'Save as Waiting Materials'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 5. ADMIN ORDER STATUS PROMPT MODAL */}
       {adminOrderStatusPromptModal.open && adminOrderStatusPromptModal.order && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 z-50 animate-in fade-in duration-150">
@@ -14543,6 +19365,296 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           </div>
         </div>
       )}
+
+      {/* ========================================================================= */}
+      {/* UNIFIED PALLET THERMAL PRINT MODAL (SHARED COMPONENT)                     */}
+      {/* ========================================================================= */}
+      {palletThermalModal && (
+        <PalletThermalPrintModal
+          isOpen={Boolean(palletThermalModal)}
+          onClose={() => setPalletThermalModal(null)}
+          items={palletThermalModal.items}
+          isAr={isAr}
+          currentUserId={currentUserId}
+          currentUserName={currentUserName}
+          finishedProducts={finishedProducts}
+        />
+      )}
+
+      {/* 3. END SHIFT VERIFICATION & SEALING WIZARD */}
+      {showEndShiftModal && (() => {
+        const runningOrders = workOrders.filter(
+          (o) => o.planDate === todayCalendarDateStr && o.status === 'in_progress'
+        );
+        const openBreaks = globalBreaks.filter(
+          (b) => b.date === todayCalendarDateStr && b.status === 'Active'
+        );
+        const stagedPallets = activeStagedFloorPallets;
+        const unprintedPallets = stagedPallets.filter((p) => !isFloorPalletPrinted(p));
+
+        // Shift Summary KPIs
+        let totalCartons = 0;
+        let totalPallets = 0;
+        workOrders
+          .filter((o) => o.planDate === todayCalendarDateStr && o.status !== 'cancelled')
+          .forEach((o) => {
+            totalCartons += Number(o.finishedQtyLarge || 0);
+            totalPallets += Array.isArray(o.pallets) ? o.pallets.filter((p) => p.endTime).length : 0;
+          });
+
+        return (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto animate-in fade-in duration-150">
+            <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-5 my-auto max-h-[92vh] flex flex-col">
+              {/* Header */}
+              <div className="flex justify-between items-center border-b border-slate-100 pb-3 shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 bg-rose-50 text-rose-600 rounded-2xl border border-rose-100">
+                    <PowerOff className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-lg text-slate-900">
+                      {isAr ? 'إنهاء وتوثيق وردية اليوم (End Shift)' : 'End & Seal Shift Wizard'}
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      {isAr
+                        ? `التحقق النهائي وإغلاق وردية تاريخ ${todayCalendarDateStr}`
+                        : `Final verification and shift closure for ${todayCalendarDateStr}`}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowEndShiftModal(false)}
+                  className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* Wizard Content Body */}
+              <div className="overflow-y-auto space-y-4 pe-1">
+                {/* 1. Running Orders Check */}
+                <div className={`p-4 rounded-2xl border ${runningOrders.length > 0 ? 'bg-amber-50/70 border-amber-200' : 'bg-emerald-50/70 border-emerald-200'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-extrabold text-xs flex items-center gap-1.5">
+                      {runningOrders.length > 0 ? (
+                        <>
+                          <AlertTriangle className="h-4 w-4 text-amber-600" />
+                          <span className="text-amber-950">{isAr ? `تنبيه: يوجد (${runningOrders.length}) أوامر قيد التشغيل` : `${runningOrders.length} Orders In Progress`}</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                          <span className="text-emerald-950">{isAr ? 'جميع أوامر التشغيل مكتملة أو متوقفة مؤقتاً' : 'No Running Orders'}</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+
+                  {runningOrders.length > 0 && (
+                    <div className="space-y-2 mt-2">
+                      <p className="text-[11px] text-amber-800">
+                        {isAr
+                          ? 'يُفضل إيقاف أو إنهاء الأوامر الجارية قبل إغلاق الوردية:'
+                          : 'Please pause or finalize running orders before closing the shift:'}
+                      </p>
+                      {runningOrders.map((ord) => (
+                        <div key={ord.id} className="p-2.5 bg-white border border-amber-200 rounded-xl flex items-center justify-between gap-2 text-xs">
+                          <div>
+                            <span className="font-mono font-bold text-indigo-700">#{ord.orderNumber}</span>
+                            <span className="ms-2 font-bold text-slate-900">{ord.productNameAr}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handlePauseOrder(ord)}
+                              className="px-2 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg font-bold text-[11px] transition cursor-pointer"
+                            >
+                              {isAr ? 'إيقاف مؤقت' : 'Pause'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenCompletePrompt(ord)}
+                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold text-[11px] transition cursor-pointer"
+                            >
+                              {isAr ? 'إنهاء' : 'Complete'}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. Staged Pallets & Printing Check */}
+                <div className={`p-4 rounded-2xl border ${unprintedPallets.length > 0 ? 'bg-amber-50/70 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-extrabold text-xs flex items-center gap-1.5 text-slate-900">
+                      <Boxes className="h-4 w-4 text-indigo-600" />
+                      <span>{isAr ? 'طبالي أرضية الصالة وحالة الاستيكرات' : 'Floor Pallets & Labels'}</span>
+                    </span>
+                    <span className="font-mono text-xs font-bold text-slate-600">
+                      {stagedPallets.length} {isAr ? 'باليتة بالصالة' : 'pallets staged'}
+                    </span>
+                  </div>
+
+                  {unprintedPallets.length > 0 ? (
+                    <div className="p-3 bg-amber-100/70 border border-amber-300 rounded-xl space-y-2 mt-2">
+                      <div className="flex items-center gap-2 text-amber-950 font-bold text-xs">
+                        <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
+                        <span>{isAr ? `يوجد (${unprintedPallets.length}) باليتة بانتظار طباعة الاستيكر الإلزامي قبل الترحيل!` : `${unprintedPallets.length} unprinted pallets!`}</span>
+                      </div>
+                      <p className="text-[11px] text-amber-800">
+                        {isAr ? 'قوانين التشغيل تلزم طباعة استيكر الباليتة لتسهيل استلامها بمستودع التام.' : 'Rules require label printing before transferring to FG.'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenBatchPrintStickers(unprintedPallets)}
+                        className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                      >
+                        <Printer className="h-3.5 w-3.5" />
+                        <span>{isAr ? `طباعة استيكرات المعلقة دفعة واحدة (${unprintedPallets.length})` : `Batch Print Pending Labels (${unprintedPallets.length})`}</span>
+                      </button>
+                    </div>
+                  ) : stagedPallets.length === 0 ? (
+                    <div className="text-[11px] text-slate-600 font-semibold flex items-center gap-1.5 mt-1">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>{isAr ? 'لا توجد طبالي متبقية على أرضية الصالة حالياً (تم ترحيل كافة الطبالي لمستودع التام).' : 'No staged pallets remaining on floor (all pallets transferred to FG).'}</span>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-emerald-800 font-semibold flex items-center gap-1.5 mt-1">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>{isAr ? `جميع الطبالي المتبقية بالصالة (${stagedPallets.length}) مطبوعة وجاهزة للترحيل أو البقاء بأمان.` : `All ${stagedPallets.length} remaining floor pallets are printed and ready.`}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Open Breaks Check */}
+                <div className={`p-4 rounded-2xl border ${openBreaks.length > 0 ? 'bg-rose-50/70 border-rose-200' : 'bg-emerald-50/70 border-emerald-200'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-extrabold text-xs flex items-center gap-1.5">
+                      {openBreaks.length > 0 ? (
+                        <>
+                          <Clock className="h-4 w-4 text-rose-600" />
+                          <span className="text-rose-950">{isAr ? `يوجد (${openBreaks.length}) استراحة مفتوحة لم تُقفل` : `${openBreaks.length} Open Breaks`}</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                          <span className="text-emerald-950">{isAr ? 'جميع فترات الراحة مقفلة وموثقة' : 'All Breaks Closed'}</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+
+                  {openBreaks.length > 0 && (
+                    <div className="space-y-2 mt-2">
+                      <p className="text-[11px] text-rose-800">
+                        {isAr ? 'يرجى تحديد وقت نهاية الاستراحة لإغلاقها قبل إنهاء الوردية:' : 'Specify end time to close open breaks:'}
+                      </p>
+                      {openBreaks.map((b) => (
+                        <div key={b.id} className="p-3 bg-white border border-rose-200 rounded-xl space-y-2">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="font-bold text-slate-900">{b.name || (isAr ? 'استراحة' : 'Break')}</span>
+                            <span className="font-mono text-slate-500">{isAr ? 'وقت البدء:' : 'Start:'} {b.startTime}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-bold text-slate-600 shrink-0">{isAr ? 'وقت النهاية:' : 'End Time:'}</span>
+                            <input
+                              type="time"
+                              value={endShiftBreakEndTime}
+                              onChange={(e) => setEndShiftBreakEndTime(e.target.value)}
+                              className="px-2 py-1 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono font-bold focus:outline-hidden focus:ring-2 focus:ring-rose-500"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleCloseEndShiftBreak(b)}
+                              className="ms-auto px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                            >
+                              {isAr ? 'إغلاق الاستراحة' : 'Close Break'}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. Shift Summary & Metrics */}
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5">
+                  <span className="font-extrabold text-xs text-slate-900 block">
+                    {isAr ? 'ملخص مخرجات اليوم الختامية' : 'Shift Output Summary'}
+                  </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 text-center">
+                      <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'إجمالي الكراتين' : 'Total Cartons'}</span>
+                      <span className="text-lg font-black font-mono text-slate-950 block mt-0.5">{totalCartons.toLocaleString()}</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 text-center">
+                      <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'الباليتات المنجزة' : 'Total Pallets'}</span>
+                      <span className="text-lg font-black font-mono text-indigo-700 block mt-0.5">{totalPallets}</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 text-center">
+                      <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'صافي التشغيل' : 'Net Production'}</span>
+                      <span className="text-lg font-black font-mono text-emerald-700 block mt-0.5">{shiftKpis.totalProdMins}د</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 text-center">
+                      <span className="text-[10px] text-slate-500 font-bold block">{isAr ? 'كفاءة الوردية' : 'OEE Efficiency'}</span>
+                      <span className="text-lg font-black font-mono text-purple-700 block mt-0.5">{shiftKpis.timeEfficiencyPct}%</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 pt-1">
+                    <label className="text-[11px] font-bold text-slate-600 block">
+                      {isAr ? 'ملاحظات ختامية للوردية (اختياري):' : 'Closing Notes (Optional):'}
+                    </label>
+                    <textarea
+                      value={endShiftNotes}
+                      onChange={(e) => setEndShiftNotes(e.target.value)}
+                      placeholder={isAr ? 'سجل أي ملاحظات خاصة بإنتاج اليوم أو تسليم الوردية التالية...' : 'Enter any notes about today\'s shift...'}
+                      rows={2}
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions Footer */}
+              <div className="flex items-center gap-3 pt-3 border-t border-slate-100 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleConfirmEndShift}
+                  disabled={isSealingShift || openBreaks.length > 0}
+                  className={`flex-1 py-3 px-4 font-black text-sm rounded-xl shadow-md flex items-center justify-center gap-2 transition ${
+                    isSealingShift || openBreaks.length > 0
+                      ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                      : 'bg-rose-600 hover:bg-rose-700 active:scale-95 text-white cursor-pointer'
+                  }`}
+                >
+                  {isSealingShift ? (
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <PowerOff className="h-4 w-4" />
+                  )}
+                  <span>
+                    {openBreaks.length > 0
+                      ? (isAr ? 'يرجى إغلاق الاستراحة المفتوحة أولاً' : 'Close Open Breaks First')
+                      : (isAr ? 'تأكيد إغلاق وتوثيق الوردية' : 'Confirm End & Seal Shift')}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowEndShiftModal(false)}
+                  className="py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-xl transition cursor-pointer"
+                >
+                  {isAr ? 'إلغاء' : 'Cancel'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
     </div>
   );
 }

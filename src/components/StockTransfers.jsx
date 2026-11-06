@@ -61,6 +61,11 @@ import {
   formatVariantLabel,
   resolveItemAllowFractions
 } from '../utils/stockResolver';
+import {
+  createActionRequired,
+  completeActionRequired,
+  createNotification
+} from '../utils/notificationEngine';
 
 export default function StockTransfers({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
@@ -70,6 +75,12 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
   const currentUserId = currentUser?.id || currentUser?.uid || '';
   const currentUserName = isAr ? (currentUser?.nameAr || 'المسؤول') : (currentUser?.name || 'Authorized User');
+
+  const canReverse = isGeneralAdmin || (
+    permissions?.actions?.['transfers.canReverse'] !== undefined
+      ? permissions.actions['transfers.canReverse'] === true
+      : permissions?.actions?.canReverse === true
+  );
 
   // Cloud Collections State
   const [transfers, setTransfers] = useState([]);
@@ -667,28 +678,58 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
   const targetCustodianId = targetWhObj?.responsibleUserId || '';
 
   // Determine required verifier based on custody:
+  // Rule: Responsible user of the warehouse always has to approve any transfers to/from his WH unless triggerer is General Admin.
   const getRequiredVerifierInfo = (creatorId) => {
     let verifierId = '';
     let verifierRoleDesc = '';
+    let allowedVerifierIds = [];
 
-    // Rule: If both warehouses belong to the SAME custodian, no extra verification step is required
-    if (sourceCustodianId && targetCustodianId && sourceCustodianId === targetCustodianId) {
-      return { verifierId: '', verifierRoleDesc: '' };
+    // Rule 1: If triggerer is General Admin, no verification step needed
+    if (isGeneralAdmin) {
+      return { verifierId: '', verifierRoleDesc: '', allowedVerifierIds: [] };
     }
 
-    // Inter-custody transfers between different custodians:
-    if (creatorId === targetCustodianId && sourceCustodianId && sourceCustodianId !== creatorId) {
-      verifierId = sourceCustodianId;
-      verifierRoleDesc = isAr ? `مسؤول مخزن الصرف (${sourceWhObj.nameAr})` : `Source WH Custodian (${sourceWhObj.nameAr})`;
-    } else if (targetCustodianId && targetCustodianId !== creatorId) {
+    // Rule 2: Both warehouses belong to the SAME custodian, AND the triggerer is that custodian
+    if (sourceCustodianId && targetCustodianId && sourceCustodianId === targetCustodianId && creatorId === sourceCustodianId) {
+      return { verifierId: '', verifierRoleDesc: '', allowedVerifierIds: [] };
+    }
+
+    // Rule 3: Creator is the source warehouse custodian -> target custodian must approve receipt
+    if (creatorId === sourceCustodianId && targetCustodianId && targetCustodianId !== creatorId) {
       verifierId = targetCustodianId;
-      verifierRoleDesc = isAr ? `مسؤول المخزن المستلم (${targetWhObj.nameAr})` : `Target WH Custodian (${targetWhObj.nameAr})`;
-    } else if (sourceCustodianId && sourceCustodianId !== creatorId) {
+      verifierRoleDesc = isAr ? `مسؤول المخزن المستلم (${targetWhObj?.nameAr || targetWarehouse})` : `Target WH Custodian (${targetWhObj?.nameEn || targetWarehouse})`;
+      allowedVerifierIds = [targetCustodianId];
+    }
+    // Rule 4: Creator is the target warehouse custodian -> source custodian must approve dispatch
+    else if (creatorId === targetCustodianId && sourceCustodianId && sourceCustodianId !== creatorId) {
       verifierId = sourceCustodianId;
-      verifierRoleDesc = isAr ? `مسؤول مخزن الصرف (${sourceWhObj.nameAr})` : `Source WH Custodian (${sourceWhObj.nameAr})`;
+      verifierRoleDesc = isAr ? `مسؤول مخزن الصرف (${sourceWhObj?.nameAr || sourceWarehouse})` : `Source WH Custodian (${sourceWhObj?.nameEn || sourceWarehouse})`;
+      allowedVerifierIds = [sourceCustodianId];
+    }
+    // Rule 5: Creator is neither source nor target custodian (external triggerer e.g. supervisor, planner, operator)
+    else {
+      if (sourceCustodianId && targetCustodianId) {
+        verifierId = sourceCustodianId;
+        allowedVerifierIds = [sourceCustodianId, targetCustodianId];
+        verifierRoleDesc = isAr
+          ? `مسؤول مخزن الصرف (${sourceWhObj?.nameAr || sourceWarehouse}) أو المستلم (${targetWhObj?.nameAr || targetWarehouse})`
+          : `Warehouse Custodian (${sourceWhObj?.nameAr || sourceWarehouse} / ${targetWhObj?.nameAr || targetWarehouse})`;
+      } else if (sourceCustodianId) {
+        verifierId = sourceCustodianId;
+        allowedVerifierIds = [sourceCustodianId];
+        verifierRoleDesc = isAr ? `مسؤول مخزن الصرف (${sourceWhObj?.nameAr || sourceWarehouse})` : `Source WH Custodian (${sourceWhObj?.nameEn || sourceWarehouse})`;
+      } else if (targetCustodianId) {
+        verifierId = targetCustodianId;
+        allowedVerifierIds = [targetCustodianId];
+        verifierRoleDesc = isAr ? `مسؤول المخزن المستلم (${targetWhObj?.nameAr || targetWarehouse})` : `Target WH Custodian (${targetWhObj?.nameAr || targetWarehouse})`;
+      } else {
+        verifierId = '';
+        allowedVerifierIds = [];
+        verifierRoleDesc = isAr ? 'أمين المستودع المختص' : 'Warehouse Keeper';
+      }
     }
 
-    return { verifierId, verifierRoleDesc };
+    return { verifierId, verifierRoleDesc, allowedVerifierIds };
   };
 
   // Submit Transfer
@@ -733,12 +774,12 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
 
     try {
       const newTrnId = generateTransferId();
-      const { verifierId, verifierRoleDesc } = getRequiredVerifierInfo(currentUserId);
+      const { verifierId, verifierRoleDesc, allowedVerifierIds } = getRequiredVerifierInfo(currentUserId);
 
       // Status Hierarchy Rules:
       // 1. If Date is NOT Today and user is not General Admin: 'pending_admin_verification'
-      // 2. Else If requiredVerifierId exists and user is not General Admin: 'pending_custodian_verification'
-      // 3. Otherwise: 'completed'
+      // 2. Else If user is not General Admin and not self-custodian of both: 'pending_custodian_verification'
+      // 3. Otherwise (General Admin or self-transfer between own warehouses): 'completed'
       const lotsSummary = transferLines.map((l) => l.lotNumber ? `[لوط: ${l.lotNumber}]` : '').filter(Boolean).join(', ');
       const lotsSummaryEn = transferLines.map((l) => l.lotNumber ? `[Lot: ${l.lotNumber}]` : '').filter(Boolean).join(', ');
 
@@ -747,17 +788,21 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
       let noteAr = `تم تنفيذ التحويل المخزني واعتماده فورياً ${lotsSummary ? `(${lotsSummary})` : ''}`;
       let noteEn = `Transfer executed and completed directly ${lotsSummaryEn ? `(${lotsSummaryEn})` : ''}`;
 
-      if (isDateDifferentFromToday && !isGeneralAdmin) {
-        initialStatus = 'pending_admin_verification';
-        auditAction = 'transfer_held_backdate';
-        noteAr = `تم تعليق التحويل لاختلاف تاريخ الصرف (${transferDate}) عن تاريخ اليوم وبانتظار اعتماد المسؤول العام حصراً ${lotsSummary ? `(${lotsSummary})` : ''}`;
-        noteEn = `Transfer held due to custom date (${transferDate}); awaiting General Admin verification exclusively ${lotsSummaryEn ? `(${lotsSummaryEn})` : ''}`;
-      } else if (verifierId && !isGeneralAdmin) {
-        initialStatus = 'pending_custodian_verification';
-        auditAction = 'transfer_requested_custodian';
-        const verifierName = getUserName(verifierId);
-        noteAr = `تم إنشاء طلب التحويل وبانتظار فحص واعتماد ${verifierRoleDesc}: ${verifierName} ${lotsSummary ? `(${lotsSummary})` : ''}`;
-        noteEn = `Transfer requested; awaiting inspection & verification by ${verifierName} ${lotsSummaryEn ? `(${lotsSummaryEn})` : ''}`;
+      if (!isGeneralAdmin) {
+        if (isDateDifferentFromToday) {
+          initialStatus = 'pending_admin_verification';
+          auditAction = 'transfer_held_backdate';
+          noteAr = `تم تعليق التحويل لاختلاف تاريخ الصرف (${transferDate}) عن تاريخ اليوم وبانتظار اعتماد المسؤول العام حصراً ${lotsSummary ? `(${lotsSummary})` : ''}`;
+          noteEn = `Transfer held due to custom date (${transferDate}); awaiting General Admin verification exclusively ${lotsSummaryEn ? `(${lotsSummaryEn})` : ''}`;
+        } else if (
+          !(sourceCustodianId && targetCustodianId && sourceCustodianId === targetCustodianId && currentUserId === sourceCustodianId)
+        ) {
+          initialStatus = 'pending_custodian_verification';
+          auditAction = 'transfer_requested_custodian';
+          const verifierName = verifierId ? getUserName(verifierId) : (isAr ? 'أمين المستودع' : 'Warehouse Keeper');
+          noteAr = `تم إنشاء طلب التحويل وبانتظار فحص واعتماد ${verifierRoleDesc}: ${verifierName} ${lotsSummary ? `(${lotsSummary})` : ''}`;
+          noteEn = `Transfer requested; awaiting inspection & verification by ${verifierName} ${lotsSummaryEn ? `(${lotsSummaryEn})` : ''}`;
+        }
       }
 
       const auditEntry = {
@@ -788,6 +833,7 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
         issuedById: currentUserId,
         requiredVerifierId: verifierId || null,
         requiredVerifierRoleDesc: verifierRoleDesc || null,
+        allowedVerifierIds: allowedVerifierIds || [],
         verifiedBy: initialStatus === 'completed' ? currentUserName : null,
         verifiedAt: initialStatus === 'completed' ? new Date().toISOString() : null,
         auditTrail: [auditEntry],
@@ -798,6 +844,35 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
       };
 
       await setDoc(doc(db, 'stock_transfers', newTrnId), transferDoc);
+
+      if (initialStatus !== 'completed') {
+        const isAdminOnly = initialStatus === 'pending_admin_verification';
+        const resolvedTargetUsers = Array.isArray(allowedVerifierIds) && allowedVerifierIds.length > 0
+          ? allowedVerifierIds
+          : (verifierId ? [verifierId] : []);
+
+        await createActionRequired({
+          actionType: 'stock_transfer_verification',
+          docId: newTrnId,
+          docNumber: newTrnId,
+          title: `مطلوب اعتماد وتأكيد تحويل مخزني: ${newTrnId}`,
+          titleEn: `Stock Transfer Verification Required: ${newTrnId}`,
+          message: `من [${getWarehouseName(sourceWarehouse)}] إلى [${getWarehouseName(targetWarehouse)}] - عدد الأصناف: ${transferLines.length}`,
+          messageEn: `From [${getWarehouseName(sourceWarehouse)}] to [${getWarehouseName(targetWarehouse)}]`,
+          targetTab: 'transfers',
+          targetModule: 'purchases',
+          highlightId: newTrnId,
+          createdBy: currentUserId,
+          createdByName: currentUserName,
+          targetUserId: verifierId || null,
+          targetUserIds: resolvedTargetUsers,
+          targetRoles: isAdminOnly
+            ? ['general_admin']
+            : ['general_admin', 'warehouse_keeper', 'storekeeper'],
+          createdAt: serverTimestamp()
+        });
+      }
+
       setShowCreateModal(false);
     } catch (err) {
       console.error('Error saving transfer:', err);
@@ -814,6 +889,12 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
     // Security Check: If custom date, only General Admin can verify
     if (verifyModalTransfer.status === 'pending_admin_verification' && !isGeneralAdmin) {
       alert(isAr ? 'هذا التحويل معلق بتاريخ مخصص ولا يمكن اعتماده إلا من قبل المسؤول العام حصراً.' : 'Only the General Admin can approve transfers with custom dates.');
+      return;
+    }
+
+    // Security Check: Creator cannot verify their own transfer unless General Admin
+    if (!isGeneralAdmin && verifyModalTransfer.issuedById && verifyModalTransfer.issuedById === currentUserId) {
+      alert(isAr ? 'لا يمكن اعتماد التحويل من قبل نفس المستخدم الذي قام بتحريره. يلزم اعتماد مسؤول المستودع المستلم/الصرف.' : 'You cannot approve a transfer initiated by yourself.');
       return;
     }
 
@@ -848,6 +929,31 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
         { merge: true }
       );
 
+      // Complete Action Required & Notify Initiator
+      await completeActionRequired({
+        actionType: 'stock_transfer_verification',
+        docId: verifyModalTransfer.id,
+        completedBy: currentUserId,
+        completedByName: currentUserName,
+        resolutionNote: 'تم فحص الشحنة واعتماد التحويل المخزني بنجاح'
+      });
+
+      if (verifyModalTransfer.issuedById && verifyModalTransfer.issuedById !== currentUserId) {
+        await createNotification({
+          type: 'success',
+          title: `تم تأكيد استلام التحويل: ${verifyModalTransfer.id}`,
+          titleEn: `Transfer Received: ${verifyModalTransfer.id}`,
+          message: `قام (${currentUserName}) بتأكيد استلام التحويل من [${verifyModalTransfer.sourceWarehouse}] إلى [${verifyModalTransfer.targetWarehouse}].`,
+          messageEn: `(${currentUserName}) verified receipt into [${verifyModalTransfer.targetWarehouse}].`,
+          targetUserId: verifyModalTransfer.issuedById,
+          targetTab: 'transfers',
+          targetModule: 'purchases',
+          highlightId: verifyModalTransfer.id,
+          createdBy: currentUserId,
+          createdByName: currentUserName
+        });
+      }
+
       setVerifyModalTransfer(null);
     } catch (err) {
       console.error('Error verifying transfer:', err);
@@ -862,6 +968,12 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
     if (!rejectModalTransfer) return;
     if (!rejectionReason.trim()) {
       alert(isAr ? 'يرجى كتابة سبب رفض التحويل.' : 'Please provide a reason for rejection.');
+      return;
+    }
+
+    // Security Check: Creator cannot reject their own transfer unless General Admin
+    if (!isGeneralAdmin && rejectModalTransfer.issuedById && rejectModalTransfer.issuedById === currentUserId) {
+      alert(isAr ? 'لا يمكن رفض التحويل من قبل نفس المستخدم الذي قام بتحريره.' : 'You cannot reject a transfer initiated by yourself.');
       return;
     }
 
@@ -894,6 +1006,31 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
         },
         { merge: true }
       );
+
+      // Complete Action Required & Notify Initiator of Rejection
+      await completeActionRequired({
+        actionType: 'stock_transfer_verification',
+        docId: rejectModalTransfer.id,
+        completedBy: currentUserId,
+        completedByName: currentUserName,
+        resolutionNote: `تم رفض التحويل: ${rejectionReason.trim()}`
+      });
+
+      if (rejectModalTransfer.issuedById && rejectModalTransfer.issuedById !== currentUserId) {
+        await createNotification({
+          type: 'warning',
+          title: `تم رفض التحويل المخزني: ${rejectModalTransfer.id}`,
+          titleEn: `Transfer Rejected: ${rejectModalTransfer.id}`,
+          message: `قام (${currentUserName}) برفض التحويل. السبب: ${rejectionReason.trim()}`,
+          messageEn: `(${currentUserName}) rejected transfer. Reason: ${rejectionReason.trim()}`,
+          targetUserId: rejectModalTransfer.issuedById,
+          targetTab: 'transfers',
+          targetModule: 'purchases',
+          highlightId: rejectModalTransfer.id,
+          createdBy: currentUserId,
+          createdByName: currentUserName
+        });
+      }
 
       setRejectModalTransfer(null);
       setRejectionReason('');
@@ -1016,10 +1153,10 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
 
   // Open Admin Reversal Modal (or Blocker Modal)
   const handleOpenAdminTransferReversal = (trn) => {
-    if (!isGeneralAdmin) {
+    if (!canReverse) {
       showAlert({
         title: isAr ? 'صلاحية غير كافية' : 'Permission Denied',
-        message: isAr ? 'إلغاء وعكس التحويلات المخزنية محصور بالمسؤول العام.' : 'Only General Admin can reverse stock transfers.',
+        message: isAr ? 'إلغاء وعكس التحويلات المخزنية محصور بالمسؤولين المعتمدين.' : 'Only authorized personnel can reverse stock transfers.',
         variant: 'error',
       });
       return;
@@ -1296,10 +1433,21 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
 
                 // Verification Authority Rule:
                 // 1. General Admin can verify ANY transfer (Override capability)
-                // 2. The specifically assigned requiredVerifierId can verify
+                // 2. Creator can NEVER verify their own transfer (unless General Admin)
+                // 3. Custodian responsible for source or target warehouse (or designated verifiers) can verify
+                const isCreator = trn.issuedById && currentUserId === trn.issuedById;
                 const canVerifyThisTrn =
                   isGeneralAdmin ||
-                  (isPendingCustodian && trn.requiredVerifierId && currentUserId === trn.requiredVerifierId);
+                  (!isCreator && (
+                    (isPendingAdmin && isGeneralAdmin) ||
+                    (isPendingCustodian && (
+                      (trn.requiredVerifierId && currentUserId === trn.requiredVerifierId) ||
+                      (Array.isArray(trn.allowedVerifierIds) && trn.allowedVerifierIds.includes(currentUserId)) ||
+                      (srcObj?.responsibleUserId && currentUserId === srcObj.responsibleUserId) ||
+                      (tgtObj?.responsibleUserId && currentUserId === tgtObj.responsibleUserId) ||
+                      (!srcObj?.responsibleUserId && !tgtObj?.responsibleUserId && ['warehouse_keeper', 'storekeeper'].includes(currentUser?.role))
+                    ))
+                  ));
 
                 return (
                   <tr key={trn.id} className="hover:bg-slate-50/70 transition">
@@ -1456,13 +1604,13 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                           </>
                         )}
 
-                        {/* General Admin Interlinked Transfer Reversal Action */}
-                        {isGeneralAdmin && isCompleted && !isReversed && (
+                        {/* Interlinked Transfer Reversal Action */}
+                        {canReverse && isCompleted && !isReversed && (
                           <button
                             type="button"
                             onClick={() => handleOpenAdminTransferReversal(trn)}
                             className="p-1.5 text-purple-700 hover:text-white hover:bg-purple-700 rounded-lg transition cursor-pointer border border-purple-300 bg-purple-50 shadow-2xs"
-                            title={isAr ? 'إلغاء وعكس التحويل إدارياً (General Admin)' : 'Admin Reversal (General Admin)'}
+                            title={isAr ? 'إلغاء وعكس التحويل إدارياً' : 'Admin Reversal'}
                           >
                             <ShieldAlert className="h-4 w-4" />
                           </button>

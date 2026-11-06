@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import PeacockLoader from './PeacockLoader';
 import VariantComboBox from './VariantComboBox';
+import SearchableSelect from './SearchableSelect';
 import VariantIdentifierChip from './VariantIdentifierChip';
 import {
   Plus,
@@ -782,19 +783,18 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
                           <label className="block font-bold text-slate-700 mb-1 truncate">
                             {isAr ? '٢- اسم قطعة الغيار / المستهلك (Flag X) *' : '2. Item Name (Flag X) *'}
                           </label>
-                          <select
+                          <SearchableSelect
                             required
                             value={line.itemId}
-                            onChange={(e) => handleLineFieldChange(idx, 'itemId', e.target.value)}
-                            className="w-full p-2 border border-slate-300 rounded-xl font-bold text-slate-900 bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none text-xs truncate"
-                          >
-                            <option value="">{isAr ? '-- اختر قطعة الغيار / المستهلك --' : '-- Select X-Item --'}</option>
-                            {xFlaggedItems.map((xItem) => (
-                              <option key={xItem.code} value={xItem.code}>
-                                {xItem.nameAr} [{xItem.code}]
-                              </option>
-                            ))}
-                          </select>
+                            onChange={(val) => handleLineFieldChange(idx, 'itemId', val)}
+                            options={xFlaggedItems.map((xItem) => ({
+                              value: xItem.code,
+                              label: xItem.nameAr,
+                              sublabel: xItem.code,
+                            }))}
+                            placeholder={isAr ? '-- اختر قطعة الغيار / المستهلك --' : '-- Select X-Item --'}
+                            isAr={isAr}
+                          />
                         </div>
 
                         {/* Item Variance Name (50%) */}

@@ -1465,18 +1465,18 @@ export default function BOMRecipesMaster({ currentUser = {}, permissions = null 
 
                                               {/* Raw Material Selector */}
                                               <td className="p-2">
-                                                <select
+                                                <SearchableSelect
                                                   disabled={!canEdit}
                                                   value={comp.itemId}
-                                                  onChange={(e) => handleBreakdownChangeComponent(recipe.code, compIdx, 'itemId', e.target.value)}
-                                                  className="w-full p-1.5 border border-slate-300 rounded-xl bg-white font-bold text-slate-900 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                                                >
-                                                  {rawMaterials.map((m) => (
-                                                    <option key={m.code} value={m.code}>
-                                                      {m.nameAr} [{m.code}]
-                                                    </option>
-                                                  ))}
-                                                </select>
+                                                  onChange={(val) => handleBreakdownChangeComponent(recipe.code, compIdx, 'itemId', val)}
+                                                  options={rawMaterials.map((m) => ({
+                                                    value: m.code,
+                                                    label: m.nameAr,
+                                                    sublabel: m.code,
+                                                  }))}
+                                                  placeholder={isAr ? '-- اختر الخامة --' : '-- Select Material --'}
+                                                  isAr={isAr}
+                                                />
                                               </td>
 
                                               {/* Specific Variant Selector */}

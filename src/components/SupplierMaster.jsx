@@ -36,6 +36,8 @@ import {
   TrendingDown,
   X
 } from 'lucide-react';
+import VatNumberInput from './VatNumberInput';
+import VatNumberDisplay from './VatNumberDisplay';
 
 export default function SupplierMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
@@ -524,9 +526,25 @@ export default function SupplierMaster({ currentUser = {}, permissions = null })
   const handleTrancheDetailChange = (index, field, value) => {
     const updated = [...formData.paymentTerms.tranches];
     updated[index][field] = field === 'percent' || field === 'days' ? Number(value) : value;
+    if (field === 'baseDate' && value === 'advance_payment') {
+      updated[index].days = 0;
+    }
     setFormData({
       ...formData,
       paymentTerms: { ...formData.paymentTerms, tranches: updated }
+    });
+  };
+
+  const handleApplyAdvancePreset = () => {
+    setFormData({
+      ...formData,
+      paymentTerms: {
+        tranchesCount: 2,
+        tranches: [
+          { percent: 30, days: 0, baseDate: 'advance_payment' },
+          { percent: 70, days: 30, baseDate: 'delivery_date' }
+        ]
+      }
     });
   };
 
@@ -540,6 +558,19 @@ export default function SupplierMaster({ currentUser = {}, permissions = null })
     }
     if (!editingSupplierId && !canCreate) {
       alert(isAr ? 'عذراً، ليس لديك صلاحية تسجيل موردين جدد.' : 'You do not have permission to create suppliers.');
+      return;
+    }
+
+    const totalTranchePercent = (formData.paymentTerms?.tranches || []).reduce(
+      (sum, t) => sum + (Number(t.percent) || 0),
+      0
+    );
+    if (Math.abs(totalTranchePercent - 100) > 0.01) {
+      alert(
+        isAr
+          ? `يجب أن يكون مجموع نسب دفعات السداد 100% بالضبط (المجموع الحالي: ${totalTranchePercent}%).`
+          : `Total payment tranche percentages must equal 100% (current total: ${totalTranchePercent}%).`
+      );
       return;
     }
 
@@ -678,7 +709,7 @@ export default function SupplierMaster({ currentUser = {}, permissions = null })
                     {canViewTaxCard && sup.taxCardNumber && (
                       <div className="flex items-center gap-1.5">
                         <span className="text-slate-400">{isAr ? 'ب.ض:' : 'Tax Card:'}</span>{' '}
-                        <span className="font-mono font-medium text-slate-800">{sup.taxCardNumber}</span>
+                        <VatNumberDisplay value={sup.taxCardNumber} className="font-medium text-slate-800" />
                         {sup.taxCardFile && (
                           <button
                             type="button"
@@ -794,12 +825,21 @@ export default function SupplierMaster({ currentUser = {}, permissions = null })
                     <div className="space-y-0.5">
                       {(sup.paymentTerms?.tranches || []).map((t, idx) => (
                         <div key={idx} className="text-slate-500 text-[11px]">
-                          • {t.percent}% ({t.days} {isAr ? 'يوم' : 'days'}) -{' '}
-                          <span className="text-slate-400">
-                            {t.baseDate === 'delivery_date'
-                              ? isAr ? 'من التوريد' : 'from delivery'
-                              : isAr ? 'نهاية الشهر' : 'end of month'}
-                          </span>
+                          • {t.percent}%{' '}
+                          {t.baseDate === 'advance_payment' ? (
+                            <span className="font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1 py-0.2 rounded">
+                              {isAr ? 'دفعة مقدمة (قبل التوريد)' : 'Advance (Before Delivery)'}
+                            </span>
+                          ) : (
+                            <>
+                              ({t.days} {isAr ? 'يوم' : 'days'}) -{' '}
+                              <span className="text-slate-400">
+                                {t.baseDate === 'delivery_date'
+                                  ? isAr ? 'من التوريد' : 'from delivery'
+                                  : isAr ? 'نهاية الشهر' : 'end of month'}
+                              </span>
+                            </>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -952,12 +992,10 @@ export default function SupplierMaster({ currentUser = {}, permissions = null })
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
                       {isAr ? 'رقم البطاقة الضريبية' : 'Tax Card No.'}
                     </label>
-                    <input
-                      type="text"
-                      placeholder="xxx-xxx-xxx"
+                    <VatNumberInput
                       value={formData.taxCardNumber}
-                      onChange={(e) => setFormData({ ...formData, taxCardNumber: e.target.value })}
-                      className="w-full p-2 border border-slate-300 rounded-lg text-sm"
+                      onChange={(val) => setFormData({ ...formData, taxCardNumber: val })}
+                      className="w-full"
                     />
                   </div>
 
@@ -1375,11 +1413,19 @@ export default function SupplierMaster({ currentUser = {}, permissions = null })
 
               {/* Section 4: Payment Terms Engine */}
               <div className="space-y-3 pt-3 border-t border-slate-100">
-                <div className="flex justify-between items-center">
+                <div className="flex flex-wrap justify-between items-center gap-2">
                   <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wider">
                     {isAr ? '٤- شروط السداد والائتمان' : '4. Payment Terms & Installments'}
                   </h4>
                   <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleApplyAdvancePreset}
+                      className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-md text-[11px] font-bold transition cursor-pointer"
+                      title={isAr ? 'تطبيق قالب: دفعة مقدمة % عند أمر الشراء + نسبة متبقية بفترة ائتمان' : 'Preset: Advance % upon PO + Remaining % with grace period'}
+                    >
+                      {isAr ? '+ دفعة مقدمة + باقي آجل' : '+ Advance + Deferred'}
+                    </button>
                     <span className="text-xs text-slate-600">{isAr ? 'عدد الدفعات:' : 'Tranches:'}</span>
                     <select
                       value={formData.paymentTerms.tranchesCount}
@@ -1396,7 +1442,14 @@ export default function SupplierMaster({ currentUser = {}, permissions = null })
 
                 <div className="space-y-2">
                   {formData.paymentTerms.tranches.map((tranche, tIdx) => (
-                    <div key={tIdx} className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs items-center">
+                    <div
+                      key={tIdx}
+                      className={`grid grid-cols-1 sm:grid-cols-3 gap-2 p-2 border rounded-lg text-xs items-center ${
+                        tranche.baseDate === 'advance_payment'
+                          ? 'bg-amber-50/70 border-amber-300'
+                          : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
                       <div className="flex items-center gap-1">
                         <span className="font-semibold text-slate-700">{isAr ? `الدفعة ${tIdx + 1}:` : `Tranche ${tIdx + 1}:`}</span>
                         <input
@@ -1423,8 +1476,11 @@ export default function SupplierMaster({ currentUser = {}, permissions = null })
                         <select
                           value={tranche.baseDate}
                           onChange={(e) => handleTrancheDetailChange(tIdx, 'baseDate', e.target.value)}
-                          className="w-full p-1 border border-slate-300 rounded bg-white"
+                          className="w-full p-1 border border-slate-300 rounded bg-white font-medium"
                         >
+                          <option value="advance_payment">
+                            {isAr ? 'دفعة مقدمة (عند أمر الشراء / قبل التوريد)' : 'Advance Payment (Upon PO / Before Delivery)'}
+                          </option>
                           <option value="delivery_date">
                             {isAr ? 'من تاريخ التوريد' : 'From Delivery Date'}
                           </option>

@@ -53,8 +53,12 @@ import {
   RefreshCw,
   ShieldAlert,
   GitBranch,
-  CornerDownRight
+  CornerDownRight,
+  UploadCloud,
+  Upload,
+  MessageSquare
 } from 'lucide-react';
+import { RowCommentButton, useRecordComments } from './comments';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
 import VariantComboBox from './VariantComboBox';
@@ -69,19 +73,34 @@ import {
   formatLotDate,
   resolveItemAllowFractions
 } from '../utils/stockResolver';
+import {
+  getAccountingLinks,
+  DEFAULT_ACCOUNTING_LINKS,
+  buildGrnJournalEntry
+} from '../utils/cashLedgerEngine';
 
 export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const { toast, showAlert, showConfirm } = useNotification();
+  const { registerRowActions } = useRecordComments();
 
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
   const isPurchasingAdmin = currentUser?.isPurchasingAdmin || isGeneralAdmin;
   const currentUserName = isAr ? (currentUser?.nameAr || 'أمين المخزن') : (currentUser?.name || 'Storekeeper');
 
-  // Permission Checks for Sensitive Price Data
+  // Accounting Links & Chart of Accounts Integration
+  const [accountingLinks, setAccountingLinks] = useState(DEFAULT_ACCOUNTING_LINKS);
+  const [chartAccounts, setChartAccounts] = useState([]);
+
+  // Permission Checks for Sensitive Price Data & Actions
   const canViewPrices = permissions ? permissions.sensitive?.canViewPrices !== false : true;
   const canViewTotals = permissions ? permissions.sensitive?.canViewTotals !== false : true;
+  const canReverse = isGeneralAdmin || (
+    permissions?.actions?.['goods_receipts.canReverse'] !== undefined
+      ? permissions.actions['goods_receipts.canReverse'] === true
+      : permissions?.actions?.canReverse === true
+  );
 
   // Real-time Cloud Collections
   const [receipts, setReceipts] = useState([]);
@@ -269,6 +288,16 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
       setTransformations(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
+    const unsubLinks = onSnapshot(doc(db, 'system_config', 'accounting_links'), (snap) => {
+      if (snap.exists()) {
+        setAccountingLinks((prev) => ({ ...DEFAULT_ACCOUNTING_LINKS, ...snap.data() }));
+      }
+    });
+
+    const unsubCoa = onSnapshot(collection(db, 'chart_of_accounts'), (snap) => {
+      setChartAccounts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+
     return () => {
       unsubReceipts();
       unsubOrders();
@@ -278,6 +307,8 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
       unsubLedger();
       unsubTransfers();
       unsubTransformations();
+      unsubLinks();
+      unsubCoa();
     };
   }, []);
 
@@ -1158,11 +1189,11 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         const lineSubtotal = qty * price;
         const lineVat = isTaxOfficial ? lineSubtotal * ((line.vatPercent || 0) / 100) : 0;
 
-        let effectiveWhtRate = (line.whtPercent || 0) / 100;
+        let effectiveWhtRate = isTaxOfficial ? ((line.whtPercent || 0) / 100) : 0;
         if (selectedSupplier?.whtCompliance === 'advance_payment') {
           effectiveWhtRate = 0;
         }
-        const lineWht = lineSubtotal * effectiveWhtRate;
+        const lineWht = isTaxOfficial ? (lineSubtotal * effectiveWhtRate) : 0;
 
         subtotal += lineSubtotal;
         totalVat += lineVat;
@@ -1192,6 +1223,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
     setCreditNoteNumber('');
     setCreditNoteDate('');
     setEtaPortalRegistered(false);
+    setStagedAttachments([]);
 
     const defaultWh = targetDocType === 'return'
       ? (warehousesList.find((w) => w.isActive !== false && w.classification === 'returns')?.nameAr || '')
@@ -1257,6 +1289,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
     setCreditNoteDate(grn.creditNoteDate || '');
     setEtaPortalRegistered(grn.etaPortalRegistered !== false);
     setGrnLines(grn.lines || []);
+    setStagedAttachments(Array.isArray(grn.attachments) ? [...grn.attachments] : []);
     setShowModal(true);
   };
 
@@ -1280,6 +1313,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
     setCreditNoteDate(grn.creditNoteDate || '');
     setEtaPortalRegistered(grn.etaPortalRegistered !== false);
     setGrnLines(grn.lines || []);
+    setStagedAttachments(Array.isArray(grn.attachments) ? [...grn.attachments] : []);
     setShowModal(true);
   };
 
@@ -1357,6 +1391,17 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         },
         { merge: true }
       );
+
+      // Synchronously mirror attachments to the linked General Ledger Journal Entry if it exists
+      try {
+        const jeRef = doc(db, 'journal_entries', `JE-${attachmentModalGrn.id}`);
+        await setDoc(jeRef, {
+          attachments: stagedAttachments,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      } catch (jeAttErr) {
+        console.warn('Silent note: Journal Entry attachments sync skipped or non-existent:', jeAttErr);
+      }
 
       setAttachmentModalGrn(null);
       setStagedAttachments([]);
@@ -1571,6 +1616,42 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         }
       }
 
+      // Reverse General Ledger Journal Entry if document was previously approved
+      if (grnToCancel.status === 'approved') {
+        const revJe = buildGrnJournalEntry({
+          grnId: grnToCancel.id,
+          docType: (grnToCancel.docType === 'return' || grnToCancel.id?.startsWith('RTN')) ? 'receipt' : 'return',
+          receiptDate: new Date().toISOString().split('T')[0],
+          supplierId: grnToCancel.supplierId,
+          supplierName: grnToCancel.supplierName,
+          taxInvoiceNumber: grnToCancel.taxInvoiceNumber,
+          supplierDeliveryNote: grnToCancel.supplierDeliveryNote,
+          poId: grnToCancel.poId,
+          computedTotals: grnToCancel.financials || {},
+          accountingLinks,
+          accountsMaster: chartAccounts,
+          currentUserName,
+          isTaxOfficial: Boolean(grnToCancel.isTaxOfficial),
+          etaPortalRegistered: Boolean(grnToCancel.etaPortalRegistered),
+          attachments: grnToCancel.attachments || []
+        });
+        batch.set(doc(db, 'journal_entries', `JE-REV-${grnToCancel.id}`), {
+          ...revJe,
+          id: `JE-REV-${grnToCancel.id}`,
+          entryNumber: `JE-REV-${grnToCancel.id}`,
+          sourceDocType: 'reversal',
+          originalEntryId: `JE-${grnToCancel.id}`,
+          descriptionAr: `قيد عكسي لإلغاء ${docLabel} (${grnToCancel.id}) إدارياً وعكس آثاره المحاسبية`,
+          descriptionEn: `Reversal JE for cancelled ${docLabel} #${grnToCancel.id}`,
+          createdAt: serverTimestamp()
+        });
+        batch.set(doc(db, 'journal_entries', `JE-${grnToCancel.id}`), {
+          status: 'reversed',
+          reversedAt: serverTimestamp(),
+          reversalEntryId: `JE-REV-${grnToCancel.id}`
+        }, { merge: true });
+      }
+
       await batch.commit();
       setShowModal(false);
       setEditingGrn(null);
@@ -1688,10 +1769,10 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
 
   // Open Admin Reversal Modal (or Blocker Modal)
   const handleOpenAdminGrnReversal = (grn) => {
-    if (!isGeneralAdmin) {
+    if (!canReverse) {
       showAlert({
         title: isAr ? 'صلاحية غير كافية' : 'Permission Denied',
-        message: isAr ? 'إلغاء وعكس أذون الاستلام محصور بالمسؤول العام.' : 'Only General Admin can reverse goods receipts.',
+        message: isAr ? 'إلغاء وعكس أذون الاستلام محصور بالمسؤولين المعتمدين.' : 'Only authorized personnel can reverse goods receipts.',
         variant: 'error',
       });
       return;
@@ -1893,6 +1974,43 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         });
       }
 
+      // Reverse General Ledger Journal Entry if approved
+      if (receipt.status === 'approved') {
+        const revJe = buildGrnJournalEntry({
+          grnId: receipt.id,
+          docType: (receipt.docType === 'return' || receipt.id?.startsWith('RTN')) ? 'receipt' : 'return',
+          receiptDate: new Date().toISOString().split('T')[0],
+          supplierId: receipt.supplierId,
+          supplierName: receipt.supplierName,
+          taxInvoiceNumber: receipt.taxInvoiceNumber,
+          supplierDeliveryNote: receipt.supplierDeliveryNote,
+          poId: receipt.poId,
+          computedTotals: receipt.financials || {},
+          accountingLinks,
+          accountsMaster: chartAccounts,
+          currentUserName,
+          isTaxOfficial: Boolean(receipt.isTaxOfficial),
+          etaPortalRegistered: Boolean(receipt.etaPortalRegistered),
+          attachments: receipt.attachments || []
+        });
+        batch.set(doc(db, 'journal_entries', `JE-REV-${receipt.id}`), {
+          ...revJe,
+          id: `JE-REV-${receipt.id}`,
+          entryNumber: `JE-REV-${receipt.id}`,
+          sourceDocType: 'reversal',
+          originalEntryId: `JE-${receipt.id}`,
+          descriptionAr: `قيد عكسي لإلغاء ${docLabel} (${receipt.id}) إدارياً - السبب: ${adminReversalModal.reason || 'إلغاء إداري'}`,
+          descriptionEn: `Reversal JE for ${receipt.id} - Reason: ${adminReversalModal.reason || 'Admin reversal'}`,
+          createdAt: serverTimestamp()
+        });
+        batch.set(doc(db, 'journal_entries', `JE-${receipt.id}`), {
+          status: 'reversed',
+          reversedAt: serverTimestamp(),
+          reversalEntryId: `JE-REV-${receipt.id}`,
+          reversalReason: adminReversalModal.reason || 'إلغاء إداري'
+        }, { merge: true });
+      }
+
       await batch.commit();
 
       setAdminReversalModal({ open: false, receipt: null, isReturn: false, reason: '', isSubmitting: false, linesToRollback: [] });
@@ -2054,6 +2172,8 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         poId: receivingType === 'po_linked' ? selectedPoId : null,
         supplierId: selectedSupplierId,
         supplierName: selectedSupplier?.name || '',
+        paymentTermsSnapshot: selectedSupplier?.paymentTerms || editingGrn?.paymentTermsSnapshot || null,
+        whtComplianceSnapshot: selectedSupplier?.whtCompliance || editingGrn?.whtComplianceSnapshot || 'credit_notes',
         receiptDate,
         supplierDeliveryNote,
         vehiclePlateNumber,
@@ -2095,6 +2215,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
           rejectionReason: l.rejectionReason || '',
         })),
         financials: computedTotals,
+        attachments: (stagedAttachments && stagedAttachments.length > 0) ? stagedAttachments : (editingGrn?.attachments || []),
         receivedBy: editingGrn?.receivedBy || currentUserName,
         updatedAt: serverTimestamp(),
       };
@@ -2424,6 +2545,41 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
         } catch (woBindErr) {
           console.warn('Error during complementary work order auto-binding from GRN:', woBindErr);
         }
+      }
+
+      // 4. Automatic 4-Leg Double-Entry Accrual Posting to General Ledger (journal_entries)
+      if (isNowApproved) {
+        if (computedTotals.subtotal > 0 || computedTotals.netPayable > 0) {
+          const jePayload = buildGrnJournalEntry({
+            grnId,
+            docType,
+            receiptDate,
+            supplierId: selectedSupplierId,
+            supplierName: selectedSupplier?.name || selectedSupplier?.taxpayerLegalName || '',
+            taxInvoiceNumber: isTaxOfficial ? taxInvoiceNumber : '',
+            supplierDeliveryNote,
+            poId: receivingType === 'po_linked' ? selectedPoId : '',
+            computedTotals,
+            accountingLinks,
+            accountsMaster: chartAccounts,
+            currentUserName,
+            isTaxOfficial: Boolean(isTaxOfficial),
+            etaPortalRegistered: isTaxOfficial ? Boolean(etaPortalRegistered) : false,
+            attachments: (stagedAttachments && stagedAttachments.length > 0) ? stagedAttachments : (editingGrn?.attachments || [])
+          });
+          batch.set(doc(db, 'journal_entries', jePayload.id), {
+            ...jePayload,
+            updatedAt: serverTimestamp(),
+            createdAt: editingGrn?.createdAt || serverTimestamp()
+          }, { merge: true });
+        }
+      } else if (wasPreviouslyApproved && !isNowApproved) {
+        batch.set(doc(db, 'journal_entries', `JE-${grnId}`), {
+          status: 'reversed',
+          reversedAt: serverTimestamp(),
+          reversedBy: currentUserName,
+          reversalReason: `GRN status changed from approved to ${statusToSet}`
+        }, { merge: true });
       }
 
       await batch.commit();
@@ -2759,9 +2915,72 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                 const isReturn = grn.docType === 'return' || grn.id?.startsWith('RTN');
                 const isReversed = grn.status === 'reversed' || grn.isReversed;
 
+                const grnRowActions = [
+                  {
+                    id: 'view',
+                    label: 'معاينة إذن الاستلام والمواصفات',
+                    labelAr: 'معاينة إذن الاستلام والمواصفات',
+                    labelEn: 'View Full Details & Specs',
+                    icon: Eye,
+                    onClick: () => handleOpenView(grn)
+                  },
+                  {
+                    id: 'attachments',
+                    label: 'إدارة المرفقات والوثائق',
+                    labelAr: 'إدارة المرفقات والوثائق',
+                    labelEn: 'Manage Attachments',
+                    icon: Paperclip,
+                    onClick: () => handleOpenAttachmentModal(grn)
+                  },
+                  ...(canEdit ? [
+                    {
+                      id: 'edit',
+                      label: 'تعديل إذن الاستلام وتحديث الأرصدة',
+                      labelAr: 'تعديل إذن الاستلام وتحديث الأرصدة',
+                      labelEn: 'Edit GRN',
+                      icon: Edit3,
+                      onClick: () => handleOpenEdit(grn)
+                    }
+                  ] : []),
+                  {
+                    id: 'audit',
+                    label: 'سجل المراجعة والاعتمادات',
+                    labelAr: 'سجل المراجعة والاعتمادات',
+                    labelEn: 'View Audit Trail',
+                    icon: History,
+                    onClick: () => setAuditGrnData(grn)
+                  },
+                  {
+                    id: 'print',
+                    label: 'طباعة إذن الاستلام',
+                    labelAr: 'طباعة إذن الاستلام',
+                    labelEn: 'Print GRN',
+                    icon: Printer,
+                    onClick: () => handleTriggerPrint(grn)
+                  },
+                  ...(canReverse && grn.status === 'approved' && !grn.isReversed ? [
+                    {
+                      id: 'reverse',
+                      label: 'إلغاء الإذن إدارياً وعكس الأرصدة',
+                      labelAr: 'إلغاء الإذن إدارياً وعكس الأرصدة',
+                      labelEn: 'Admin Reversal & Stock Rollback',
+                      icon: ShieldAlert,
+                      variant: 'danger',
+                      onClick: () => handleOpenAdminGrnReversal(grn)
+                    }
+                  ] : [])
+                ];
+                registerRowActions(grn.id, grnRowActions);
+
                 return (
                   <tr
                     key={grn.id}
+                    id={`grn-row-${grn.id}`}
+                    data-comment-doc={grn.id}
+                    data-comment-number={grn.id}
+                    data-comment-tab="goods_receipt"
+                    data-comment-module="purchases"
+                    data-comment-type="table_row"
                     className={`transition ${
                       isReversed
                         ? 'bg-purple-50/40 opacity-75 hover:bg-purple-50/70 border-s-4 border-s-purple-500'
@@ -2987,6 +3206,14 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
 
                     <td className="p-3.5 align-top text-center">
                       <div className="flex items-center justify-center gap-1">
+                        {/* Quick Row Comment Button */}
+                        <RowCommentButton
+                          docId={grn.id}
+                          docNumber={grn.id}
+                          tab="receipts"
+                          module="purchases"
+                        />
+
                         <button
                           onClick={() => handleOpenView(grn)}
                           className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition cursor-pointer"
@@ -3037,11 +3264,11 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                           <Printer className="h-4 w-4" />
                         </button>
 
-                        {isGeneralAdmin && grn.status === 'approved' && !grn.isReversed && (
+                        {canReverse && grn.status === 'approved' && !grn.isReversed && (
                           <button
                             onClick={() => handleOpenAdminGrnReversal(grn)}
                             className="p-1.5 text-purple-600 hover:text-purple-800 hover:bg-purple-100 rounded-lg transition cursor-pointer"
-                            title={isAr ? 'إلغاء الإذن إدارياً وعكس الأرصدة وأمر الشراء (المسؤول العام)' : 'Admin Reversal & Stock Rollback (General Admin)'}
+                            title={isAr ? 'إلغاء الإذن إدارياً وعكس الأرصدة وأمر الشراء' : 'Admin Reversal & Stock Rollback'}
                           >
                             <ShieldAlert className="h-4 w-4" />
                           </button>
@@ -3951,6 +4178,98 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                 onChange={(e) => setNotes(e.target.value)}
                 className="w-full p-2.5 border border-slate-300 rounded-xl text-xs bg-slate-50 focus:bg-white disabled:bg-slate-100"
               />
+            </div>
+
+            {/* SECTION 5: ATTACHMENTS & SUPPORTING INVOICES */}
+            <div className="p-4 bg-white border-2 border-slate-200 rounded-2xl shadow-xs space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg">
+                    <Paperclip className="h-4 w-4" />
+                  </div>
+                  <h4 className="text-xs font-extrabold text-slate-900 uppercase tracking-wider">
+                    {isAr ? '٥- مرفقات ووثائق التوريد والفاتورة' : '5. Attachments & Supporting Invoices'}
+                  </h4>
+                </div>
+                <span className="text-[11px] font-bold text-purple-900 bg-purple-50 px-2.5 py-0.5 rounded-full border border-purple-200">
+                  {stagedAttachments.length} {isAr ? 'مستندات مرفقة' : 'attached'}
+                </span>
+              </div>
+
+              {!isReadOnly && (
+                <div className="p-3 border-2 border-dashed border-purple-200 rounded-xl bg-purple-50/30 text-center space-y-1.5">
+                  <label className="cursor-pointer inline-flex items-center gap-2 px-3.5 py-1.5 bg-white border border-purple-300 rounded-lg text-xs font-bold text-purple-700 hover:bg-purple-50 transition shadow-2xs">
+                    <UploadCloud className="h-4 w-4 text-purple-600" />
+                    <span>{isAr ? 'اختيار ورفع ملفات (فاتورة المورد / إذن الاستلام / صور الفحص)' : 'Upload Invoices / Delivery Notes / Photos'}</span>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*,application/pdf"
+                      onChange={handleFilesSelected}
+                      className="hidden"
+                    />
+                  </label>
+                  <p className="text-[10px] text-slate-500">
+                    {isAr ? 'يدعم صور الفواتير وإيصالات الاستلام ووثائق PDF - ترتبط مباشرة بسجل الأستاذ العام لأغراض المراجعة' : 'Supports PDF & Images - automatically synced to the General Ledger for audit drill-down'}
+                  </p>
+                </div>
+              )}
+
+              {stagedAttachments.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 max-h-56 overflow-y-auto pe-1">
+                  {stagedAttachments.map((att, idx) => (
+                    <div
+                      key={att.id || idx}
+                      className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 truncate">
+                          <FileText className="h-4 w-4 text-purple-600 shrink-0" />
+                          <div className="truncate">
+                            <span className="font-bold text-slate-800 truncate block text-[11px]" title={att.fileName || att.label}>
+                              {att.label || att.fileName}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">{att.fileSize}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {att.dataUrl && (
+                            <a
+                              href={att.dataUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1 text-slate-600 hover:text-purple-700 hover:bg-purple-50 rounded transition"
+                              title={isAr ? 'معاينة المستند' : 'Preview'}
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </a>
+                          )}
+                          {!isReadOnly && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveStagedAttachment(idx)}
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer"
+                              title={isAr ? 'حذف المرفق' : 'Remove'}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {!isReadOnly && (
+                        <input
+                          type="text"
+                          value={att.label || ''}
+                          placeholder={isAr ? 'وصف المرفق (مثال: فاتورة ضريبية رسمية)' : 'Attachment description'}
+                          onChange={(e) => handleUpdateAttachmentLabel(idx, e.target.value)}
+                          className="w-full p-1 bg-white border border-slate-200 rounded text-[11px] text-slate-700 focus:border-purple-400"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Modal Actions Footer */}

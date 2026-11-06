@@ -37,6 +37,7 @@ import {
   FlaskConical
 } from 'lucide-react';
 import VariantIdentifierChip from './VariantIdentifierChip';
+import SearchableSelect from './SearchableSelect';
 import { isUsableWarehouse, matchWarehouse, getWarehouseDisplayName } from '../utils/warehouseClassifier';
 import { resolveItemOrLotCost } from '../utils/stockResolver';
 
@@ -280,7 +281,7 @@ export default function StockLifecycleSubTab({
     // B. VENDOR RECEIPTS (GRN), RETURNS (RTN), & AUDIT RECONCILIATIONS (ADJ)
     // -----------------------------------------------------------------------
     goodsReceipts.forEach((grn) => {
-      if (grn.status === 'cancelled' || grn.status === 'rejected') return;
+      if (grn.status === 'cancelled' || grn.status === 'rejected' || grn.status === 'reversed' || grn.isReversed) return;
       if (grn.docType === 'opening_balance' || grn.id?.startsWith('OB-')) return;
 
       const isReturn = grn.docType === 'return' || grn.id?.startsWith('RTN');
@@ -461,7 +462,7 @@ export default function StockLifecycleSubTab({
     // D. WORK ORDER / PRODUCTION CONSUMPTIONS (WO / PRD-INT / ISS)
     // -----------------------------------------------------------------------
     transformations.forEach((trans) => {
-      if (trans.status === 'cancelled' || trans.status === 'rejected') return;
+      if (trans.status === 'cancelled' || trans.status === 'rejected' || trans.status === 'reversed' || trans.isReversed) return;
       const timeInfo = resolveTimeInfo(trans, trans.date);
       const isWorkOrder = Boolean(trans.workOrderId || trans.id?.startsWith('TRANS-WO-'));
       const woRefCode = trans.workOrderId || trans.productionOrderRef || trans.id;
@@ -472,6 +473,7 @@ export default function StockLifecycleSubTab({
       // 1. Inflow (+): Produced Intermediate M-material in Tank Prep WH (PRD-INT)
       if (trans.itemCode && Number(trans.producedQty) > 0 && !isWorkOrder) {
         const pId = trans.itemCode;
+        const itemObj = itemsMaster.find((i) => i.code === pId || i.id === pId);
         const vCode = trans.variantCode || pId;
         const qty = Number(trans.producedQty);
         const tankLotNo = trans.lotNumber || (trans.tankNumber ? `TANK-${trans.tankNumber}` : `LOT-${trans.id}`);
@@ -1127,18 +1129,17 @@ export default function StockLifecycleSubTab({
               <PackageCheck className="h-3.5 w-3.5 text-emerald-600" />
               <span>{isAr ? 'الخامة / الصنف:' : 'Raw Material:'}</span>
             </label>
-            <select
-              value={selectedItemCode}
-              onChange={(e) => handleItemChange(e.target.value)}
-              className="w-full p-2 border border-slate-300 rounded-xl text-xs font-bold bg-slate-50 focus:bg-white focus:border-indigo-500 focus:outline-none transition"
-            >
-              <option value="all">{isAr ? '-- كافة الخامات والمواد (الكل) --' : '-- All Materials --'}</option>
-              {itemsMaster.map((item) => (
-                <option key={item.code} value={item.code}>
-                  {item.nameAr} [{item.code}]
-                </option>
-              ))}
-            </select>
+            <SearchableSelect
+              value={selectedItemCode === 'all' ? '' : selectedItemCode}
+              onChange={(val) => handleItemChange(val || 'all')}
+              options={itemsMaster.map((item) => ({
+                value: item.code,
+                label: item.nameAr,
+                sublabel: item.code,
+              }))}
+              placeholder={isAr ? '-- كافة الخامات والمواد (الكل) --' : '-- All Materials --'}
+              isAr={isAr}
+            />
           </div>
 
           {/* 2. Variant Selector */}

@@ -36,7 +36,14 @@ import {
   FolderKanban,
   PackageCheck,
   Warehouse,
-  Settings
+  Settings,
+  Coins,
+  Vault,
+  UserCheck,
+  Landmark,
+  FileText,
+  Receipt,
+  Truck
 } from 'lucide-react';
 import LandingPage from './components/LandingPage';
 import TopNavbar from './components/TopNavbar';
@@ -56,6 +63,9 @@ import BOMRecipesMaster from './components/BOMRecipesMaster';
 import IntermediateBOMMaster from './components/IntermediateBOMMaster';
 import ProductionProcessesMaster from './components/ProductionProcessesMaster';
 import WarehouseMaster from './components/WarehouseMaster';
+import SafesMaster from './components/SafesMaster';
+import BankAccountsMaster from './components/BankAccountsMaster';
+import VehiclesMaster from './components/VehiclesMaster';
 import ProductionWorkersMaster from './components/ProductionWorkersMaster';
 import UsersMaster from './components/UsersMaster';
 import SystemConfigMaster from './components/SystemConfigMaster';
@@ -71,12 +81,26 @@ import StockTransfers from './components/StockTransfers';
 import StockBalances from './components/StockBalances';
 import StockCount from './components/StockCount';
 import SparePartsConsumption from './components/SparePartsConsumption';
+import CashSafesMaster from './components/CashSafesMaster';
+import ChartOfAccountsMaster from './components/ChartOfAccountsMaster';
+import FinancialStatementsMaster from './components/FinancialStatementsMaster';
+import PartnerStatementsMaster from './components/PartnerStatementsMaster';
+import DuesTrackingMaster from './components/DuesTrackingMaster';
+import FinanceUpcomingView from './components/FinanceUpcomingView';
 import AdminControlPanel from './components/AdminControlPanel';
 import ScopedPermissionMatrixModal from './components/ScopedPermissionMatrixModal';
+import { useHeaderAlerts } from './hooks/useHeaderAlerts';
+import InAppAlertToast from './components/InAppAlertToast';
+import { highlightTargetRow, resolveModuleAndTab } from './utils/notificationEngine';
+import { syncOneSignalUser } from './utils/oneSignalEngine';
 import PeacockLoader from './components/PeacockLoader';
 import { DEFAULT_ROLE_PERMISSIONS } from './config/appArchitecture';
 import { collection, doc, onSnapshot, getDocs, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase';
+import { CommentProvider } from './context/CommentContext';
+import CommentContextMenu from './components/comments/CommentContextMenu';
+import CommentThreadPopover from './components/comments/CommentThreadPopover';
+import GlobalCommentsDrawer from './components/comments/GlobalCommentsDrawer';
 
 // Initial Seeds (with Login Email Addresses & 2-Tier Roles)
 const INITIAL_SEED_USERS = [
@@ -88,7 +112,7 @@ const INITIAL_SEED_USERS = [
     role: 'general_admin',
     department: 'الإدارة العليا',
     isGeneralAdmin: true,
-    allowedModules: ['master_data', 'purchases', 'production', 'sales', 'finance', 'hr'],
+    allowedModules: ['master_data', 'purchases', 'production', 'finance', 'sales', 'hr'],
     status: 'active',
   },
   {
@@ -137,10 +161,42 @@ const INITIAL_SEED_USERS = [
   },
 ];
 
+// Helper to initialize active route synchronously on startup / reload
+const getInitialRoute = () => {
+  if (typeof window === 'undefined') return { module: 'landing', tab: 'landing' };
+  const rawHash = window.location.hash || '';
+  const rawSearch = window.location.search || '';
+  const searchParams = new URLSearchParams(rawSearch);
+  let hashParams = new URLSearchParams();
+  let tabName = '';
+
+  if (rawHash) {
+    const cleanHash = rawHash.replace(/^#/, '');
+    const [hName, hQuery] = cleanHash.split('?');
+    tabName = hName;
+    if (hQuery) hashParams = new URLSearchParams(hQuery);
+  }
+
+  const savedTab = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tawoos_last_active_tab') : null;
+  const savedModule = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tawoos_last_active_module') : null;
+
+  const targetTab = tabName || searchParams.get('tab') || hashParams.get('tab') || savedTab || '';
+  const targetModule = searchParams.get('module') || hashParams.get('module') || savedModule || '';
+
+  if (targetTab && targetTab !== 'landing') {
+    const resolved = resolveModuleAndTab(targetModule, targetTab);
+    if (resolved && resolved.module && resolved.tab) {
+      return { module: resolved.module, tab: resolved.tab };
+    }
+  }
+  return { module: 'landing', tab: 'landing' };
+};
+
 export default function App() {
   const { t, i18n } = useTranslation();
-  const [activeModule, setActiveModule] = useState('landing');
-  const [activeTab, setActiveTab] = useState('landing');
+  const initialRoute = useMemo(() => getInitialRoute(), []);
+  const [activeModule, setActiveModule] = useState(() => initialRoute.module);
+  const [activeTab, setActiveTab] = useState(() => initialRoute.tab);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isSidebarVisible, setIsSidebarVisible] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 768 : false
@@ -171,7 +227,21 @@ export default function App() {
     if (showCollapsedUserMenu) document.addEventListener('mousedown', handleOutsideClick);
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, [showCollapsedUserMenu]);
-  const [currentUserId, setCurrentUserId] = useState(INITIAL_SEED_USERS[0].id);
+
+  const [currentUserId, setCurrentUserId] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('tawoos_current_user_id');
+      if (saved) return saved;
+    }
+    return INITIAL_SEED_USERS[0].id;
+  });
+
+  const handleSwitchUser = (userId) => {
+    setCurrentUserId(userId);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('tawoos_current_user_id', userId);
+    }
+  };
   const [cloudPermissions, setCloudPermissions] = useState({});
   const [isBooting, setIsBooting] = useState(true);
 
@@ -189,13 +259,113 @@ export default function App() {
       if (modId) setActiveModule(modId);
       if (tab) setActiveTab(tab);
     };
+    const handleHashRouting = () => {
+      if (typeof window === 'undefined') return;
+      const rawHash = window.location.hash || '';
+      const rawSearch = window.location.search || '';
+
+      const searchParams = new URLSearchParams(rawSearch);
+      let hashParams = new URLSearchParams();
+      let tabName = '';
+
+      if (rawHash) {
+        const cleanHash = rawHash.replace(/^#/, '');
+        const [hName, hQuery] = cleanHash.split('?');
+        tabName = hName;
+        if (hQuery) {
+          hashParams = new URLSearchParams(hQuery);
+        }
+      }
+
+      const targetTab = tabName || searchParams.get('tab') || hashParams.get('tab') || '';
+      const targetModule = searchParams.get('module') || hashParams.get('module') || '';
+      const voucherId = searchParams.get('voucherId') || hashParams.get('voucherId') || '';
+      const recordId = searchParams.get('recordId') || hashParams.get('recordId') || searchParams.get('id') || hashParams.get('id') || '';
+      const safeId = searchParams.get('safeId') || hashParams.get('safeId') || searchParams.get('safe') || hashParams.get('safe') || '';
+      const subTab = searchParams.get('subTab') || hashParams.get('subTab') || searchParams.get('subtab') || hashParams.get('subtab') || '';
+
+      if (targetTab === 'fg_inward' || targetTab === 'fg_inwards' || targetTab === 'finished_goods_inward' || targetTab === 'finished_goods_inwards') {
+        setActiveModule('production');
+        setActiveTab('fg_inward');
+      } else if (targetTab === 'work_orders') {
+        setActiveModule('production');
+        setActiveTab('work_orders');
+      } else if (targetTab === 'safes') {
+        setActiveModule('master_data');
+        setActiveTab('safes');
+      } else if (targetTab === 'bank_accounts') {
+        setActiveModule('master_data');
+        setActiveTab('bank_accounts');
+      } else if (targetTab === 'vehicles') {
+        setActiveModule('master_data');
+        setActiveTab('vehicles');
+      } else if (targetTab === 'cash_safes' || targetTab === 'cash_safes_hub' || targetTab === 'custodies_advances' || voucherId || recordId) {
+        setActiveModule('finance');
+        setActiveTab('cash_safes');
+        setTimeout(() => {
+          const effectiveSafeId = safeId || (!['safes', 'custodies', 'custodies_advances', 'safes_hub'].includes(subTab) ? subTab : '');
+          window.dispatchEvent(new CustomEvent('app_focus_transaction', {
+            detail: { voucherId, recordId, safeId: effectiveSafeId, subTab: targetTab === 'custodies_advances' ? 'custodies' : subTab }
+          }));
+        }, 350);
+      } else if (targetTab) {
+        const resolved = resolveModuleAndTab(targetModule, targetTab);
+        if (resolved && resolved.module && resolved.tab) {
+          setActiveModule(resolved.module);
+          setActiveTab(resolved.tab);
+        }
+      }
+    };
+
+    handleHashRouting();
+    window.addEventListener('hashchange', handleHashRouting);
+    window.addEventListener('popstate', handleHashRouting);
     window.addEventListener('app_tab_config_updated', handleTabConfigUpdated);
     window.addEventListener('app_navigate_tab', handleAppNavigate);
     return () => {
+      window.removeEventListener('hashchange', handleHashRouting);
+      window.removeEventListener('popstate', handleHashRouting);
       window.removeEventListener('app_tab_config_updated', handleTabConfigUpdated);
       window.removeEventListener('app_navigate_tab', handleAppNavigate);
     };
   }, []);
+
+  // Synchronize browser URL hash with activeTab and activeModule to guarantee return to same screen
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (activeTab && activeTab !== 'landing' && activeTab !== 'admin_panel') {
+      const rawHash = window.location.hash || '';
+      const [currTab, currQuery] = rawHash.replace(/^#/, '').split('?');
+      const hashParams = new URLSearchParams(currQuery || '');
+      const hashModule = hashParams.get('module');
+
+      if (currTab !== activeTab) {
+        // Main tab changed: Fresh parameter scoping — discard stale parameters unless targeted for new tab
+        const freshParams = new URLSearchParams();
+        if (activeModule) freshParams.set('module', activeModule);
+        const currSubTab = hashParams.get('subTab') || hashParams.get('subtab');
+        const currSafeId = hashParams.get('safeId') || hashParams.get('safe');
+        if (currSubTab) freshParams.set('subTab', currSubTab);
+        if (currSafeId) freshParams.set('safeId', currSafeId);
+        const queryStr = freshParams.toString();
+        window.location.hash = queryStr ? `${activeTab}?${queryStr}` : activeTab;
+
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('tawoos_last_active_tab', activeTab);
+          if (activeModule) sessionStorage.setItem('tawoos_last_active_module', activeModule);
+        }
+      } else if (activeModule && hashModule !== activeModule) {
+        // Same tab, but module changed: update module while preserving current tab's own subTab
+        hashParams.set('module', activeModule);
+        const queryStr = hashParams.toString();
+        window.location.hash = queryStr ? `${activeTab}?${queryStr}` : activeTab;
+
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('tawoos_last_active_module', activeModule);
+        }
+      }
+    }
+  }, [activeTab, activeModule]);
 
   // 1. Subscribe to Live Cloud Users & Auto-Seed on initial startup
   useEffect(() => {
@@ -250,6 +420,16 @@ export default function App() {
     return usersList.find((u) => u.id === currentUserId) || usersList[0] || INITIAL_SEED_USERS[0];
   }, [usersList, currentUserId]);
 
+  // Sync active user persona with OneSignal for targeted mobile web push
+  useEffect(() => {
+    if (currentUser?.id) {
+      syncOneSignalUser(currentUser);
+    }
+  }, [currentUser?.id]);
+
+  // Live Real-Time Actions Required & Notifications Hub
+  const headerAlerts = useHeaderAlerts(currentUser);
+
   // Compute Effective Permissions Dynamically
   const effectivePermissions = useMemo(() => {
     if (currentUser.isGeneralAdmin || currentUser.role === 'general_admin') {
@@ -259,11 +439,33 @@ export default function App() {
     const baseDefault = DEFAULT_ROLE_PERMISSIONS.standard || DEFAULT_ROLE_PERMISSIONS.general_admin;
     const userOverride = cloudPermissions[currentUser.id] || {};
 
+    const effectiveModules = { ...baseDefault.modules, ...(userOverride.modules || {}) };
+    const effectiveActions = { ...baseDefault.actions, ...(userOverride.actions || {}) };
+    const effectiveSensitive = { ...baseDefault.sensitive, ...(userOverride.sensitive || {}) };
+    const effectiveFields = { ...(userOverride.fields || {}) };
+
+    // CASCADE RULE: If "show tab in navigation" (effectiveModules[tabId]) is false,
+    // all related actions and fields under that tab must be false
+    Object.keys(effectiveModules).forEach((tabId) => {
+      if (effectiveModules[tabId] === false) {
+        Object.keys(effectiveActions).forEach((actKey) => {
+          if (actKey.startsWith(`${tabId}.`)) {
+            effectiveActions[actKey] = false;
+          }
+        });
+        Object.keys(effectiveFields).forEach((fKey) => {
+          if (fKey.startsWith(`${tabId}.`)) {
+            effectiveFields[fKey] = false;
+          }
+        });
+      }
+    });
+
     return {
-      modules: { ...baseDefault.modules, ...(userOverride.modules || {}) },
-      actions: { ...baseDefault.actions, ...(userOverride.actions || {}) },
-      sensitive: { ...baseDefault.sensitive, ...(userOverride.sensitive || {}) },
-      fields: { ...(userOverride.fields || {}) },
+      modules: effectiveModules,
+      actions: effectiveActions,
+      sensitive: effectiveSensitive,
+      fields: effectiveFields,
     };
   }, [currentUser, cloudPermissions]);
 
@@ -309,6 +511,9 @@ export default function App() {
       { id: 'intermediate_bom', labelAr: 'تصنيع الخامات الوسيطة (M)', labelEn: 'Intermediate Recipes (M)', icon: FlaskConical, moduleKey: 'intermediate_bom' },
       { id: 'production_processes', labelAr: 'مسارات ومراحل التشغيل (SOP)', labelEn: 'Production Processes & SOPs', icon: Workflow, moduleKey: 'production_processes' },
       { id: 'warehouses', labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', icon: Warehouse, moduleKey: 'warehouses' },
+      { id: 'safes', labelAr: 'سجل الخزائن والخزن النقدية', labelEn: 'Safes & Cash Vaults', icon: Vault, moduleKey: 'safes' },
+      { id: 'bank_accounts', labelAr: 'سجل الحسابات والودائع البنكية', labelEn: 'Bank Accounts Master', icon: Landmark, moduleKey: 'bank_accounts' },
+      { id: 'vehicles', labelAr: 'سجل أسطول الشاحنات والسيارات', labelEn: 'Vehicles & Fleet Master', icon: Truck, moduleKey: 'vehicles' },
       { id: 'production_workers', labelAr: 'سجل عمالة وفنيي الإنتاج', labelEn: 'Production Workers', icon: Users, moduleKey: 'production_workers' },
       { id: 'users', labelAr: 'المستخدمين والصلاحيات', labelEn: 'Users & Roles', icon: ShieldCheck, moduleKey: 'users' },
       { id: 'system_config', labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', icon: Settings, moduleKey: 'system_config' },
@@ -329,12 +534,17 @@ export default function App() {
       { id: 'fg_inward', labelAr: 'استلام المنتج التام', labelEn: 'Finished Goods Inward', icon: CheckCircle2, moduleKey: 'fg_inward' },
       { id: 'production_reports', labelAr: 'تقارير الإنتاجية والأداء التنفيذي', labelEn: 'Production & Performance Reports', icon: BarChart3, moduleKey: 'production_reports' },
     ],
+    finance: [
+      { id: 'cash_safes', labelAr: 'الخزائن النقدية والعهد', labelEn: 'Cash Safes & Vaults', icon: Coins, moduleKey: 'cash_safes' },
+      { id: 'dues_tracking', labelAr: 'متابعة الاستحقاقات والدفعات', labelEn: 'Dues & Installments Tracking', icon: Receipt, moduleKey: 'dues_tracking' },
+      { id: 'banks', labelAr: 'الحسابات البنكية والشيكات', labelEn: 'Bank Accounts & Cheques', icon: Landmark, moduleKey: 'banks' },
+      { id: 'accounts', labelAr: 'دليل الحسابات والأستاذ العام', labelEn: 'Chart of Accounts & GL', icon: BadgeDollarSign, moduleKey: 'accounts' },
+      { id: 'party_statements', labelAr: 'كشوف حسابات الموردين والعملاء', labelEn: 'Partner Statements', icon: FileText, moduleKey: 'party_statements' },
+      { id: 'financial_statements', labelAr: 'القوائم المالية والتقارير', labelEn: 'Financial Statements', icon: BarChart3, moduleKey: 'financial_statements' },
+    ],
     sales: [
       { id: 'customers', labelAr: 'سجل العملاء', labelEn: 'Customers Master', icon: Users, moduleKey: 'customers' },
       { id: 'sales_orders', labelAr: 'أوامر البيع والتوريد', labelEn: 'Sales Orders', icon: TrendingUp, moduleKey: 'sales_orders' },
-    ],
-    finance: [
-      { id: 'accounts', labelAr: 'دليل الحسابات', labelEn: 'Chart of Accounts', icon: BadgeDollarSign, moduleKey: 'accounts' },
     ],
     hr: [
       { id: 'employees', labelAr: 'سجل العاملين', labelEn: 'Employees Directory', icon: Users, moduleKey: 'employees' },
@@ -371,13 +581,17 @@ export default function App() {
     }));
 
   const handleSelectModule = (moduleId, targetTab) => {
-    setActiveModule(moduleId);
-    if (moduleId === 'landing') {
+    const resolved = resolveModuleAndTab(moduleId, targetTab);
+    const resolvedModule = resolved.module || moduleId;
+    const resolvedTargetTab = resolved.tab || targetTab;
+
+    setActiveModule(resolvedModule);
+    if (resolvedModule === 'landing') {
       setActiveTab('landing');
       return;
     }
 
-    const moduleNav = MODULE_NAV_DEFINITIONS[moduleId] || [];
+    const moduleNav = MODULE_NAV_DEFINITIONS[resolvedModule] || [];
     const permittedNav = moduleNav
       .map((item) => {
         const customConfig = tabAppearanceMap[item.id];
@@ -392,28 +606,36 @@ export default function App() {
       })
       .sort((a, b) => (Number(a.order) || 99) - (Number(b.order) || 99));
 
-    const userDefault = currentUser?.defaultModuleTabs?.[moduleId];
-    const isTargetPermitted = targetTab && permittedNav.some((t) => t.id === targetTab);
+    const userDefault = currentUser?.defaultModuleTabs?.[resolvedModule];
+    const isTargetPermitted = resolvedTargetTab && permittedNav.some((t) => t.id === resolvedTargetTab);
     const isUserDefaultPermitted = userDefault && permittedNav.some((t) => t.id === userDefault);
     const defaultFallback =
-      moduleId === 'master_data'
+      resolvedModule === 'master_data'
         ? 'items'
-        : moduleId === 'production'
+        : resolvedModule === 'production'
         ? 'work_orders'
-        : moduleId === 'purchases'
+        : resolvedModule === 'purchases'
         ? 'orders'
+        : resolvedModule === 'finance'
+        ? 'cash_safes'
         : 'dashboard';
     const isFallbackPermitted = permittedNav.some((t) => t.id === defaultFallback);
 
     // Pick strictly from visible tabs
     const resolvedTab =
-      (isTargetPermitted ? targetTab : null) ||
+      (isTargetPermitted ? resolvedTargetTab : null) ||
       (isUserDefaultPermitted ? userDefault : null) ||
       (isFallbackPermitted ? defaultFallback : null) ||
       permittedNav[0]?.id ||
       defaultFallback;
 
     setActiveTab(resolvedTab);
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('tawoos_last_active_tab', resolvedTab);
+        sessionStorage.setItem('tawoos_last_active_module', resolvedModule);
+      }
+    } catch (_) {}
   };
 
   // Persist user preferred default tab per module to Firestore
@@ -450,20 +672,40 @@ export default function App() {
   };
 
   return (
-    <div 
-      style={{ fontFamily: "'Cairo', sans-serif" }} 
-      className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans"
+    <CommentProvider
+      currentUser={currentUser}
+      usersList={usersList}
+      cloudPermissions={cloudPermissions}
+      onSelectModule={handleSelectModule}
     >
-      {/* 1. Global Navigation Bar */}
-      <TopNavbar
+      <div 
+        style={{ fontFamily: "'Cairo', sans-serif" }} 
+        className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans"
+      >
+        {/* 1. Global Navigation Bar */}
+        <TopNavbar
         activeModule={activeModule}
         activeTab={activeTab}
         onSelectModule={handleSelectModule}
         currentUser={currentUser}
         testUsers={usersList}
+        onSelectUser={handleSwitchUser}
         effectivePermissions={effectivePermissions}
         isSidebarVisible={isSidebarVisible}
         onToggleSidebarVisibility={() => setIsSidebarVisible(!isSidebarVisible)}
+        headerAlerts={headerAlerts}
+      />
+
+      {/* 15-Second Auto-Dismissing In-App Alert Popup */}
+      <InAppAlertToast
+        alerts={headerAlerts.activeToasts}
+        onDismiss={headerAlerts.dismissToast}
+        onNavigate={(alertItem) => {
+          if (alertItem.targetTab) {
+            handleSelectModule(alertItem.targetModule || activeModule, alertItem.targetTab);
+            highlightTargetRow(alertItem.highlightId || alertItem.docId);
+          }
+        }}
       />
 
       {/* Main Body */}
@@ -631,15 +873,23 @@ export default function App() {
                     </span>
                     <select
                       value={currentUser.id}
-                      onChange={(e) => setCurrentUserId(e.target.value)}
+                      onChange={(e) => handleSwitchUser(e.target.value)}
                       className="w-full bg-transparent text-xs text-slate-900 font-extrabold focus:outline-none cursor-pointer truncate"
                       title={isAr ? 'تبديل المستخدم' : 'Switch live user persona'}
                     >
-                      {usersList.map((u) => (
-                        <option key={u.id} value={u.id} className="bg-white text-slate-900">
-                          {isAr ? u.nameAr : (u.name || u.nameAr)} ({u.role})
-                        </option>
-                      ))}
+                      {usersList.map((u) => {
+                        const displayName = isAr
+                          ? (u.nameAr || u.name || u.id)
+                          : (u.name || u.nameAr || u.id);
+                        const roleBadge = u.isGeneralAdmin || u.role === 'general_admin'
+                          ? (isAr ? 'مسؤول عام' : 'Admin')
+                          : (isAr ? 'مستخدم' : 'User');
+                        return (
+                          <option key={u.id} value={u.id}>
+                            {displayName} ({roleBadge})
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                 </div>
@@ -700,15 +950,23 @@ export default function App() {
                       <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
                       <select
                         value={currentUser.id}
-                        onChange={(e) => setCurrentUserId(e.target.value)}
+                        onChange={(e) => handleSwitchUser(e.target.value)}
                         className="w-full bg-transparent text-xs text-slate-800 font-bold focus:outline-none cursor-pointer truncate"
                         title={isAr ? 'تبديل المستخدم' : 'Switch live user persona'}
                       >
-                        {usersList.map((u) => (
-                          <option key={u.id} value={u.id} className="bg-white text-slate-900">
-                            {isAr ? u.nameAr : (u.name || u.nameAr)}
-                          </option>
-                        ))}
+                        {usersList.map((u) => {
+                          const displayName = isAr
+                            ? (u.nameAr || u.name || u.id)
+                            : (u.name || u.nameAr || u.id);
+                          const roleBadge = u.isGeneralAdmin || u.role === 'general_admin'
+                            ? (isAr ? 'مسؤول عام' : 'Admin')
+                            : (isAr ? 'مستخدم' : 'User');
+                          return (
+                            <option key={u.id} value={u.id}>
+                              {displayName} ({roleBadge})
+                            </option>
+                          );
+                        })}
                       </select>
                     </div>
                   ) : (
@@ -741,7 +999,7 @@ export default function App() {
                                   key={u.id}
                                   type="button"
                                   onClick={() => {
-                                    setCurrentUserId(u.id);
+                                    handleSwitchUser(u.id);
                                     setShowCollapsedUserMenu(false);
                                   }}
                                   className={`w-full flex items-center justify-between p-2 rounded-xl text-xs font-bold transition cursor-pointer text-start ${
@@ -751,7 +1009,7 @@ export default function App() {
                                   }`}
                                 >
                                   <div className="truncate">
-                                    <div className="truncate text-slate-900 font-bold">{isAr ? u.nameAr : (u.name || u.nameAr)}</div>
+                                    <div className="truncate text-slate-900 font-bold">{isAr ? (u.nameAr || u.name) : (u.name || u.nameAr)}</div>
                                     <div className="text-[10px] text-slate-400 font-normal truncate">{u.role}</div>
                                   </div>
                                   {isSelected && <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
@@ -813,7 +1071,8 @@ export default function App() {
                       const allNavItems = [
                         ...(MODULE_NAV_DEFINITIONS.master_data || []),
                         ...(MODULE_NAV_DEFINITIONS.purchases || []),
-                        ...(MODULE_NAV_DEFINITIONS.production || [])
+                        ...(MODULE_NAV_DEFINITIONS.production || []),
+                        ...(MODULE_NAV_DEFINITIONS.finance || [])
                       ];
                       const item = allNavItems.find((n) => n.id === tabId);
                       handleOpenScopedMatrix('tab', item?.moduleKey || tabId);
@@ -829,7 +1088,7 @@ export default function App() {
                     onSelectModule={handleSelectModule}
                     onOpenAdminPermissions={handleOpenScopedMatrix}
                     usersList={usersList}
-                    onSelectUser={(userId) => setCurrentUserId(userId)}
+                    onSelectUser={handleSwitchUser}
                     onToggleLanguage={toggleLanguage}
                     onOpenAdminPanel={() => {
                       setAdminPanelSubTab('users');
@@ -894,6 +1153,24 @@ export default function App() {
             )}
             {activeTab === 'warehouses' && (
               <WarehouseMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'safes' && (
+              <SafesMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {(activeTab === 'bank_accounts' || (activeTab === 'banks' && activeModule === 'master_data')) && (
+              <BankAccountsMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'vehicles' && (
+              <VehiclesMaster 
                 currentUser={currentUser} 
                 permissions={effectivePermissions} 
               />
@@ -1005,12 +1282,78 @@ export default function App() {
               />
             )}
 
+            {/* ========================================================================= */}
+            {/* FINANCE, ACCOUNTS & TREASURY MODULE                                       */}
+            {/* ========================================================================= */}
+            {activeTab !== 'admin_panel' && activeTab !== 'landing' && (
+              activeTab === 'cash_safes' || 
+              activeTab === 'cash_safes_hub' || 
+              activeTab === 'custodies_advances' || 
+              (activeModule === 'finance' && !['banks', 'accounts', 'financial_statements', 'party_statements', 'dues_tracking'].includes(activeTab))
+            ) && (
+              <CashSafesMaster
+                currentUser={currentUser}
+                usersList={usersList}
+                effectivePermissions={effectivePermissions}
+                activeTab={activeTab}
+                onSelectTab={(tabId) => handleSelectModule('finance', tabId)}
+              />
+            )}
+
+            {/* Dues & Installments Tracking (#dues_tracking) */}
+            {activeTab !== 'admin_panel' && activeTab !== 'landing' && activeTab === 'dues_tracking' && (
+              <DuesTrackingMaster
+                currentUser={currentUser}
+                permissions={effectivePermissions}
+              />
+            )}
+
+            {/* Chart of Accounts & General Ledger (#accounts) */}
+            {activeTab !== 'admin_panel' && activeTab !== 'landing' && activeTab === 'accounts' && (
+              <ChartOfAccountsMaster
+                currentUser={currentUser}
+                onNavigateToStatements={() => handleSelectModule('finance', 'financial_statements')}
+                onNavigateToCash={() => handleSelectModule('finance', 'cash_safes')}
+              />
+            )}
+
+            {/* Partner Statements of Account (#party_statements) */}
+            {activeTab !== 'admin_panel' && activeTab !== 'landing' && activeTab === 'party_statements' && (
+              <PartnerStatementsMaster currentUser={currentUser} />
+            )}
+
+            {/* Financial Statements Suite (#financial_statements) */}
+            {activeTab !== 'admin_panel' && activeTab !== 'landing' && activeTab === 'financial_statements' && (
+              <FinancialStatementsMaster
+                currentUser={currentUser}
+                onNavigateToAccounts={() => handleSelectModule('finance', 'accounts')}
+                onNavigateToCash={() => handleSelectModule('finance', 'cash_safes')}
+              />
+            )}
+
+            {/* Bank Accounts & Cheques (#banks) in Finance */}
+            {activeTab !== 'admin_panel' && activeTab !== 'landing' && activeTab === 'banks' && activeModule === 'finance' && (
+              <FinanceUpcomingView
+                tabId="banks"
+                onNavigateToCash={() => handleSelectModule('finance', 'cash_safes')}
+                onNavigateToBankMaster={() => handleSelectModule('master_data', 'banks')}
+                isAr={isAr}
+              />
+            )}
+
             {/* Admin Panel (General Admin Only) */}
             {activeTab === 'admin_panel' && (currentUser.isGeneralAdmin || currentUser.role === 'general_admin') && (
               <AdminControlPanel 
                 currentUser={currentUser}
                 initialSubTab={adminPanelSubTab || 'users'}
                 initialTabFocus={adminPanelTabFocus}
+                onClose={() => {
+                  if (activeModule === 'finance') {
+                    handleSelectModule('finance', adminPanelTabFocus || 'cash_safes');
+                  } else {
+                    handleSelectModule(activeModule, adminPanelTabFocus);
+                  }
+                }}
               />
             )}
               </>
@@ -1116,6 +1459,12 @@ export default function App() {
         currentUser={currentUser}
         usersList={usersList}
       />
+
+      {/* Global Real-Time Collaborative Comment Overlays (Google Sheets Engine) */}
+      <CommentContextMenu />
+      <CommentThreadPopover />
+      <GlobalCommentsDrawer />
     </div>
+  </CommentProvider>
   );
 }

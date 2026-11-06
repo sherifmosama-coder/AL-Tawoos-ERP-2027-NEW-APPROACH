@@ -42,6 +42,7 @@ import {
   Cog,
   Sparkles
 } from 'lucide-react';
+import { RowCommentButton, useRecordComments } from './comments';
 import PeacockLoader from './PeacockLoader';
 import VariantIdentifierChip from './VariantIdentifierChip';
 import StockLifecycleSubTab from './StockLifecycleSubTab';
@@ -79,6 +80,8 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
   const canViewPrices = permissions ? permissions.sensitive?.canViewPrices !== false : true;
   const canViewTotals = permissions ? permissions.sensitive?.canViewTotals !== false : true;
 
+  const { registerRowActions } = useRecordComments();
+
   // Cloud State
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [itemsMaster, setItemsMaster] = useState([]);
@@ -92,8 +95,35 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
   const [intermediateRecipes, setIntermediateRecipes] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // View & Filter States
-  const [viewMode, setViewMode] = useState('consolidated'); // 'consolidated' | 'warehouse' | 'lots' | 'lifecycle'
+  // View & Filter States (Synchronized with URL hash subTab)
+  const [viewMode, setViewMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const raw = window.location.hash || '';
+      if (raw.includes('?')) {
+        const params = new URLSearchParams(raw.split('?')[1]);
+        const s = params.get('subTab');
+        if (s && ['consolidated', 'warehouse', 'lots', 'lifecycle'].includes(s)) {
+          return s;
+        }
+      }
+    }
+    return 'consolidated';
+  });
+
+  // Sync viewMode into URL hash subTab so native browser reload / mobile pull-down preserves exact view
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = window.location.hash || '#stock';
+    const [base, query] = raw.split('?');
+    const params = new URLSearchParams(query || '');
+    if (params.get('subTab') !== viewMode || !params.has('module')) {
+      params.set('subTab', viewMode);
+      if (!params.has('module')) params.set('module', 'purchases');
+      const newHash = `${base || '#stock'}?${params.toString()}`;
+      window.history.replaceState(null, '', newHash);
+    }
+  }, [viewMode]);
+
   const [selectedWarehouseFilter, setSelectedWarehouseFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -344,7 +374,7 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
     // 2. STREAMS: VENDOR PURCHASES (GRN), RETURNS (RTN), & RECONCILIATIONS (ADJ)
     // =========================================================================
     goodsReceipts.forEach((grn) => {
-      if (grn.status === 'cancelled' || grn.status === 'rejected') return;
+      if (grn.status === 'cancelled' || grn.status === 'rejected' || grn.status === 'reversed' || grn.isReversed) return;
       if (grn.docType === 'opening_balance' || grn.id?.startsWith('OB-')) return;
 
       const isReturn = grn.docType === 'return' || grn.id?.startsWith('RTN');
@@ -459,7 +489,7 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
     // 4. STREAMS: BULK INTERMEDIATE (PRD-INT) & WO PACKAGING ISSUES (ISS)
     // =========================================================================
     transformations.forEach((trans) => {
-      if (trans.status === 'cancelled' || trans.status === 'rejected') return;
+      if (trans.status === 'cancelled' || trans.status === 'rejected' || trans.status === 'reversed' || trans.isReversed) return;
       const timeInfo = resolveTimeInfo(trans, trans.date);
       const isWorkOrder = Boolean(trans.workOrderId || trans.id?.startsWith('TRANS-WO-'));
 
@@ -1074,9 +1104,39 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
                         const varKey = `${item.code}_${v.resolvedCode}`;
                         const varData = variantBalancesMap[varKey] || { totalQty: 0, totalValue: 0, byWarehouse: {} };
                         const isFirstVar = vIdx === 0;
+                        const targetDocId = `${item.code}_${v.resolvedCode}`;
+
+                        const varRowActions = [
+                          {
+                            id: 'kardex',
+                            label: 'عرض كارت حركة الصنف',
+                            labelAr: 'عرض كارت حركة الصنف',
+                            labelEn: 'View Stock Card (Kardex)',
+                            icon: History,
+                            onClick: () =>
+                              setKardexTarget({
+                                itemId: item.code,
+                                variantCode: v.resolvedCode,
+                                nameAr: item.nameAr,
+                                nameEn: item.nameEn,
+                                specs: v.resolvedSpecs,
+                                smallUnit: item.smallUnit,
+                              })
+                          }
+                        ];
+                        registerRowActions(targetDocId, varRowActions);
 
                         return (
-                          <tr key={v.resolvedCode} className="hover:bg-slate-50/70 transition">
+                          <tr
+                            key={v.resolvedCode}
+                            id={`stock-row-${item.code}-${v.resolvedCode}`}
+                            data-comment-doc={targetDocId}
+                            data-comment-number={v.resolvedCode}
+                            data-comment-tab="stock_balances"
+                            data-comment-module="inventory"
+                            data-comment-type="table_row"
+                            className="hover:bg-slate-50/70 transition"
+                          >
                             {/* Item Master Name & Code (Span across variants) */}
                             {isFirstVar && (
                               <td rowSpan={variations.length} className="p-3 align-top border-e border-slate-100 bg-slate-50/30">
@@ -1155,25 +1215,35 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
                               </td>
                             )}
 
-                            {/* Kardex Trigger Button */}
+                            {/* Kardex Trigger Button & Comments */}
                             <td className="p-3 align-top text-center">
-                              <button
-                                onClick={() =>
-                                  setKardexTarget({
-                                    itemId: item.code,
-                                    variantCode: v.resolvedCode,
-                                    nameAr: item.nameAr,
-                                    nameEn: item.nameEn,
-                                    specs: v.resolvedSpecs,
-                                    smallUnit: item.smallUnit,
-                                  })
-                                }
-                                className="px-2.5 py-1 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 rounded-xl font-bold text-[11px] transition cursor-pointer flex items-center gap-1 mx-auto"
-                                title={isAr ? 'عرض كارت حركة الصنف' : 'View Stock Card'}
-                              >
-                                <History className="h-3.5 w-3.5 text-indigo-600" />
-                                <span>{isAr ? 'كارت الحركة' : 'Kardex'}</span>
-                              </button>
+                              <div className="flex items-center justify-center gap-1">
+                                {/* Quick Row Comment Button */}
+                                <RowCommentButton
+                                  docId={targetDocId}
+                                  docNumber={v.resolvedCode}
+                                  tab="stock_balances"
+                                  module="inventory"
+                                />
+
+                                <button
+                                  onClick={() =>
+                                    setKardexTarget({
+                                      itemId: item.code,
+                                      variantCode: v.resolvedCode,
+                                      nameAr: item.nameAr,
+                                      nameEn: item.nameEn,
+                                      specs: v.resolvedSpecs,
+                                      smallUnit: item.smallUnit,
+                                    })
+                                  }
+                                  className="px-2.5 py-1 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 rounded-xl font-bold text-[11px] transition cursor-pointer flex items-center gap-1"
+                                  title={isAr ? 'عرض كارت حركة الصنف' : 'View Stock Card'}
+                                >
+                                  <History className="h-3.5 w-3.5 text-indigo-600" />
+                                  <span>{isAr ? 'كارت الحركة' : 'Kardex'}</span>
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );

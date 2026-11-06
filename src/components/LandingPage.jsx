@@ -33,7 +33,13 @@ import {
   FolderKanban,
   PackageCheck,
   Warehouse,
-  Settings
+  Settings,
+  Vault,
+  Coins,
+  UserCheck,
+  Landmark,
+  Truck,
+  FileText
 } from 'lucide-react';
 import {
   getStoredTabConfigs,
@@ -89,6 +95,9 @@ export default function LandingPage({
         { id: 'intermediate_bom', moduleKey: 'intermediate_bom', labelAr: 'تصنيع الخامات الوسيطة (M)', labelEn: 'Intermediate BOM (M)', icon: FlaskConical },
         { id: 'production_processes', moduleKey: 'production_processes', labelAr: 'مسارات وعمليات التشغيل (SOP)', labelEn: 'Production Processes & SOPs', icon: Workflow },
         { id: 'warehouses', moduleKey: 'warehouses', labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', icon: Warehouse },
+        { id: 'safes', moduleKey: 'safes', labelAr: 'سجل الخزائن والخزن النقدية', labelEn: 'Safes & Cash Vaults', icon: Vault },
+        { id: 'bank_accounts', moduleKey: 'bank_accounts', labelAr: 'سجل الحسابات والودائع البنكية', labelEn: 'Bank Accounts Master', icon: Landmark },
+        { id: 'vehicles', moduleKey: 'vehicles', labelAr: 'سجل أسطول الشاحنات والسيارات', labelEn: 'Vehicles & Fleet Master', icon: Truck },
         { id: 'production_workers', moduleKey: 'production_workers', labelAr: 'سجل عمالة وفنيي الإنتاج', labelEn: 'Production Workers', icon: Users },
         { id: 'users', moduleKey: 'users', labelAr: 'المستخدمين والصلاحيات', labelEn: 'Users & Roles', icon: ShieldCheck },
         { id: 'system_config', moduleKey: 'system_config', labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', icon: Settings },
@@ -131,6 +140,23 @@ export default function LandingPage({
       ]
     },
     {
+      id: 'finance',
+      defaultTab: 'cash_safes',
+      titleAr: 'المالية والحسابات والسيولة',
+      titleEn: 'Finance, Accounts & Treasury',
+      icon: BadgeDollarSign,
+      color: 'teal',
+      status: 'active',
+      permissionModuleKey: 'finance',
+      tabs: [
+        { id: 'cash_safes', moduleKey: 'cash_safes', labelAr: 'الخزائن النقدية والعهد', labelEn: 'Cash Safes & Vaults', icon: Coins },
+        { id: 'banks', moduleKey: 'banks', labelAr: 'الحسابات البنكية والشيكات', labelEn: 'Bank Accounts & Cheques', icon: Landmark },
+        { id: 'accounts', moduleKey: 'accounts', labelAr: 'دليل الحسابات والأستاذ العام', labelEn: 'Chart of Accounts & GL', icon: BadgeDollarSign },
+        { id: 'party_statements', moduleKey: 'party_statements', labelAr: 'كشوف حسابات الموردين والعملاء', labelEn: 'Partner Statements', icon: FileText },
+        { id: 'financial_statements', moduleKey: 'financial_statements', labelAr: 'القوائم المالية والتقارير', labelEn: 'Financial Statements', icon: BarChart3 },
+      ]
+    },
+    {
       id: 'sales',
       defaultTab: 'sales_orders',
       titleAr: 'المبيعات والتوزيع',
@@ -139,17 +165,6 @@ export default function LandingPage({
       color: 'amber',
       status: 'upcoming',
       permissionModuleKey: 'sales',
-      tabs: []
-    },
-    {
-      id: 'finance',
-      defaultTab: 'accounts',
-      titleAr: 'المالية والحسابات',
-      titleEn: 'Finance & Accounts',
-      icon: BadgeDollarSign,
-      color: 'violet',
-      status: 'upcoming',
-      permissionModuleKey: 'finance',
       tabs: []
     },
     {
@@ -172,6 +187,12 @@ export default function LandingPage({
           cardBorder: 'hover:border-indigo-400 hover:shadow-indigo-500/10',
           iconBg: 'bg-indigo-50 text-indigo-600 border-indigo-200',
           chipActive: 'bg-indigo-50 text-indigo-800 border-indigo-300 font-bold',
+        };
+      case 'teal':
+        return {
+          cardBorder: 'hover:border-teal-400 hover:shadow-teal-500/10',
+          iconBg: 'bg-teal-50 text-teal-600 border-teal-200',
+          chipActive: 'bg-teal-50 text-teal-800 border-teal-300 font-bold',
         };
       case 'emerald':
         return {
@@ -264,14 +285,22 @@ export default function LandingPage({
             <select
               value={currentUser.id}
               onChange={(e) => onSelectUser(e.target.value)}
-              className="bg-transparent text-xs text-slate-800 font-bold focus:outline-none cursor-pointer max-w-[150px] truncate"
+              className="bg-transparent text-xs text-slate-800 font-bold focus:outline-none cursor-pointer max-w-[170px] truncate"
               title={isAr ? 'تبديل المستخدم' : 'Switch live user persona'}
             >
-              {usersList.map((u) => (
-                <option key={u.id} value={u.id} className="bg-white text-slate-900">
-                  {isAr ? u.nameAr : (u.name || u.nameAr)}
-                </option>
-              ))}
+              {usersList.map((u) => {
+                const displayName = isAr
+                  ? (u.nameAr || u.name || u.id)
+                  : (u.name || u.nameAr || u.id);
+                const roleBadge = u.isGeneralAdmin || u.role === 'general_admin'
+                  ? (isAr ? 'مسؤول عام' : 'Admin')
+                  : (isAr ? 'مستخدم' : 'User');
+                return (
+                  <option key={u.id} value={u.id}>
+                    {displayName} ({roleBadge})
+                  </option>
+                );
+              })}
             </select>
           </div>
 

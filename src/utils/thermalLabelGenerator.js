@@ -11,6 +11,7 @@ export const DEFAULT_THERMAL_CONFIG = {
   widthMm: 50,
   heightMm: 38,
   orientation: 'landscape', // 'landscape' | 'portrait'
+  flip180: false, // Invert 180° for upside-down roll feeds
   gapMm: 2, // Physical die-cut gap between continuous rolled labels (e.g. 2mm or 3mm)
   showBarcode: false, // Barcodes removed from thermal stickers per requirement
   showBatchCode: true,
@@ -34,6 +35,50 @@ export const saveStoredThermalConfig = (config) => {
     console.warn('Failed to save thermal label config:', e);
   }
 };
+
+/**
+ * Pallet Thermal Roll Configuration
+ * Defaults to the exact thermal roll page setup used in faulty_fg: 50mm x 38mm landscape, 2mm gap.
+ */
+const PALLET_STORAGE_KEY = 'ALTAWOOS_PALLET_THERMAL_CONFIG_V1';
+
+export const DEFAULT_PALLET_THERMAL_CONFIG = {
+  widthMm: 50,
+  heightMm: 38,
+  orientation: 'landscape', // 'landscape' | 'portrait'
+  flip180: false, // Invert 180° for printers that feed upside down
+  gapMm: 2, // Physical die-cut gap between continuous rolled labels (e.g. 2mm or 3mm)
+  preset: '50x38',
+  fontSize: 'medium',
+};
+
+export const PALLET_THERMAL_PRESETS = [
+  { id: '50x38', nameAr: '50 × 38 مم (افتراضي - رول حراري صغير)', nameEn: '50 x 38 mm (Default Small Thermal Roll)', widthMm: 50, heightMm: 38, orientation: 'landscape', gapMm: 2 },
+  { id: '38x50', nameAr: '38 × 50 مم (رأسي - رول حراري)', nameEn: '38 x 50 mm (Portrait Thermal Roll)', widthMm: 38, heightMm: 50, orientation: 'portrait', gapMm: 2 },
+  { id: '100x150', nameAr: '100 × 150 مم (4 × 6 بوصة - باليت كبير)', nameEn: '100 x 150 mm (4" x 6" Large Pallet)', widthMm: 100, heightMm: 150, orientation: 'portrait', gapMm: 3 },
+  { id: '100x100', nameAr: '100 × 100 مم (4 × 4 بوصة - مربع)', nameEn: '100 x 100 mm (4" x 4" Square)', widthMm: 100, heightMm: 100, orientation: 'portrait', gapMm: 2 },
+  { id: '80x50', nameAr: '80 × 50 مم (رول متوسط)', nameEn: '80 x 50 mm (Medium Roll)', widthMm: 80, heightMm: 50, orientation: 'landscape', gapMm: 2 },
+  { id: 'custom', nameAr: 'مقاس مخصص (Custom)', nameEn: 'Custom Dimensions', widthMm: 50, heightMm: 38, orientation: 'landscape', gapMm: 2 },
+];
+
+export const getStoredPalletThermalConfig = () => {
+  try {
+    const raw = localStorage.getItem(PALLET_STORAGE_KEY);
+    if (raw) return { ...DEFAULT_PALLET_THERMAL_CONFIG, ...JSON.parse(raw) };
+  } catch (e) {
+    console.warn('Failed to load pallet thermal label config:', e);
+  }
+  return { ...DEFAULT_PALLET_THERMAL_CONFIG };
+};
+
+export const saveStoredPalletThermalConfig = (config) => {
+  try {
+    localStorage.setItem(PALLET_STORAGE_KEY, JSON.stringify(config));
+  } catch (e) {
+    console.warn('Failed to save pallet thermal label config:', e);
+  }
+};
+
 
 /**
  * Lightweight Code 128-B Pattern Generator

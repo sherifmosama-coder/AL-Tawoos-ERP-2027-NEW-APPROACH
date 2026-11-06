@@ -27,6 +27,7 @@ import {
   resetAllTabConfigs,
   ICON_REGISTRY,
   POPULAR_ICON_GROUPS,
+  ICON_SEARCH_ALIASES,
   PRESET_COLOR_PALETTES,
   getIconComponent,
   getAtmosphericWatercolorBannerStyle,
@@ -48,6 +49,24 @@ export default function TabAppearanceManager({
   const [iconPickerSearch, setIconPickerSearch] = useState('');
   const [saveToast, setSaveToast] = useState(null);
   const [focusedTabId, setFocusedTabId] = useState(initialTabFocus);
+
+  useEffect(() => {
+    if (initialTabFocus) {
+      setFocusedTabId(initialTabFocus);
+    }
+  }, [initialTabFocus]);
+
+  useEffect(() => {
+    if (focusedTabId) {
+      const timer = setTimeout(() => {
+        const el = document.getElementById(`tab-config-${focusedTabId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [focusedTabId]);
 
   // Sync state if storage changes externally
   useEffect(() => {
@@ -89,7 +108,7 @@ export default function TabAppearanceManager({
       );
     });
 
-    const moduleOrder = { master_data: 1, purchases: 2, production: 3, settings: 4 };
+    const moduleOrder = { master_data: 1, purchases: 2, production: 3, finance: 4, settings: 5 };
     return list.sort((a, b) => {
       if (a.moduleKey !== b.moduleKey) {
         return (moduleOrder[a.moduleKey] || 99) - (moduleOrder[b.moduleKey] || 99);
@@ -147,13 +166,17 @@ export default function TabAppearanceManager({
     }, 3000);
   };
 
-  // Icon Picker Filter
+  // Icon Picker Filter with keyword/alias matching
   const filteredIconGroups = useMemo(() => {
     if (!iconPickerSearch.trim()) return POPULAR_ICON_GROUPS;
     const q = iconPickerSearch.toLowerCase().trim();
     return POPULAR_ICON_GROUPS.map((group) => ({
       ...group,
-      icons: group.icons.filter((iconName) => iconName.toLowerCase().includes(q))
+      icons: group.icons.filter((iconName) => {
+        if (iconName.toLowerCase().includes(q)) return true;
+        const aliases = ICON_SEARCH_ALIASES[iconName] || [];
+        return aliases.some((a) => a.toLowerCase().includes(q));
+      })
     })).filter((group) => group.icons.length > 0);
   }, [iconPickerSearch]);
 
@@ -215,6 +238,7 @@ export default function TabAppearanceManager({
               { id: 'master_data', labelAr: 'قاعدة البيانات الأساسية', labelEn: 'Master Database' },
               { id: 'purchases', labelAr: 'الخامات والمخازن', labelEn: 'Materials & Stock' },
               { id: 'production', labelAr: 'الإنتاج والتشغيل', labelEn: 'Production' },
+              { id: 'finance', labelAr: 'المالية والسيولة', labelEn: 'Finance & Treasury' },
               { id: 'settings', labelAr: 'الإدارة', labelEn: 'Admin' }
             ].map((mod) => (
               <button
@@ -551,7 +575,7 @@ export default function TabAppearanceManager({
                   type="text"
                   value={iconPickerSearch}
                   onChange={(e) => setIconPickerSearch(e.target.value)}
-                  placeholder={isAr ? 'بحث في أسماء الأيقونات (Factory, Package, Layers...)' : 'Search icon names...'}
+                  placeholder={isAr ? 'بحث في أسماء الأيقونات (Vault, Safe, خزينة, Factory...)' : 'Search icons (e.g. Vault, Safe, Factory...)'}
                   className="w-full ps-9 pe-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 focus:bg-white"
                   autoFocus
                 />

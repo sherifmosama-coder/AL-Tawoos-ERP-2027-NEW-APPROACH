@@ -17,6 +17,13 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      proxy: {
+        '/api/onesignal': {
+          target: 'https://api.onesignal.com',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api\/onesignal/, ''),
+        },
+      },
     },
   };
 });

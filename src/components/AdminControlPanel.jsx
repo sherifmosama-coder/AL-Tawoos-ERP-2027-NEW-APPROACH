@@ -13,13 +13,16 @@ import {
   onSnapshot,
   Timestamp
 } from 'firebase/firestore';
-import { APP_ARCHITECTURE } from '../config/appArchitecture';
+import { APP_ARCHITECTURE, getMasterCollectionsRegistry, isMasterCollection } from '../config/appArchitecture';
 import TabAppearanceManager from './TabAppearanceManager';
 import OpeningStockSeederModal from './OpeningStockSeederModal';
+import NotificationControlCenter from './NotificationControlCenter';
 import {
   Plus,
   Shield,
   ShieldCheck,
+  BellRing,
+  Smartphone,
   User,
   Users,
   UserPlus,
@@ -77,8 +80,11 @@ import {
   Network,
   GitBranch,
   ArrowRightLeft,
-  Workflow
+  Workflow,
+  KeyRound,
+  EyeOff
 } from 'lucide-react';
+import { getMasterPin, saveMasterPinToFirestore } from '../utils/dualLedgerEngine.js';
 import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
 
 // Base Registry for Standard Entity Descriptions & Categories
@@ -95,6 +101,10 @@ export const STATIC_GRAPH_METADATA = {
   production_processes: { labelAr: 'مسارات وعمليات التشغيل (SOPs)', labelEn: 'Production Processes & SOPs', category: 'Master Data', color: '#6366f1' },
   production_workers: { labelAr: 'سجل عمالة الإنتاج والورديات', labelEn: 'Production Workers Master', category: 'Master Data', color: '#8b5cf6' },
   system_config: { labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', category: 'Master Data', color: '#64748b' },
+  cash_safes: { labelAr: 'سجل الخزائن والخزن النقدية', labelEn: 'Safes & Cash Vaults Master', category: 'Master Data', color: '#059669' },
+  corporate_banks: { labelAr: 'سجل الحسابات والودائع البنكية', labelEn: 'Corporate Bank Accounts Master', category: 'Master Data', color: '#0d6cba' },
+  vehicles: { labelAr: 'سجل أسطول الشاحنات والمركبات', labelEn: 'Vehicles & Fleet Master', category: 'Master Data', color: '#d97706' },
+  chart_of_accounts: { labelAr: 'دليل شجرة الحسابات المحاسبية', labelEn: 'Chart of Accounts', category: 'Master Data', color: '#0284c7' },
   liquid_tanks: { labelAr: 'تشغيل وتانكات الخامات (M)', labelEn: 'Bulk Liquid Tanks', category: 'Production', color: '#0891b2' },
   floor_liquid_vessels: { labelAr: 'خزانات وتدفق السوائل بالصالة', labelEn: 'Floor Liquid Storage & Vessels', category: 'Production', color: '#0284c7' },
   production_transformations: { labelAr: 'حركات التحويل والتصنيع الداخلي', labelEn: 'Production Transformations', category: 'Inventory & Production', color: '#7c3aed' },
@@ -146,6 +156,10 @@ export function resolveDynamicEntityRelations(targetCollection, sampleDocs = [],
     { pattern: /(fgReceiptId|fgrId)/i, target: 'fg_receipts', labelAr: 'إذن استلام التام', labelEn: 'FG Receipt' },
     { pattern: /(transformationId|transformationDocId)/i, target: 'production_transformations', labelAr: 'حركة التحويل', labelEn: 'Transformation' },
     { pattern: /(categoryId)/i, target: 'categories', labelAr: 'مجموعة التكويد', labelEn: 'Category' },
+    { pattern: /(safeId|cashSafeId)/i, target: 'cash_safes', labelAr: 'الخزينة النقدية', labelEn: 'Cash Safe' },
+    { pattern: /(bankAccountId|bankId)/i, target: 'corporate_banks', labelAr: 'الحساب البنكي', labelEn: 'Bank Account' },
+    { pattern: /(vehicleId|truckId)/i, target: 'vehicles', labelAr: 'المركبة / الشاحنة', labelEn: 'Vehicle' },
+    { pattern: /(accountId|glAccountId|chartAccountId)/i, target: 'chart_of_accounts', labelAr: 'الحساب المحاسبي', labelEn: 'GL Account' },
     { pattern: /(userId|issuedById|verifiedById|responsibleUserId|createdById)/i, target: 'users', labelAr: 'المستخدم المسؤول', labelEn: 'User Account' },
   ];
 
@@ -255,49 +269,54 @@ const ICON_MAP = {
   LayoutDashboard
 };
 
-export const MASTER_COLLECTIONS_REGISTRY = [
-  'users',
-  'system_config',
-  'suppliers',
-  'items',
-  'categories',
-  'finished_products',
-  'finished_product_categories',
-  'warehouses',
-  'bom_recipes',
-  'intermediate_recipes',
-  'production_processes',
-  'production_workers',
-];
+// Dynamically derived from APP_ARCHITECTURE.modules.master_data.tabs + core master tables
+export const MASTER_COLLECTIONS_REGISTRY = getMasterCollectionsRegistry(APP_ARCHITECTURE);
 
 export const OPERATIONAL_COLLECTIONS_REGISTRY = [
   'purchase_orders',
   'goods_receipts',
   'stock_transfers',
+  'transfers',
   'stock_ledger',
   'stock_counts',
   'spare_parts_issues',
   'work_orders',
+  'production_work_orders',
   'staged_floor_pallets',
   'staged_floor_materials',
   'production_breaks',
+  'production_shifts',
   'liquid_tanks',
-  'floor_liquid_vessels',
   'production_transformations',
   'shift_handovers',
   'faulty_fg_returns',
   'fg_receipts',
+  'cash_transactions',
+  'cash_count_sessions',
+  'journal_entries',
+  'custody_ledger',
+  'custody_advance_drafts',
+  'custodies_and_advances',
+  'dues_settlements',
+  'dues_batches',
+  'wht_notes',
+  'record_comments',
+  'user_actions_queue',
+  'system_notifications',
 ];
 
-export const BACKUP_COLLECTIONS_REGISTRY = [
-  ...MASTER_COLLECTIONS_REGISTRY,
-  ...OPERATIONAL_COLLECTIONS_REGISTRY,
-];
+export const BACKUP_COLLECTIONS_REGISTRY = Array.from(
+  new Set([
+    ...MASTER_COLLECTIONS_REGISTRY,
+    ...OPERATIONAL_COLLECTIONS_REGISTRY,
+  ])
+);
 
 export const COLLECTION_DISPLAY_NAMES = {
   users: { ar: 'المستخدمين والصلاحيات', en: 'Users & Roles' },
-  system_config: { ar: 'إعدادات النظام والتهيئة', en: 'System Config' },
+  system_config: { ar: 'إعدادات النظام والروابط المحاسبية ومراكز التكلفة', en: 'System Config, Accounting Links & Cost Centers' },
   suppliers: { ar: 'سجل الموردين المعتمدين', en: 'Suppliers Master' },
+  clients: { ar: 'سجل العملاء', en: 'Clients Master' },
   items: { ar: 'سجل الخامات ومستلزمات الإنتاج', en: 'Item Master (Raw Materials)' },
   categories: { ar: 'مجموعات وتصنيفات التكويد', en: 'Category Groups' },
   finished_products: { ar: 'سجل المنتجات التامة', en: 'Finished Goods Master' },
@@ -307,26 +326,853 @@ export const COLLECTION_DISPLAY_NAMES = {
   intermediate_recipes: { ar: 'خلطات الخامات الوسيطة (IBOM)', en: 'Intermediate Recipes' },
   production_processes: { ar: 'مسارات ومراحل التشغيل (SOP)', en: 'Production Processes' },
   production_workers: { ar: 'سجل عمالة الإنتاج والورديات', en: 'Production Workers' },
+  cash_safes: { ar: 'سجل الخزائن والخزن النقدية', en: 'Safes & Cash Vaults Master' },
+  corporate_banks: { ar: 'سجل الحسابات والودائع البنكية', en: 'Corporate Bank Accounts Master' },
+  bank_accounts: { ar: 'سجل الحسابات البنكية', en: 'Bank Accounts Master' },
+  vehicles: { ar: 'سجل أسطول الشاحنات والمركبات', en: 'Vehicles & Logistics Fleet' },
+  chart_of_accounts: { ar: 'دليل شجرة الحسابات وإعدادات التوجيه المالي', en: 'Chart of Accounts & Statement Routing Setup' },
+  floor_liquid_vessels: { ar: 'إعدادات خزانات السوائل بالصالة', en: 'Floor Liquid Vessels Master Config' },
 
   purchase_orders: { ar: 'أوامر الشراء (PO)', en: 'Purchase Orders' },
-  goods_receipts: { ar: 'أذون استلام المخزن (GRN/RTN)', en: 'Goods Receipts' },
+  goods_receipts: { ar: 'أذون استلام المخزن والمرتجعات (GRN/RTN)', en: 'Goods Receipts & Returns' },
   stock_transfers: { ar: 'أذون التحويل المخزني (TRN)', en: 'Stock Transfers' },
+  transfers: { ar: 'حركات النقل الفرعية (Transfers)', en: 'Warehouse Transfers' },
   stock_ledger: { ar: 'سجل الحركات الدفتري (Ledger)', en: 'Stock Ledger' },
   stock_counts: { ar: 'الجرد الفعلي والتسويات', en: 'Physical Stock Counts' },
   spare_parts_issues: { ar: 'صرف قطع الغيار (XISS)', en: 'Spare Parts Issues' },
   work_orders: { ar: 'أوامر التشغيل والإنتاج (MO)', en: 'Work Orders' },
+  production_work_orders: { ar: 'أوامر إعادة التشغيل والتصنيع', en: 'Rework & Production Work Orders' },
   staged_floor_pallets: { ar: 'بالتات الصالة المشدودة', en: 'Staged Floor Pallets' },
   staged_floor_materials: { ar: 'خامات ومستلزمات الصالة', en: 'Staged Floor Materials' },
   production_breaks: { ar: 'سجل فترات الراحة والتوقف', en: 'Production Breaks' },
+  production_shifts: { ar: 'سجل الورديات الإنتاجية', en: 'Production Shifts' },
   liquid_tanks: { ar: 'تشغيل وتانكات الخامات (M)', en: 'Bulk Liquid Tanks' },
-  floor_liquid_vessels: { ar: 'خزانات وتدفق السوائل بالصالة', en: 'Floor Liquid Storage' },
-  production_transformations: { ar: 'حركات التحويل والتصنيع', en: 'Transformations' },
+  production_transformations: { ar: 'حركات التحويل والتصنيع الداخلي', en: 'Production Transformations' },
   shift_handovers: { ar: 'تسليم واستلام الورديات', en: 'Shift Handovers' },
   faulty_fg_returns: { ar: 'مرتجعات ومعيب المنتج التام', en: 'Faulty FG Returns' },
   fg_receipts: { ar: 'استلام وحفظ المنتج التام', en: 'FG Receipts' },
+  cash_transactions: { ar: 'سجل حركات وسندات الخزينة والبنوك', en: 'Cash & Bank Vouchers' },
+  cash_count_sessions: { ar: 'محاضر جرد ومطابقة الخزينة', en: 'Cash Count Audit Sessions' },
+  journal_entries: { ar: 'دفتر قيود اليومية العامة', en: 'Journal Entries Ledger' },
+  custody_ledger: { ar: 'سجل العهد النقدية والسلف', en: 'Custodies & Advances Ledger' },
+  custody_advance_drafts: { ar: 'مسودات وطلبات العهد والسلف', en: 'Custody & Advance Drafts' },
+  custodies_and_advances: { ar: 'حركات العهد والسلف المؤقتة', en: 'Custodies & Advances Records' },
+  dues_settlements: { ar: 'سجل تسويات ودفعات الموردين والعملاء', en: 'Dues & Installments Settlements' },
+  dues_batches: { ar: 'حافظات السداد المجمعة للموردين', en: 'Batch Payment Ledgers' },
+  wht_notes: { ar: 'إشعارات وشهادات الخصم والإضافة (1%)', en: '1% WHT Certificates' },
+  record_comments: { ar: 'التعليقات والمهام التشغيلية على السجلات', en: 'Record Comments & Tasks' },
+  user_actions_queue: { ar: 'طابور المهام والاعتمادات المعلقة', en: 'Pending User Actions Queue' },
+  system_notifications: { ar: 'سجل التنبيهات والإشعارات', en: 'System Notifications' },
 };
 
-export default function AdminControlPanel({ currentUser = {}, initialSubTab = null, initialTabFocus = null }) {
+/**
+ * Universal Display Name Resolver for Firestore Collections.
+ * If not in static dictionary, dynamically resolves label from APP_ARCHITECTURE modules & tabs.
+ */
+export function getCollectionDisplayName(collKey, isAr = false) {
+  if (COLLECTION_DISPLAY_NAMES[collKey]) {
+    return isAr ? COLLECTION_DISPLAY_NAMES[collKey].ar : COLLECTION_DISPLAY_NAMES[collKey].en;
+  }
+  // Dynamic lookup across all modules & tabs in APP_ARCHITECTURE
+  for (const mod of Object.values(APP_ARCHITECTURE.modules || {})) {
+    for (const tab of Object.values(mod.tabs || {})) {
+      if (tab.collection === collKey) {
+        return isAr ? tab.labelAr : tab.labelEn;
+      }
+    }
+  }
+  return collKey;
+}
+
+/**
+ * Helper to match collaborative comments, pending user actions, and notifications
+ * generated for a given set of collections, tabs, or document ID prefixes.
+ */
+const makeCollabCascadeEntries = (targetCollections = [], targetTabs = [], docPrefixes = []) => {
+  const matchDocPrefix = (val) => {
+    const s = String(val || '').toUpperCase();
+    return docPrefixes.some((p) => s.startsWith(p.toUpperCase()));
+  };
+  const matchCollOrTab = (d) =>
+    targetCollections.includes(d.collectionName) ||
+    targetCollections.includes(d.sourceCollection) ||
+    targetCollections.includes(d.targetCollection) ||
+    targetTabs.includes(d.targetTab) ||
+    targetTabs.includes(d.tabId) ||
+    targetTabs.includes(d.moduleKey) ||
+    matchDocPrefix(d.recordId) ||
+    matchDocPrefix(d.docId) ||
+    matchDocPrefix(d.highlightId);
+
+  return [
+    {
+      collection: 'record_comments',
+      labelAr: 'التعليقات والمهام المرتبطة بهذه السجلات (record_comments)',
+      labelEn: 'Collaborative comments linked to these records (record_comments)',
+      predicate: (d) => matchCollOrTab(d),
+    },
+    {
+      collection: 'user_actions_queue',
+      labelAr: 'طلبات الاعتماد والمهام المعلقة المرتبطة (user_actions_queue)',
+      labelEn: 'Pending approval actions linked to these records (user_actions_queue)',
+      predicate: (d) => matchCollOrTab(d),
+    },
+    {
+      collection: 'system_notifications',
+      labelAr: 'إشعارات وتنبيهات النظام المرتبطة (system_notifications)',
+      labelEn: 'System notifications linked to these records (system_notifications)',
+      predicate: (d) => matchCollOrTab(d),
+    },
+  ];
+};
+
+/**
+ * Comprehensive Relational Cascade Purge Catalog.
+ * Aligns every operational module and master table in the ERP with its exact
+ * Firestore collection(s) and auto-generated cross-collection records.
+ */
+export const PURGE_TARGETS_CATALOG = [
+  // =========================================================================
+  // GROUP A: OPERATIONAL MODULES WITH AUTO-MADE CROSS-COLLECTION CASCADES
+  // =========================================================================
+  {
+    key: 'goods_receipts',
+    category: 'operational',
+    labelAr: 'أذون استلام الخامات ومرتجعات المشتريات (GRNs & Supplier Returns)',
+    labelEn: 'Goods Receipts & Supplier Returns (GRNs & RTNs)',
+    collectionsLabel: 'goods_receipts + Auto-Made Ledger, JEs, Vouchers & Dues',
+    primaryCollections: [], // Uses selective predicate on goods_receipts so stock count ADJ-* records are not wiped unless stock_count is selected
+    relatedCascades: [
+      {
+        collection: 'goods_receipts',
+        labelAr: 'أذون الاستلام الفعلي ومرتجعات الموردين (goods_receipts: GRN-* & RTN-*)',
+        labelEn: 'Supplier Goods Receipts & Return Notes (goods_receipts: GRN-* & RTN-*)',
+        predicate: (d, docId) =>
+          d.docType !== 'inventory_reconciliation' &&
+          !d.isDirectAdjustment &&
+          !String(docId || d.id || '').startsWith('ADJ-'),
+      },
+      {
+        collection: 'stock_ledger',
+        labelAr: 'حركات كارت الصنف التلقائية للاستلامات والمرتجعات (stock_ledger)',
+        labelEn: 'Auto-generated stock ledger movements for GRNs/RTNs (stock_ledger)',
+        predicate: (d) =>
+          ['receipt', 'return', 'GRN', 'RTN'].includes(d.docType) ||
+          [
+            'initial_receipt',
+            'receipt_modified',
+            'supplier_return',
+            'receipt_cancelled_reversal',
+            'return_cancelled_restored',
+            'receipt_reversed_admin',
+            'return_reversed_admin',
+          ].includes(d.action) ||
+          String(d.grnId || '').startsWith('GRN-') ||
+          String(d.grnId || '').startsWith('RTN-'),
+      },
+      {
+        collection: 'journal_entries',
+        labelAr: 'قيود اليومية التلقائية للاستلامات والمرتجعات وعكوساتها (journal_entries)',
+        labelEn: 'Auto-generated journal entries for GRNs/RTNs & reversals (journal_entries)',
+        predicate: (d, docId) => {
+          const idStr = String(docId || d.id || '');
+          const refStr = String(d.sourceDocId || d.referenceNumber || '');
+          return (
+            d.sourceCollection === 'goods_receipts' ||
+            ['goods_receipt', 'goods_receipt_return'].includes(d.originType) ||
+            idStr.startsWith('JE-GRN-') ||
+            idStr.startsWith('JE-RTN-') ||
+            idStr.startsWith('JE-REV-GRN-') ||
+            idStr.startsWith('JE-REV-RTN-') ||
+            refStr.startsWith('GRN-') ||
+            refStr.startsWith('RTN-')
+          );
+        },
+      },
+      {
+        collection: 'cash_transactions',
+        labelAr: 'سندات الصرف والتحصيل المرتبطة بأذون الاستلام والمرتجعات (cash_transactions)',
+        labelEn: 'Auto-generated cash/bank vouchers linked to GRNs/RTNs (cash_transactions)',
+        predicate: (d) =>
+          Boolean(d.grnId) ||
+          String(d.referenceNumber || '').startsWith('GRN-') ||
+          String(d.referenceNumber || '').startsWith('RTN-') ||
+          (Array.isArray(d.linkedDocs) && d.linkedDocs.some((ld) => ld.docType === 'GRN' || ld.docType === 'RTN' || String(ld.docId || '').startsWith('GRN-') || String(ld.docId || '').startsWith('RTN-'))),
+      },
+      {
+        collection: 'dues_settlements',
+        labelAr: 'تسويات الاستحقاقات المرتبطة بأذون الاستلام والمرتجعات (dues_settlements)',
+        labelEn: 'Dues settlements linked to GRNs/RTNs (dues_settlements)',
+        predicate: (d) =>
+          Boolean(d.grnId) ||
+          String(d.docId || '').startsWith('GRN-') ||
+          String(d.docId || '').startsWith('RTN-') ||
+          (Array.isArray(d.linkedDocs) && d.linkedDocs.some((ld) => ld.docType === 'GRN' || ld.docType === 'RTN' || String(ld.docId || '').startsWith('GRN-') || String(ld.docId || '').startsWith('RTN-'))),
+      },
+      {
+        collection: 'wht_notes',
+        labelAr: 'شهادات الخصم الضريبي 1% الصادرة لأذون الاستلام (wht_notes)',
+        labelEn: '1% WHT certificates issued for GRNs/RTNs (wht_notes)',
+        predicate: (d) =>
+          Boolean(d.grnId) ||
+          String(d.sourceDocId || d.docId || '').startsWith('GRN-') ||
+          String(d.sourceDocId || d.docId || '').startsWith('RTN-'),
+      },
+      ...makeCollabCascadeEntries(['goods_receipts'], ['goods_receipts'], ['GRN-', 'RTN-']),
+    ],
+    recalculate: {
+      recalcItemsStock: true,
+      recalcSafesAndBanks: true,
+      resetPoReceivedQuantities: true,
+    },
+    descAr: 'يمسح أذون استلام المشتريات (GRN) ومرتجعات الموردين (RTN)، ويحذف تلقائياً كافة السجلات المرتبطة بها في كارت الصنف (stock_ledger)، وقيود اليومية التلقائية (journal_entries)، وسندات الخزينة، وتسويات الاستحقاقات، وشهادات الخصم 1%، مع إعادة احتساب أرصدة الخامات والخزائن والبنوك تلقائياً.',
+    descEn: 'Wipes all Supplier Goods Receipts (GRN) and Return Notes (RTN), automatically purging their auto-made records in stock_ledger, journal_entries, cash_transactions, dues_settlements, and wht_notes, and dynamically recalculating item stock and safe/bank balances.',
+  },
+  {
+    key: 'purchase_orders',
+    category: 'operational',
+    labelAr: 'أوامر الشراء والدفعات المقدمة المرتبطة بها (Purchase Orders & PO Advances)',
+    labelEn: 'Purchase Orders & Linked PO Advances (purchase_orders)',
+    collectionsLabel: 'purchase_orders + Auto-Made PO Advances, JEs & Dues',
+    primaryCollections: ['purchase_orders'],
+    relatedCascades: [
+      {
+        collection: 'cash_transactions',
+        labelAr: 'سندات الدفعات المقدمة المرتبطة بأوامر الشراء (cash_transactions)',
+        labelEn: 'Auto-generated PO Advance payment vouchers (cash_transactions)',
+        predicate: (d) =>
+          Boolean(d.poId) ||
+          String(d.referenceNumber || '').startsWith('PO-') ||
+          (Array.isArray(d.linkedDocs) && d.linkedDocs.some((ld) => ld.docType === 'PO' || String(ld.docId || '').startsWith('PO-'))),
+      },
+      {
+        collection: 'journal_entries',
+        labelAr: 'قيود اليومية التلقائية للدفعات المقدمة لأوامر الشراء (journal_entries)',
+        labelEn: 'Auto-generated journal entries for PO Advances (journal_entries)',
+        predicate: (d, docId) =>
+          d.sourceCollection === 'purchase_orders' ||
+          String(docId || d.id || '').startsWith('JE-PO-') ||
+          String(d.sourceDocId || d.referenceNumber || '').startsWith('PO-'),
+      },
+      {
+        collection: 'dues_settlements',
+        labelAr: 'تسويات الدفعات المقدمة لأوامر الشراء (dues_settlements)',
+        labelEn: 'PO Advance settlements in dues_settlements',
+        predicate: (d) =>
+          Boolean(d.poId) ||
+          String(d.docId || '').startsWith('PO-') ||
+          (Array.isArray(d.linkedDocs) && d.linkedDocs.some((ld) => ld.docType === 'PO' || String(ld.docId || '').startsWith('PO-'))),
+      },
+      {
+        collection: 'wht_notes',
+        labelAr: 'إشعارات الخصم المرتبطة بأوامر الشراء (wht_notes)',
+        labelEn: 'WHT notes linked to Purchase Orders (wht_notes)',
+        predicate: (d) =>
+          Boolean(d.poId) ||
+          String(d.sourceDocId || d.docId || '').startsWith('PO-'),
+      },
+      ...makeCollabCascadeEntries(['purchase_orders'], ['purchase_orders'], ['PO-']),
+    ],
+    recalculate: {
+      recalcSafesAndBanks: true,
+      unlinkGrnPoRefs: true,
+    },
+    descAr: 'يمسح كافة أوامر الشراء (PO)، ويحذف تلقائياً سندات الدفعات المقدمة المرتبطة بها في الخزينة والبنوك، وقيودها المحاسبية، وتسوياتها في شاشة الاستحقاقات، ويفك ارتباط أذون الاستلام بأوامر الشراء المحذوفة مع إعادة احتساب أرصدة الخزائن والبنوك.',
+    descEn: 'Wipes all Purchase Orders (PO) and automatically purges their linked PO Advance cash vouchers, journal entries, and dues settlements, unlinking PO references on existing GRNs and recalculating safe/bank balances.',
+  },
+  {
+    key: 'transfers',
+    category: 'operational',
+    labelAr: 'التحويلات المخزنية وحركات النقل بين المستودعات (Stock Transfers)',
+    labelEn: 'Warehouse Stock Transfers (stock_transfers & transfers)',
+    collectionsLabel: 'stock_transfers + transfers + Auto-Made Stock Ledger & Floor Materials',
+    primaryCollections: ['transfers'],
+    relatedCascades: [
+      {
+        collection: 'stock_transfers',
+        labelAr: 'أذون التحويل المخزني بين المستودعات (stock_transfers)',
+        labelEn: 'Warehouse stock transfer vouchers (stock_transfers)',
+        predicate: (d) => !d.isFinishedGoods && d.transferType !== 'finished_goods' && !d.isPipelineTransfer,
+      },
+      {
+        collection: 'stock_ledger',
+        labelAr: 'حركات النقل المخزني المسجلة في كارت الصنف (stock_ledger)',
+        labelEn: 'Transfer movements recorded in stock_ledger',
+        predicate: (d) =>
+          d.docType === 'transfer' ||
+          ['transfer_in', 'transfer_out', 'transfer_reversal'].includes(d.action) ||
+          String(d.grnId || '').startsWith('TRN-') ||
+          String(d.transferId || '').startsWith('TRN-'),
+      },
+      {
+        collection: 'staged_floor_materials',
+        labelAr: 'خامات الصالة المحولة عبر أذون التحويل (staged_floor_materials)',
+        labelEn: 'Staged floor materials originating from stock transfers',
+        predicate: (d) => Boolean(d.transferId) || String(d.id || '').startsWith('TRN-'),
+      },
+      ...makeCollabCascadeEntries(['stock_transfers', 'transfers'], ['transfers'], ['TRN-']),
+    ],
+    recalculate: {
+      recalcItemsStock: true,
+    },
+    descAr: 'يمسح أذون التحويل المخزني بين المستودعات، ويحذف تلقائياً حركاتها المقابلة في كارت الصنف (stock_ledger) وخامات الصالة المحولة، مع إعادة احتساب أرصدة الخامات.',
+    descEn: 'Wipes warehouse stock transfers and automatically removes their corresponding movements in stock_ledger and staged_floor_materials, recalculating item stock.',
+  },
+  {
+    key: 'stock_count',
+    category: 'operational',
+    labelAr: 'جلسات الجرد الفعلي وتسويات الفروقات المخزنية (Stock Counts & Reconciliations)',
+    labelEn: 'Physical Stock Count Sessions & Reconciliations (stock_counts)',
+    collectionsLabel: 'stock_counts + Auto-Made ADJ-* Receipts & Stock Ledger Variances',
+    primaryCollections: ['stock_counts'],
+    relatedCascades: [
+      {
+        collection: 'goods_receipts',
+        labelAr: 'سندات التسوية الجردية التلقائية (goods_receipts: ADJ-* / inventory_reconciliation)',
+        labelEn: 'Auto-generated adjustment vouchers in goods_receipts (ADJ-* / inventory_reconciliation)',
+        predicate: (d, docId) =>
+          d.docType === 'inventory_reconciliation' ||
+          Boolean(d.isDirectAdjustment) ||
+          String(docId || d.id || '').startsWith('ADJ-') ||
+          ['STOCK_COUNT_RECONCILIATION', 'STOCK_COUNT_ADJUSTMENT'].includes(d.supplierId),
+      },
+      {
+        collection: 'stock_ledger',
+        labelAr: 'حركات فروقات الجرد (الزيادة والعجز) في كارت الصنف (stock_ledger)',
+        labelEn: 'Auto-generated inventory surplus/deficit entries in stock_ledger',
+        predicate: (d) =>
+          d.docType === 'inventory_reconciliation' ||
+          Boolean(d.sessionId) ||
+          Boolean(d.isDirectAdjustment) ||
+          [
+            'reconciliation_surplus',
+            'reconciliation_deficit',
+            'direct_adjustment_surplus',
+            'direct_adjustment_deficit',
+          ].includes(d.action) ||
+          String(d.grnId || '').startsWith('ADJ-'),
+      },
+      {
+        collection: 'journal_entries',
+        labelAr: 'قيود تسويات فروقات الجرد في دفتر اليومية (journal_entries)',
+        labelEn: 'Auto-generated inventory variance journal entries (journal_entries)',
+        predicate: (d, docId) =>
+          d.sourceCollection === 'stock_counts' ||
+          String(docId || d.id || '').startsWith('JE-ADJ-') ||
+          String(d.sourceDocId || '').startsWith('ADJ-') ||
+          String(d.sourceDocId || '').startsWith('STK-'),
+      },
+      ...makeCollabCascadeEntries(['stock_counts'], ['stock_count'], ['STK-', 'ADJ-']),
+    ],
+    recalculate: {
+      recalcItemsStock: true,
+    },
+    descAr: 'يمسح جلسات الجرد الفعلي (stock_counts)، ويحذف تلقائياً كافة سندات التسوية الجردية (ADJ-*) التي أُنشئت تلقائياً داخل (goods_receipts) وحركات الزيادة والعجز في (stock_ledger)، مع إعادة احتساب أرصدة الخامات بدقة.',
+    descEn: 'Wipes all physical stock count sessions (stock_counts) and automatically deletes their auto-made adjustment documents (ADJ-*) in goods_receipts and variance entries in stock_ledger, recalculating item stock.',
+  },
+  {
+    key: 'spare_parts_issue',
+    category: 'operational',
+    labelAr: 'أذون صرف واستهلاك قطع الغيار والمهمات (Spare Parts Consumption)',
+    labelEn: 'Spare Parts Consumption & Issue Vouchers (spare_parts_issues)',
+    collectionsLabel: 'spare_parts_issues + Auto-Made Stock Ledger & JEs',
+    primaryCollections: ['spare_parts_issues'],
+    relatedCascades: [
+      {
+        collection: 'stock_ledger',
+        labelAr: 'حركات خصم وعكس قطع الغيار في كارت الصنف (stock_ledger: XISS-*)',
+        labelEn: 'Auto-generated spare parts deduction & reversal entries in stock_ledger',
+        predicate: (d) =>
+          ['spare_parts_issue', 'spare_parts_reversal'].includes(d.docType) ||
+          ['spare_parts_consumption', 'spare_parts_reversal'].includes(d.action) ||
+          String(d.grnId || '').startsWith('XISS-') ||
+          String(d.grnId || '').startsWith('REV-XISS-'),
+      },
+      {
+        collection: 'journal_entries',
+        labelAr: 'قيود مصروفات قطع الغيار التلقائية (journal_entries)',
+        labelEn: 'Auto-generated spare parts expense journal entries',
+        predicate: (d) =>
+          d.sourceCollection === 'spare_parts_issues' ||
+          String(d.sourceDocId || d.referenceNumber || '').startsWith('XISS-'),
+      },
+      ...makeCollabCascadeEntries(['spare_parts_issues'], ['spare_parts_issue'], ['XISS-', 'REV-XISS-']),
+    ],
+    recalculate: {
+      recalcItemsStock: true,
+    },
+    descAr: 'يمسح أذون صرف واستهلاك قطع الغيار (XISS-*)، ويحذف تلقائياً حركات الخصم والعكس المرتبطة بها في كارت الصنف (stock_ledger)، ويعيد احتساب أرصدة قطع الغيار والمهمات تلقائياً.',
+    descEn: 'Wipes spare parts consumption vouchers (spare_parts_issues) and their auto-made deduction/reversal entries in stock_ledger, dynamically restoring spare parts stock balances.',
+  },
+  {
+    key: 'liquid_tanks',
+    category: 'operational',
+    labelAr: 'تشغيل وتانكات السوائل، التحويلات الوسيطة، والضخ بالأنابيب (Bulk Liquid Tanks)',
+    labelEn: 'Bulk Liquid Tanks, Transformations & Pipeline Transfers (liquid_tanks)',
+    collectionsLabel: 'liquid_tanks + shift_handovers + Auto-Made TRANS-*, TRN-PIPE-* & Vessel Reset',
+    primaryCollections: ['liquid_tanks', 'shift_handovers'],
+    relatedCascades: [
+      {
+        collection: 'production_transformations',
+        labelAr: 'سجلات التحويل والتصنيع الداخلي للتانكات (production_transformations: TRANS-TANK-*)',
+        labelEn: 'Auto-generated tank transformation records (production_transformations)',
+        predicate: (d, docId) =>
+          Boolean(d.tankId) ||
+          String(docId || d.id || '').startsWith('TRANS-TANK-') ||
+          String(docId || d.id || '').startsWith('TRANS-BATCH-') ||
+          String(d.lotNumber || '').startsWith('TANK-'),
+      },
+      {
+        collection: 'stock_transfers',
+        labelAr: 'أذون الضخ التلقائية عبر خطوط الأنابيب لصالة الإنتاج (stock_transfers: TRN-PIPE-*)',
+        labelEn: 'Auto-generated pipeline transfer records (stock_transfers: TRN-PIPE-*)',
+        predicate: (d, docId) =>
+          Boolean(d.isPipelineTransfer) ||
+          Boolean(d.tankId) ||
+          String(docId || d.id || '').startsWith('TRN-PIPE-'),
+      },
+      ...makeCollabCascadeEntries(['liquid_tanks', 'shift_handovers'], ['liquid_tanks', 'liquid_storage'], ['TANK-', 'BATCH-', 'TRN-PIPE-']),
+    ],
+    recalculate: {
+      resetFloorVessels: true,
+      recalcItemsStock: true,
+    },
+    descAr: 'يمسح سجلات تانكات السوائل (liquid_tanks) وتسليم الورديات، ويحذف تلقائياً حركات التحويل الداخلي (TRANS-TANK-*) وأذون الضخ عبر الأنابيب (TRN-PIPE-*)، ويصفر الكميات الحالية العابرة داخل خزانات الصالة (floor_liquid_vessels) مع الحفاظ الكامل على إعدادات سعة الخزانات.',
+    descEn: 'Wipes bulk liquid tanks and shift handovers, automatically deleting their auto-made transformation records (TRANS-TANK-*) and pipeline transfers (TRN-PIPE-*), and resets transient volumes in floor_liquid_vessels while preserving vessel capacity configurations.',
+  },
+  {
+    key: 'work_orders',
+    category: 'operational',
+    labelAr: 'أوامر التشغيل، الباليتات المرحلية، خامات الصالة، والورديات (Work Orders & Floor Ops)',
+    labelEn: 'Work Orders, Staged Pallets, Floor Materials & Shifts (work_orders)',
+    collectionsLabel: 'work_orders + staged_floor_pallets + staged_floor_materials + breaks/shifts + Auto-Made TRANS-PAL-* & TRN-*',
+    primaryCollections: [
+      'work_orders',
+      'production_work_orders',
+      'staged_floor_pallets',
+      'staged_floor_materials',
+      'production_breaks',
+      'production_shifts',
+    ],
+    relatedCascades: [
+      {
+        collection: 'production_transformations',
+        labelAr: 'حركات استهلاك الخامات وتصنيع الباليتات وأوامر التشغيل (production_transformations: TRANS-PAL-* / TRANS-WO-*)',
+        labelEn: 'Auto-generated pallet & work order transformations (production_transformations)',
+        predicate: (d, docId) => {
+          const idStr = String(docId || d.id || '');
+          return (
+            idStr.startsWith('TRANS-PAL-') ||
+            idStr.startsWith('TRANS-WO-') ||
+            Boolean(d.workOrderId) ||
+            Boolean(d.palletId) ||
+            !d.tankId
+          );
+        },
+      },
+      {
+        collection: 'stock_transfers',
+        labelAr: 'أذون ترحيل الباليتات التامة ومرتجعات الهالك وأوامر التشغيل (stock_transfers)',
+        labelEn: 'Auto-generated FG pallet transfers & floor scrap returns (stock_transfers)',
+        predicate: (d, docId) => {
+          const idStr = String(docId || d.id || '');
+          return (
+            Boolean(d.isFinishedGoods) ||
+            ['finished_goods', 'floor_feeding', 'scrap_return'].includes(d.transferType) ||
+            String(d.productionOrderRef || '').startsWith('MO-') ||
+            idStr.startsWith('TRN-SCRAP') ||
+            idStr.startsWith('TRN-PALLET') ||
+            idStr.startsWith('TRN-FG') ||
+            (Array.isArray(d.lines) && d.lines.some((l) => Boolean(l.palletId) || Boolean(l.workOrderId)))
+          );
+        },
+      },
+      {
+        collection: 'stock_ledger',
+        labelAr: 'حركات استهلاك الإنتاج والهالك المسجلة في كارت الصنف (stock_ledger)',
+        labelEn: 'Production consumption & scrap entries in stock_ledger',
+        predicate: (d) =>
+          Boolean(d.workOrderId) ||
+          String(d.productionOrderRef || '').startsWith('MO-') ||
+          ['production_consumption', 'scrap_return', 'floor_feeding'].includes(d.docType || d.action),
+      },
+      {
+        collection: 'journal_entries',
+        labelAr: 'قيود التكاليف والإنتاج التلقائية لأوامر التشغيل (journal_entries)',
+        labelEn: 'Auto-generated production journal entries (journal_entries)',
+        predicate: (d) =>
+          d.sourceCollection === 'work_orders' ||
+          String(d.sourceDocId || d.referenceNumber || '').startsWith('MO-'),
+      },
+      ...makeCollabCascadeEntries(
+        ['work_orders', 'production_work_orders', 'staged_floor_pallets', 'staged_floor_materials'],
+        ['work_orders', 'production_reports'],
+        ['MO-', 'PAL-']
+      ),
+    ],
+    recalculate: {
+      recalcItemsStock: true,
+    },
+    descAr: 'يمسح أوامر التشغيل والإنتاج، وباليتات الصالة، وخامات الصالة، وسجلات التوقف والورديات، ويحذف تلقائياً كافة حركات التصنيع والاستهلاك (TRANS-PAL-*) وأذون ترحيل الباليتات والهالك (stock_transfers) المرتبطة بها.',
+    descEn: 'Wipes all production work orders, staged floor pallets, staged materials, breaks, and shifts, automatically purging their auto-made pallet transformation records (TRANS-PAL-*) and FG/scrap transfer vouchers.',
+  },
+  {
+    key: 'fg_inward',
+    category: 'operational',
+    labelAr: 'استلامات وإيداعات باليتات المنتج التام بالمستودعات (Finished Goods Inward)',
+    labelEn: 'Finished Goods Inward Transfers & Receipts (fg_inward)',
+    collectionsLabel: 'fg_receipts + Auto-Made FG Transfers in stock_transfers & Pallet Status Reset',
+    primaryCollections: ['fg_receipts'],
+    relatedCascades: [
+      {
+        collection: 'stock_transfers',
+        labelAr: 'أذون استلام وترحيل باليتات المنتج التام (stock_transfers: isFinishedGoods)',
+        labelEn: 'Finished Goods pallet inward transfer vouchers in stock_transfers',
+        predicate: (d, docId) => {
+          const idStr = String(docId || d.id || '');
+          return (
+            Boolean(d.isFinishedGoods) ||
+            d.transferType === 'finished_goods' ||
+            idStr.startsWith('TRN-FG') ||
+            idStr.startsWith('TRN-PALLET') ||
+            (Array.isArray(d.lines) && d.lines.some((l) => Boolean(l.palletId)))
+          );
+        },
+      },
+      ...makeCollabCascadeEntries(['fg_receipts', 'stock_transfers'], ['fg_inward'], ['FGR-', 'TRN-FG', 'TRN-PALLET']),
+    ],
+    recalculate: {
+      resetStagedPalletsToFloor: true,
+      recalcItemsStock: true,
+    },
+    descAr: 'يمسح أذون استلام وترحيل باليتات المنتج التام (stock_transfers الخاصة بالمنتج التام + fg_receipts)، ويعيد حالة الباليتات في صالة الإنتاج إلى (مشدودة بالصالة - staged_on_floor) لتجنب أي ارتباطات معلقة.',
+    descEn: 'Wipes all Finished Goods inward transfer vouchers in stock_transfers and fg_receipts, resetting staged floor pallets back to staged_on_floor status so no dangling transfer links remain.',
+  },
+  {
+    key: 'faulty_fg',
+    category: 'operational',
+    labelAr: 'إشعارات مرتجعات ومعيب المنتج التام وأوامر إعادة التشغيل (Faulty FG & Rework)',
+    labelEn: 'Faulty FG Returns & Linked Rework Orders (faulty_fg_returns)',
+    collectionsLabel: 'faulty_fg_returns + Auto-Made Rework Orders',
+    primaryCollections: ['faulty_fg_returns'],
+    relatedCascades: [
+      {
+        collection: 'work_orders',
+        labelAr: 'أوامر إعادة التشغيل المنشأة تلقائياً من مرتجعات المعيب (work_orders: isRework)',
+        labelEn: 'Auto-created Rework work orders in work_orders',
+        predicate: (d) =>
+          Boolean(d.isRework) ||
+          (Array.isArray(d.reworkSourceVouchers) && d.reworkSourceVouchers.length > 0),
+      },
+      {
+        collection: 'production_work_orders',
+        labelAr: 'سجلات إعادة التشغيل المرتبطة (production_work_orders)',
+        labelEn: 'Linked rework records in production_work_orders',
+        predicate: (d) =>
+          Boolean(d.isRework) ||
+          (Array.isArray(d.reworkSourceVouchers) && d.reworkSourceVouchers.length > 0),
+      },
+      ...makeCollabCascadeEntries(['faulty_fg_returns'], ['faulty_fg'], ['RTN-FG-']),
+    ],
+    recalculate: {},
+    descAr: 'يمسح كافة إشعارات مرتجعات ومعيب المنتج التام (faulty_fg_returns)، ويحذف تلقائياً أوامر إعادة التشغيل (Rework Work Orders) المرتبطة بها.',
+    descEn: 'Wipes all Faulty FG return vouchers (faulty_fg_returns) and automatically deletes any Rework Work Orders generated from them.',
+  },
+  {
+    key: 'cash_transactions_hub',
+    category: 'operational',
+    labelAr: 'حركات وسندات الخزائن والبنوك، العهد والسلف، ومحاضر الجرد (مع بقاء الخزائن والبنوك)',
+    labelEn: 'Cash & Bank Vouchers, Custodies & Cash Audits (Preserves Safe/Bank Master Definitions)',
+    collectionsLabel: 'cash_transactions + custody_ledger + cash_count_sessions + Auto-Made JEs & Dues',
+    primaryCollections: [
+      'cash_transactions',
+      'custody_ledger',
+      'custody_advance_drafts',
+      'custodies_and_advances',
+      'cash_count_sessions',
+    ],
+    relatedCascades: [
+      {
+        collection: 'journal_entries',
+        labelAr: 'قيود اليومية التلقائية لسندات الخزينة والبنوك والعهد وجرد النقدية (journal_entries)',
+        labelEn: 'Auto-generated journal entries for cash/bank vouchers, custodies & cash audits',
+        predicate: (d, docId) => {
+          const idStr = String(docId || d.id || '');
+          const refStr = String(d.sourceDocId || d.referenceNumber || '');
+          return (
+            ['cash_transactions', 'custody_ledger', 'cash_count_sessions', 'custodies_and_advances'].includes(d.sourceCollection) ||
+            ['cash_receipt', 'cash_disbursement', 'custody_advance', 'custody_liquidation', 'cash_audit', 'safe_transfer'].includes(d.originType) ||
+            idStr.startsWith('JE-VCH-') ||
+            idStr.startsWith('JE-LIQ-') ||
+            idStr.startsWith('JE-CSH-') ||
+            refStr.startsWith('VCH-') ||
+            refStr.startsWith('ADV-') ||
+            refStr.startsWith('LIQ-')
+          );
+        },
+      },
+      {
+        collection: 'dues_settlements',
+        labelAr: 'تسويات الاستحقاقات المسددة عبر سندات الخزينة والبنوك (dues_settlements)',
+        labelEn: 'Dues settlements paid via cash/bank vouchers (dues_settlements)',
+        predicate: (d) => Boolean(d.voucherId) || Boolean(d.cashTransactionId) || Boolean(d.safeId) || Boolean(d.bankId),
+      },
+      {
+        collection: 'dues_batches',
+        labelAr: 'حافظات السداد المجمعة المرتبطة بسندات الصرف (dues_batches)',
+        labelEn: 'Batch payment ledgers linked to cash/bank vouchers (dues_batches)',
+        predicate: () => true,
+      },
+      ...makeCollabCascadeEntries(
+        ['cash_transactions', 'custody_ledger', 'custody_advance_drafts', 'cash_count_sessions'],
+        ['cash_safes', 'cash_safes_hub', 'custodies_advances'],
+        ['VCH-', 'ADV-', 'LIQ-', 'CSH-']
+      ),
+    ],
+    recalculate: {
+      recalcSafesAndBanks: true,
+    },
+    descAr: 'يمسح كافة سندات الصرف والتحصيل والتحويلات النقدية، وسجل العهد والسلف، ومحاضر جرد الخزينة، ويحذف قيود اليومية التلقائية الناتجة عنها، ويصفر الأرصدة والفئات النقدية الحالية في (cash_safes) و(corporate_banks) مع الحفاظ التام (100%) على تعريفات الخزائن والحسابات البنكية.',
+    descEn: 'Wipes all cash & bank vouchers, custodies/advances, and cash count audit sessions along with their auto-generated journal entries and dues settlements, resetting safe & bank balances to 0 while 100% preserving Safe & Bank Master records.',
+  },
+  {
+    key: 'dues_tracking',
+    category: 'operational',
+    labelAr: 'تسويات الاستحقاقات، حافظات السداد المجمعة، وشهادات الخصم 1% (Dues & WHT)',
+    labelEn: 'Dues Settlements, Payment Batches & 1% WHT Certificates (dues_tracking)',
+    collectionsLabel: 'dues_settlements + dues_batches + wht_notes + Auto-Made Vouchers & JEs',
+    primaryCollections: ['dues_settlements', 'dues_batches', 'wht_notes'],
+    relatedCascades: [
+      {
+        collection: 'cash_transactions',
+        labelAr: 'سندات الصرف والتحصيل المنشأة تلقائياً من شاشة الاستحقاقات (cash_transactions)',
+        labelEn: 'Auto-generated cash/bank vouchers created by Dues Tracking (cash_transactions)',
+        predicate: (d) =>
+          d.originModule === 'dues_tracking' ||
+          Boolean(d.duesBatchId) ||
+          Boolean(d.duesSettlementId) ||
+          (Array.isArray(d.linkedDocs) && d.linkedDocs.length > 0),
+      },
+      {
+        collection: 'journal_entries',
+        labelAr: 'قيود اليومية التلقائية لتسويات الموردين والعملاء وشهادات الخصم (journal_entries)',
+        labelEn: 'Auto-generated journal entries for Dues Settlements & WHT certificates',
+        predicate: (d, docId) => {
+          const idStr = String(docId || d.id || '');
+          const refStr = String(d.sourceDocId || d.referenceNumber || '');
+          return (
+            ['dues_settlements', 'dues_batches', 'wht_notes'].includes(d.sourceCollection) ||
+            d.originType === 'dues_settlement' ||
+            Boolean(d.duesBatchId) ||
+            idStr.startsWith('JE-WHT-') ||
+            idStr.startsWith('JE-DUE-') ||
+            refStr.startsWith('WHT-') ||
+            refStr.startsWith('BAT-')
+          );
+        },
+      },
+      ...makeCollabCascadeEntries(['dues_settlements', 'dues_batches', 'wht_notes'], ['dues_tracking'], ['WHT-', 'BAT-']),
+    ],
+    recalculate: {
+      recalcSafesAndBanks: true,
+    },
+    descAr: 'يمسح كافة تسويات دفعات الموردين والعملاء (dues_settlements)، وحافظات السداد المجمعة (dues_batches)، وشهادات الخصم الضريبي 1% (wht_notes)، ويحذف تلقائياً سندات الصرف والتحصيل وقيود اليومية الناتجة عنها، مع إعادة احتساب أرصدة الخزائن والبنوك.',
+    descEn: 'Wipes all supplier/client dues settlements, batch payment ledgers, and 1% WHT certificates, automatically deleting their auto-generated cash/bank vouchers and journal entries and recalculating safe/bank balances.',
+  },
+  {
+    key: 'journal_entries_only',
+    category: 'operational',
+    labelAr: 'قيود دفتر اليومية العامة فقط — مع الحفاظ التام على دليل الحسابات (Journal Entries Only)',
+    labelEn: 'General Journal Entries Only — Preserves Chart of Accounts (journal_entries)',
+    collectionsLabel: 'journal_entries (100% Preserves chart_of_accounts)',
+    primaryCollections: ['journal_entries'],
+    relatedCascades: [
+      ...makeCollabCascadeEntries(['journal_entries'], ['accounts'], ['JE-']),
+    ],
+    recalculate: {},
+    descAr: 'يمسح قيود دفتر اليومية العامة (journal_entries) فقط مع الحفاظ التام والكامل (100%) على شجرة دليل الحسابات وإعدادات التوجيه المالي (chart_of_accounts).',
+    descEn: 'Wipes all General Journal Entries (journal_entries) while 100% preserving your Chart of Accounts and Financial Statement routing setup (chart_of_accounts).',
+  },
+  {
+    key: 'opening_balances_only',
+    category: 'operational',
+    labelAr: 'الأرصدة الافتتاحية المخزنية والمالية فقط (Opening Stock & Financial Balances)',
+    labelEn: 'Opening Stock & Financial Opening Balances Only',
+    collectionsLabel: 'stock_ledger (OB-*) + journal_entries (JE-OB-*) + items.openingQtySmall',
+    primaryCollections: [],
+    relatedCascades: [
+      {
+        collection: 'stock_ledger',
+        labelAr: 'حركات الأرصدة الافتتاحية في كارت الصنف (stock_ledger: opening_balance / OB-*)',
+        labelEn: 'Opening stock balance movements in stock_ledger (opening_balance / OB-*)',
+        predicate: (d) =>
+          d.docType === 'opening_balance' ||
+          ['opening_balance', 'opening_balance_initial', 'fg_opening_balance'].includes(d.action) ||
+          String(d.lotNumber || '').startsWith('OB-') ||
+          d.supplierId === 'INITIAL_BALANCE',
+      },
+      {
+        collection: 'journal_entries',
+        labelAr: 'قيود الأرصدة الافتتاحية في دفتر اليومية (journal_entries: JE-OB-*)',
+        labelEn: 'Opening balance journal entries in journal_entries (JE-OB-*)',
+        predicate: (d, docId) =>
+          d.originType === 'opening_balance' ||
+          String(docId || d.id || '').startsWith('JE-OB-') ||
+          String(d.referenceNumber || '').startsWith('OB-'),
+      },
+    ],
+    recalculate: {
+      clearOpeningFieldsOnItems: true,
+      recalcItemsStock: true,
+    },
+    descAr: 'يمسح حركات الأرصدة الافتتاحية فقط من كارت الصنف (stock_ledger) وقيود اليومية الافتتاحية، ويصفر حقول الرصيد الافتتاحي في كارت الأصناف مع إعادة احتساب المخزون الفعلي من باقي الحركات.',
+    descEn: 'Selectively removes only Opening Stock movements from stock_ledger and Opening Balance journal entries, clearing opening balance fields on Item Master variations and recalculating stock from remaining movements.',
+  },
+  {
+    key: 'all_inventory_movements',
+    category: 'operational',
+    labelAr: 'سجل الحركات الدفتري للمخزون والتحويلات الشامل (Full Stock Ledger & Transfers)',
+    labelEn: 'Full Central Stock Ledger & All Transfers (stock_ledger & stock_transfers)',
+    collectionsLabel: 'stock_ledger + stock_transfers + transfers + items.stock = 0',
+    primaryCollections: ['stock_ledger', 'stock_transfers', 'transfers'],
+    relatedCascades: [
+      ...makeCollabCascadeEntries(['stock_ledger', 'stock_transfers', 'transfers'], ['stock', 'transfers'], ['TRN-', 'OB-']),
+    ],
+    recalculate: {
+      clearOpeningFieldsOnItems: true,
+      recalcItemsStock: true,
+    },
+    descAr: 'يمسح سجل الحركات الدفتري للمخزون (stock_ledger) وكافة أذون التحويل (stock_transfers) بالكامل، ويصفر أرصدة الخامات الدفترية في كارت الأصناف إلى (0) مع بقاء تعريفات الأصناف.',
+    descEn: 'Wipes the entire Central Stock Ledger (stock_ledger) and all Stock Transfers (stock_transfers), resetting item stock balances to 0 while preserving Item Master definitions.',
+  },
+  {
+    key: 'comments_and_notifications',
+    category: 'operational',
+    labelAr: 'التعليقات التعاونية، طابور الاعتمادات، وسجل التنبيهات فقط (Comments, Queue & Alerts)',
+    labelEn: 'Collaborative Comments, Pending Actions Queue & System Notifications Only',
+    collectionsLabel: 'record_comments + user_actions_queue + system_notifications',
+    primaryCollections: ['record_comments', 'user_actions_queue', 'system_notifications'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'يمسح كافة التعليقات التعاونية على السجلات (record_comments)، وطابور المهام والاعتمادات (user_actions_queue)، وسجل الإشعارات (system_notifications) دون المساس بأي مستندات أو حركات.',
+    descEn: 'Wipes all row-level collaborative comments, pending user action tasks, and system notifications without touching any operational or master records.',
+  },
+
+  // =========================================================================
+  // GROUP B: MASTER DATA TABLES (ADMIN RESET FOR SPECIFIC MASTER COLLECTIONS)
+  // =========================================================================
+  {
+    key: 'master_items',
+    category: 'master',
+    labelAr: 'قاعدة بيانات كارت الأصناف والخامات (Item Master — يحذف تعريفات الخامات)',
+    labelEn: 'Item Master Database (items — Deletes Raw Material Definitions)',
+    collectionsLabel: 'items',
+    primaryCollections: ['items'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف سجل تعريفات الخامات والأصناف وتنوعاتها (items) بالكامل من قاعدة البيانات الأساسية.',
+    descEn: 'WARNING: Permanently deletes all Raw Material & Item Master definitions (items).',
+  },
+  {
+    key: 'master_suppliers',
+    category: 'master',
+    labelAr: 'قاعدة بيانات سجل الموردين المعتمدين (Suppliers Master)',
+    labelEn: 'Suppliers Master Database (suppliers)',
+    collectionsLabel: 'suppliers',
+    primaryCollections: ['suppliers'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف سجل تعريفات الموردين وشروط الدفع والملفات الضريبية (suppliers) بالكامل.',
+    descEn: 'WARNING: Permanently deletes all Supplier Master records (suppliers).',
+  },
+  {
+    key: 'master_clients',
+    category: 'master',
+    labelAr: 'قاعدة بيانات سجل العملاء (Clients Master)',
+    labelEn: 'Clients Master Database (clients)',
+    collectionsLabel: 'clients',
+    primaryCollections: ['clients'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف سجل تعريفات العملاء (clients) بالكامل.',
+    descEn: 'WARNING: Permanently deletes all Client Master records (clients).',
+  },
+  {
+    key: 'master_finished_products',
+    category: 'master',
+    labelAr: 'قاعدة بيانات المنتجات التامة وتصنيفاتها (Finished Products & Categories)',
+    labelEn: 'Finished Products & Categories Master (finished_products & finished_product_categories)',
+    collectionsLabel: 'finished_products + finished_product_categories',
+    primaryCollections: ['finished_products', 'finished_product_categories'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف سجل تعريفات المنتجات التامة وتصنيفاتها بالكامل.',
+    descEn: 'WARNING: Permanently deletes all Finished Products and FG Categories master definitions.',
+  },
+  {
+    key: 'master_boms_and_processes',
+    category: 'master',
+    labelAr: 'قوائم المكونات (BOM)، الخلطات الوسيطة (IBOM)، ومسارات التشغيل (SOPs)',
+    labelEn: 'BOM Recipes, Intermediate Recipes & Production Processes (bom_recipes, intermediate_recipes, production_processes)',
+    collectionsLabel: 'bom_recipes + intermediate_recipes + production_processes',
+    primaryCollections: ['bom_recipes', 'intermediate_recipes', 'production_processes'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف شجرة المكونات (bom_recipes) والخلطات الوسيطة (intermediate_recipes) ومسارات التشغيل القياسية (production_processes).',
+    descEn: 'WARNING: Permanently deletes all BOM recipes, intermediate recipes, and production processes.',
+  },
+  {
+    key: 'master_warehouses_and_vessels',
+    category: 'master',
+    labelAr: 'سجل المستودعات وإعدادات خزانات السوائل بالصالة (Warehouses & Floor Vessels Master)',
+    labelEn: 'Warehouses & Floor Liquid Vessels Master (warehouses & floor_liquid_vessels)',
+    collectionsLabel: 'warehouses + floor_liquid_vessels',
+    primaryCollections: ['warehouses', 'floor_liquid_vessels'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف تعريفات المستودعات والصالات (warehouses) وإعدادات سعة خزانات السوائل (floor_liquid_vessels).',
+    descEn: 'WARNING: Permanently deletes all Warehouse definitions and Floor Liquid Vessel capacity configurations.',
+  },
+  {
+    key: 'master_safes_and_banks',
+    category: 'master',
+    labelAr: 'تعريفات الخزائن النقدية والحسابات البنكية (Safes & Corporate Banks Master)',
+    labelEn: 'Cash Safes & Corporate Banks Master Definitions (cash_safes & corporate_banks)',
+    collectionsLabel: 'cash_safes + corporate_banks + bank_accounts',
+    primaryCollections: ['cash_safes', 'corporate_banks', 'bank_accounts'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف بطاقات تعريف الخزائن النقدية والحسابات البنكية نفسها. (إذا كنت تريد تصفير الحركات والأرصدة فقط مع بقاء الخزائن والبنوك، اختر "حركات وسندات الخزائن والبنوك" من القائمة التشغيلية أعلاه).',
+    descEn: 'WARNING: Deletes the Master Safe & Bank definitions themselves. (To wipe vouchers and zero balances while keeping safes/banks, choose "Cash & Bank Vouchers" from the Operational group above).',
+  },
+  {
+    key: 'master_chart_of_accounts',
+    category: 'master',
+    labelAr: 'دليل شجرة الحسابات المحاسبية (Chart of Accounts Master — chart_of_accounts)',
+    labelEn: 'Chart of Accounts Master Directory (chart_of_accounts)',
+    collectionsLabel: 'chart_of_accounts',
+    primaryCollections: ['chart_of_accounts'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف شجرة دليل الحسابات وإعدادات التوجيه المالي بالكامل. (إذا كنت تريد مسح قيود اليومية فقط مع بقاء دليل الحسابات، اختر "قيود دفتر اليومية العامة فقط" من القائمة التشغيلية أعلاه).',
+    descEn: 'WARNING: Deletes the entire Chart of Accounts directory. (To wipe journal entries only while keeping COA intact, choose "General Journal Entries Only" from the Operational group above).',
+  },
+  {
+    key: 'master_workers_and_vehicles',
+    category: 'master',
+    labelAr: 'سجل عمالة الإنتاج وأسطول المركبات (Production Workers & Vehicles Master)',
+    labelEn: 'Production Workers & Vehicles Fleet Master (production_workers & vehicles)',
+    collectionsLabel: 'production_workers + vehicles',
+    primaryCollections: ['production_workers', 'vehicles'],
+    relatedCascades: [],
+    recalculate: {},
+    descAr: 'تحذير: يحذف سجل عمالة وفنيي الإنتاج وسجل أسطول السيارات والشاحنات.',
+    descEn: 'WARNING: Permanently deletes all Production Workers and Vehicles Fleet master records.',
+  },
+];
+
+
+export default function AdminControlPanel({ currentUser = {}, initialSubTab = null, initialTabFocus = null, onClose = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
 
@@ -344,7 +1190,71 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const tabColor = tabConfig?.color || '#059669';
   const { r, g, b } = hexToRgb(tabColor);
 
-  const [activeSubTab, setActiveSubTab] = useState(initialSubTab || 'users'); // 'users' | 'warehouses' | 'permissions' | 'tab_appearance' | 'import' | 'backup_restore' | 'factory_reset' | 'db_inspector'
+  const [activeSubTab, setActiveSubTab] = useState(() => {
+    if (initialSubTab) return initialSubTab;
+    if (typeof window !== 'undefined') {
+      const raw = window.location.hash || '';
+      if (raw.includes('?')) {
+        const p = new URLSearchParams(raw.split('?')[1]);
+        const s = p.get('subTab');
+        if (s && ['users', 'warehouses', 'permissions', 'tab_appearance', 'import', 'backup_restore', 'factory_reset', 'db_inspector'].includes(s)) {
+          return s;
+        }
+      }
+    }
+    return 'users';
+  });
+
+  // Sync active subtab when opened externally with specific intent (e.g., tab customizer)
+  useEffect(() => {
+    if (initialSubTab) {
+      setActiveSubTab(initialSubTab);
+    }
+  }, [initialSubTab]);
+
+  // Sync activeSubTab into URL hash subTab so refresh returns to same view
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = window.location.hash || '';
+    if (raw.startsWith('#admin_panel')) {
+      const [base, query] = raw.split('?');
+      const params = new URLSearchParams(query || '');
+      if (params.get('subTab') !== activeSubTab) {
+        params.set('subTab', activeSubTab);
+        const newHash = `${base || '#admin_panel'}?${params.toString()}`;
+        window.history.replaceState(null, '', newHash);
+      }
+    }
+  }, [activeSubTab]);
+
+  // --- SUB-TAB: CONSOLIDATED VIEW SECURITY PASSCODE STATE ---
+  const [ledgerPasscode, setLedgerPasscode] = useState(() => getMasterPin());
+  const [showLedgerPasscode, setShowLedgerPasscode] = useState(false);
+  const [isSavingPasscode, setIsSavingPasscode] = useState(false);
+  const [passcodeSaveSuccess, setPasscodeSaveSuccess] = useState(false);
+
+  useEffect(() => {
+    setLedgerPasscode(getMasterPin());
+  }, []);
+
+  const handleSaveLedgerPasscode = async (e) => {
+    e.preventDefault();
+    if (!ledgerPasscode || ledgerPasscode.trim().length < 4) {
+      alert(isAr ? 'رمز الأمان يجب أن يتكون من ٤ أرقام على الأقل' : 'Passcode must be at least 4 digits');
+      return;
+    }
+    setIsSavingPasscode(true);
+    try {
+      await saveMasterPinToFirestore(ledgerPasscode.trim(), currentUser?.name || currentUser?.nameAr || 'Admin');
+      setPasscodeSaveSuccess(true);
+      setTimeout(() => setPasscodeSaveSuccess(false), 3000);
+    } catch (err) {
+      console.error('Error saving ledger passcode:', err);
+      alert(err.message || 'Error saving passcode');
+    } finally {
+      setIsSavingPasscode(false);
+    }
+  };
 
   // --- SUB-TAB: UNIVERSAL DATABASE INSPECTOR & DOCUMENT EDITOR STATE ---
   const [discoveredCollections, setDiscoveredCollections] = useState([]);
@@ -429,7 +1339,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const [importSuccessMsg, setImportSuccessMsg] = useState('');
 
   // --- SUB-TAB 4: TARGETED FACTORY RESET STATE ---
-  const [selectedPurgeTargetKey, setSelectedPurgeTargetKey] = useState('all');
+  const [selectedPurgeTargetKey, setSelectedPurgeTargetKey] = useState('operational_only');
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [confirmationPhrase, setConfirmationPhrase] = useState('');
   const [isPurging, setIsPurging] = useState(false);
@@ -711,11 +1621,29 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       defaultSensitive[node.key] = true;
     });
 
+    const effectiveModules = { ...defaultModules, ...(override.modules || {}) };
+    const effectiveActions = { ...defaultActions, ...(override.actions || {}) };
+    const effectiveSensitive = { ...defaultSensitive, ...(override.sensitive || {}) };
+    const effectiveFields = { ...defaultFields, ...(override.fields || {}) };
+
+    // CASCADE RULE: If "show tab in navigation" (modules[tab.id]) is deselected,
+    // all below related selections (actions and fields) for this tab must be automatically deselected (false)
+    allTabsList.forEach((tab) => {
+      if (effectiveModules[tab.id] === false) {
+        (tab.actions || []).forEach((act) => {
+          effectiveActions[`${tab.id}.${act.key}`] = false;
+        });
+        Object.keys(tab.fields || {}).forEach((fKey) => {
+          effectiveFields[`${tab.id}.${fKey}`] = false;
+        });
+      }
+    });
+
     return {
-      modules: { ...defaultModules, ...(override.modules || {}) },
-      actions: { ...defaultActions, ...(override.actions || {}) },
-      sensitive: { ...defaultSensitive, ...(override.sensitive || {}) },
-      fields: { ...defaultFields, ...(override.fields || {}) },
+      modules: effectiveModules,
+      actions: effectiveActions,
+      sensitive: effectiveSensitive,
+      fields: effectiveFields,
     };
   }, [permissionsState, activePermTargetUser, allTabsList]);
 
@@ -1005,20 +1933,48 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       return;
     }
 
+    // If trying to toggle an action or field, but the tab is disabled, prevent it
+    if (tier === 'actions' || tier === 'fields') {
+      const tabId = key.split('.')[0];
+      if (!userEffectivePerms.modules[tabId]) {
+        return;
+      }
+    }
+
     setPermissionsState((prev) => {
       const currentOverrides = prev[selectedPermUserId] || {};
       const currentTier = currentOverrides[tier] || {};
       const nextVal = !userEffectivePerms[tier][key];
 
+      const updatedUserOverrides = {
+        ...currentOverrides,
+        [tier]: {
+          ...currentTier,
+          [key]: nextVal,
+        },
+      };
+
+      // CASCADE RULE: If "show tab in navigation" (tier === 'modules') is deselected (nextVal === false),
+      // all below related selections (actions and fields) for this tab must be automatically deselected
+      if (tier === 'modules' && nextVal === false) {
+        const tabSchema = allTabsList.find((t) => t.id === key) || activeTabSchema;
+        if (tabSchema) {
+          const updatedActions = { ...(updatedUserOverrides.actions || currentOverrides.actions || {}) };
+          (tabSchema.actions || []).forEach((act) => {
+            updatedActions[`${tabSchema.id}.${act.key}`] = false;
+          });
+          const updatedFields = { ...(updatedUserOverrides.fields || currentOverrides.fields || {}) };
+          Object.keys(tabSchema.fields || {}).forEach((fKey) => {
+            updatedFields[`${tabSchema.id}.${fKey}`] = false;
+          });
+          updatedUserOverrides.actions = updatedActions;
+          updatedUserOverrides.fields = updatedFields;
+        }
+      }
+
       return {
         ...prev,
-        [selectedPermUserId]: {
-          ...currentOverrides,
-          [tier]: {
-            ...currentTier,
-            [key]: nextVal,
-          },
-        },
+        [selectedPermUserId]: updatedUserOverrides,
       };
     });
   };
@@ -2923,7 +3879,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   };
 
   // ==========================================
-  // SUB-TAB 4: TARGETED FACTORY RESET ENGINE
+  // SUB-TAB 4: TARGETED FACTORY RESET & RELATIONAL CASCADE PURGE ENGINE
   // ==========================================
   const handleExecuteDynamicPurge = async () => {
     if (confirmationPhrase !== 'CONFIRM-RESET-ERP') {
@@ -2933,59 +3889,149 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
 
     setIsPurging(true);
 
+    // Helper: Commit operations in chunks of 400 to respect Firestore 500-op batch limit
+    const commitChunkedOperations = async (operations = []) => {
+      if (!operations.length) return 0;
+      const CHUNK_SIZE = 400;
+      for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
+        const chunk = operations.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+        chunk.forEach((opFn) => opFn(batch));
+        await batch.commit();
+      }
+      return operations.length;
+    };
+
     try {
+      const masterCollectionsSet = new Set(getMasterCollectionsRegistry(APP_ARCHITECTURE));
+      // Explicit safety guarantee for Chart of Accounts, System Config, Users & Floor Vessel Configs
+      masterCollectionsSet.add('chart_of_accounts');
+      masterCollectionsSet.add('system_config');
+      masterCollectionsSet.add('users');
+      masterCollectionsSet.add('floor_liquid_vessels');
+
       const collectionsToPurge = [];
+      const cascadesByCollection = {}; // { [collName]: Array<(data, id) => boolean> }
       let shouldZeroStock = false;
+      let shouldRecalcItemsStock = false;
+      let shouldClearOpeningFieldsOnItems = false;
+      let shouldZeroSafeAndBankBalances = false;
+      let shouldRecalcSafesAndBanks = false;
+      let shouldResetFloorVessels = false;
+      let shouldResetPoReceivedQuantities = false;
+      let shouldUnlinkGrnPoRefs = false;
+      let shouldResetStagedPalletsToFloor = false;
+
+      const targetCatalogEntry = PURGE_TARGETS_CATALOG.find((t) => t.key === selectedPurgeTargetKey);
 
       if (selectedPurgeTargetKey === 'all') {
         allTabsList.forEach((t) => {
-          if (t.collection) collectionsToPurge.push(t.collection);
+          if (t.collection) {
+            t.collection.split(',').map((s) => s.trim()).filter(Boolean).forEach((c) => collectionsToPurge.push(c));
+          }
         });
         collectionsToPurge.push(
-          ...OPERATIONAL_COLLECTIONS_REGISTRY,
-          'transfers'
+          ...BACKUP_COLLECTIONS_REGISTRY,
+          ...OPERATIONAL_COLLECTIONS_REGISTRY
         );
         shouldZeroStock = true;
+        shouldZeroSafeAndBankBalances = true;
+        shouldResetFloorVessels = true;
       } else if (selectedPurgeTargetKey === 'operational_only') {
-        collectionsToPurge.push(
-          ...OPERATIONAL_COLLECTIONS_REGISTRY,
-          'transfers'
-        );
+        // Operational wipe: strictly exclude all master collections & chart_of_accounts
+        const safeOperational = OPERATIONAL_COLLECTIONS_REGISTRY.filter((coll) => !masterCollectionsSet.has(coll));
+        collectionsToPurge.push(...safeOperational);
         shouldZeroStock = true;
+        shouldZeroSafeAndBankBalances = true;
+        shouldResetFloorVessels = true;
+      } else if (targetCatalogEntry) {
+        // Aligned Catalog Target (Operational Cascade or Master Table Reset)
+        const rawPrimary = targetCatalogEntry.primaryCollections || [];
+        if (targetCatalogEntry.category === 'operational') {
+          rawPrimary
+            .filter((coll) => !masterCollectionsSet.has(coll))
+            .forEach((coll) => collectionsToPurge.push(coll));
+        } else {
+          rawPrimary.forEach((coll) => collectionsToPurge.push(coll));
+        }
+
+        // Group selective cross-collection predicates by collection
+        (targetCatalogEntry.relatedCascades || []).forEach((cRule) => {
+          if (!cRule.collection || typeof cRule.predicate !== 'function') return;
+          // Never allow an operational cascade to delete a master collection
+          if (targetCatalogEntry.category === 'operational' && masterCollectionsSet.has(cRule.collection)) return;
+          if (!cascadesByCollection[cRule.collection]) {
+            cascadesByCollection[cRule.collection] = [];
+          }
+          cascadesByCollection[cRule.collection].push(cRule.predicate);
+        });
+
+        const recalc = targetCatalogEntry.recalculate || {};
+        if (recalc.recalcItemsStock) shouldRecalcItemsStock = true;
+        if (recalc.clearOpeningFieldsOnItems) shouldClearOpeningFieldsOnItems = true;
+        if (recalc.recalcSafesAndBanks) shouldRecalcSafesAndBanks = true;
+        if (recalc.resetFloorVessels) shouldResetFloorVessels = true;
+        if (recalc.resetPoReceivedQuantities) shouldResetPoReceivedQuantities = true;
+        if (recalc.unlinkGrnPoRefs) shouldUnlinkGrnPoRefs = true;
+        if (recalc.resetStagedPalletsToFloor) shouldResetStagedPalletsToFloor = true;
       } else {
+        // Fallback for any legacy tab key
         const targetTab = allTabsList.find((t) => t.id === selectedPurgeTargetKey);
         if (targetTab?.collection) {
-          collectionsToPurge.push(targetTab.collection);
-          if (targetTab.collection === 'work_orders') {
-            collectionsToPurge.push('staged_floor_pallets', 'staged_floor_materials', 'production_breaks', 'production_workers');
-          }
-          if (targetTab.collection === 'stock_transfers') {
-            collectionsToPurge.push('stock_ledger');
-            shouldZeroStock = true;
-          }
-          if (targetTab.resetCascades) {
-            targetTab.resetCascades.forEach((c) => {
-              if (c === 'items.stock') shouldZeroStock = true;
-              else collectionsToPurge.push(c);
+          targetTab.collection.split(',').map((s) => s.trim()).filter(Boolean).forEach((c) => collectionsToPurge.push(c));
+        }
+      }
+
+      // 1. Purge Full Primary Collections (with Master Data & Chart of Accounts Immunity Lock for operational targets)
+      let finalCollectionsToPurge = Array.from(new Set(collectionsToPurge));
+      if (selectedPurgeTargetKey === 'operational_only' || targetCatalogEntry?.category === 'operational') {
+        finalCollectionsToPurge = finalCollectionsToPurge.filter(
+          (coll) => !masterCollectionsSet.has(coll) && coll !== 'chart_of_accounts' && coll !== 'system_config'
+        );
+      }
+
+      let deletedPrimaryCount = 0;
+      for (const collName of finalCollectionsToPurge) {
+        const snap = await getDocs(collection(db, collName));
+        if (!snap.empty) {
+          const ops = snap.docs.map((d) => (batch) => batch.delete(d.ref));
+          deletedPrimaryCount += await commitChunkedOperations(ops);
+        }
+      }
+
+      // 2. Execute Selective Cross-Collection Cascade Deletions (Auto-Made Records in Related Tables)
+      let deletedCascadeCount = 0;
+      const primaryPurgedSet = new Set(finalCollectionsToPurge);
+      for (const [collName, predicates] of Object.entries(cascadesByCollection)) {
+        // Skip if the entire collection was already purged in step 1
+        if (primaryPurgedSet.has(collName)) continue;
+        // Immunity check for operational targets
+        if (targetCatalogEntry?.category === 'operational' && masterCollectionsSet.has(collName)) continue;
+
+        const snap = await getDocs(collection(db, collName));
+        if (!snap.empty) {
+          const matchingDocs = snap.docs.filter((docSnap) => {
+            const data = docSnap.data() || {};
+            return predicates.some((predFn) => {
+              try {
+                return Boolean(predFn(data, docSnap.id));
+              } catch (_) {
+                return false;
+              }
             });
+          });
+          if (matchingDocs.length > 0) {
+            const ops = matchingDocs.map((d) => (batch) => batch.delete(d.ref));
+            deletedCascadeCount += await commitChunkedOperations(ops);
           }
         }
       }
 
-      // Purge collections
-      for (const collName of Array.from(new Set(collectionsToPurge))) {
-        const snap = await getDocs(collection(db, collName));
-        const batch = writeBatch(db);
-        snap.docs.forEach((d) => batch.delete(d.ref));
-        await batch.commit();
-      }
-
-      // Cascade: Zero out stock in Item Master
+      // 3. Cascade: Zero or Dynamically Recalculate Stock in Item Master (preserves 100% of item definitions & specs)
       if (shouldZeroStock) {
         const itemsSnap = await getDocs(collection(db, 'items'));
         if (!itemsSnap.empty) {
-          const resetBatch = writeBatch(db);
-          itemsSnap.docs.forEach((itemDoc) => {
+          const ops = itemsSnap.docs.map((itemDoc) => (batch) => {
             const data = itemDoc.data();
             const resetVariations = (data.variations || []).map((v) => ({
               ...v,
@@ -2995,26 +4041,370 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
               openingUnitCost: 0,
               openingBatchNo: '',
             }));
-            resetBatch.set(
+            batch.set(
               itemDoc.ref,
               { stock: 0, variations: resetVariations, updatedAt: serverTimestamp() },
               { merge: true }
             );
           });
-          await resetBatch.commit();
+          await commitChunkedOperations(ops);
+        }
+      } else if (shouldRecalcItemsStock) {
+        // Dynamically recalculate items.stock from remaining stock_ledger records
+        const [itemsSnap, ledgerSnap] = await Promise.all([
+          getDocs(collection(db, 'items')),
+          getDocs(collection(db, 'stock_ledger')),
+        ]);
+        if (!itemsSnap.empty) {
+          const stockByVariant = {};
+          const stockByItem = {};
+          ledgerSnap.docs.forEach((lDoc) => {
+            const l = lDoc.data() || {};
+            if (l.status === 'cancelled' || l.isCancelled) return;
+            const qty = Number(l.qty) || 0;
+            const itemCode = String(l.itemId || '').trim();
+            const varCode = String(l.variantCode || '').trim();
+            if (varCode) stockByVariant[varCode] = (stockByVariant[varCode] || 0) + qty;
+            if (itemCode) stockByItem[itemCode] = (stockByItem[itemCode] || 0) + qty;
+          });
+
+          const ops = itemsSnap.docs.map((itemDoc) => (batch) => {
+            const data = itemDoc.data() || {};
+            const itemCode = data.code || itemDoc.id;
+            const variations = Array.isArray(data.variations) ? data.variations : [];
+            let computedItemTotal = 0;
+            const updatedVariations = variations.map((v) => {
+              const vSuffix = v.suffix || 'A';
+              const vCode = v.variantCode || `${itemCode}-${vSuffix}`;
+              const vStock = Math.max(0, Number((stockByVariant[vCode] || 0).toFixed(4)));
+              computedItemTotal += vStock;
+              const nextVar = { ...v, stock: vStock };
+              if (shouldClearOpeningFieldsOnItems) {
+                nextVar.openingQtySmall = 0;
+                nextVar.openingWarehouse = '';
+                nextVar.openingUnitCost = 0;
+                nextVar.openingBatchNo = '';
+              }
+              return nextVar;
+            });
+            const finalItemStock = variations.length > 0
+              ? computedItemTotal
+              : Math.max(0, Number((stockByItem[itemCode] || 0).toFixed(4)));
+            batch.set(
+              itemDoc.ref,
+              { stock: finalItemStock, variations: updatedVariations, updatedAt: serverTimestamp() },
+              { merge: true }
+            );
+          });
+          await commitChunkedOperations(ops);
+        }
+      }
+
+      // 4. Cascade: Zero or Dynamically Recalculate Cash Safes & Corporate Banks Balances (preserves 100% of safe/bank definitions)
+      const zeroDenominations = { 200: 0, 100: 0, 50: 0, 20: 0, 10: 0, 5: 0, 1: 0, '0.5': 0 };
+      if (shouldZeroSafeAndBankBalances) {
+        const safesSnap = await getDocs(collection(db, 'cash_safes'));
+        if (!safesSnap.empty) {
+          const ops = safesSnap.docs.map((safeDoc) => (batch) => {
+            const sData = safeDoc.data() || {};
+            const existingBalances = sData.balances && typeof sData.balances === 'object' ? sData.balances : {};
+            const resetBalances = {
+              EGP: { currentBalance: 0, denominations: { ...zeroDenominations } },
+            };
+            Object.keys(existingBalances).forEach((currKey) => {
+              resetBalances[currKey] = {
+                ...(existingBalances[currKey] || {}),
+                currentBalance: 0,
+                denominations: { ...zeroDenominations },
+              };
+            });
+            batch.set(
+              safeDoc.ref,
+              {
+                currentBalance: 0,
+                balance: 0,
+                denominations: { ...zeroDenominations },
+                balances: resetBalances,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          });
+          await commitChunkedOperations(ops);
+        }
+
+        const banksSnap = await getDocs(collection(db, 'corporate_banks'));
+        if (!banksSnap.empty) {
+          const ops = banksSnap.docs.map((bankDoc) => (batch) => {
+            const bData = bankDoc.data() || {};
+            const payload = {
+              currentBalance: 0,
+              balance: 0,
+              updatedAt: serverTimestamp(),
+            };
+            if (bData.balances && typeof bData.balances === 'object') {
+              const resetBankBalances = {};
+              Object.keys(bData.balances).forEach((currKey) => {
+                resetBankBalances[currKey] = {
+                  ...(bData.balances[currKey] || {}),
+                  currentBalance: 0,
+                };
+              });
+              payload.balances = resetBankBalances;
+            }
+            batch.set(bankDoc.ref, payload, { merge: true });
+          });
+          await commitChunkedOperations(ops);
+        }
+      } else if (shouldRecalcSafesAndBanks) {
+        const [safesSnap, banksSnap, txSnap] = await Promise.all([
+          getDocs(collection(db, 'cash_safes')),
+          getDocs(collection(db, 'corporate_banks')),
+          getDocs(collection(db, 'cash_transactions')),
+        ]);
+
+        const safeBalances = {};
+        const safeDenoms = {};
+        const bankBalances = {};
+
+        const ensureSafeDenoms = (sId) => {
+          if (!safeDenoms[sId]) safeDenoms[sId] = { ...zeroDenominations };
+          return safeDenoms[sId];
+        };
+
+        const addDenomMap = (sId, denomObj, multiplier = 1) => {
+          if (!sId || !denomObj || typeof denomObj !== 'object') return;
+          const map = ensureSafeDenoms(sId);
+          Object.entries(denomObj).forEach(([k, v]) => {
+            const count = Number(v) || 0;
+            if (count !== 0) {
+              map[k] = Math.max(0, (Number(map[k]) || 0) + count * multiplier);
+            }
+          });
+        };
+
+        txSnap.docs.forEach((tDoc) => {
+          const tx = tDoc.data() || {};
+          if (
+            [
+              'cancelled',
+              'reversed',
+              'rejected',
+              'draft',
+              'pending_approval',
+              'pending_receiver_approval',
+            ].includes(tx.status)
+          ) {
+            return;
+          }
+          const txType = String(tx.type || tx.voucherType || '').toLowerCase();
+          const amt = Math.abs(Number(tx.amount || tx.totalAmount || 0));
+          const sourceSafe = tx.safeId || tx.sourceSafeId || tx.vaultId;
+          const targetSafe = tx.targetSafeId;
+          const targetBank = tx.bankId || tx.bankAccountId;
+
+          if (txType === 'safe_transfer') {
+            if (sourceSafe && amt) {
+              safeBalances[sourceSafe] = (safeBalances[sourceSafe] || 0) - amt;
+              addDenomMap(sourceSafe, tx.denominationsOut || tx.denominations, -1);
+            }
+            if (targetSafe && amt) {
+              safeBalances[targetSafe] = (safeBalances[targetSafe] || 0) + amt;
+              addDenomMap(targetSafe, tx.denominationsIn || tx.denominationsOut || tx.denominations, 1);
+            }
+            return;
+          }
+
+          if (txType === 'change_exchange') {
+            if (sourceSafe) {
+              addDenomMap(sourceSafe, tx.denominationsIn, 1);
+              addDenomMap(sourceSafe, tx.denominationsOut, -1);
+            }
+            return;
+          }
+
+          if (!amt && txType !== 'balance_adjustment') return;
+
+          const dir = String(tx.direction || '').toLowerCase();
+          const isInflow =
+            dir === 'in' ||
+            ['receipt', 'inflow', 'deposit', 'collection', 'custody_settle', 'advance_settle', 'opening_balance'].includes(txType);
+          const signedAmt = isInflow ? amt : -amt;
+
+          if (sourceSafe) {
+            safeBalances[sourceSafe] = (safeBalances[sourceSafe] || 0) + signedAmt;
+            if (tx.denominationsIn || tx.denominationsOut) {
+              addDenomMap(sourceSafe, tx.denominationsIn, 1);
+              addDenomMap(sourceSafe, tx.denominationsOut, -1);
+            } else if (tx.denominations) {
+              addDenomMap(sourceSafe, tx.denominations, isInflow ? 1 : -1);
+            }
+          }
+          if (targetBank) {
+            bankBalances[targetBank] = (bankBalances[targetBank] || 0) + signedAmt;
+          }
+        });
+
+        if (!safesSnap.empty) {
+          const ops = safesSnap.docs.map((safeDoc) => (batch) => {
+            const sData = safeDoc.data() || {};
+            const newBal = Number(((safeBalances[safeDoc.id] || 0) + (safeBalances[sData.code] || 0)).toFixed(2));
+            const computedDenoms = newBal === 0
+              ? { ...zeroDenominations }
+              : (safeDenoms[safeDoc.id] || safeDenoms[sData.code] || sData.balances?.EGP?.denominations || { ...zeroDenominations });
+            const existingBalances = sData.balances && typeof sData.balances === 'object' ? sData.balances : {};
+            const updatedBalances = {
+              ...existingBalances,
+              EGP: {
+                ...(existingBalances.EGP || {}),
+                currentBalance: newBal,
+                denominations: computedDenoms,
+              },
+            };
+            const payload = {
+              currentBalance: newBal,
+              balance: newBal,
+              denominations: computedDenoms,
+              balances: updatedBalances,
+              updatedAt: serverTimestamp(),
+            };
+            batch.set(safeDoc.ref, payload, { merge: true });
+          });
+          await commitChunkedOperations(ops);
+        }
+
+        if (!banksSnap.empty) {
+          const ops = banksSnap.docs.map((bankDoc) => (batch) => {
+            const bData = bankDoc.data() || {};
+            const newBal = Number(((bankBalances[bankDoc.id] || 0) + (bankBalances[bData.code] || 0)).toFixed(2));
+            const payload = {
+              currentBalance: newBal,
+              balance: newBal,
+              updatedAt: serverTimestamp(),
+            };
+            if (bData.balances && typeof bData.balances === 'object') {
+              payload.balances = {
+                ...bData.balances,
+                EGP: {
+                  ...(bData.balances.EGP || {}),
+                  currentBalance: newBal,
+                },
+              };
+            }
+            batch.set(bankDoc.ref, payload, { merge: true });
+          });
+          await commitChunkedOperations(ops);
+        }
+      }
+
+      // 5. Cascade: Reset Transient Operational Volumes in Floor Liquid Vessels (preserves 100% of vessel master capacity setup)
+      if (shouldResetFloorVessels) {
+        const vesselsSnap = await getDocs(collection(db, 'floor_liquid_vessels'));
+        if (!vesselsSnap.empty) {
+          const ops = vesselsSnap.docs.map((vDoc) => (batch) => {
+            batch.set(
+              vDoc.ref,
+              {
+                currentVolume: 0,
+                activeTanksCount: 0,
+                activeTanks: [],
+                historyTanks: [],
+                cleanoutLogs: [],
+                consumptionLogs: [],
+                overrideLogs: [],
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          });
+          await commitChunkedOperations(ops);
+        }
+      }
+
+      // 6. Relational Cleanup: Reset received quantities on POs when GRNs are wiped
+      if (shouldResetPoReceivedQuantities) {
+        const poSnap = await getDocs(collection(db, 'purchase_orders'));
+        if (!poSnap.empty) {
+          const ops = poSnap.docs.map((poDoc) => (batch) => {
+            const po = poDoc.data() || {};
+            const resetLines = (po.lines || []).map((l) => ({
+              ...l,
+              receivedQty: 0,
+              receivedSmallUnits: 0,
+              receivedLargeUnits: 0,
+            }));
+            batch.set(
+              poDoc.ref,
+              {
+                lines: resetLines,
+                deliveryStatus: 'pending',
+                receivedPercentage: 0,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          });
+          await commitChunkedOperations(ops);
+        }
+      }
+
+      // 7. Relational Cleanup: Unlink deleted PO references on remaining GRNs when POs are wiped
+      if (shouldUnlinkGrnPoRefs) {
+        const grnSnap = await getDocs(collection(db, 'goods_receipts'));
+        if (!grnSnap.empty) {
+          const ops = grnSnap.docs
+            .filter((gDoc) => Boolean(gDoc.data()?.poId || gDoc.data()?.poNumber))
+            .map((gDoc) => (batch) => {
+              batch.set(
+                gDoc.ref,
+                { poId: '', poNumber: '', updatedAt: serverTimestamp() },
+                { merge: true }
+              );
+            });
+          await commitChunkedOperations(ops);
+        }
+      }
+
+      // 8. Relational Cleanup: Reset staged floor pallets status when FG Inward transfers are wiped
+      if (shouldResetStagedPalletsToFloor) {
+        const palletsSnap = await getDocs(collection(db, 'staged_floor_pallets'));
+        if (!palletsSnap.empty) {
+          const ops = palletsSnap.docs
+            .filter((pDoc) => {
+              const p = pDoc.data() || {};
+              return p.status === 'transferred_to_fg' || p.stagingStatus === 'transferred_to_fg' || Boolean(p.transferId);
+            })
+            .map((pDoc) => (batch) => {
+              batch.set(
+                pDoc.ref,
+                {
+                  status: 'staged_on_floor',
+                  stagingStatus: 'staged_on_floor',
+                  transferId: null,
+                  targetWarehouseId: null,
+                  updatedAt: serverTimestamp(),
+                },
+                { merge: true }
+              );
+            });
+          await commitChunkedOperations(ops);
         }
       }
 
       setPurgeSuccessMsg(
         selectedPurgeTargetKey === 'operational_only'
           ? (isAr
-              ? 'تم مسح وتصفير كافة الحركات التشغيلية بنجاح مع الحفاظ الكامل على البيانات الأساسية!'
-              : 'Operational data successfully wiped! Master data has been fully preserved.')
+              ? `تم مسح وتصفير كافة الحركات التشغيلية والمحاسبية بنجاح (${deletedPrimaryCount} سجل) مع الحفاظ التام والكامل (100%) على دليل الحسابات وإعدادات التوجيه وكافة مجموعات البيانات الأساسية (${MASTER_COLLECTIONS_REGISTRY.length})!`
+              : `Operational transactions successfully wiped (${deletedPrimaryCount} docs)! Chart of Accounts setup & all ${MASTER_COLLECTIONS_REGISTRY.length} Master Collections have been 100% preserved.`)
+          : targetCatalogEntry
+          ? (isAr
+              ? `تم مسح (${targetCatalogEntry.labelAr}) بنجاح! [حُذف ${deletedPrimaryCount} سجل أساسي + ${deletedCascadeCount} سجل تلقائي مرتبط في الجداول الأخرى] وتمت إعادة معايرة الأرصدة المرتبطة.`
+              : `Successfully purged (${targetCatalogEntry.labelEn})! [Deleted ${deletedPrimaryCount} primary records + ${deletedCascadeCount} auto-made linked records in related collections] and recalculated balances.`)
           : (isAr ? 'تم تصفير واستعادة ضبط المصنع بنجاح!' : 'Selected tables successfully purged to factory settings!')
       );
       setResetModalOpen(false);
       setConfirmationPhrase('');
-      setTimeout(() => setPurgeSuccessMsg(''), 4000);
+      setTimeout(() => setPurgeSuccessMsg(''), 7000);
     } catch (err) {
       console.error('Error during purge:', err);
       alert(isAr ? 'حدث خطأ أثناء مسح البيانات.' : 'Error during purge.');
@@ -3090,6 +4480,18 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
           </div>
         </div>
 
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 text-xs font-bold transition shadow-xs cursor-pointer ms-auto"
+            title={isAr ? 'العودة إلى بيئة العمل' : 'Back to Workspace'}
+          >
+            <ArrowRightLeft className="h-4 w-4 text-emerald-400" />
+            <span>{isAr ? 'العودة لبيئة العمل' : 'Back to Workspace'}</span>
+          </button>
+        )}
+
         {/* 4 Sub-Tabs Bar */}
         <div className="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700 text-xs font-bold">
           <button
@@ -3123,6 +4525,17 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
           >
             <Sliders className="h-3.5 w-3.5" />
             <span>{isAr ? 'مصفوفة الصلاحيات' : 'Permissions Matrix'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('notifications')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition cursor-pointer ${
+              activeSubTab === 'notifications' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            <BellRing className="h-3.5 w-3.5 text-amber-300" />
+            <span>{isAr ? 'الإشعارات وتوكنات الأجهزة' : 'Notifications & Devices'}</span>
           </button>
 
           <button
@@ -3836,6 +5249,73 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
             </div>
           )}
 
+          {/* Consolidated View Security Passcode Management Card */}
+          <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-2xs flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-slate-900 text-amber-400 border border-slate-800 shrink-0">
+                <KeyRound className="h-5 w-5" />
+              </div>
+              <div>
+                <h4 className="text-xs sm:text-sm font-bold text-slate-900">
+                  {isAr ? 'رمز أمان العرض الشامل للقوائم والسجلات' : 'Consolidated View Security Passcode'}
+                </h4>
+                <p className="text-[11px] text-slate-500 font-medium">
+                  {isAr
+                    ? 'الرمز السري المكون من ٤ أرقام لفك حجب العرض الشامل عبر حركة الضغط المطول على أيقونة القفل.'
+                    : '4-digit administrative passcode to unlock consolidated records via the long-press gesture on the lock icon.'}
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveLedgerPasscode} className="flex items-center gap-2 flex-wrap">
+              <div className="relative">
+                <input
+                  type={showLedgerPasscode ? 'text' : 'password'}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  value={ledgerPasscode}
+                  onChange={(e) => setLedgerPasscode(e.target.value.replace(/\D/g, ''))}
+                  placeholder="7799"
+                  className="w-28 px-3 py-1.5 border border-slate-300 rounded-xl text-center font-mono font-black text-sm bg-slate-50 text-slate-900 focus:bg-white focus:ring-2 focus:ring-slate-900 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowLedgerPasscode(!showLedgerPasscode)}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition cursor-pointer"
+                  tabIndex={-1}
+                >
+                  {showLedgerPasscode ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSavingPasscode || !ledgerPasscode || ledgerPasscode.length < 4}
+                className="flex items-center gap-1.5 px-4 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition cursor-pointer shadow-xs"
+              >
+                {isSavingPasscode ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <span>{isAr ? 'جاري الحفظ...' : 'Saving...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="h-3.5 w-3.5" />
+                    <span>{isAr ? 'حفظ رمز الأمان' : 'Save Passcode'}</span>
+                  </>
+                )}
+              </button>
+
+              {passcodeSaveSuccess && (
+                <span className="text-xs font-bold text-emerald-600 flex items-center gap-1 animate-in fade-in">
+                  <CheckCircle2 className="h-4 w-4" />
+                  <span>{isAr ? 'تم الحفظ والمزامنة ✓' : 'Saved ✓'}</span>
+                </span>
+              )}
+            </form>
+          </div>
+
           {/* Hierarchical Drill-Down Workspace (Module -> Tab -> Actions/Fields) */}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
             {/* Column 1: Module & Tab Navigation Tree */}
@@ -3916,24 +5396,37 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
 
                 {/* Granular Operational Actions for this specific tab */}
                 <div className="space-y-2">
-                  <span className="text-xs font-bold text-slate-700 block">
-                    {isAr ? 'الصلاحيات التشغيلية المعتمدة لهذا التبويب:' : 'Operational Actions Authority:'}
-                  </span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 block">
+                      {isAr ? 'الصلاحيات التشغيلية المعتمدة لهذا التبويب:' : 'Operational Actions Authority:'}
+                    </span>
+                    {!userEffectivePerms.modules[activeTabSchema.id] && (
+                      <span className="text-[11px] font-semibold text-rose-500 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-lg">
+                        {isAr ? 'معطلة تلقائياً (التبويب مخفي)' : 'Auto-disabled (Tab hidden)'}
+                      </span>
+                    )}
+                  </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                     {(activeTabSchema.actions || []).map((act) => {
                       const permKey = `${activeTabSchema.id}.${act.key}`;
+                      const isTabEnabled = Boolean(userEffectivePerms.modules[activeTabSchema.id]);
                       return (
                         <label
                           key={act.key}
-                          className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 border border-slate-200 rounded-xl cursor-pointer select-none transition"
+                          className={`flex items-center justify-between p-2.5 border rounded-xl select-none transition ${
+                            !isTabEnabled
+                              ? 'bg-slate-100/60 border-slate-200 opacity-50 cursor-not-allowed'
+                              : 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 cursor-pointer'
+                          }`}
                         >
                           <span className="font-medium text-slate-800">{isAr ? act.labelAr : act.labelEn}</span>
                           <input
                             type="checkbox"
+                            disabled={!isTabEnabled}
                             checked={Boolean(userEffectivePerms.actions[permKey])}
                             onChange={() => handleTogglePermission('actions', permKey)}
-                            className="h-4 w-4 rounded accent-emerald-600 cursor-pointer"
+                            className="h-4 w-4 rounded accent-emerald-600 cursor-pointer disabled:cursor-not-allowed"
                           />
                         </label>
                       );
@@ -3948,9 +5441,16 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                       <Lock className="h-3.5 w-3.5 text-amber-600" />
                       <span>{isAr ? `حجب الحقول الحساسة لجدول (${activeTabSchema.labelAr}):` : `Field Masking for (${activeTabSchema.labelEn}):`}</span>
                     </span>
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      {Object.values(activeTabSchema.fields || {}).filter((f) => f.isSensitive).length} {isAr ? 'حقول حساسة' : 'sensitive fields'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {!userEffectivePerms.modules[activeTabSchema.id] && (
+                        <span className="text-[11px] font-semibold text-rose-500 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-lg">
+                          {isAr ? 'معطلة تلقائياً' : 'Auto-disabled'}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        {Object.values(activeTabSchema.fields || {}).filter((f) => f.isSensitive).length} {isAr ? 'حقول حساسة' : 'sensitive fields'}
+                      </span>
+                    </div>
                   </div>
 
                   {Object.entries(activeTabSchema.fields || {}).filter(([_, f]) => f.isSensitive).length === 0 ? (
@@ -3963,13 +5463,18 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                         .filter(([_, f]) => f.isSensitive)
                         .map(([fieldKey, fieldMeta]) => {
                           const permKey = `${activeTabSchema.id}.${fieldKey}`;
+                          const isTabEnabled = Boolean(userEffectivePerms.modules[activeTabSchema.id]);
                           const isFieldVisible = userEffectivePerms.fields?.[permKey] !== false;
 
                           return (
                             <div
                               key={fieldKey}
                               className={`p-2.5 rounded-xl border transition ${
-                                isFieldVisible ? 'bg-slate-50 border-slate-200' : 'bg-amber-50/60 border-amber-300'
+                                !isTabEnabled
+                                  ? 'bg-slate-100/60 border-slate-200 opacity-50 cursor-not-allowed'
+                                  : isFieldVisible
+                                  ? 'bg-slate-50 border-slate-200'
+                                  : 'bg-amber-50/60 border-amber-300'
                               }`}
                             >
                               <div className="flex items-center justify-between">
@@ -3978,9 +5483,10 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                                 </span>
                                 <input
                                   type="checkbox"
+                                  disabled={!isTabEnabled}
                                   checked={isFieldVisible}
                                   onChange={() => handleTogglePermission('fields', permKey)}
-                                  className="h-4 w-4 rounded accent-emerald-600 cursor-pointer"
+                                  className="h-4 w-4 rounded accent-emerald-600 cursor-pointer disabled:cursor-not-allowed"
                                 />
                               </div>
                               <p className="text-[10px] text-slate-500 mt-0.5">
@@ -3996,6 +5502,13 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
             </div>
           </div>
         </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* SUB-TAB: LIVE NOTIFICATIONS & DEVICE TOKENS HUB                           */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'notifications' && (
+        <NotificationControlCenter currentUser={currentUser} />
       )}
 
       {/* ========================================================================= */}
@@ -4892,46 +6405,192 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
             </p>
           </div>
 
-          <div className="p-5 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-4 max-w-2xl">
+          <div className="p-5 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-4 max-w-3xl">
             <div>
               <label className="block text-xs font-bold text-slate-800 mb-1">
-                {isAr ? 'اختر الجدول أو النطاق المراد مسحه وتصفيره:' : 'Select Purge Target Scope:'}
+                {isAr ? 'اختر الجدول أو النطاق المراد مسحه وتصفيره (متوافق 100% مع هيكل البيانات الفعلي):' : 'Select Aligned Purge Target & Relational Cascade Scope:'}
               </label>
               <select
                 value={selectedPurgeTargetKey}
                 onChange={(e) => setSelectedPurgeTargetKey(e.target.value)}
                 className="w-full p-2.5 border border-slate-300 rounded-xl text-xs bg-slate-50 font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-rose-500 focus:outline-none"
               >
-                <option value="operational_only">
-                  ⚡ {isAr ? 'مسح وتصفير كافة الحركات التشغيلية مع الحفاظ الكامل على البيانات الأساسية (Wipe Operational Only - Keep Master Data)' : 'Wipe Operational Data Only (Keep Master Data Intact)'}
-                </option>
-                <option value="all">⚠️ {isAr ? 'استعادة ضبط المصنع الشامل لكامل النظام (Full Master Reset)' : 'Master Full Factory Reset (All Tables)'}</option>
-                {allTabsList.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {isAr ? `جدول: ${t.labelAr}` : `Table: ${t.labelEn}`} ({t.collection})
+                <optgroup label={isAr ? '🛡️ 1. المسح التشغيلي الشامل الموصى به (آمن 100% على البيانات الأساسية ودليل الحسابات)' : '🛡️ 1. Recommended Full Operational Wipe (100% Safe for Master Data & COA)'}>
+                  <option value="operational_only">
+                    ⚡ {isAr ? 'مسح وتصفير كافة الحركات التشغيلية والمحاسبية فقط — مع الحفاظ الكامل (100%) على البيانات الأساسية ودليل الحسابات (Wipe Operational Only)' : 'Wipe Operational Data Only (Keep Master Data & Chart of Accounts 100% Intact)'}
                   </option>
-                ))}
+                </optgroup>
+
+                <optgroup label={isAr ? '🔗 2. مسح جدول تشغيلي محدد + كافة السجلات التلقائية المرتبطة به في الجداول الأخرى (Smart Relational Cascade)' : '🔗 2. Targeted Operational Table + Auto-Made Linked Records in Other Collections'}>
+                  {PURGE_TARGETS_CATALOG.filter((t) => t.category === 'operational').map((t) => (
+                    <option key={t.key} value={t.key}>
+                      🔹 {isAr ? t.labelAr : t.labelEn} [{t.collectionsLabel}]
+                    </option>
+                  ))}
+                </optgroup>
+
+                <optgroup label={isAr ? '🗂️ 3. مسح جدول بيانات أساسية محدد (Master Data Reset — يحذف التعريفات الأساسية)' : '🗂️ 3. Specific Master Data Table Reset (Deletes Master Definitions)'}>
+                  {PURGE_TARGETS_CATALOG.filter((t) => t.category === 'master').map((t) => (
+                    <option key={t.key} value={t.key}>
+                      ⚠️ {isAr ? t.labelAr : t.labelEn} ({t.collectionsLabel})
+                    </option>
+                  ))}
+                </optgroup>
+
+                <optgroup label={isAr ? '🚨 4. خطر: استعادة ضبط المصنع الشامل (يحذف كافة الجداول الأساسية والتشغيلية)' : '🚨 4. Danger: Full Factory Reset (Deletes All Operational & Master Tables)'}>
+                  <option value="all">
+                    🚨 {isAr ? 'استعادة ضبط المصنع الشامل لكامل النظام بما فيه البيانات الأساسية (Full Master Reset)' : 'Master Full Factory Reset (All Tables Including Master Data)'}
+                  </option>
+                </optgroup>
               </select>
             </div>
 
             {/* Target Scope Explanation Box */}
-            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-1">
-              <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                <Info className="h-4 w-4 text-amber-600" />
-                <span>{isAr ? 'بيان الأثر والتأثير التلقائي:' : 'Cascade Effect & Scope:'}</span>
-              </div>
-              <p className="text-slate-600">
-                {selectedPurgeTargetKey === 'operational_only'
-                  ? (isAr
-                      ? 'سيتم مسح وتصفير كافة الحركات التشغيلية والدفترية (16 جدول: أوامر التشغيل، أذون الاستلام والتحويل، السجل الدفتري العام، سجل الورديات والتوقفات) وتصفير رصيد الخامات، مع الحفاظ التام والكامل على كافة البيانات الأساسية (الموردين، المستودعات، شجرة المنتجات BOM، تركيبات IBOM، مسارات التشغيل SOP، مستخدمي النظام).'
-                      : 'Wipes all 16 operational/transactional collections (Work Orders, GRNs, Transfers, Stock Ledger, Breaks, Shifts, etc.) and zeroes item stock, while completely preserving all Master Data (Items, Suppliers, Warehouses, BOMs, Users).')
-                  : selectedPurgeTargetKey === 'all'
-                  ? (isAr ? 'سيتم مسح وتفريغ كافة الجداول التشغيلية وسجل الحركات وتصفير أرصدة الخامات إلى الصفر (0).' : 'Purges all transactional collections, movement ledgers, and resets stock to 0.')
-                  : selectedPurgeTargetKey === 'goods_receipts'
-                  ? (isAr ? 'سيتم مسح أذون الاستلام وسجل حركة المخزن، وإعادة تعيين رصيد الخامات في Item Master إلى الصفر (0).' : 'Purges GRNs, stock ledger, and zeroes out physical stock in Item Master.')
-                  : (isAr ? `سيتم تفريغ كافة سجلات (${selectedPurgeTargetKey}) السحابية فقط دون المساس بباقي الجداول.` : `Wipes records in (${selectedPurgeTargetKey}) only.`)}
-              </p>
-            </div>
+            {(() => {
+              const selectedCatalogItem = PURGE_TARGETS_CATALOG.find((t) => t.key === selectedPurgeTargetKey);
+              return (
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-3">
+                  <div className="font-bold text-slate-900 flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <Info className="h-4 w-4 text-amber-600 shrink-0" />
+                      <span>{isAr ? 'بيان الأثر والتأثير التلقائي المترابط (Relational Cascade Breakdown):' : 'Relational Cascade Effect & Scope Breakdown:'}</span>
+                    </div>
+                    {(selectedPurgeTargetKey === 'operational_only' || selectedCatalogItem?.category === 'operational') && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 text-[10px] font-extrabold">
+                        <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                        <span>{isAr ? 'محمي: لا يمس البيانات الأساسية أو دليل الحسابات' : 'Master Data & COA 100% Protected'}</span>
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-slate-700 leading-relaxed font-medium">
+                    {selectedPurgeTargetKey === 'operational_only'
+                      ? (isAr
+                          ? `سيتم مسح وتصفير كافة الحركات التشغيلية والمحاسبية (${OPERATIONAL_COLLECTIONS_REGISTRY.length} جدول تشغيلي: أوامر الشراء، أذون الاستلام والمرتجعات، التحويلات، أوامر التشغيل، تانكات السوائل، قيود اليومية، سندات الخزينة والبنوك، العهد والسلف، تسويات الاستحقاقات، وشهادات الخصم) وتصفير الأرصدة الدفترية العابرة للخامات والخزائن والبنوك وخزانات الصالة إلى (0)، دون المساس نهائياً بأي سجل من البيانات الأساسية أو إعدادات دليل الحسابات.`
+                          : `Wipes all ${OPERATIONAL_COLLECTIONS_REGISTRY.length} operational/transactional collections (POs, GRNs/RTNs, Transfers, Work Orders, Liquid Tanks, Journal Entries, Cash Vouchers, Custodies, Dues Settlements, WHT Notes, etc.) and resets transient item stock, safe/bank balances, and floor vessel volumes to 0, while 100% preserving all Master Data and Chart of Accounts setups.`)
+                      : selectedPurgeTargetKey === 'all'
+                      ? (isAr ? 'تحذير شديد: سيتم مسح وتفريغ كافة الجداول التشغيلية والأساسية بالكامل وتصفير أرصدة الخامات والخزائن والبنوك إلى الصفر (0).' : 'CRITICAL WARNING: Purges all transactional and master collections and resets all balances to 0.')
+                      : selectedCatalogItem
+                      ? (isAr ? selectedCatalogItem.descAr : selectedCatalogItem.descEn)
+                      : (isAr ? `سيتم تفريغ كافة سجلات (${selectedPurgeTargetKey}) السحابية.` : `Wipes records in (${selectedPurgeTargetKey}).`)}
+                  </p>
+
+                  {/* Detailed Breakdown for Selected Catalog Item */}
+                  {selectedCatalogItem && (
+                    <div className="space-y-2.5 pt-1">
+                      {/* 1. Primary Collections */}
+                      {selectedCatalogItem.primaryCollections?.length > 0 && (
+                        <div className="p-2.5 bg-white border border-slate-200 rounded-xl space-y-1.5">
+                          <div className="text-[11px] font-extrabold text-slate-800 flex items-center gap-1.5">
+                            <Database className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                            <span>{isAr ? 'الجداول الأساسية المستهدفة بالمسح المباشر:' : 'Primary Collections Wiped Directly:'}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {selectedCatalogItem.primaryCollections.map((collKey) => (
+                              <span
+                                key={collKey}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-50 border border-rose-200 text-[10px] font-bold text-rose-900"
+                              >
+                                <span>{getCollectionDisplayName(collKey, isAr)}</span>
+                                <span className="font-mono text-[9px] text-rose-700">({collKey})</span>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 2. Related Auto-Made Cascades in Other Collections */}
+                      {selectedCatalogItem.relatedCascades?.length > 0 && (
+                        <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl space-y-1.5">
+                          <div className="text-[11px] font-extrabold text-amber-950 flex items-center gap-1.5">
+                            <GitBranch className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                            <span>
+                              {isAr
+                                ? `السجلات التلقائية المرتبطة التي سيتم حذفها انتقائياً من الجداول الأخرى (${selectedCatalogItem.relatedCascades.length} مسارات ربط):`
+                                : `Auto-Made Linked Records Selectively Purged from Other Collections (${selectedCatalogItem.relatedCascades.length} cascade rules):`}
+                            </span>
+                          </div>
+                          <ul className="space-y-1 text-[11px] text-amber-900 font-medium list-disc list-inside">
+                            {selectedCatalogItem.relatedCascades.map((cRule, idx) => (
+                              <li key={`${cRule.collection}-${idx}`}>
+                                <span className="font-bold">{isAr ? cRule.labelAr : cRule.labelEn}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* 3. Dynamic Balance Recalculation Summary */}
+                      {selectedCatalogItem.recalculate && Object.values(selectedCatalogItem.recalculate).some(Boolean) && (
+                        <div className="p-2.5 bg-indigo-50/80 border border-indigo-200 rounded-xl space-y-1">
+                          <div className="text-[11px] font-extrabold text-indigo-950 flex items-center gap-1.5">
+                            <RefreshCw className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                            <span>{isAr ? 'إعادة المعايرة التلقائية للأرصدة والارتباطات بعد المسح:' : 'Automatic Post-Purge Balance & State Recalibration:'}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 pt-0.5">
+                            {selectedCatalogItem.recalculate.recalcItemsStock && (
+                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
+                                {isAr ? '📦 إعادة احتساب أرصدة الخامات (items.stock) من الحركات المتبقية في (stock_ledger)' : '📦 Recalculates items.stock from remaining stock_ledger entries'}
+                              </span>
+                            )}
+                            {selectedCatalogItem.recalculate.recalcSafesAndBanks && (
+                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
+                                {isAr ? '🏦 إعادة احتساب أرصدة وفئات الخزائن والبنوك من السندات المتبقية' : '🏦 Recalculates Safe & Bank balances from remaining vouchers'}
+                              </span>
+                            )}
+                            {selectedCatalogItem.recalculate.resetFloorVessels && (
+                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
+                                {isAr ? '🧪 تصفير الكميات العابرة بخزانات الصالة مع بقاء إعدادات السعة' : '🧪 Resets transient Floor Vessel volumes (keeps capacity config)'}
+                              </span>
+                            )}
+                            {selectedCatalogItem.recalculate.resetPoReceivedQuantities && (
+                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
+                                {isAr ? '📋 إعادة تعيين الكميات المستلمة بأوامر الشراء إلى (0 - قيد التوريد)' : '📋 Resets received quantities on Purchase Orders to 0'}
+                              </span>
+                            )}
+                            {selectedCatalogItem.recalculate.unlinkGrnPoRefs && (
+                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
+                                {isAr ? '🔗 فك ارتباط أذون الاستلام بأوامر الشراء المحذوفة' : '🔗 Unlinks deleted PO references on remaining GRNs'}
+                              </span>
+                            )}
+                            {selectedCatalogItem.recalculate.resetStagedPalletsToFloor && (
+                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
+                                {isAr ? '🏷️ إعادة حالة الباليتات إلى (مشدودة بصالة الإنتاج)' : '🏷️ Resets staged pallets back to floor status'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {selectedPurgeTargetKey === 'operational_only' && (
+                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1.5 mt-2">
+                      <div className="font-black text-emerald-900 flex items-center gap-1.5 text-[11px]">
+                        <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
+                        <span>
+                          {isAr
+                            ? `حصانة مطلقة (100% محمي ولن يتم لمسه — ${MASTER_COLLECTIONS_REGISTRY.length} جدول أساسي ومحاسبي):`
+                            : `100% Protected Master & Accounting Configurations (${MASTER_COLLECTIONS_REGISTRY.length} Collections Untouched):`}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 pt-0.5">
+                        {MASTER_COLLECTIONS_REGISTRY.map((collKey) => (
+                          <span
+                            key={collKey}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-200 text-[10px] font-bold text-emerald-900 shadow-2xs"
+                          >
+                            <CheckCircle2 className="h-3 w-3 text-emerald-600 shrink-0" />
+                            <span>{getCollectionDisplayName(collKey, isAr)}</span>
+                            <span className="font-mono text-[9px] text-emerald-700">({collKey})</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <button
               type="button"
@@ -5789,11 +7448,28 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
               </button>
             </div>
 
-            <p className="text-xs text-slate-700 leading-relaxed">
-              {isAr
-                ? `أنت على وشك مسح (${selectedPurgeTargetKey === 'all' ? 'كافة جداول النظام بالكامل' : selectedPurgeTargetKey === 'operational_only' ? 'كافة الحركات التشغيلية مع الحفاظ الكامل على البيانات الأساسية' : selectedPurgeTargetKey}) نهائياً من قاعدة البيانات السحابية. لا يمكن التراجع عن هذا الإجراء.`
-                : `Permanently purging (${selectedPurgeTargetKey === 'operational_only' ? 'Operational Data Only (Keeping Master Data)' : selectedPurgeTargetKey}) from Firestore cloud.`}
-            </p>
+            {(() => {
+              const targetEntry = PURGE_TARGETS_CATALOG.find((t) => t.key === selectedPurgeTargetKey);
+              const labelText =
+                selectedPurgeTargetKey === 'all'
+                  ? isAr
+                    ? 'كافة جداول النظام بالكامل (استعادة ضبط المصنع الشامل)'
+                    : 'All ERP Tables (Full Factory Reset)'
+                  : selectedPurgeTargetKey === 'operational_only'
+                  ? isAr
+                    ? 'كافة الحركات التشغيلية والمحاسبية فقط — مع الحفاظ الكامل (100%) على البيانات الأساسية ودليل الحسابات'
+                    : 'All Operational Transactions Only — 100% Preserving Master Data & Chart of Accounts'
+                  : targetEntry
+                  ? `${isAr ? targetEntry.labelAr : targetEntry.labelEn} [${targetEntry.collectionsLabel}]`
+                  : selectedPurgeTargetKey;
+              return (
+                <p className="text-xs text-slate-700 leading-relaxed">
+                  {isAr
+                    ? `أنت على وشك مسح (${labelText}) وكافة السجلات التلقائية المرتبطة به نهائياً من قاعدة البيانات السحابية. لا يمكن التراجع عن هذا الإجراء.`
+                    : `You are about to permanently purge (${labelText}) and all its auto-generated linked records from Firestore cloud. This action cannot be undone.`}
+                </p>
+              );
+            })()}
 
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-1.5">
               <label className="block text-xs font-bold text-rose-950">

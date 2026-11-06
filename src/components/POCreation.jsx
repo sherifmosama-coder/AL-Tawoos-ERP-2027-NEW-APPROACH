@@ -34,17 +34,28 @@ import {
   Ban,
   Eye,
   SlidersHorizontal,
-  Sparkles
+  Sparkles,
+  AlertTriangle,
+  MessageSquare
 } from 'lucide-react';
+import { RowCommentButton, useRecordComments } from './comments';
 import PeacockLoader from './PeacockLoader';
 import SearchableSelect from './SearchableSelect';
 import VariantComboBox from './VariantComboBox';
 import VariantIdentifierChip from './VariantIdentifierChip';
+import VatNumberDisplay from './VatNumberDisplay';
 import { formatVariantLabel, resolveItemAllowFractions } from '../utils/stockResolver';
 import { useNotification } from '../context/NotificationContext';
+import {
+  createActionRequired,
+  completeActionRequired,
+  cancelActionRequired,
+  createNotification
+} from '../utils/notificationEngine';
 
 export default function POCreation({ currentUser = {}, permissions = null }) {
   const { toast, showAlert, showConfirm } = useNotification();
+  const { registerRowActions } = useRecordComments();
   const canViewPrices = permissions ? permissions.sensitive?.canViewPrices !== false : true;
   const canViewTotals = permissions ? permissions.sensitive?.canViewTotals !== false : true;
   const { i18n } = useTranslation();
@@ -204,6 +215,11 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
 
     if (terms.tranchesCount === 1) {
       const t = terms.tranches[0];
+      if (t.baseDate === 'advance_payment') {
+        return lang === 'ar'
+          ? 'سداد 100% دفعة مقدمة عند أمر الشراء (قبل التوريد).'
+          : '100% Advance Payment upon Purchase Order (before delivery).';
+      }
       const baseText = t.baseDate === 'delivery_date' 
         ? (lang === 'ar' ? 'من تاريخ التوريد الفعلي' : 'from actual delivery date')
         : (lang === 'ar' ? 'من نهاية شهر التوريد' : 'from end of supply month');
@@ -215,12 +231,18 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
 
     if (lang === 'ar') {
       const parts = terms.tranches.map((t, idx) => {
+        if (t.baseDate === 'advance_payment') {
+          return `دفعة (${idx + 1}): ${t.percent}% دفعة مقدمة قبل التوريد`;
+        }
         const baseText = t.baseDate === 'delivery_date' ? 'من تاريخ التوريد' : 'من نهاية شهر التوريد';
         return `دفعة (${idx + 1}): ${t.percent}% خلال ${t.days} يوم ${baseText}`;
       });
       return `السداد على ${terms.tranchesCount} دفعات [ ${parts.join(' | ')} ].`;
     } else {
       const parts = terms.tranches.map((t, idx) => {
+        if (t.baseDate === 'advance_payment') {
+          return `Tranche (${idx + 1}): ${t.percent}% advance before delivery`;
+        }
         const baseText = t.baseDate === 'delivery_date' ? 'from delivery' : 'from end of month';
         return `Tranche (${idx + 1}): ${t.percent}% within ${t.days} days ${baseText}`;
       });
@@ -394,11 +416,11 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
         const vatRate = isTaxOfficial ? (line.vatPercent || 0) / 100 : 0;
         const lineVat = lineSubtotal * vatRate;
 
-        let effectiveWhtRate = (line.whtPercent || 0) / 100;
+        let effectiveWhtRate = isTaxOfficial ? ((line.whtPercent || 0) / 100) : 0;
         if (selectedSupplier?.whtCompliance === 'advance_payment') {
           effectiveWhtRate = 0;
         }
-        const lineWht = lineSubtotal * effectiveWhtRate;
+        const lineWht = isTaxOfficial ? (lineSubtotal * effectiveWhtRate) : 0;
 
         subtotal += lineSubtotal;
         totalVat += lineVat;
@@ -677,6 +699,8 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
         supplierName: selectedSupplier?.name || editingPo?.supplierName || '',
         supplierTaxNumber: selectedSupplier?.taxCardNumber || editingPo?.supplierTaxNumber || '',
         supplierAddress: selectedSupplier?.taxpayerAddress || editingPo?.supplierAddress || '',
+        paymentTermsSnapshot: selectedSupplier?.paymentTerms || editingPo?.paymentTermsSnapshot || null,
+        whtComplianceSnapshot: selectedSupplier?.whtCompliance || editingPo?.whtComplianceSnapshot || 'credit_notes',
         paymentTermsFormattedAr: formatPaymentTerms(selectedSupplier?.paymentTerms, 'ar'),
         paymentTermsFormattedEn: formatPaymentTerms(selectedSupplier?.paymentTerms, 'en'),
         showPaymentTerms: Boolean(showPaymentTerms),
@@ -703,8 +727,8 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
           qty: Number(l.qty) || 0,
           unitPrice: l.unitPrice !== '' && l.unitPrice !== undefined ? Number(l.unitPrice) : '',
           currency: l.currency || 'EGP',
-          vatPercent: Number(l.vatPercent) || 0,
-          whtPercent: Number(l.whtPercent) || 0,
+          vatPercent: isTaxOfficial ? (Number(l.vatPercent) || 0) : 0,
+          whtPercent: isTaxOfficial ? (Number(l.whtPercent) || 0) : 0,
         })),
         financials: computedTotals,
         status: finalStatus,
@@ -712,6 +736,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
         revision: parseFloat(nextVersion) || 1.0,
         auditTrail: [...existingAudit, newAuditEntry],
         createdBy: editingPo?.createdBy || currentUserName,
+        createdById: editingPo?.createdById || currentUser?.id || 'usr_unknown',
         updatedAt: serverTimestamp(),
         approvedBy: (finalStatus === 'approved') ? (editingPo?.approvedBy || currentUserName) : (editingPo?.approvedBy || null),
         approvedAt: (finalStatus === 'approved') ? (editingPo?.approvedAt || new Date().toISOString()) : (editingPo?.approvedAt || null),
@@ -722,6 +747,83 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
       }
 
       await setDoc(doc(db, 'purchase_orders', poId), poPayload, { merge: true });
+
+      // --- Real-time Actions Required & Notifications Hub Dispatches ---
+      if (finalStatus === 'pending') {
+        await createActionRequired({
+          actionType: 'po_approval',
+          docId: poId,
+          docNumber: poId,
+          title: `مطلوب اعتماد أمر شراء: ${poId}`,
+          titleEn: `PO Approval Required: ${poId}`,
+          message: `أمر شراء للمورد (${poPayload.supplierName || 'مورد'}) بقيمة ${computedTotals?.netTotalWithTax || '0'} ج.م بانتظار الاعتماد للتوريد`,
+          messageEn: `PO for (${poPayload.supplierName || 'Supplier'}) awaiting management approval`,
+          targetTab: 'orders',
+          targetModule: 'purchases',
+          highlightId: poId,
+          createdBy: currentUser?.id || 'system',
+          createdByName: currentUserName,
+          targetRoles: ['general_admin', 'purchasing_manager']
+        });
+      } else if (finalStatus === 'approved') {
+        await completeActionRequired({
+          actionType: 'po_approval',
+          docId: poId,
+          completedBy: currentUser?.id,
+          completedByName: currentUserName,
+          resolutionNote: 'تم اعتماد أمر الشراء للتوريد'
+        });
+        if (editingPo?.createdById && editingPo.createdById !== currentUser?.id) {
+          await createNotification({
+            type: 'success',
+            title: `تم اعتماد أمر الشراء: ${poId}`,
+            titleEn: `Purchase Order Approved: ${poId}`,
+            message: `قام (${currentUserName}) باعتماد أمر الشراء للتوريد المخزني الرسمي.`,
+            messageEn: `(${currentUserName}) approved PO for warehouse delivery.`,
+            targetUserId: editingPo.createdById,
+            targetTab: 'orders',
+            targetModule: 'purchases',
+            highlightId: poId,
+            createdBy: currentUser?.id,
+            createdByName: currentUserName
+          });
+        }
+      } else if (finalStatus === 'pending_adjustments') {
+        await createActionRequired({
+          actionType: 'po_approval',
+          docId: poId,
+          docNumber: poId,
+          title: `مطلوب تعديل أمر شراء: ${poId}`,
+          titleEn: `Adjustments Requested: ${poId}`,
+          message: `طلب (${currentUserName}): ${adjustmentComment || 'مراجعة البنود'}`,
+          messageEn: `Management requested adjustments: ${adjustmentComment || 'Review items'}`,
+          targetTab: 'orders',
+          targetModule: 'purchases',
+          highlightId: poId,
+          createdBy: currentUser?.id || 'system',
+          createdByName: currentUserName,
+          targetUserId: editingPo?.createdById || null,
+          targetRoles: ['purchasing_specialist', 'purchasing_manager']
+        });
+        if (editingPo?.createdById && editingPo.createdById !== currentUser?.id) {
+          await createNotification({
+            type: 'warning',
+            title: `طلب تعديل على أمر الشراء: ${poId}`,
+            titleEn: `Adjustments requested on PO: ${poId}`,
+            message: `طلب (${currentUserName}): ${adjustmentComment || 'يرجى مراجعة البنود'}`,
+            messageEn: `Management requested changes: ${adjustmentComment || 'Please review items'}`,
+            targetUserId: editingPo.createdById,
+            targetTab: 'orders',
+            targetModule: 'purchases',
+            highlightId: poId,
+            createdBy: currentUser?.id,
+            createdByName: currentUserName
+          });
+        }
+      } else if (finalStatus === 'cancelled') {
+        await cancelActionRequired({ actionType: 'po_approval', docId: poId, cancelledBy: currentUser?.id });
+      }
+
       setShowModal(false);
       setSpecDecisionModal(null);
     } catch (error) {
@@ -878,6 +980,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
         },
         { merge: true }
       );
+      await cancelActionRequired({ actionType: 'po_approval', docId: po.id, cancelledBy: currentUser?.id });
       toast.success(
         isAr ? `تم إلغاء أمر الشراء (${po.id}) بنجاح.` : `PO (${po.id}) cancelled successfully.`
       );
@@ -1156,8 +1259,73 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
                 const canCancel = canCancelPo(po);
                 const hasActiveGrns = getActiveGrnsForPo(po.id).length > 0 || (po.lines || []).some((l) => Number(l.receivedSmallUnits || 0) > 0);
 
+                const poRowActions = [
+                  ...(po.status === 'pending' ? [
+                    {
+                      id: 'review_approve',
+                      label: 'معاينة واعتماد أمر الشراء',
+                      labelAr: 'معاينة واعتماد أمر الشراء',
+                      labelEn: 'Review & Approve PO',
+                      icon: Eye,
+                      onClick: () => handleOpenApprovalReview(po)
+                    }
+                  ] : []),
+                  ...(canEdit ? [
+                    {
+                      id: 'edit',
+                      label: 'تعديل شامل لأمر الشراء (+1.0)',
+                      labelAr: 'تعديل شامل لأمر الشراء (+1.0)',
+                      labelEn: 'Standard Full Edit (+1.0)',
+                      icon: Edit3,
+                      onClick: () => handleOpenStandardEdit(po)
+                    }
+                  ] : []),
+                  {
+                    id: 'audit',
+                    label: 'سجل التعديلات والاعتمادات',
+                    labelAr: 'سجل التعديلات والاعتمادات',
+                    labelEn: 'View Audit Trail',
+                    icon: History,
+                    onClick: () => setAuditPoData(po)
+                  },
+                  ...(isApproved && po.status !== 'cancelled' ? [
+                    {
+                      id: 'print',
+                      label: 'معاينة وطباعة أمر الشراء',
+                      labelAr: 'معاينة وطباعة أمر الشراء',
+                      labelEn: 'Print PO',
+                      icon: Printer,
+                      onClick: () => {
+                        setPrintPoData(po);
+                        setPrintLang('ar');
+                      }
+                    }
+                  ] : []),
+                  ...(canCancel ? [
+                    {
+                      id: 'cancel',
+                      label: 'إلغاء أمر الشراء',
+                      labelAr: 'إلغاء أمر الشراء',
+                      labelEn: 'Cancel PO',
+                      icon: Ban,
+                      variant: 'danger',
+                      onClick: () => handleCancelPo(po)
+                    }
+                  ] : [])
+                ];
+                registerRowActions(po.id, poRowActions);
+
                 return (
-                  <tr key={po.id} className={`transition ${po.status === 'cancelled' ? 'bg-slate-50/60 opacity-75' : 'hover:bg-slate-50/70'}`}>
+                  <tr
+                    key={po.id}
+                    id={`po-row-${po.id}`}
+                    data-comment-doc={po.id}
+                    data-comment-number={po.id}
+                    data-comment-tab="po_creation"
+                    data-comment-module="purchases"
+                    data-comment-type="table_row"
+                    className={`transition ${po.status === 'cancelled' ? 'bg-slate-50/60 opacity-75' : 'hover:bg-slate-50/70'}`}
+                  >
                     {/* PO ID & Version */}
                     <td className="p-3 align-top">
                       <div className="flex items-center gap-1.5">
@@ -1249,6 +1417,14 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
                     {/* Actions */}
                     <td className="p-3 align-top text-center">
                       <div className="flex items-center justify-center gap-1">
+                        {/* Quick Row Comment Button */}
+                        <RowCommentButton
+                          docId={po.id}
+                          docNumber={po.id}
+                          tab="orders"
+                          module="purchases"
+                        />
+
                         {/* Inspection / Approval Review Icon */}
                         {po.status === 'pending' && (
                           <button
@@ -2084,7 +2260,7 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
                   </span>
                   <span className="font-bold text-slate-900 text-sm block">{printPoData.supplierName}</span>
                   <span className="text-slate-700 block mt-0.5">
-                    {printLang === 'ar' ? 'البطاقة الضريبية:' : 'Tax Card:'} {printPoData.supplierTaxNumber || '—'}
+                    {printLang === 'ar' ? 'البطاقة الضريبية:' : 'Tax Card:'} {printPoData.supplierTaxNumber ? <VatNumberDisplay value={printPoData.supplierTaxNumber} /> : '—'}
                   </span>
                   <span className="text-slate-700 block">
                     {printLang === 'ar' ? 'العنوان:' : 'Address:'} {printPoData.supplierAddress || '—'}

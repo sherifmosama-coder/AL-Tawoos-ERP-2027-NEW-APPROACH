@@ -104,7 +104,7 @@ export const calculatePalletBatchRange = (dateStr, startTime, endTime) => {
   return {
     startBatch,
     endBatch,
-    displayRange: startBatch && endBatch ? `${startBatch} ◄──► ${endBatch}` : '—',
+    displayRange: startBatch && endBatch ? `${startBatch} ↔ ${endBatch}` : '—',
   };
 };
 

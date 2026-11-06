@@ -69,6 +69,11 @@ import PeacockLoader from './PeacockLoader';
 import { buildLiveStockMatrix, matchWarehouse, getFactoryFloorWarehouse, resolveItemOrLotCost } from '../utils/stockResolver';
 import SearchableSelect from './SearchableSelect';
 import { useNotification } from '../context/NotificationContext';
+import {
+  createActionRequired,
+  completeActionRequired,
+  createNotification
+} from '../utils/notificationEngine';
 
 // Helper: Normalize Arabic-Indic digits to standard digits
 const normalizeArabicNumerals = (str) => {
@@ -928,6 +933,7 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
           ? editingTank.rMaterialLots
           : resolvedRMaterialLots,
         registeredBy: editingTank?.registeredBy || currentUserName,
+        createdById: editingTank?.createdById || currentUser?.id || 'unknown',
         auditTrail: [auditEntry, ...existingAudit],
         updatedAt: serverTimestamp(),
       };
@@ -990,6 +996,25 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
       }
 
       await batch.commit();
+
+      if (payload.qaStatus === 'pending') {
+        await createActionRequired({
+          actionType: 'liquid_tank_qa',
+          docId: tankDocId,
+          docNumber: cleanTankNum,
+          title: `مطلوب فحص ومطابقة جودة تانك: ${cleanTankNum}`,
+          titleEn: `QA Inspection Required for Tank: ${cleanTankNum}`,
+          message: `تم تحضير تانك (${selectedRecipe?.nameAr || 'خلطة سوائل'}) - حجم التشغيلة: ${cleanQty} ${yieldUnit || 'لتر'} بانتظار فحص المختبر`,
+          messageEn: `Tank prepared; awaiting lab inspection & QA verdict`,
+          targetTab: 'liquid_tanks',
+          targetModule: 'production',
+          highlightId: tankDocId,
+          createdBy: currentUser?.id || 'system',
+          createdByName: currentUserName,
+          targetRoles: ['general_admin', 'quality_control', 'qa_specialist', 'lab_technician']
+        });
+      }
+
       setShowRegisterModal(false);
     } catch (err) {
       console.error('Error saving tank:', err);
@@ -1059,6 +1084,34 @@ export default function LiquidTanksMaster({ currentUser = {}, permissions = null
         },
         { merge: true }
       );
+
+      // Complete QA Action Required
+      await completeActionRequired({
+        actionType: 'liquid_tank_qa',
+        docId: showQAModal.id,
+        completedBy: currentUser?.id,
+        completedByName: currentUserName,
+        resolutionNote: `تم اعتماد فحص الجودة بنجاح (التركيز: ${cleanConc}%)`
+      });
+
+      // Notify Tank Creator
+      const creatorId = showQAModal.createdById || showQAModal.registeredById;
+      if (creatorId && creatorId !== currentUser?.id) {
+        await createNotification({
+          type: 'success',
+          title: `تم اعتماد جودة التانك: ${showQAModal.tankNumber || showQAModal.id}`,
+          titleEn: `Tank QA Approved: ${showQAModal.tankNumber || showQAModal.id}`,
+          message: `قام مسؤول الجودة (${currentUserName}) باعتماد نتائج المختبر ومطابقة التانك بنجاح.`,
+          messageEn: `(${currentUserName}) approved QA lab inspection for tank.`,
+          targetUserId: creatorId,
+          targetTab: 'liquid_tanks',
+          targetModule: 'production',
+          highlightId: showQAModal.id,
+          createdBy: currentUser?.id,
+          createdByName: currentUserName
+        });
+      }
+
       setShowQAModal(null);
     } catch (err) {
       console.error('Error saving QA analysis:', err);

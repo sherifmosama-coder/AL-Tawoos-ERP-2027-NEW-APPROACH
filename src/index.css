@@ -4,3 +4,9 @@
 *, html, body, input, select, textarea, button {
   font-family: 'Cairo', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
 }
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}

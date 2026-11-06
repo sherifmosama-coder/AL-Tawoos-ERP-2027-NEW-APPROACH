@@ -3146,20 +3146,22 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
                           const lotNo = e.target.value;
                           const targetLotObj = activeLotsForSelection.find((l) => l.lotNumber === lotNo);
                           const bookQty = targetLotObj ? (targetLotObj.isLocal ? targetLotObj.localQty : 0) : 0;
-                          const supId = targetLotObj?.supplierId || selectedVariant.supplierId || prev.supplierId || '';
-                          const resolvedSupName = targetLotObj?.supplierName || selectedVariant.supplierName || suppliersList.find((s) => s.id === supId)?.name || prev.supplierName || '';
 
-                          setDirectAdjForm((prev) => ({
-                            ...prev,
-                            selectedLotNumber: lotNo,
-                            bookSmallQty: bookQty,
-                            unitCost: targetLotObj?.unitPrice !== undefined ? targetLotObj.unitPrice : prev.unitCost,
-                            supplierId: supId,
-                            supplierName: resolvedSupName,
-                            actualSmallQty: '',
-                            actualLargeQty: '',
-                            actualSmallRemainingQty: '',
-                          }));
+                          setDirectAdjForm((prev) => {
+                            const supId = targetLotObj?.supplierId || selectedVariant.supplierId || prev.supplierId || '';
+                            const resolvedSupName = targetLotObj?.supplierName || selectedVariant.supplierName || suppliersList.find((s) => s.id === supId)?.name || prev.supplierName || '';
+                            return {
+                              ...prev,
+                              selectedLotNumber: lotNo,
+                              bookSmallQty: bookQty,
+                              unitCost: targetLotObj?.unitPrice !== undefined ? targetLotObj.unitPrice : prev.unitCost,
+                              supplierId: supId,
+                              supplierName: resolvedSupName,
+                              actualSmallQty: '',
+                              actualLargeQty: '',
+                              actualSmallRemainingQty: '',
+                            };
+                          });
                         }}
                         className="w-full p-2 border border-slate-300 rounded-xl bg-white font-mono font-bold text-slate-900 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
                         required

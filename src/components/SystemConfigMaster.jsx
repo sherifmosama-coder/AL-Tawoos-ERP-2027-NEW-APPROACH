@@ -20,7 +20,8 @@ import {
   Server,
   Layers
 } from 'lucide-react';
-import { MASTER_COLLECTIONS_REGISTRY, COLLECTION_DISPLAY_NAMES } from './AdminControlPanel';
+import { MASTER_COLLECTIONS_REGISTRY, COLLECTION_DISPLAY_NAMES, getCollectionDisplayName } from './AdminControlPanel';
+import VatNumberInput from './VatNumberInput';
 
 export default function SystemConfigMaster({
   currentUser = {},
@@ -130,8 +131,8 @@ export default function SystemConfigMaster({
             </h2>
             <p className="text-xs text-slate-300 font-medium mt-0.5">
               {isAr
-                ? 'إدارة الهوية القانونية للمنشأة، وضبط المؤشرات التشغيلية، ومراقبة صحة مجموعات البيانات الأساسية الـ ١٢.'
-                : 'Manage legal organizational profile, operational defaults, and monitor live telemetry for the 12 master collections.'}
+                ? `إدارة الهوية القانونية للمنشأة، وضبط المؤشرات التشغيلية، ومراقبة صحة مجموعات البيانات الأساسية الـ ${MASTER_COLLECTIONS_REGISTRY.length}.`
+                : `Manage legal organizational profile, operational defaults, and monitor live telemetry for the ${MASTER_COLLECTIONS_REGISTRY.length} master collections.`}
             </p>
           </div>
         </div>
@@ -209,12 +210,11 @@ export default function SystemConfigMaster({
                   <label className="block font-bold text-slate-700 mb-1">
                     {isAr ? 'رقم البطاقة الضريبية' : 'Tax Card Number'}
                   </label>
-                  <input
-                    type="text"
+                  <VatNumberInput
                     value={companyProfile.taxCardNumber}
                     disabled={!isGeneralAdmin}
-                    onChange={(e) => setCompanyProfile({ ...companyProfile, taxCardNumber: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono font-bold"
+                    onChange={(val) => setCompanyProfile((prev) => ({ ...prev, taxCardNumber: val }))}
+                    className="w-full justify-center"
                   />
                 </div>
 
@@ -355,7 +355,7 @@ export default function SystemConfigMaster({
               <div className="flex items-center gap-2">
                 <Server className="h-4 w-4 text-indigo-600" />
                 <h3 className="font-extrabold text-sm text-slate-900">
-                  {isAr ? 'مصفوفة البيانات الأساسية (١٢)' : 'Master Collections (12)'}
+                  {isAr ? `مصفوفة البيانات الأساسية (${MASTER_COLLECTIONS_REGISTRY.length})` : `Master Collections (${MASTER_COLLECTIONS_REGISTRY.length})`}
                 </h3>
               </div>
               <span className="px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-800 font-mono font-bold text-[10px]">
@@ -365,13 +365,13 @@ export default function SystemConfigMaster({
 
             <p className="text-[11px] text-slate-500 leading-relaxed">
               {isAr
-                ? 'الحالة الفورية لعدد السجلات المعتمدة في المجموعات الـ ١٢ الأساسية للنظام.'
-                : 'Real-time telemetry showing verified records in the 12 master collections.'}
+                ? `الحالة الفورية لعدد السجلات المعتمدة في المجموعات الـ ${MASTER_COLLECTIONS_REGISTRY.length} الأساسية للنظام.`
+                : `Real-time telemetry showing verified records in the ${MASTER_COLLECTIONS_REGISTRY.length} master collections.`}
             </p>
 
             <div className="divide-y divide-slate-100 max-h-[480px] overflow-y-auto pe-1 text-xs">
               {MASTER_COLLECTIONS_REGISTRY.map((collKey, idx) => {
-                const meta = COLLECTION_DISPLAY_NAMES[collKey] || {};
+                const displayName = getCollectionDisplayName(collKey, isAr);
                 const count = collectionCounts[collKey] || 0;
                 return (
                   <div key={collKey} className="py-2 flex items-center justify-between gap-2 hover:bg-slate-50/60 px-1 rounded-lg transition">
@@ -381,7 +381,7 @@ export default function SystemConfigMaster({
                       </span>
                       <div className="min-w-0">
                         <div className="font-bold text-slate-800 truncate">
-                          {isAr ? meta.ar || collKey : meta.en || collKey}
+                          {displayName}
                         </div>
                         <div className="font-mono text-[10px] text-slate-400 truncate">
                           {collKey}

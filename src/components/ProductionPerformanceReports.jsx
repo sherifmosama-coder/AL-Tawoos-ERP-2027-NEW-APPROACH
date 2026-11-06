@@ -27,6 +27,7 @@ import {
   Info,
   Scale
 } from 'lucide-react';
+import SearchableSelect from './SearchableSelect';
 
 // Helper time converters
 const timeToMins = (timeStr) => {
@@ -945,18 +946,19 @@ export default function ProductionPerformanceReports({ currentUser = {}, permiss
             </div>
 
             {/* Product Dropdown Filter */}
-            <select
-              value={selectedProductFilter}
-              onChange={(e) => setSelectedProductFilter(e.target.value)}
-              className="p-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 cursor-pointer"
-            >
-              <option value="all">{isAr ? 'كافة الأصناف (الكل)' : 'All Products'}</option>
-              {reportData.productRows.map((p) => (
-                <option key={p.productId} value={p.productId}>
-                  {p.productNameAr} ({p.productId})
-                </option>
-              ))}
-            </select>
+            <div className="w-56 sm:w-64">
+              <SearchableSelect
+                value={selectedProductFilter === 'all' ? '' : selectedProductFilter}
+                onChange={(val) => setSelectedProductFilter(val || 'all')}
+                options={reportData.productRows.map((p) => ({
+                  value: p.productId,
+                  label: p.productNameAr,
+                  sublabel: p.productId,
+                }))}
+                placeholder={isAr ? 'كافة الأصناف (الكل)' : 'All Products'}
+                isAr={isAr}
+              />
+            </div>
           </div>
         </div>
 

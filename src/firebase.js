@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
+import { getMessaging, isSupported } from 'firebase/messaging';
 
 // Your live Firebase configuration (Connected to me-central2)
 const firebaseConfig = {
@@ -12,10 +13,30 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase SDK
-const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseConfig);
 
-// Initialize Firestore Database (me-central2)
-export const db = getFirestore(app);
+// Initialize Firestore Database with persistent local multi-tab IndexedDB cache
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
+});
+
+let messagingInstance = null;
+export async function getFirebaseMessaging() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const supported = await isSupported();
+    if (!supported) return null;
+    if (!messagingInstance) {
+      messagingInstance = getMessaging(app);
+    }
+    return messagingInstance;
+  } catch (e) {
+    console.debug('Firebase Messaging isSupported error:', e);
+    return null;
+  }
+}
 
 /**
  * Helper: Converts any local PDF or image to a Base64 data attachment
