@@ -937,7 +937,7 @@ export const DEFAULT_TABS_CONFIG = {
   production_workers: {
     id: 'production_workers',
     moduleKey: 'master_data',
-    order: 10,
+    order: 13,
     labelAr: 'سجل عمالة وفنيي الإنتاج',
     labelEn: 'Production Workers',
     iconName: 'Users',
@@ -948,7 +948,7 @@ export const DEFAULT_TABS_CONFIG = {
   users: {
     id: 'users',
     moduleKey: 'master_data',
-    order: 11,
+    order: 14,
     labelAr: 'المستخدمين والصلاحيات',
     labelEn: 'Users & Roles',
     iconName: 'ShieldCheck',
@@ -959,7 +959,7 @@ export const DEFAULT_TABS_CONFIG = {
   system_config: {
     id: 'system_config',
     moduleKey: 'master_data',
-    order: 12,
+    order: 15,
     labelAr: 'إعدادات وتهيئة النظام',
     labelEn: 'System Configuration',
     iconName: 'Settings',
@@ -1132,14 +1132,14 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'المالية والحسابات والسيولة',
     categoryEn: 'Finance & Treasury'
   },
-  accounts: {
-    id: 'accounts',
+  dues_tracking: {
+    id: 'dues_tracking',
     moduleKey: 'finance',
     order: 3,
-    labelAr: 'دليل الحسابات والأستاذ العام',
-    labelEn: 'Chart of Accounts & GL',
-    iconName: 'BadgeDollarSign',
-    color: '#2563eb',
+    labelAr: 'متابعة الاستحقاقات والدفعات',
+    labelEn: 'Dues & Installments Tracking',
+    iconName: 'Receipt',
+    color: '#0d9488',
     categoryAr: 'المالية والحسابات والسيولة',
     categoryEn: 'Finance & Treasury'
   },
@@ -1154,25 +1154,25 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'المالية والحسابات والسيولة',
     categoryEn: 'Finance & Treasury'
   },
+  accounts: {
+    id: 'accounts',
+    moduleKey: 'finance',
+    order: 5,
+    labelAr: 'دليل الحسابات والأستاذ العام',
+    labelEn: 'Chart of Accounts & GL',
+    iconName: 'BadgeDollarSign',
+    color: '#2563eb',
+    categoryAr: 'المالية والحسابات والسيولة',
+    categoryEn: 'Finance & Treasury'
+  },
   financial_statements: {
     id: 'financial_statements',
     moduleKey: 'finance',
-    order: 5,
+    order: 6,
     labelAr: 'القوائم المالية والتقارير',
     labelEn: 'Financial Statements',
     iconName: 'BarChart3',
     color: '#4f46e5',
-    categoryAr: 'المالية والحسابات والسيولة',
-    categoryEn: 'Finance & Treasury'
-  },
-  dues_tracking: {
-    id: 'dues_tracking',
-    moduleKey: 'finance',
-    order: 6,
-    labelAr: 'متابعة الاستحقاقات والدفعات',
-    labelEn: 'Dues & Installments Tracking',
-    iconName: 'Receipt',
-    color: '#0d9488',
     categoryAr: 'المالية والحسابات والسيولة',
     categoryEn: 'Finance & Treasury'
   },

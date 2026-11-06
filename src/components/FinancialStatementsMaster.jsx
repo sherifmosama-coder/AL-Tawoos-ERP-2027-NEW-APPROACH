@@ -39,6 +39,7 @@ import {
 import SecretDoorModal from './SecretDoorModal.jsx';
 import SecretLockButton from './SecretLockButton.jsx';
 import FinancialStatementPrintSlip from './FinancialStatementPrintSlip.jsx';
+import { useCompanyProfile } from '../hooks/useCompanyProfile.js';
 import {
   LEDGER_MODES,
   getActiveLedgerMode,
@@ -54,6 +55,7 @@ export default function FinancialStatementsMaster({
   onNavigateToAccounts = () => {},
   onNavigateToCash = () => {}
 }) {
+  const { companyProfile } = useCompanyProfile();
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
 
@@ -1184,7 +1186,10 @@ export default function FinancialStatementsMaster({
         ? (isAr ? 'قائمة التدفقات النقدية' : 'Statement of Cash Flows')
         : (isAr ? 'تقرير أداء مراكز التكلفة' : 'Cost Center Performance');
 
-    csvContent += `"${headerTitle} (${scopeLabel}) - ${isAr ? 'شركة الطاووس الصناعية' : 'Al-Tawoos Industrial Co.'}"\n`;
+    const companyDisplayName = isAr
+      ? (companyProfile.tradeNameAr || companyProfile.legalName)
+      : (companyProfile.tradeNameEn || companyProfile.legalName);
+    csvContent += `"${headerTitle} (${scopeLabel}) - ${companyDisplayName}"\n`;
     csvContent += `"${isAr ? 'الفترة من' : 'Period from'}: ${startDate} ${isAr ? 'إلى' : 'to'} ${endDate} | ${isAr ? 'مستوى العرض' : 'Display Level'}: ${displayLevel}"\n\n`;
 
     if (activeTab === 'income_statement') {

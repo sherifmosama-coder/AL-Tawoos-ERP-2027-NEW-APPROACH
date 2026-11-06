@@ -696,6 +696,49 @@ export const APP_ARCHITECTURE = {
             id: { labelAr: "كود الحساب البنكي", labelEn: "Bank ID", type: "string", sample: "BNK-01" },
           }
         },
+        dues_tracking: {
+          id: "dues_tracking",
+          collection: "dues_settlements,dues_batches,wht_notes",
+          labelAr: "متابعة الاستحقاقات والدفعات",
+          labelEn: "Dues & Installments Tracking",
+          icon: "Receipt",
+          subtabs: [
+            { id: "suppliers", labelAr: "استحقاقات ودفعات الموردين", labelEn: "Suppliers Dues & Installments", isDefault: true },
+            { id: "clients", labelAr: "استحقاقات وتحصيلات العملاء", labelEn: "Clients Receivables & Dues" }
+          ],
+          actions: [
+            { key: "canSettleDues", labelAr: "تسجيل دفعات وتسوية استحقاقات الموردين (فردي / مجمع)", labelEn: "Record & Settle Supplier Dues" },
+            { key: "canGenerateWhtNote", labelAr: "إصدار وطباعة شهادة الخصم والإضافة (1%) A4 نصفين", labelEn: "Issue & Print 1% WHT Certificate A4" }
+          ],
+          fields: {
+            id: { labelAr: "معرف دفعة الاستحقاق", labelEn: "Tranche ID", type: "string", required: true, sample: "GRN-2026101101-T1" },
+            dueDate: { labelAr: "تاريخ الاستحقاق", labelEn: "Due Date", type: "date", required: true, sample: "2026-11-10" },
+            originalDueAmount: { labelAr: "قيمة الدفعة المستحقة", labelEn: "Original Due Amount", type: "number", isSensitive: true, sample: 25000.00 },
+            remainingAmount: { labelAr: "الرصيد المتبقي للسداد", labelEn: "Remaining Balance", type: "number", isSensitive: true, sample: 10000.00 }
+          }
+        },
+        party_statements: {
+          id: "party_statements",
+          collection: "cash_transactions,goods_receipts,journal_entries",
+          labelAr: "كشوف حسابات الموردين والعملاء",
+          labelEn: "Partner Statements (Suppliers & Clients)",
+          icon: "FileText",
+          actions: [
+            { key: "canView", labelAr: "عرض كشوف الحسابات", labelEn: "View Statements" },
+            { key: "canFilterPeriods", labelAr: "تحديد الفترات وتخصيص التواريخ", labelEn: "Filter Periods" },
+            { key: "canToggleReversals", labelAr: "إظهار/إخفاء الحركات المعكوسة والملغاة", labelEn: "Toggle Reversals" },
+            { key: "canPrintA4Statement", labelAr: "طباعة كشف الحساب A4 معتمد", labelEn: "Print A4 Statement" },
+            { key: "canExportCSV", labelAr: "تصدير كشف الحساب إلى Excel / CSV", labelEn: "Export CSV" }
+          ],
+          fields: {
+            partyType: { labelAr: "نوع الطرف (مورد/عميل)", labelEn: "Partner Type", type: "enum", options: ["supplier", "client"], sample: "supplier" },
+            partyId: { labelAr: "معرف الطرف", labelEn: "Partner ID", type: "string", sample: "SUP-001" },
+            openingBalance: { labelAr: "الرصيد الافتتاحي السابق للفترة", labelEn: "Opening Balance", type: "number", sample: 0.00 },
+            totalDebit: { labelAr: "إجمالي المدين في الفترة", labelEn: "Period Debit", type: "number", sample: 15000.00 },
+            totalCredit: { labelAr: "إجمالي الدائن في الفترة", labelEn: "Period Credit", type: "number", sample: 25000.00 },
+            closingBalance: { labelAr: "الرصيد الختامي المستحق", labelEn: "Closing Balance", type: "number", sample: 10000.00 }
+          }
+        },
         accounts: {
           id: "accounts",
           collection: "chart_of_accounts",
@@ -741,28 +784,6 @@ export const APP_ARCHITECTURE = {
             isSystemProtected: { labelAr: "حساب نظام محمي من الحذف", labelEn: "System Protected", type: "boolean", sample: false }
           }
         },
-        party_statements: {
-          id: "party_statements",
-          collection: "cash_transactions,goods_receipts,journal_entries",
-          labelAr: "كشوف حسابات الموردين والعملاء",
-          labelEn: "Partner Statements (Suppliers & Clients)",
-          icon: "FileText",
-          actions: [
-            { key: "canView", labelAr: "عرض كشوف الحسابات", labelEn: "View Statements" },
-            { key: "canFilterPeriods", labelAr: "تحديد الفترات وتخصيص التواريخ", labelEn: "Filter Periods" },
-            { key: "canToggleReversals", labelAr: "إظهار/إخفاء الحركات المعكوسة والملغاة", labelEn: "Toggle Reversals" },
-            { key: "canPrintA4Statement", labelAr: "طباعة كشف الحساب A4 معتمد", labelEn: "Print A4 Statement" },
-            { key: "canExportCSV", labelAr: "تصدير كشف الحساب إلى Excel / CSV", labelEn: "Export CSV" }
-          ],
-          fields: {
-            partyType: { labelAr: "نوع الطرف (مورد/عميل)", labelEn: "Partner Type", type: "enum", options: ["supplier", "client"], sample: "supplier" },
-            partyId: { labelAr: "معرف الطرف", labelEn: "Partner ID", type: "string", sample: "SUP-001" },
-            openingBalance: { labelAr: "الرصيد الافتتاحي السابق للفترة", labelEn: "Opening Balance", type: "number", sample: 0.00 },
-            totalDebit: { labelAr: "إجمالي المدين في الفترة", labelEn: "Period Debit", type: "number", sample: 15000.00 },
-            totalCredit: { labelAr: "إجمالي الدائن في الفترة", labelEn: "Period Credit", type: "number", sample: 25000.00 },
-            closingBalance: { labelAr: "الرصيد الختامي المستحق", labelEn: "Closing Balance", type: "number", sample: 10000.00 }
-          }
-        },
         financial_statements: {
           id: "financial_statements",
           collection: "financial_reports",
@@ -786,27 +807,6 @@ export const APP_ARCHITECTURE = {
             displayLevel: { labelAr: "مستوى عرض شجرة الحسابات (summary/2/3/4/all)", labelEn: "COA Display Level", type: "enum", options: ["summary", "2", "3", "4", "all"], sample: "all" },
             showZeroBalances: { labelAr: "إظهار الحسابات الصفرية", labelEn: "Show Zero Balance Accounts", type: "boolean", sample: false },
             currency: { labelAr: "عملة العرض", labelEn: "Reporting Currency", type: "string", sample: "EGP" }
-          }
-        },
-        dues_tracking: {
-          id: "dues_tracking",
-          collection: "dues_settlements,dues_batches,wht_notes",
-          labelAr: "متابعة الاستحقاقات والدفعات",
-          labelEn: "Dues & Installments Tracking",
-          icon: "Receipt",
-          subtabs: [
-            { id: "suppliers", labelAr: "استحقاقات ودفعات الموردين", labelEn: "Suppliers Dues & Installments", isDefault: true },
-            { id: "clients", labelAr: "استحقاقات وتحصيلات العملاء", labelEn: "Clients Receivables & Dues" }
-          ],
-          actions: [
-            { key: "canSettleDues", labelAr: "تسجيل دفعات وتسوية استحقاقات الموردين (فردي / مجمع)", labelEn: "Record & Settle Supplier Dues" },
-            { key: "canGenerateWhtNote", labelAr: "إصدار وطباعة شهادة الخصم والإضافة (1%) A4 نصفين", labelEn: "Issue & Print 1% WHT Certificate A4" }
-          ],
-          fields: {
-            id: { labelAr: "معرف دفعة الاستحقاق", labelEn: "Tranche ID", type: "string", required: true, sample: "GRN-2026101101-T1" },
-            dueDate: { labelAr: "تاريخ الاستحقاق", labelEn: "Due Date", type: "date", required: true, sample: "2026-11-10" },
-            originalDueAmount: { labelAr: "قيمة الدفعة المستحقة", labelEn: "Original Due Amount", type: "number", isSensitive: true, sample: 25000.00 },
-            remainingAmount: { labelAr: "الرصيد المتبقي للسداد", labelEn: "Remaining Balance", type: "number", isSensitive: true, sample: 10000.00 }
           }
         }
       }

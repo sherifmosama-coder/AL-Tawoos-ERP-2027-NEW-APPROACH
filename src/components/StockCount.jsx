@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useCompanyProfile } from '../hooks/useCompanyProfile';
 import { db } from '../firebase';
 import {
   collection,
@@ -102,6 +103,7 @@ const sortStockCountLines = (lines = []) => {
 };
 
 export default function StockCount({ currentUser = {}, permissions = null }) {
+  const { companyProfile } = useCompanyProfile();
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
 
@@ -2605,7 +2607,11 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
             <div className="space-y-4 text-xs">
               <div className="border-b-2 border-slate-900 pb-3 flex justify-between items-start">
                 <div>
-                  <h1 className="text-base font-extrabold text-slate-900">{isAr ? 'شركة الطاووس للصناعات الغذائية والتعبئة' : 'Al Tawoos Food Industries'}</h1>
+                  <h1 className="text-base font-extrabold text-slate-900">
+                    {isAr
+                      ? (companyProfile.tradeNameAr || companyProfile.legalName)
+                      : (companyProfile.tradeNameEn || companyProfile.legalName)}
+                  </h1>
                   <h2 className="text-sm font-bold text-indigo-900 mt-0.5">{isAr ? 'استمارة ولائحة حصر الجرد المخزني الفعلي' : 'Physical Inventory Count Sheet'}</h2>
                   <span className="font-mono text-slate-500 font-bold block mt-1">{isAr ? 'رقم الإذن:' : 'ID:'} {printSessionData.id}</span>
                 </div>

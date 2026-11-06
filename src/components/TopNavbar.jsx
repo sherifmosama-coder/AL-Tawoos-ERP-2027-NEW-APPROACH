@@ -51,7 +51,8 @@ import {
   UserCheck,
   Landmark,
   Truck,
-  MessageSquare
+  MessageSquare,
+  Receipt
 } from 'lucide-react';
 import { HeaderPresencePill } from './UIUXComponents';
 import { useRecordComments } from '../context/CommentContext';
@@ -299,6 +300,28 @@ export default function TopNavbar({
             { id: 'bank_list', labelAr: 'حسابات البنوك المعتمدة', labelEn: 'Bank Accounts' },
             { id: 'cheques_ledger', labelAr: 'حافظة الشيكات', labelEn: 'Cheques Ledger' },
             { id: 'bank_reconciliation', labelAr: 'مطابقة كشف الحساب', labelEn: 'Bank Reconciliation' },
+          ]
+        },
+        {
+          id: 'dues_tracking',
+          moduleKey: 'dues_tracking',
+          labelAr: 'متابعة الاستحقاقات والدفعات',
+          labelEn: 'Dues & Installments Tracking',
+          icon: Receipt,
+          subtabs: [
+            { id: 'suppliers', labelAr: 'استحقاقات ودفعات الموردين', labelEn: 'Suppliers Dues & Installments' },
+            { id: 'clients', labelAr: 'استحقاقات وتحصيلات العملاء', labelEn: 'Clients Receivables & Dues' },
+          ]
+        },
+        {
+          id: 'party_statements',
+          moduleKey: 'party_statements',
+          labelAr: 'كشوف حسابات الموردين والعملاء',
+          labelEn: 'Partner Statements',
+          icon: FileText,
+          subtabs: [
+            { id: 'supplier', labelAr: 'كشوف حسابات الموردين', labelEn: 'Supplier Statements' },
+            { id: 'client', labelAr: 'كشوف حسابات العملاء', labelEn: 'Client Statements' },
           ]
         },
         {
@@ -751,6 +774,10 @@ export default function TopNavbar({
                                               } else {
                                                 window.location.hash = 'cash_safes?module=finance&subTab=SAFE-01&safeId=SAFE-01';
                                               }
+                                            } else if (tab.id === 'dues_tracking') {
+                                              window.location.hash = `dues_tracking?module=finance&subTab=${sub.id}`;
+                                            } else if (tab.id === 'party_statements') {
+                                              window.location.hash = `party_statements?module=finance&subTab=${sub.id}`;
                                             } else {
                                               onSelectModule(activeModule, tab.id);
                                             }
@@ -777,6 +804,10 @@ export default function TopNavbar({
                                             } else {
                                               window.location.hash = 'cash_safes?module=finance&subTab=SAFE-01&safeId=SAFE-01';
                                             }
+                                          } else if (tab.id === 'dues_tracking') {
+                                            window.location.hash = `dues_tracking?module=finance&subTab=${sub.id}`;
+                                          } else if (tab.id === 'party_statements') {
+                                            window.location.hash = `party_statements?module=finance&subTab=${sub.id}`;
                                           } else {
                                             onSelectModule(activeModule, tab.id);
                                           }

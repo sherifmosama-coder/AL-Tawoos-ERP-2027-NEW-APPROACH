@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useCompanyProfile } from '../hooks/useCompanyProfile';
 import { db } from '../firebase';
 import {
   collection,
@@ -74,6 +75,7 @@ const DEFAULT_CATEGORIES = [
 ];
 
 export default function StockBalances({ currentUser = {}, permissions = null }) {
+  const { companyProfile } = useCompanyProfile();
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
 
@@ -2111,7 +2113,9 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
                         />
                         <div>
                           <h1 className="text-sm font-black text-slate-900 leading-tight">
-                            {isAr ? 'شركة الطاووس لتعبئة و تجارة المواد الغذائية' : 'Al Tawoos for Packing & Trading Food Goods'}
+                            {isAr
+                              ? (companyProfile.tradeNameAr || companyProfile.legalName)
+                              : (companyProfile.tradeNameEn || companyProfile.legalName)}
                           </h1>
                           <h2 className="text-xs text-slate-700 font-bold mt-0.5">
                             {isAr ? 'كارت حركة ومتابعة الصنف المخزني (Stock Kardex Ledger)' : 'Stock Movement Ledger (Kardex Slip)'}
@@ -2386,7 +2390,9 @@ export default function StockBalances({ currentUser = {}, permissions = null }) 
               />
               <div>
                 <h1 className="text-sm font-black text-slate-900 leading-tight">
-                  {isAr ? 'شركة الطاووس لتعبئة و تجارة المواد الغذائية' : 'Al Tawoos for Packing & Trading Food Goods'}
+                  {isAr
+                    ? (companyProfile.tradeNameAr || companyProfile.legalName)
+                    : (companyProfile.tradeNameEn || companyProfile.legalName)}
                 </h1>
                 <h2 className="text-xs text-slate-700 font-bold mt-0.5">
                   {isAr ? 'كارت حركة ومتابعة الصنف المخزني (Stock Kardex Ledger)' : 'Stock Movement Ledger (Kardex Slip)'}

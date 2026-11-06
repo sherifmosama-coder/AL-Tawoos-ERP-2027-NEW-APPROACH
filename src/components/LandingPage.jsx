@@ -39,7 +39,8 @@ import {
   UserCheck,
   Landmark,
   Truck,
-  FileText
+  FileText,
+  Receipt
 } from 'lucide-react';
 import {
   getStoredTabConfigs,
@@ -151,8 +152,9 @@ export default function LandingPage({
       tabs: [
         { id: 'cash_safes', moduleKey: 'cash_safes', labelAr: 'الخزائن النقدية والعهد', labelEn: 'Cash Safes & Vaults', icon: Coins },
         { id: 'banks', moduleKey: 'banks', labelAr: 'الحسابات البنكية والشيكات', labelEn: 'Bank Accounts & Cheques', icon: Landmark },
-        { id: 'accounts', moduleKey: 'accounts', labelAr: 'دليل الحسابات والأستاذ العام', labelEn: 'Chart of Accounts & GL', icon: BadgeDollarSign },
+        { id: 'dues_tracking', moduleKey: 'dues_tracking', labelAr: 'متابعة الاستحقاقات والدفعات', labelEn: 'Dues & Installments Tracking', icon: Receipt },
         { id: 'party_statements', moduleKey: 'party_statements', labelAr: 'كشوف حسابات الموردين والعملاء', labelEn: 'Partner Statements', icon: FileText },
+        { id: 'accounts', moduleKey: 'accounts', labelAr: 'دليل الحسابات والأستاذ العام', labelEn: 'Chart of Accounts & GL', icon: BadgeDollarSign },
         { id: 'financial_statements', moduleKey: 'financial_statements', labelAr: 'القوائم المالية والتقارير', labelEn: 'Financial Statements', icon: BarChart3 },
       ]
     },

@@ -2,6 +2,7 @@ import React from 'react';
 import { Printer, X, CheckCircle2, Scissors, ShieldCheck, Building2, FileText } from 'lucide-react';
 import { tafqeetArabic } from '../utils/tafqeet';
 import VatNumberDisplay from './VatNumberDisplay';
+import { useCompanyProfile } from '../hooks/useCompanyProfile';
 
 export default function WhtNotePrintSlip({
   isOpen,
@@ -11,7 +12,12 @@ export default function WhtNotePrintSlip({
   isAr = true,
   onToggleDelivered
 }) {
+  const { companyProfile } = useCompanyProfile();
   if (!isOpen || !whtData) return null;
+
+  const companyName = isAr
+    ? (companyProfile.tradeNameAr || companyProfile.legalName)
+    : (companyProfile.tradeNameEn || companyProfile.legalName);
 
   const isReturn = whtData.docType === 'return';
   const absSubtotal = Math.abs(Number(whtData.subtotal) || 0);
@@ -48,11 +54,17 @@ export default function WhtNotePrintSlip({
               <div className="flex items-center gap-2">
                 <Building2 className="h-4 w-4 text-emerald-800" />
                 <span className="font-extrabold text-sm text-slate-900">
-                  شركة الطاووس للصناعات الكيماوية والتجارة
+                  {companyName}
                 </span>
               </div>
-              <p className="text-[10px] text-slate-600 font-semibold">
-                الإدارة المالية - قسم الضرائب والالتزام الضريبي (نموذج ٤١ خصم وتحصيل)
+              <p className="text-[10px] text-slate-600 font-semibold flex items-center gap-2 flex-wrap">
+                <span>الإدارة المالية - قسم الضرائب والالتزام الضريبي (نموذج ٤١ خصم وتحصيل)</span>
+                {companyProfile.taxCardNumber && (
+                  <>
+                    <span>•</span>
+                    <span>ب.ض جهة الخصم: <VatNumberDisplay value={companyProfile.taxCardNumber} /></span>
+                  </>
+                )}
               </p>
             </div>
 

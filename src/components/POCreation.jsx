@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useCompanyProfile } from '../hooks/useCompanyProfile';
 import { db } from '../firebase';
 import { 
   collection, 
@@ -54,6 +55,7 @@ import {
 } from '../utils/notificationEngine';
 
 export default function POCreation({ currentUser = {}, permissions = null }) {
+  const { companyProfile } = useCompanyProfile();
   const { toast, showAlert, showConfirm } = useNotification();
   const { registerRowActions } = useRecordComments();
   const canViewPrices = permissions ? permissions.sensitive?.canViewPrices !== false : true;
@@ -2231,11 +2233,19 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
                   />
                   <div>
                     <h1 className="text-base font-extrabold tracking-wide text-slate-900 leading-tight">
-                      {printLang === 'ar' ? 'شركة الطاووس لتعبئة و تجارة المواد الغذائية' : 'Al Tawoos for packing and trading food goods'}
+                      {printLang === 'ar'
+                        ? (companyProfile.tradeNameAr || companyProfile.legalName)
+                        : (companyProfile.tradeNameEn || companyProfile.legalName)}
                     </h1>
                     <p className="text-[11px] text-slate-600 mt-0.5">
-                      {printLang === 'ar' ? 'المنطقة الصناعية، السادس من أكتوبر، الجيزة، مصر' : '6th of October Industrial Zone, Giza, Egypt'}
+                      {companyProfile.registeredAddress || (printLang === 'ar' ? 'المنطقة الصناعية، السادس من أكتوبر، الجيزة، مصر' : '6th of October Industrial Zone, Giza, Egypt')}
                     </p>
+                    {companyProfile.taxCardNumber && (
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        {printLang === 'ar' ? 'بطاقة ضريبية:' : 'Tax Card:'} {companyProfile.taxCardNumber}
+                        {companyProfile.commercialRegister && ` • ${printLang === 'ar' ? 'س.ت:' : 'CR:'} ${companyProfile.commercialRegister}`}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="text-end">

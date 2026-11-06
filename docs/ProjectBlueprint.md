@@ -92,6 +92,11 @@
    * 23.5 Inline `@FullName` Mention Chips & Message-Level Task Resolution (`تم إنجاز المهمة`)
    * 23.6 Strict Target Audience Filtering & `GlobalCommentsDrawer` ("مركز المحادثات والمهام") Access Isolation
    * 23.7 System-Wide Reusable Integration Across All 22+ Modules & Tabs
+24. [Finance Dues & Installments Tracking, PO Advance Anti-Repayment & A4 Dual-Half WHT Certificates (`dues_tracking`)](#24-finance-dues--installments-tracking-po-advance-anti-repayment--a4-dual-half-wht-certificates-dues_tracking)
+25. [100% Setup-Driven Financial Statements Engine, Vertical Balance Sheet & Multi-Level COA Hierarchy (`financial_statements` & `accounts`)](#25-100-setup-driven-financial-statements-engine-vertical-balance-sheet--multi-level-coa-hierarchy-financial_statements--accounts)
+26. [Relational Cascade Purge & Master Data Immunity Engine (`AdminControlPanel.jsx` — `factory_reset`)](#26-relational-cascade-purge--master-data-immunity-engine-admincontrolpaneljsx--factory_reset)
+27. [Universal Company Profile Single Source of Truth (SSOT) & Document Letterhead Architecture (`#system_config` & `useCompanyProfile`)](#27-universal-company-profile-single-source-of-truth-ssot--document-letterhead-architecture-system_config--usecompanyprofile)
+28. [Tri-Surface Navigation Alignment Standard (Home Page, Sidebar & Top Navbar)](#28-tri-surface-navigation-alignment-standard-home-page-sidebar--top-navbar)
 
 ---
 
@@ -1328,3 +1333,98 @@ The Database Purge & Factory Reset sub-tab (`#admin_panel?subTab=factory_reset`)
    - Clearly isolated for General Admin use when resetting a specific Master collection (`master_items`, `master_suppliers`, `master_clients`, `master_finished_products`, `master_boms_and_processes`, `master_warehouses_and_vessels`, `master_safes_and_banks`, `master_chart_of_accounts`, `master_workers_and_vehicles`).
 4. **Tier 4 — Full Factory Reset (`all`)**:
    - Wipes both operational and master collections across the entire ERP.
+
+---
+
+## 27. Universal Company Profile Single Source of Truth (SSOT) & Document Letterhead Architecture (`#system_config` & `useCompanyProfile`)
+
+### 27.1 Core SSOT Principle: Zero Hardcoded Company Names
+To ensure absolute legal and brand consistency across all company documents, no hardcoded company names, addresses, commercial registry numbers, or tax registration IDs are permitted anywhere in the application code.
+
+Every printable document, slip, export, and letterhead MUST derive its company profile dynamically from:
+- **Firestore Collection**: `system_config`
+- **Document ID**: `company_profile`
+- **Primary Accessor Hook**: `useCompanyProfile()` in `src/hooks/useCompanyProfile.js`
+
+### 27.2 Standard Company Profile Schema (`companyProfile`)
+Managed live via `#system_config` (`SystemConfigMaster.jsx`):
+- `tradeNameAr`: Arabic trade name
+- `tradeNameEn`: English trade name
+- `legalName`: Full legal corporate name
+- `taxCardNumber`: 9-digit tax registration card number
+- `commercialRegister`: Commercial registry number (السجل التجاري)
+- `taxDistrict`: Competent corporate tax district
+- `registeredAddress`: Official corporate headquarters address
+
+### 27.3 Mandatory Letterhead Implementation Standard
+Whenever rendering any printable slip, modal preview, or Excel/CSV export header:
+1. Import `useCompanyProfile` from `../hooks/useCompanyProfile` (or appropriate relative path).
+2. Derive localized display name:
+   ```javascript
+   const { companyProfile } = useCompanyProfile();
+   const companyName = isAr
+     ? (companyProfile.tradeNameAr || companyProfile.legalName)
+     : (companyProfile.tradeNameEn || companyProfile.legalName);
+   ```
+3. Render BiDi-isolated tax card: `<VatNumberDisplay value={companyProfile.taxCardNumber} />`.
+4. Display registered address and commercial register dynamically.
+
+### 27.4 Covered Printouts & Documents Registry (100% Unified)
+- **Finance & Treasury**: `CashVoucherPrintSlip.jsx`, `FinancialStatementPrintSlip.jsx`, `TrialBalancePrintSlip.jsx`, `JournalVoucherPrintSlip.jsx`, `PartnerStatementPrintSlip.jsx`, `CustodyAcknowledgmentPrintSlip.jsx`, `WhtNotePrintSlip.jsx`, `FinancialStatementsMaster.jsx` (CSV/Excel).
+- **Procurement & Warehousing**: `POCreation.jsx`, `GoodsReceipt.jsx`, `GoodsReceiptPrintSlip.jsx`, `StockTransfers.jsx`, `StockTransferPrintSlip.jsx`, `StockBalances.jsx` (Kardex print slips), `StockCount.jsx` (Inventory count sheets).
+
+---
+
+## 28. Tri-Surface Navigation Alignment Standard (Home Page, Sidebar & Top Navbar)
+
+### 28.1 The Alignment Imperative
+The ERP provides three primary navigational surfaces:
+1. **Home Page Hub (`LandingPage.jsx`)**: Module cards with interactive tab chips and default tab selection dropdowns.
+2. **Sidebar Navigation (`App.jsx` — `MODULE_NAV_DEFINITIONS`)**: Persistent left/right collapsible dock displaying the current module's active tabs.
+3. **Top Navbar Breadcrumbs Droplist (`TopNavbar.jsx` — `RAW_ERP_STRUCTURE`)**: Header breadcrumbs dropdown providing quick switching between operational modules and their underlying workspaces/subtabs.
+
+To eliminate user confusion, all three surfaces MUST remain 100% synchronized with identical tab IDs, permission module keys, localized labels, icons, default orders, and subtab routes.
+
+### 28.2 Standard Operational Module Registry
+- **Master Database (`master_data` - 15 Tabs)**:
+  1. `items` (Item Master)
+  2. `suppliers` (Supplier Master)
+  3. `categories` (Raw Material Categories)
+  4. `finished_products` (Finished Goods Master)
+  5. `finished_product_categories` (FG Categories & Lines)
+  6. `bom` (Packing & Filling BOM)
+  7. `intermediate_bom` (Intermediate Recipes)
+  8. `production_processes` (Production Processes & SOPs)
+  9. `warehouses` (Warehouses Master)
+  10. `safes` (Safes & Cash Vaults)
+  11. `bank_accounts` (Bank Accounts Master)
+  12. `vehicles` (Vehicles & Fleet Master)
+  13. `production_workers` (Production Workers)
+  14. `users` (Users & Roles)
+  15. `system_config` (System Configuration)
+- **Materials & Procurement (`purchases` - 6 Tabs)**:
+  1. `orders` (Purchase Orders)
+  2. `receipts` (Goods Receipt GRN)
+  3. `transfers` (Stock Transfers TRN)
+  4. `stock` (Stock Balances & Kardex)
+  5. `stock_count` (Stock Count & Variances)
+  6. `spare_parts` (Spare Parts Issue)
+- **Production & Manufacturing (`production` - 6 Tabs)**:
+  1. `work_orders` (Work Orders: Plan, Today's Pallet Production, Live Shift)
+  2. `liquid_tanks` (Bulk Liquid Tanks M)
+  3. `liquid_storage` (Floor Liquid Storage & Bulk Flow)
+  4. `faulty_fg` (Faulty FG & Returns)
+  5. `fg_inward` (Finished Goods Inward)
+  6. `production_reports` (Production & Performance Reports)
+- **Finance, Accounts & Treasury (`finance` - 6 Tabs)**:
+  1. `cash_safes` (Cash Safes & Vaults: Safes Hub, Custodies & Advances)
+  2. `banks` (Bank Accounts & Cheques: Bank List, Cheques Ledger, Reconciliation)
+  3. `dues_tracking` (Dues & Installments: Suppliers AP, Clients AR)
+  4. `party_statements` (Partner Statements: Supplier Statements, Client Statements)
+  5. `accounts` (Chart of Accounts & GL: COA Tree, Journal Entries, Trial Balance)
+  6. `financial_statements` (Financial Statements: P&L Income Statement, Vertical Balance Sheet, Cash Flow)
+
+### 28.3 Dynamic Order & Appearance Recalibration (`tabAppearanceConfig.js`)
+All three navigation surfaces map their base tab definitions through `tabConfigs[tab.id]` and sort using `(Number(tab.order) || 99)`.
+`DEFAULT_TABS_CONFIG` serves as the baseline fallback order, preventing any duplicate order numbers or dropped tabs across sessions.
+

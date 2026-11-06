@@ -536,10 +536,10 @@ export default function App() {
     ],
     finance: [
       { id: 'cash_safes', labelAr: 'الخزائن النقدية والعهد', labelEn: 'Cash Safes & Vaults', icon: Coins, moduleKey: 'cash_safes' },
-      { id: 'dues_tracking', labelAr: 'متابعة الاستحقاقات والدفعات', labelEn: 'Dues & Installments Tracking', icon: Receipt, moduleKey: 'dues_tracking' },
       { id: 'banks', labelAr: 'الحسابات البنكية والشيكات', labelEn: 'Bank Accounts & Cheques', icon: Landmark, moduleKey: 'banks' },
-      { id: 'accounts', labelAr: 'دليل الحسابات والأستاذ العام', labelEn: 'Chart of Accounts & GL', icon: BadgeDollarSign, moduleKey: 'accounts' },
+      { id: 'dues_tracking', labelAr: 'متابعة الاستحقاقات والدفعات', labelEn: 'Dues & Installments Tracking', icon: Receipt, moduleKey: 'dues_tracking' },
       { id: 'party_statements', labelAr: 'كشوف حسابات الموردين والعملاء', labelEn: 'Partner Statements', icon: FileText, moduleKey: 'party_statements' },
+      { id: 'accounts', labelAr: 'دليل الحسابات والأستاذ العام', labelEn: 'Chart of Accounts & GL', icon: BadgeDollarSign, moduleKey: 'accounts' },
       { id: 'financial_statements', labelAr: 'القوائم المالية والتقارير', labelEn: 'Financial Statements', icon: BarChart3, moduleKey: 'financial_statements' },
     ],
     sales: [

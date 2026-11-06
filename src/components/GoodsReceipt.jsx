@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useCompanyProfile } from '../hooks/useCompanyProfile';
 import { db } from '../firebase';
 import {
   collection,
@@ -80,6 +81,7 @@ import {
 } from '../utils/cashLedgerEngine';
 
 export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
+  const { companyProfile } = useCompanyProfile();
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const { toast, showAlert, showConfirm } = useNotification();
@@ -4641,7 +4643,9 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                 />
                 <div>
                   <h1 className="text-base font-extrabold text-slate-900 leading-tight">
-                    {printLang === 'ar' ? 'شركة الطاووس لتعبئة و تجارة المواد الغذائية' : 'Al Tawoos for packing and trading food goods'}
+                    {printLang === 'ar'
+                      ? (companyProfile.tradeNameAr || companyProfile.legalName)
+                      : (companyProfile.tradeNameEn || companyProfile.legalName)}
                   </h1>
                   <h2 className="text-xs text-slate-700 font-bold mt-1">
                     {isPrintReturn
@@ -4650,7 +4654,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                     }
                   </h2>
                   <p className="text-[10px] text-slate-500 mt-0.5">
-                    {printLang === 'ar' ? 'المنطقة الصناعية، السادس من أكتوبر، الجيزة، مصر' : '6th of October Industrial Zone, Giza, Egypt'}
+                    {companyProfile.registeredAddress || (printLang === 'ar' ? 'المنطقة الصناعية، السادس من أكتوبر، الجيزة، مصر' : '6th of October Industrial Zone, Giza, Egypt')}
                   </p>
                 </div>
               </div>
