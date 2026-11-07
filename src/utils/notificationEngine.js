@@ -104,7 +104,7 @@ export function resolveModuleAndTab(targetModule, targetTab) {
 
   // If targetModule is explicitly master_data, preserve master_data for safes, bank_accounts, and vehicles
   if (targetModule === 'master_data') {
-    if (['safes', 'banks', 'bank_accounts', 'corporate_banks', 'vehicles', 'items', 'suppliers', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'production_workers', 'users', 'system_config'].includes(tab)) {
+    if (['safes', 'banks', 'bank_accounts', 'corporate_banks', 'vehicles', 'items', 'suppliers', 'clients', 'client_segments', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'production_workers', 'users', 'system_config'].includes(tab)) {
       return { module: 'master_data', tab: (tab === 'banks' || tab === 'corporate_banks') ? 'bank_accounts' : tab };
     }
   }
@@ -166,13 +166,19 @@ export function resolveModuleAndTab(targetModule, targetTab) {
   } else if (tab === 'dues_tracking' || tab === 'dues') {
     mod = 'finance';
     tab = 'dues_tracking';
+  } else if (tab === 'clients' || tab === 'client_master' || tab === 'customers') {
+    mod = 'master_data';
+    tab = 'clients';
+  } else if (tab === 'client_segments' || tab === 'segments' || tab === 'customer_segments') {
+    mod = 'master_data';
+    tab = 'client_segments';
   }
 
   // Infer module if missing or general/landing
   if (!mod || mod === 'landing') {
     const purchasesTabs = ['orders', 'receipts', 'transfers', 'stock', 'stock_count', 'spare_parts'];
     const productionTabs = ['work_orders', 'liquid_tanks', 'liquid_storage', 'faulty_fg', 'fg_inward', 'production_reports'];
-    const masterTabs = ['items', 'suppliers', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'safes', 'banks', 'vehicles', 'production_workers', 'users', 'system_config'];
+    const masterTabs = ['items', 'suppliers', 'clients', 'client_segments', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'safes', 'banks', 'vehicles', 'production_workers', 'users', 'system_config'];
     const financeTabs = ['cash_safes', 'cash_safes_hub', 'custodies_advances', 'dues_tracking', 'banks', 'accounts', 'party_statements', 'financial_statements'];
 
     if (purchasesTabs.includes(tab)) {
