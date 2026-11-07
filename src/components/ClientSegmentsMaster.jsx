@@ -329,11 +329,24 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
   const [isSeeding, setIsSeeding] = useState(false);
   const [formError, setFormError] = useState('');
   const [iconCategoryFilter, setIconCategoryFilter] = useState('all');
+  const [iconSearchQuery, setIconSearchQuery] = useState('');
 
   const displayedIcons = useMemo(() => {
-    if (iconCategoryFilter === 'all') return SEGMENT_ICONS_METADATA;
-    return SEGMENT_ICONS_METADATA.filter((m) => m.category === iconCategoryFilter);
-  }, [iconCategoryFilter]);
+    let list = SEGMENT_ICONS_METADATA;
+    if (iconCategoryFilter !== 'all') {
+      list = list.filter((m) => m.category === iconCategoryFilter);
+    }
+    if (iconSearchQuery.trim()) {
+      const q = iconSearchQuery.toLowerCase().trim();
+      list = list.filter(
+        (m) =>
+          m.key.toLowerCase().includes(q) ||
+          m.labelAr.toLowerCase().includes(q) ||
+          m.labelEn.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [iconCategoryFilter, iconSearchQuery]);
 
   const [formData, setFormData] = useState({
     id: '',
@@ -380,6 +393,7 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
     setEditingSegment(null);
     setFormError('');
     setIconCategoryFilter('all');
+    setIconSearchQuery('');
     setFormData({
       id: `seg_${Date.now()}`,
       nameAr: '',
@@ -395,12 +409,8 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
   const handleOpenEditModal = (segment) => {
     setEditingSegment(segment);
     setFormError('');
-    const foundMeta = SEGMENT_ICONS_METADATA.find((m) => m.key === segment.icon);
-    if (foundMeta) {
-      setIconCategoryFilter(foundMeta.category);
-    } else {
-      setIconCategoryFilter('all');
-    }
+    setIconCategoryFilter('all'); // Show all 55 icons by default on edit so user can choose any food, shipping, or retail icon
+    setIconSearchQuery('');
     setFormData({
       id: segment.id,
       nameAr: segment.nameAr || '',
@@ -821,28 +831,41 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
                   </span>
                 </div>
 
-                {/* Category Filter Tabs */}
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
-                  {SEGMENT_ICON_CATEGORIES.map((cat) => {
-                    const count = cat.id === 'all'
-                      ? SEGMENT_ICONS_METADATA.length
-                      : SEGMENT_ICONS_METADATA.filter((m) => m.category === cat.id).length;
-                    const isActive = iconCategoryFilter === cat.id;
-                    return (
-                      <button
-                        key={cat.id}
-                        type="button"
-                        onClick={() => setIconCategoryFilter(cat.id)}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition shrink-0 cursor-pointer ${
-                          isActive
-                            ? 'bg-purple-600 text-white shadow-xs'
-                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                      >
-                        {isAr ? cat.labelAr : cat.labelEn} ({count})
-                      </button>
-                    );
-                  })}
+                {/* Category Filter Tabs & Quick Icon Search */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
+                  <div className="flex items-center gap-1.5 overflow-x-auto text-xs pb-1 sm:pb-0">
+                    {SEGMENT_ICON_CATEGORIES.map((cat) => {
+                      const count = cat.id === 'all'
+                        ? SEGMENT_ICONS_METADATA.length
+                        : SEGMENT_ICONS_METADATA.filter((m) => m.category === cat.id).length;
+                      const isActive = iconCategoryFilter === cat.id;
+                      return (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => setIconCategoryFilter(cat.id)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition shrink-0 cursor-pointer ${
+                            isActive
+                              ? 'bg-purple-600 text-white shadow-xs'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                        >
+                          {isAr ? cat.labelAr : cat.labelEn} ({count})
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="relative w-full sm:w-36 shrink-0">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute start-2 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={iconSearchQuery}
+                      onChange={(e) => setIconSearchQuery(e.target.value)}
+                      placeholder={isAr ? 'بحث أيقونة...' : 'Search icon...'}
+                      className="w-full ps-7 pe-2 py-1 text-xs bg-slate-100 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    />
+                  </div>
                 </div>
 
                 {/* Grid of Icons */}

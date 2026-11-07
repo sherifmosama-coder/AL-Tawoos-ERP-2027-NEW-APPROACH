@@ -1322,6 +1322,31 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                           </option>
                         ))}
                       </select>
+
+                      {formData.segmentId && segmentMap[formData.segmentId] && (() => {
+                        const activeSeg = segmentMap[formData.segmentId];
+                        const ActiveIcon = SEGMENT_ICON_MAP[activeSeg.icon] || Layers;
+                        return (
+                          <div className="mt-1.5 flex items-center gap-1.5">
+                            <span
+                              className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-bold shadow-2xs"
+                              style={{
+                                backgroundColor: `${activeSeg.color}15`,
+                                color: activeSeg.color,
+                                border: `1px solid ${activeSeg.color}35`
+                              }}
+                            >
+                              <ActiveIcon className="w-3.5 h-3.5" />
+                              <span>{activeSeg.nameAr}</span>
+                            </span>
+                            {activeSeg.description && (
+                              <span className="text-[11px] text-slate-400 truncate max-w-xs">
+                                {activeSeg.description}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     <div>
