@@ -48,7 +48,10 @@ import {
   Navigation,
   CheckCircle2,
   Clock,
-  Boxes
+  Boxes,
+  CalendarDays,
+  FileSpreadsheet,
+  Image as ImageIcon
 } from 'lucide-react';
 import VatNumberInput from './VatNumberInput';
 import VatNumberDisplay from './VatNumberDisplay';
@@ -60,6 +63,70 @@ const normalizePhone = (p) => String(p || '').replace(/\D/g, '').trim();
 
 // Helper to normalize tax card (removes dashes/spaces)
 const normalizeTaxCard = (t) => String(t || '').replace(/[\s-]/g, '').trim();
+
+// Days of the week dictionary
+export const WEEK_DAYS = [
+  { id: 'friday', labelAr: 'الجمعة', labelEn: 'Friday' },
+  { id: 'saturday', labelAr: 'السبت', labelEn: 'Saturday' },
+  { id: 'sunday', labelAr: 'الأحد', labelEn: 'Sunday' },
+  { id: 'monday', labelAr: 'الإثنين', labelEn: 'Monday' },
+  { id: 'tuesday', labelAr: 'الثلاثاء', labelEn: 'Tuesday' },
+  { id: 'wednesday', labelAr: 'الأربعاء', labelEn: 'Wednesday' },
+  { id: 'thursday', labelAr: 'الخميس', labelEn: 'Thursday' }
+];
+
+// Helper to auto-resize client logo to a lightweight square avatar (max 160px)
+export const resizeClientLogo = (file, maxDimension = 160) => {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) {
+      return reject(new Error('Selected file is not an image'));
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.onload = (e) => {
+      const img = new window.Image();
+      img.onerror = () => reject(new Error('Failed to decode image'));
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxDimension) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          }
+        } else {
+          if (height > maxDimension) {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(e.target.result);
+
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, width, height);
+
+        try {
+          const webpData = canvas.toDataURL('image/webp', 0.85);
+          if (webpData && webpData.startsWith('data:image/webp')) {
+            return resolve(webpData);
+          }
+        } catch {
+          // fallback
+        }
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+};
 
 // Settlement Modes Dictionary
 const SETTLEMENT_MODES = [
@@ -144,6 +211,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
   // Form State
   const initialClientForm = {
     id: '',
+    logo: '',
     tradeNameAr: '',
     tradeNameEn: '',
     legalName: '',
@@ -157,6 +225,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     openingBalance: 0,
     latestActivityOn: null,
     notes: '',
+    phones: [],
+    emails: [],
+    weeklyHolidays: ['friday', 'saturday'],
+    workingHoursFrom: '09:00',
+    workingHoursTo: '17:00',
     attachments: [],
     branches: [
       {
@@ -169,6 +242,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         contactPerson: '',
         phone: '',
         mobile: '',
+        phones: [],
+        useCustomSchedule: false,
+        weeklyHolidays: [],
+        workingHoursFrom: '',
+        workingHoursTo: '',
         gpsCoordinates: '',
         notes: ''
       }
@@ -176,6 +254,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
   };
 
   const [formData, setFormData] = useState(initialClientForm);
+  const [phoneInput, setPhoneInput] = useState('');
+  const [emailInput, setEmailInput] = useState('');
 
   // Real-time Sync
   useEffect(() => {
@@ -218,6 +298,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     setEditingClient(null);
     setFormError('');
     setActiveFormTab('profile');
+    setPhoneInput('');
+    setEmailInput('');
 
     // Auto-generate code CLI-XXX
     let nextNum = 101;
@@ -242,9 +324,31 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     setEditingClient(client);
     setFormError('');
     setActiveFormTab('profile');
+    setPhoneInput('');
+    setEmailInput('');
+
+    // Reconcile phones
+    let clientPhones = Array.isArray(client.phones) ? [...client.phones] : [];
+    if (clientPhones.length === 0) {
+      if (client.phone) clientPhones.push(client.phone);
+      if (client.mobile && client.mobile !== client.phone) clientPhones.push(client.mobile);
+    }
+
+    // Reconcile emails
+    let clientEmails = Array.isArray(client.emails) ? [...client.emails] : [];
+    if (clientEmails.length === 0 && client.email) {
+      clientEmails.push(client.email);
+    }
 
     const reconciledBranches = (client.branches && client.branches.length > 0)
-      ? client.branches
+      ? client.branches.map((b) => ({
+          ...b,
+          phones: Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : []),
+          useCustomSchedule: b.useCustomSchedule === true,
+          weeklyHolidays: Array.isArray(b.weeklyHolidays) ? b.weeklyHolidays : [],
+          workingHoursFrom: b.workingHoursFrom || '',
+          workingHoursTo: b.workingHoursTo || ''
+        }))
       : [
           {
             id: 'br_main',
@@ -256,6 +360,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             contactPerson: client.contactPerson || '',
             phone: client.phone || '',
             mobile: client.mobile || '',
+            phones: client.phone ? [client.phone] : [],
+            useCustomSchedule: false,
+            weeklyHolidays: [],
+            workingHoursFrom: '',
+            workingHoursTo: '',
             gpsCoordinates: client.gpsCoordinates || '',
             notes: ''
           }
@@ -263,6 +372,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
     setFormData({
       id: client.id,
+      logo: client.logo || '',
       tradeNameAr: client.tradeNameAr || client.name || '',
       tradeNameEn: client.tradeNameEn || '',
       legalName: client.legalName || client.taxpayerLegalName || '',
@@ -276,6 +386,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       openingBalance: Number(client.openingBalance) || 0,
       latestActivityOn: client.latestActivityOn || null,
       notes: client.notes || '',
+      phones: clientPhones,
+      emails: clientEmails,
+      weeklyHolidays: Array.isArray(client.weeklyHolidays) ? client.weeklyHolidays : ['friday', 'saturday'],
+      workingHoursFrom: client.workingHoursFrom || '09:00',
+      workingHoursTo: client.workingHoursTo || '17:00',
       attachments: client.attachments || [],
       branches: reconciledBranches
     });
@@ -292,11 +407,23 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
     // Collect all non-empty phone and mobile numbers from target
     const targetPhones = new Set();
+    (targetFormData.phones || []).forEach((p) => {
+      const np = normalizePhone(p);
+      if (np) targetPhones.add(np);
+    });
+    if (targetFormData.phone) {
+      const np = normalizePhone(targetFormData.phone);
+      if (np) targetPhones.add(np);
+    }
     (targetFormData.branches || []).forEach((b) => {
       const p = normalizePhone(b.phone);
       const m = normalizePhone(b.mobile);
       if (p) targetPhones.add(p);
       if (m) targetPhones.add(m);
+      (b.phones || []).forEach((bp) => {
+        const nbp = normalizePhone(bp);
+        if (nbp) targetPhones.add(nbp);
+      });
     });
 
     for (const existing of clients) {
@@ -334,14 +461,22 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       // 3. Check Phone Numbers (ONLY if non-empty)
       if (targetPhones.size > 0) {
         const existPhones = new Set();
+        (existing.phones || []).forEach((p) => {
+          const np = normalizePhone(p);
+          if (np) existPhones.add(np);
+        });
+        if (existing.phone) existPhones.add(normalizePhone(existing.phone));
+        if (existing.mobile) existPhones.add(normalizePhone(existing.mobile));
         (existing.branches || []).forEach((b) => {
           const p = normalizePhone(b.phone);
           const m = normalizePhone(b.mobile);
           if (p) existPhones.add(p);
           if (m) existPhones.add(m);
+          (b.phones || []).forEach((bp) => {
+            const nbp = normalizePhone(bp);
+            if (nbp) existPhones.add(nbp);
+          });
         });
-        if (existing.phone) existPhones.add(normalizePhone(existing.phone));
-        if (existing.mobile) existPhones.add(normalizePhone(existing.mobile));
 
         for (const phone of targetPhones) {
           if (phone && existPhones.has(phone)) {
@@ -395,7 +530,18 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         creditLimit: Math.max(0, Number(formData.creditLimit) || 0),
         openingBalance: Number(formData.openingBalance) || 0,
         notes: formData.notes.trim(),
-        branches: formData.branches || [],
+        logo: formData.logo || '',
+        phones: formData.phones || [],
+        phone: (formData.phones && formData.phones[0]) || '',
+        emails: formData.emails || [],
+        email: (formData.emails && formData.emails[0]) || '',
+        weeklyHolidays: formData.weeklyHolidays || [],
+        workingHoursFrom: formData.workingHoursFrom || '',
+        workingHoursTo: formData.workingHoursTo || '',
+        branches: (formData.branches || []).map((b) => ({
+          ...b,
+          phone: (b.phones && b.phones[0]) || b.phone || ''
+        })),
         branchesCount: (formData.branches || []).length,
         attachments: formData.attachments || [],
         // Preserve latestActivityOn (strictly managed upon delivery)
@@ -413,6 +559,73 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       console.error('Error saving client:', err);
       setFormError(err.message || 'Failed to save client');
     }
+  };
+
+  // Logo upload with Canvas-based resize
+  const handleLogoUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const resizedDataUrl = await resizeClientLogo(file, 160);
+      setFormData((prev) => ({ ...prev, logo: resizedDataUrl }));
+    } catch (err) {
+      console.error('Error processing client logo:', err);
+      alert(isAr ? 'فشل معالجة صورة الشعار' : 'Failed to process logo image');
+    }
+  };
+
+  // Multiple Phones & Emails Handlers
+  const handleAddPhone = () => {
+    const p = phoneInput.trim();
+    if (!p) return;
+    const current = formData.phones || [];
+    if (!current.includes(p)) {
+      setFormData({ ...formData, phones: [...current, p] });
+    }
+    setPhoneInput('');
+  };
+
+  const handleRemovePhone = (index) => {
+    const current = [...(formData.phones || [])];
+    current.splice(index, 1);
+    setFormData({ ...formData, phones: current });
+  };
+
+  const handleAddEmail = () => {
+    const em = emailInput.trim();
+    if (!em) return;
+    const current = formData.emails || [];
+    if (!current.includes(em)) {
+      setFormData({ ...formData, emails: [...current, em] });
+    }
+    setEmailInput('');
+  };
+
+  const handleRemoveEmail = (index) => {
+    const current = [...(formData.emails || [])];
+    current.splice(index, 1);
+    setFormData({ ...formData, emails: current });
+  };
+
+  // Weekly Holidays Handlers
+  const handleToggleWeeklyHoliday = (dayId) => {
+    const current = formData.weeklyHolidays || [];
+    if (current.includes(dayId)) {
+      setFormData({ ...formData, weeklyHolidays: current.filter((d) => d !== dayId) });
+    } else {
+      setFormData({ ...formData, weeklyHolidays: [...current, dayId] });
+    }
+  };
+
+  const handleToggleBranchHoliday = (bIdx, dayId) => {
+    const updated = [...(formData.branches || [])];
+    const bHolidays = updated[bIdx].weeklyHolidays || [];
+    if (bHolidays.includes(dayId)) {
+      updated[bIdx].weeklyHolidays = bHolidays.filter((d) => d !== dayId);
+    } else {
+      updated[bIdx].weeklyHolidays = [...bHolidays, dayId];
+    }
+    setFormData({ ...formData, branches: updated });
   };
 
   // Delete Client
@@ -438,6 +651,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       contactPerson: '',
       phone: '',
       mobile: '',
+      phones: [],
+      useCustomSchedule: false,
+      weeklyHolidays: [],
+      workingHoursFrom: '',
+      workingHoursTo: '',
       gpsCoordinates: '',
       notes: ''
     };
@@ -513,33 +731,43 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       'taxDistrict',
       'settlementMode',
       'creditLimit',
+      'phones',
+      'emails',
+      'weeklyHolidays',
+      'workingHoursFrom',
+      'workingHoursTo',
       'branchName',
       'address',
       'region',
       'contactPerson',
-      'phone',
-      'mobile',
+      'branchPhone',
       'gpsCoordinates'
     ];
+
+    const allowedSegmentsList = segments.map((s) => s.nameAr).join(' | ');
 
     const sampleRow1 = [
       'CLI-101',
       'شركة التوفيق للتجارة',
       'Al-Tawfeeq Trading Co.',
       'شركة التوفيق للتجارة والتوزيع ش.م.م',
-      'جملة',
+      segments[0]?.nameAr || 'جملة',
       'wholesalers',
       '123-456-789',
       '109844',
       'مأمورية شركات المساهمة',
       'cod',
       '0',
+      '01012345678; 01212345678',
+      'orders@tawfeeq.com; info@tawfeeq.com',
+      'الجمعة; السبت',
+      '09:00',
+      '17:00',
       'الفرع الرئيسي',
       'شارع المعز - باب الشعرية - القاهرة',
       'القاهرة',
       'أ. محمد توفيق',
       '01012345678',
-      '01212345678',
       'https://maps.google.com/?q=30.05,31.25'
     ];
 
@@ -548,45 +776,108 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       'سلسلة سوبر ماركت البركة',
       'Al-Baraka Supermarkets',
       'البركة لتجارة التجزئة والتوزيع',
-      'سلاسل تجارية / كبرى',
+      segments[1]?.nameAr || 'سلاسل تجارية / كبرى',
       'special_pricing',
       '987-654-321',
       '205411',
       'مأمورية 6 أكتوبر',
       'rolling_credit',
       '150000',
+      '01122334455; 01522334455',
+      'baraka@supermarket.com',
+      'الجمعة',
+      '08:30',
+      '22:00',
       'فرع التجمع الخامس',
       'شارع التسعين الشمالي - مول النرجس',
       'القاهرة الجديدة',
       'أ. عمرو عبد الله',
       '01122334455',
-      '01522334455',
       ''
     ];
 
     const csvContent =
       '\uFEFF' +
-      [headers.join(','), sampleRow1.map((v) => `"${v}"`).join(','), sampleRow2.map((v) => `"${v}"`).join(',')].join(
-        '\n'
-      );
+      [
+        `# Tawoos ERP Clients Bulk Import Template - Valid Segments: [${allowedSegmentsList}]`,
+        headers.join(','),
+        sampleRow1.map((v) => `"${v}"`).join(','),
+        sampleRow2.map((v) => `"${v}"`).join(',')
+      ].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'tawoos_clients_import_template.csv';
+    link.setAttribute('download', 'tawoos_clients_import_template.csv');
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const handleUpdateImportRowSegment = (rowIndex, newSegmentId) => {
+    const updated = [...importRows];
+    const row = { ...updated[rowIndex] };
+    row.segmentId = newSegmentId;
+    if (newSegmentId) {
+      const segObj = segments.find((s) => s.id === newSegmentId);
+      row.segmentRaw = segObj ? segObj.nameAr : newSegmentId;
+      // Re-evaluate duplicates and errors
+      const dupCheck = checkDuplicates({
+        taxCardNumber: row.taxCardNumber,
+        tradeNameAr: row.tradeNameAr,
+        tradeNameEn: row.tradeNameEn,
+        phones: row.phones,
+        branches: [{ phone: row.branchPhone, mobile: row.branchPhone, phones: row.phones }]
+      });
+      if (dupCheck) {
+        row.isValid = false;
+        row.errorReason = dupCheck;
+      } else {
+        row.isValid = true;
+        row.errorReason = '';
+      }
+    } else {
+      row.isValid = false;
+      row.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+    }
+    updated[rowIndex] = row;
+    setImportRows(updated);
+
+    const validCount = updated.filter((r) => r.isValid).length;
+    setImportStats({
+      total: updated.length,
+      valid: validCount,
+      invalid: updated.length - validCount
+    });
   };
 
   const handleParseCsvFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    const parseDelimited = (str) =>
+      String(str || '')
+        .split(/[;,]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+    const normalizeArText = (t) =>
+      String(t || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[أإآ]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/\s+/g, ' ');
+
     const reader = new FileReader();
     reader.onload = (evt) => {
       const text = evt.target.result;
-      const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      const lines = text
+        .split(/\r?\n/)
+        .filter((l) => l.trim().length > 0 && !l.trim().startsWith('#'));
       if (lines.length < 2) {
         alert(isAr ? 'الملف لا يحتوي على بيانات كافية' : 'CSV file is empty');
         return;
@@ -598,13 +889,60 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       const seenInCsvNames = new Set();
 
       for (let i = 1; i < lines.length; i++) {
-        // Simple regex parser handling quoted commas
-        const rawMatches = lines[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || [];
         const cols = lines[i]
           .split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)
           .map((v) => v.replace(/^"|"$/g, '').trim());
 
         if (cols.length < 2 || !cols[1]) continue;
+
+        let phones = [];
+        let emails = [];
+        let weeklyHolidays = ['friday', 'saturday'];
+        let workingHoursFrom = '09:00';
+        let workingHoursTo = '17:00';
+        let branchName = 'الفرع الرئيسي';
+        let address = '';
+        let region = '';
+        let contactPerson = '';
+        let branchPhone = '';
+        let gpsCoordinates = '';
+
+        if (cols.length >= 22) {
+          phones = parseDelimited(cols[11]);
+          emails = parseDelimited(cols[12]);
+          const rawHolidays = parseDelimited(cols[13]);
+          if (rawHolidays.length > 0) {
+            weeklyHolidays = rawHolidays.map((h) => {
+              const day = WEEK_DAYS.find(
+                (d) =>
+                  d.id === h.toLowerCase() ||
+                  d.labelAr === h ||
+                  d.labelEn.toLowerCase() === h.toLowerCase()
+              );
+              return day ? day.id : h;
+            });
+          }
+          workingHoursFrom = cols[14] || '09:00';
+          workingHoursTo = cols[15] || '17:00';
+          branchName = cols[16] || 'الفرع الرئيسي';
+          address = cols[17] || '';
+          region = cols[18] || '';
+          contactPerson = cols[19] || '';
+          branchPhone = cols[20] || '';
+          gpsCoordinates = cols[21] || '';
+        } else {
+          // Backward-compatible mapping for older 18-col template
+          branchName = cols[11] || 'الفرع الرئيسي';
+          address = cols[12] || '';
+          region = cols[13] || '';
+          contactPerson = cols[14] || '';
+          const p1 = cols[15] || '';
+          const p2 = cols[16] || '';
+          if (p1) phones.push(p1);
+          if (p2 && p2 !== p1) phones.push(p2);
+          branchPhone = p1;
+          gpsCoordinates = cols[17] || '';
+        }
 
         const rowData = {
           code: cols[0] || `CLI-${Date.now() + i}`,
@@ -618,57 +956,86 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           taxDistrict: cols[8] || '',
           settlementMode: ['cod', 'credit', 'rolling_credit'].includes(cols[9]) ? cols[9] : 'cod',
           creditLimit: Math.max(0, parseFloat(cols[10]) || 0),
-          branchName: cols[11] || 'الفرع الرئيسي',
-          address: cols[12] || '',
-          region: cols[13] || '',
-          contactPerson: cols[14] || '',
-          phone: cols[15] || '',
-          mobile: cols[16] || '',
-          gpsCoordinates: cols[17] || '',
+          phones,
+          emails,
+          weeklyHolidays,
+          workingHoursFrom,
+          workingHoursTo,
+          branchName,
+          address,
+          region,
+          contactPerson,
+          branchPhone,
+          gpsCoordinates,
           isValid: true,
           errorReason: ''
         };
 
-        // Match segment ID
+        // Strict segment matching with Arabic normalization and no silent fallback
+        const cleanSegRaw = (rowData.segmentRaw || '').trim();
+        const normRaw = normalizeArText(cleanSegRaw);
         const matchedSeg = segments.find(
           (s) =>
-            s.nameAr === rowData.segmentRaw ||
-            s.nameEn?.toLowerCase() === rowData.segmentRaw.toLowerCase() ||
-            s.id === rowData.segmentRaw
+            s.nameAr === cleanSegRaw ||
+            s.nameEn?.toLowerCase() === cleanSegRaw.toLowerCase() ||
+            s.id === cleanSegRaw ||
+            normalizeArText(s.nameAr) === normRaw ||
+            normalizeArText(s.nameEn) === normRaw
         );
-        rowData.segmentId = matchedSeg ? matchedSeg.id : segments[0]?.id || '';
+
+        if (matchedSeg) {
+          rowData.segmentId = matchedSeg.id;
+          rowData.segmentRaw = matchedSeg.nameAr;
+        } else {
+          rowData.segmentId = '';
+          rowData.isValid = false;
+          const availableSegs = segments.map((s) => s.nameAr).join('، ');
+          rowData.errorReason = isAr
+            ? `قطاع غير معرّف أو به خطأ: "${cleanSegRaw || 'فارغ'}". القطاعات المتاحة: (${availableSegs})`
+            : `Unrecognized segment: "${cleanSegRaw || 'empty'}". Allowed segments: (${availableSegs})`;
+        }
 
         // Validation against live database
-        const dupCheck = checkDuplicates({
-          taxCardNumber: rowData.taxCardNumber,
-          tradeNameAr: rowData.tradeNameAr,
-          tradeNameEn: rowData.tradeNameEn,
-          branches: [{ phone: rowData.phone, mobile: rowData.mobile }]
-        });
+        if (rowData.isValid) {
+          const dupCheck = checkDuplicates({
+            taxCardNumber: rowData.taxCardNumber,
+            tradeNameAr: rowData.tradeNameAr,
+            tradeNameEn: rowData.tradeNameEn,
+            phones: rowData.phones,
+            branches: [{ phone: rowData.branchPhone, mobile: rowData.branchPhone, phones: rowData.phones }]
+          });
 
-        if (dupCheck) {
-          rowData.isValid = false;
-          rowData.errorReason = dupCheck;
-        } else {
-          // Check internal duplicates within CSV
+          if (dupCheck) {
+            rowData.isValid = false;
+            rowData.errorReason = dupCheck;
+          }
+        }
+
+        // Check internal duplicates within CSV
+        if (rowData.isValid) {
           const cleanTax = normalizeTaxCard(rowData.taxCardNumber);
-          const cleanPhone = normalizePhone(rowData.phone);
           const cleanName = rowData.tradeNameAr.toLowerCase();
+          const cleanPhones = rowData.phones.map(normalizePhone).filter(Boolean);
 
           if (cleanTax && seenInCsvTax.has(cleanTax)) {
             rowData.isValid = false;
             rowData.errorReason = isAr ? 'رقم البطاقة الضريبية مكرر داخل نفس الملف' : 'Tax Card duplicated inside CSV';
-          } else if (cleanPhone && seenInCsvPhones.has(cleanPhone)) {
-            rowData.isValid = false;
-            rowData.errorReason = isAr ? 'رقم الهاتف مكرر داخل نفس الملف' : 'Phone number duplicated inside CSV';
           } else if (cleanName && seenInCsvNames.has(cleanName)) {
             rowData.isValid = false;
             rowData.errorReason = isAr ? 'اسم العميل مكرر داخل نفس الملف' : 'Client name duplicated inside CSV';
+          } else {
+            for (const cp of cleanPhones) {
+              if (seenInCsvPhones.has(cp)) {
+                rowData.isValid = false;
+                rowData.errorReason = isAr ? `رقم الهاتف (${cp}) مكرر داخل نفس الملف` : `Phone (${cp}) duplicated inside CSV`;
+                break;
+              }
+            }
           }
 
           if (cleanTax) seenInCsvTax.add(cleanTax);
-          if (cleanPhone) seenInCsvPhones.add(cleanPhone);
           if (cleanName) seenInCsvNames.add(cleanName);
+          cleanPhones.forEach((cp) => seenInCsvPhones.add(cp));
         }
 
         rows.push(rowData);
@@ -707,6 +1074,13 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           creditLimit: r.creditLimit,
           openingBalance: 0,
           latestActivityOn: null,
+          phones: r.phones || [],
+          phone: (r.phones && r.phones[0]) || r.branchPhone || '',
+          emails: r.emails || [],
+          email: (r.emails && r.emails[0]) || '',
+          weeklyHolidays: r.weeklyHolidays || ['friday', 'saturday'],
+          workingHoursFrom: r.workingHoursFrom || '09:00',
+          workingHoursTo: r.workingHoursTo || '17:00',
           branches: [
             {
               id: 'br_main',
@@ -716,8 +1090,13 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               region: r.region,
               address: r.address,
               contactPerson: r.contactPerson,
-              phone: r.phone,
-              mobile: r.mobile,
+              phone: r.branchPhone || (r.phones && r.phones[0]) || '',
+              mobile: (r.phones && r.phones[1]) || '',
+              phones: r.phones || [],
+              useCustomSchedule: false,
+              weeklyHolidays: [],
+              workingHoursFrom: '',
+              workingHoursTo: '',
               gpsCoordinates: r.gpsCoordinates,
               notes: ''
             }
@@ -876,11 +1255,22 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         {/* Action Buttons */}
         <div className="flex items-center gap-2 flex-wrap shrink-0">
           {canBulkImport && (
-            <label className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition cursor-pointer border border-slate-200">
-              <UploadCloud className="w-4 h-4 text-slate-500" />
-              <span>{isAr ? 'استيراد عملاء (CSV)' : 'Import CSV'}</span>
-              <input type="file" accept=".csv" onChange={handleParseCsvFile} className="hidden" />
-            </label>
+            <div className="flex items-center gap-1">
+              <label className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition cursor-pointer border border-slate-200">
+                <UploadCloud className="w-4 h-4 text-slate-500" />
+                <span>{isAr ? 'استيراد عملاء (CSV)' : 'Import CSV'}</span>
+                <input type="file" accept=".csv" onChange={handleParseCsvFile} className="hidden" />
+              </label>
+
+              <button
+                type="button"
+                onClick={handleDownloadTemplate}
+                className="p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition border border-transparent hover:border-slate-200 cursor-pointer"
+                title={isAr ? 'تحميل نموذج قالب CSV فارغ للاستيراد' : 'Download blank CSV template'}
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+              </button>
+            </div>
           )}
 
           <button
@@ -952,25 +1342,38 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
                         {/* Name & Legal */}
                         <td className="py-3.5 px-4">
-                          <div className="flex flex-col">
-                            <span className="font-black text-slate-800 text-sm">
-                              {client.tradeNameAr || client.name}
-                            </span>
-                            {client.tradeNameEn && (
-                              <span className="text-xs text-slate-400 font-semibold" dir="ltr">
-                                {client.tradeNameEn}
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs">
+                              {client.logo ? (
+                                <img
+                                  src={client.logo}
+                                  alt={client.tradeNameAr}
+                                  className="w-full h-full object-contain p-0.5"
+                                />
+                              ) : (
+                                <IconCmp className="w-4 h-4 text-slate-500" />
+                              )}
+                            </div>
+                            <div className="flex flex-col min-w-0">
+                              <span className="font-black text-slate-800 text-sm truncate">
+                                {client.tradeNameAr || client.name}
                               </span>
-                            )}
-                            {canViewTaxCard && client.taxCardNumber && (
-                              <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
-                                <span className="text-[10px] font-bold text-slate-400">{isAr ? 'ضريبي:' : 'VAT:'}</span>
-                                <VatNumberDisplay value={client.taxCardNumber} className="text-xs font-mono font-bold" />
-                              </div>
-                            )}
+                              {client.tradeNameEn && (
+                                <span className="text-xs text-slate-400 font-semibold truncate" dir="ltr">
+                                  {client.tradeNameEn}
+                                </span>
+                              )}
+                              {canViewTaxCard && client.taxCardNumber && (
+                                <div className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-500">
+                                  <span className="text-[10px] font-bold text-slate-400">{isAr ? 'ضريبي:' : 'VAT:'}</span>
+                                  <VatNumberDisplay value={client.taxCardNumber} className="text-xs font-mono font-bold" />
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
 
-                        {/* Segment Badge */}
+                        {/* Segment Badge (Logo replaces icon if present) */}
                         <td className="py-3.5 px-4 whitespace-nowrap">
                           {seg ? (
                             <span
@@ -981,7 +1384,15 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                 border: `1px solid ${seg.color}30`
                               }}
                             >
-                              <IconCmp className="w-3.5 h-3.5" />
+                              {client.logo ? (
+                                <img
+                                  src={client.logo}
+                                  alt=""
+                                  className="w-4 h-4 object-contain rounded-xs shrink-0"
+                                />
+                              ) : (
+                                <IconCmp className="w-3.5 h-3.5 shrink-0" />
+                              )}
                               <span>{seg.nameAr}</span>
                             </span>
                           ) : (
@@ -1086,6 +1497,59 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                         <tr className="bg-slate-50/90 border-b border-slate-200 animate__animated animate__fadeIn">
                           <td colSpan={8} className="p-4">
                             <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-inner space-y-3">
+                              {/* Client Operational & Communication Banner */}
+                              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+                                <div className="flex items-center gap-4 flex-wrap">
+                                  {/* Phones */}
+                                  <div className="flex items-center gap-1.5">
+                                    <Phone className="w-3.5 h-3.5 text-blue-600" />
+                                    <span className="font-bold text-slate-700">{isAr ? 'الهواتف:' : 'Phones:'}</span>
+                                    <span className="font-mono text-slate-600">
+                                      {(client.phones && client.phones.length > 0)
+                                        ? client.phones.join(' • ')
+                                        : (client.phone || '—')}
+                                    </span>
+                                  </div>
+
+                                  {/* Emails */}
+                                  {((client.emails && client.emails.length > 0) || client.email) && (
+                                    <div className="flex items-center gap-1.5">
+                                      <Mail className="w-3.5 h-3.5 text-purple-600" />
+                                      <span className="font-bold text-slate-700">{isAr ? 'البريد:' : 'Emails:'}</span>
+                                      <span className="font-mono text-slate-600">
+                                        {(client.emails && client.emails.length > 0)
+                                          ? client.emails.join(' • ')
+                                          : client.email}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-4 flex-wrap">
+                                  {/* Working Hours */}
+                                  <div className="flex items-center gap-1.5">
+                                    <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                                    <span className="font-bold text-slate-700">{isAr ? 'مواعيد العمل:' : 'Hours:'}</span>
+                                    <span className="font-mono font-bold text-slate-600">
+                                      {client.workingHoursFrom || '09:00'} - {client.workingHoursTo || '17:00'}
+                                    </span>
+                                  </div>
+
+                                  {/* Weekly Holidays */}
+                                  <div className="flex items-center gap-1.5">
+                                    <CalendarDays className="w-3.5 h-3.5 text-amber-600" />
+                                    <span className="font-bold text-slate-700">{isAr ? 'العطلات:' : 'Holidays:'}</span>
+                                    <span className="font-bold text-slate-600">
+                                      {(client.weeklyHolidays && client.weeklyHolidays.length > 0)
+                                        ? client.weeklyHolidays
+                                            .map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h)
+                                            .join('، ')
+                                        : (isAr ? 'لا توجد عطلات' : 'None')}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
                               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                                 <h4 className="text-xs font-black text-slate-800 flex items-center gap-2">
                                   <MapPin className="w-4 h-4 text-blue-600" />
@@ -1161,6 +1625,19 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                         </a>
                                       )}
                                     </div>
+
+                                    {b.useCustomSchedule ? (
+                                      <div className="pt-1 border-t border-slate-200/60 text-[10px] text-amber-800 font-bold">
+                                        <span>{isAr ? 'مواعيد خاصة:' : 'Custom hours:'} {b.workingHoursFrom || '09:00'} - {b.workingHoursTo || '17:00'}</span>
+                                        {b.weeklyHolidays && b.weeklyHolidays.length > 0 && (
+                                          <span className="ms-1">({b.weeklyHolidays.map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h).join('، ')})</span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="pt-1 border-t border-slate-200/60 text-[10px] text-slate-400 font-semibold">
+                                        <span>{isAr ? 'مواعيد العمل والعطلات: موحدة مع العميل' : 'Standard client operational schedule'}</span>
+                                      </div>
+                                    )}
                                   </div>
                                 ))}
                               </div>
@@ -1258,6 +1735,67 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               {/* TAB 1: Profile & Pricing */}
               {activeFormTab === 'profile' && (
                 <div className="space-y-4">
+                  {/* Client Logo Upload Section */}
+                  <div className="flex items-center gap-4 p-3.5 bg-slate-50 rounded-2xl border border-slate-200">
+                    <div className="relative w-16 h-16 rounded-2xl border-2 border-dashed border-slate-300 hover:border-blue-500 bg-white flex items-center justify-center overflow-hidden shrink-0 group shadow-2xs">
+                      {formData.logo ? (
+                        <img
+                          src={formData.logo}
+                          alt={formData.tradeNameAr || 'Logo'}
+                          className="w-full h-full object-contain p-1"
+                        />
+                      ) : formData.segmentId && segmentMap[formData.segmentId] ? (
+                        (() => {
+                          const ActiveIcon = SEGMENT_ICON_MAP[segmentMap[formData.segmentId].icon] || Layers;
+                          return <ActiveIcon className="w-8 h-8 text-slate-400 group-hover:text-blue-500 transition" />;
+                        })()
+                      ) : (
+                        <Building2 className="w-8 h-8 text-slate-300" />
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <label className="text-xs font-bold text-slate-800">
+                          {isAr ? 'شعار العميل (Logo)' : 'Client Brand Logo'}
+                        </label>
+                        {formData.logo && (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
+                            {isAr ? 'محسن ومضغوط' : 'Optimized'}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500 mb-2">
+                        {isAr
+                          ? 'يتم ضغط الشعار تلقائياً ليحل محل أيقونة القطاع في التباديل والتقارير'
+                          : 'Auto-resized to replace the segment icon across the ERP'}
+                      </p>
+
+                      <div className="flex items-center gap-2">
+                        <label className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold cursor-pointer transition flex items-center gap-1.5 shadow-2xs">
+                          <UploadCloud className="w-3.5 h-3.5 text-blue-600" />
+                          <span>{formData.logo ? (isAr ? 'تغيير الشعار' : 'Change Logo') : (isAr ? 'رفع شعار العميل' : 'Upload Logo')}</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleLogoUpload}
+                            className="hidden"
+                          />
+                        </label>
+
+                        {formData.logo && (
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, logo: '' })}
+                            className="px-2.5 py-1 text-xs text-rose-600 hover:bg-rose-50 rounded-lg font-bold transition cursor-pointer"
+                          >
+                            {isAr ? 'إزالة الشعار' : 'Remove Logo'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Row 1: Names */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
@@ -1336,7 +1874,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                 border: `1px solid ${activeSeg.color}35`
                               }}
                             >
-                              <ActiveIcon className="w-3.5 h-3.5" />
+                              {formData.logo ? (
+                                <img src={formData.logo} alt="" className="w-3.5 h-3.5 object-contain rounded-xs" />
+                              ) : (
+                                <ActiveIcon className="w-3.5 h-3.5" />
+                              )}
                               <span>{activeSeg.nameAr}</span>
                             </span>
                             {activeSeg.description && (
@@ -1443,6 +1985,189 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                           ? (isAr ? '💡 0 تعني: حد ائتماني مفتوح وغير مقيد' : '💡 0 means Unlimited / No Credit Limit')
                           : (isAr ? `الحد الأقصى للمديونية: ${Number(formData.creditLimit).toLocaleString()} ج.م` : `Cap: ${Number(formData.creditLimit).toLocaleString()} EGP`)}
                       </span>
+                    </div>
+                  </div>
+
+                  {/* Row 6: Multiple Phones & Emails */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                    {/* Multiple Phones */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        {isAr ? 'أرقام هواتف التواصل (متعدد)' : 'Contact Phone Numbers (Multiple)'}
+                      </label>
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <input
+                          type="text"
+                          value={phoneInput}
+                          onChange={(e) => setPhoneInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddPhone();
+                            }
+                          }}
+                          placeholder={isAr ? 'أدخل رقم الهاتف واضغط إضافة...' : 'Add phone and press Enter...'}
+                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddPhone}
+                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shrink-0 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5 min-h-[28px]">
+                        {(formData.phones || []).map((p, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 shadow-2xs"
+                          >
+                            <Phone className="w-3 h-3 text-blue-500" />
+                            <span>{p}</span>
+                            {idx === 0 && (
+                              <span className="text-[9px] bg-blue-50 text-blue-600 px-1 py-0.2 rounded font-bold">
+                                {isAr ? 'رئيسي' : 'Primary'}
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleRemovePhone(idx)}
+                              className="text-slate-400 hover:text-rose-600 transition ms-1"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                        {(formData.phones || []).length === 0 && (
+                          <span className="text-[11px] text-slate-400 italic">
+                            {isAr ? 'لم يتم إضافة أرقام هواتف بعد' : 'No phone numbers added yet'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Multiple Emails */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        {isAr ? 'عناوين البريد الإلكتروني (متعدد)' : 'Email Addresses (Multiple)'}
+                      </label>
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <input
+                          type="email"
+                          value={emailInput}
+                          onChange={(e) => setEmailInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddEmail();
+                            }
+                          }}
+                          placeholder={isAr ? 'أدخل البريد واضغط إضافة...' : 'Add email and press Enter...'}
+                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddEmail}
+                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shrink-0 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5 min-h-[28px]">
+                        {(formData.emails || []).map((em, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 shadow-2xs"
+                          >
+                            <Mail className="w-3 h-3 text-blue-500" />
+                            <span>{em}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveEmail(idx)}
+                              className="text-slate-400 hover:text-rose-600 transition ms-1"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                        {(formData.emails || []).length === 0 && (
+                          <span className="text-[11px] text-slate-400 italic">
+                            {isAr ? 'لم يتم إضافة بريد إلكتروني بعد' : 'No email addresses added yet'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 7: Operational Schedule (Weekly Holidays & Working Hours) */}
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-blue-600" />
+                        <span className="text-xs font-bold text-slate-800">
+                          {isAr ? 'مواعيد العمل والعطلات الأسبوعية للعميل' : 'Client Operational Schedule & Holidays'}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        {isAr ? 'المواعيد القياسية لفروع العميل' : 'Standard defaults for client branches'}
+                      </span>
+                    </div>
+
+                    {/* Holidays Days Checkbox Group */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                        {isAr ? 'أيام العطلة الأسبوعية (لا يتم جدولة تسليم فيها):' : 'Weekly Holidays (No deliveries scheduled):'}
+                      </label>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {WEEK_DAYS.map((day) => {
+                          const isSelected = (formData.weeklyHolidays || []).includes(day.id);
+                          return (
+                            <button
+                              key={day.id}
+                              type="button"
+                              onClick={() => handleToggleWeeklyHoliday(day.id)}
+                              className={`px-3 py-1 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                                isSelected
+                                  ? 'bg-blue-600 text-white shadow-xs'
+                                  : 'bg-white text-slate-600 hover:bg-slate-200 border border-slate-200'
+                              }`}
+                            >
+                              {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                              <span>{isAr ? day.labelAr : day.labelEn}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Working Hours From / To */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          {isAr ? 'ساعات العمل من:' : 'Working Hours From:'}
+                        </label>
+                        <input
+                          type="time"
+                          value={formData.workingHoursFrom || '09:00'}
+                          onChange={(e) => setFormData({ ...formData, workingHoursFrom: e.target.value })}
+                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          {isAr ? 'ساعات العمل حتى:' : 'Working Hours To:'}
+                        </label>
+                        <input
+                          type="time"
+                          value={formData.workingHoursTo || '17:00'}
+                          onChange={(e) => setFormData({ ...formData, workingHoursTo: e.target.value })}
+                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -1614,6 +2339,78 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                               dir="ltr"
                             />
                           </div>
+                        </div>
+
+                        {/* Branch Schedule & Holidays Standardization Toggle */}
+                        <div className="pt-2 border-t border-slate-200/60 space-y-2">
+                          <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!branch.useCustomSchedule}
+                              onChange={(e) => handleUpdateBranch(bIdx, 'useCustomSchedule', !e.target.checked)}
+                              className="rounded text-blue-600 focus:ring-blue-500"
+                            />
+                            <span>
+                              {isAr
+                                ? 'استخدام عطلات ومواعيد عمل العميل القياسية الموحدة'
+                                : 'Inherit standard client operational schedule & holidays'}
+                            </span>
+                          </label>
+
+                          {branch.useCustomSchedule && (
+                            <div className="p-3 bg-white rounded-xl border border-slate-200 space-y-2.5">
+                              <div>
+                                <span className="block text-[11px] font-bold text-slate-600 mb-1">
+                                  {isAr ? 'عطلات هذا الفرع الخاصة:' : 'Branch-Specific Holidays:'}
+                                </span>
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  {WEEK_DAYS.map((day) => {
+                                    const isSelected = (branch.weeklyHolidays || []).includes(day.id);
+                                    return (
+                                      <button
+                                        key={day.id}
+                                        type="button"
+                                        onClick={() => handleToggleBranchHoliday(bIdx, day.id)}
+                                        className={`px-2.5 py-0.5 rounded-lg text-[11px] font-bold transition cursor-pointer flex items-center gap-1 ${
+                                          isSelected
+                                            ? 'bg-blue-600 text-white'
+                                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                        }`}
+                                      >
+                                        {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                                        <span>{isAr ? day.labelAr : day.labelEn}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <span className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                    {isAr ? 'ساعات العمل من:' : 'Working Hours From:'}
+                                  </span>
+                                  <input
+                                    type="time"
+                                    value={branch.workingHoursFrom || '09:00'}
+                                    onChange={(e) => handleUpdateBranch(bIdx, 'workingHoursFrom', e.target.value)}
+                                    className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                    {isAr ? 'حتى:' : 'Working Hours To:'}
+                                  </span>
+                                  <input
+                                    type="time"
+                                    value={branch.workingHoursTo || '17:00'}
+                                    onChange={(e) => handleUpdateBranch(bIdx, 'workingHoursTo', e.target.value)}
+                                    className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1802,9 +2599,35 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                       </td>
                       <td className="py-2 px-3 font-mono">{row.code}</td>
                       <td className="py-2 px-3 font-bold">{row.tradeNameAr}</td>
-                      <td className="py-2 px-3">{row.segmentRaw}</td>
+                      <td className="py-2 px-3">
+                        <select
+                          value={row.segmentId || ''}
+                          onChange={(e) => handleUpdateImportRowSegment(idx, e.target.value)}
+                          className={`px-2 py-1 text-xs rounded-lg border font-bold cursor-pointer ${
+                            !row.segmentId
+                              ? 'border-rose-400 bg-rose-50 text-rose-700 ring-1 ring-rose-300'
+                              : 'border-slate-200 bg-white text-slate-800'
+                          }`}
+                        >
+                          <option value="">{isAr ? '-- حدد القطاع --' : '-- Select Segment --'}</option>
+                          {segments.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.nameAr}
+                            </option>
+                          ))}
+                        </select>
+                        {row.segmentRaw && !row.segmentId && (
+                          <span className="block text-[10px] text-rose-600 font-mono mt-0.5" title="Unmatched raw text in CSV">
+                            ⚠️ {row.segmentRaw}
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2 px-3 font-mono">{row.taxCardNumber || '—'}</td>
-                      <td className="py-2 px-3 font-mono">{row.phone || '—'}</td>
+                      <td className="py-2 px-3 font-mono">
+                        {(row.phones && row.phones.length > 0)
+                          ? row.phones.join(', ')
+                          : (row.branchPhone || row.phone || '—')}
+                      </td>
                       <td className="py-2 px-3 text-rose-700 text-[11px] font-bold">
                         {row.errorReason || '—'}
                       </td>
