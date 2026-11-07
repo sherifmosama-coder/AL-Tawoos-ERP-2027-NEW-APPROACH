@@ -736,6 +736,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       'weeklyHolidays',
       'workingHoursFrom',
       'workingHoursTo',
+      'notes',
       'branchName',
       'address',
       'region',
@@ -763,6 +764,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       'الجمعة; السبت',
       '09:00',
       '17:00',
+      'توريد صباحي فقط - تسليم بالمخزن الرئيسي',
       'الفرع الرئيسي',
       'شارع المعز - باب الشعرية - القاهرة',
       'القاهرة',
@@ -788,6 +790,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       'الجمعة',
       '08:30',
       '22:00',
+      'مراجعة الفواتير مع الإدارة المالية أول كل شهر',
       'فرع التجمع الخامس',
       'شارع التسعين الشمالي - مول النرجس',
       'القاهرة الجديدة',
@@ -883,6 +886,23 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         return;
       }
 
+      const headerRow = lines[0]
+        .split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)
+        .map((v) => v.replace(/^"|"$/g, '').trim());
+
+      const getColIdx = (aliases, fallbackIdx) => {
+        const idx = headerRow.findIndex((h) =>
+          aliases.some((a) => a.toLowerCase() === h.toLowerCase())
+        );
+        return idx !== -1 ? idx : fallbackIdx;
+      };
+
+      const hasNotesCol = headerRow.some((h) =>
+        ['notes', 'ملاحظات', 'الملاحظات', 'note'].includes(h.toLowerCase())
+      );
+
+      const notesIdx = getColIdx(['notes', 'ملاحظات', 'الملاحظات', 'note'], 16);
+
       const rows = [];
       const seenInCsvTax = new Set();
       const seenInCsvPhones = new Set();
@@ -900,6 +920,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         let weeklyHolidays = ['friday', 'saturday'];
         let workingHoursFrom = '09:00';
         let workingHoursTo = '17:00';
+        let notes = '';
         let branchName = 'الفرع الرئيسي';
         let address = '';
         let region = '';
@@ -907,7 +928,33 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         let branchPhone = '';
         let gpsCoordinates = '';
 
-        if (cols.length >= 22) {
+        if (hasNotesCol || cols.length >= 23) {
+          // New 23-column template with notes
+          phones = parseDelimited(cols[11]);
+          emails = parseDelimited(cols[12]);
+          const rawHolidays = parseDelimited(cols[13]);
+          if (rawHolidays.length > 0) {
+            weeklyHolidays = rawHolidays.map((h) => {
+              const day = WEEK_DAYS.find(
+                (d) =>
+                  d.id === h.toLowerCase() ||
+                  d.labelAr === h ||
+                  d.labelEn.toLowerCase() === h.toLowerCase()
+              );
+              return day ? day.id : h;
+            });
+          }
+          workingHoursFrom = cols[14] || '09:00';
+          workingHoursTo = cols[15] || '17:00';
+          notes = cols[notesIdx] || cols[16] || '';
+          branchName = cols[17] || 'الفرع الرئيسي';
+          address = cols[18] || '';
+          region = cols[19] || '';
+          contactPerson = cols[20] || '';
+          branchPhone = cols[21] || '';
+          gpsCoordinates = cols[22] || '';
+        } else if (cols.length >= 22) {
+          // 22-column template without notes
           phones = parseDelimited(cols[11]);
           emails = parseDelimited(cols[12]);
           const rawHolidays = parseDelimited(cols[13]);
@@ -961,6 +1008,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           weeklyHolidays,
           workingHoursFrom,
           workingHoursTo,
+          notes,
           branchName,
           address,
           region,
@@ -1098,12 +1146,12 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               workingHoursFrom: '',
               workingHoursTo: '',
               gpsCoordinates: r.gpsCoordinates,
-              notes: ''
+              notes: (r.notes && r.notes.trim()) || ''
             }
           ],
           branchesCount: 1,
           attachments: [],
-          notes: 'Imported via Bulk CSV',
+          notes: (r.notes && r.notes.trim()) || 'Imported via Bulk CSV',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         };
@@ -1137,7 +1185,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       'Settlement Mode',
       'Credit Limit (EGP)',
       'Latest Activity',
-      'Branches Count'
+      'Branches Count',
+      'Notes'
     ];
 
     const rows = clients.map((c) => {
@@ -1153,7 +1202,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         c.settlementMode || '',
         c.creditLimit || 0,
         c.latestActivityOn ? new Date(c.latestActivityOn).toLocaleDateString() : 'None',
-        (c.branches || []).length
+        (c.branches || []).length,
+        c.notes || ''
       ]
         .map((v) => `"${v}"`)
         .join(',');
@@ -2575,6 +2625,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                     <th className="py-2 px-3 text-start">{isAr ? 'القطاع' : 'Segment'}</th>
                     <th className="py-2 px-3 text-start">{isAr ? 'البطاقة الضريبية' : 'Tax Card'}</th>
                     <th className="py-2 px-3 text-start">{isAr ? 'الهاتف' : 'Phone'}</th>
+                    <th className="py-2 px-3 text-start">{isAr ? 'ملاحظات' : 'Notes'}</th>
                     <th className="py-2 px-3 text-start">{isAr ? 'سبب التعارض' : 'Conflict Reason'}</th>
                   </tr>
                 </thead>
@@ -2627,6 +2678,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                         {(row.phones && row.phones.length > 0)
                           ? row.phones.join(', ')
                           : (row.branchPhone || row.phone || '—')}
+                      </td>
+                      <td className="py-2 px-3 text-slate-500 max-w-[140px] truncate" title={row.notes}>
+                        {row.notes || '—'}
                       </td>
                       <td className="py-2 px-3 text-rose-700 text-[11px] font-bold">
                         {row.errorReason || '—'}
