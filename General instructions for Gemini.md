@@ -1,7 +1,7 @@
 # General Instructions for Gemini — Al-Tawoos ERP
 
 ## 1. Communication & Handover
-- **Language**: Always communicate in English.
+- **Language**: Strictly communicate and answer in English only across all turns, responses, explanations, code comments, and handover messages (regardless of whether the user prompts in Arabic or UI labels are in Arabic). Never answer in Arabic.
 - **Delivery Summary**: Always provide a clear summary of what was built/updated, files touched, and explicit step-by-step testing instructions (including test data and expected outcomes).
 - **Proactive Clarification**: When receiving complex, ambiguous, or multi-step requirements, use `/grill-me` to align on edge cases, permissions, and database schemas before writing code.
 
