@@ -1442,8 +1442,12 @@ All three navigation surfaces map their base tab definitions through `tabConfigs
   - `nameAr`: Arabic title (e.g. `سلاسل تجارية / كبرى`).
   - `nameEn`: English title (e.g. `Chains & Modern Trade`).
   - `color`: Hex color code with live Tailwind visual tag.
-  - `icon`: Selectable Lucide icon (e.g. `Building2`, `Store`, `ShoppingBag`, `ShoppingCart`, `Truck`, `Hotel`, `Globe`, `Boxes`, `Users`, `Layers`).
+  - `icon`: Selectable Lucide icon from curated 55-icon registry organized into categories:
+    - **Food & Dining (19 icons)**: `Utensils`, `UtensilsCrossed`, `ChefHat`, `Coffee`, `CupSoda`, `Pizza`, `Sandwich`, `Soup`, `Salad`, `Cake`, `Cookie`, `Croissant`, `Apple`, `Wheat`, `Fish`, `Beef`, `Egg`, `Milk`, `IceCream`.
+    - **Shipping & Logistics (15 icons)**: `Truck`, `Ship`, `Plane`, `Container`, `Anchor`, `Warehouse`, `Factory`, `Package`, `PackageCheck`, `PackageOpen`, `Boxes`, `Bike`, `MapPin`, `Compass`, `Navigation`.
+    - **Retail & Corporate (21 icons)**: `Building2`, `Store`, `ShoppingBag`, `ShoppingCart`, `Hotel`, `Globe`, `Building`, `Landmark`, `School`, `HeartPulse`, `Crown`, `Award`, `BadgePercent`, `Receipt`, `Gift`, `Target`, `Users`, `Briefcase`, `UserCheck`, `Tag`, `Layers`.
   - `displayOrder`: Sorting order.
+- **Categorized Icon Selector**: Interactive category filter tabs in the segment creation/edit modal with live count badges, localized tooltips, and responsive grid.
 - **Pre-Seeded Default FMCG Segments**: One-click initialization for 7 standard FMCG distribution channels:
   1. *سلاسل تجارية / كبرى* (`Building2`, `#2563eb`)
   2. *جملة* (`Boxes`, `#059669`)

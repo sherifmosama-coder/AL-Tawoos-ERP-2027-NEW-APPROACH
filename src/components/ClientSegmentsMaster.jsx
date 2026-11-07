@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { db } from '../firebase';
 import {
@@ -33,28 +33,184 @@ import {
   Check,
   AlertTriangle,
   X,
-  UserCheck
+  UserCheck,
+  // --- Food & Beverage / Dining Icons (19) ---
+  Utensils,
+  UtensilsCrossed,
+  ChefHat,
+  Coffee,
+  CupSoda,
+  Pizza,
+  Sandwich,
+  Soup,
+  Salad,
+  Cake,
+  Cookie,
+  Croissant,
+  Apple,
+  Wheat,
+  Fish,
+  Beef,
+  Egg,
+  Milk,
+  IceCream,
+  // --- Shipping, Logistics & Transport Icons (12) ---
+  Ship,
+  Plane,
+  Container,
+  Anchor,
+  Warehouse,
+  Factory,
+  PackageCheck,
+  PackageOpen,
+  Bike,
+  MapPin,
+  Compass,
+  Navigation,
+  // --- Commercial, Institutional & Market Icons (8) ---
+  Building,
+  School,
+  HeartPulse,
+  Crown,
+  BadgePercent,
+  Receipt,
+  Gift,
+  Target
 } from 'lucide-react';
 
-// Icon Map Registry for Segment Dynamic Rendering
+// Icon Map Registry for Segment Dynamic Rendering (55 Curated Icons)
 export const SEGMENT_ICON_MAP = {
+  // Food & Beverage / HORECA
+  Utensils,
+  UtensilsCrossed,
+  ChefHat,
+  Coffee,
+  CupSoda,
+  Pizza,
+  Sandwich,
+  Soup,
+  Salad,
+  Cake,
+  Cookie,
+  Croissant,
+  Apple,
+  Wheat,
+  Fish,
+  Beef,
+  Egg,
+  Milk,
+  IceCream,
+
+  // Shipping, Transport & Logistics
+  Truck,
+  Ship,
+  Plane,
+  Container,
+  Anchor,
+  Warehouse,
+  Factory,
+  Package,
+  PackageCheck,
+  PackageOpen,
+  Boxes,
+  Bike,
+  MapPin,
+  Compass,
+  Navigation,
+
+  // Commercial, Retail & Institutional
   Building2,
   Store,
   ShoppingBag,
   ShoppingCart,
-  Truck,
   Hotel,
   Globe,
-  Boxes,
-  Users,
-  Layers,
+  Building,
   Landmark,
-  Tag,
-  Briefcase,
+  School,
+  HeartPulse,
+  Crown,
   Award,
-  Package,
-  UserCheck
+  BadgePercent,
+  Receipt,
+  Gift,
+  Target,
+  Users,
+  Briefcase,
+  UserCheck,
+  Tag,
+  Layers
 };
+
+export const SEGMENT_ICON_CATEGORIES = [
+  { id: 'all', labelAr: 'الكل', labelEn: 'All' },
+  { id: 'food', labelAr: 'أغذية ومطاعم', labelEn: 'Food & Dining' },
+  { id: 'shipping', labelAr: 'شحن ولوجستيات', labelEn: 'Shipping & Logistics' },
+  { id: 'commercial', labelAr: 'تجارة ومؤسسات', labelEn: 'Retail & Corporate' }
+];
+
+export const SEGMENT_ICONS_METADATA = [
+  // --- Food & Beverage / HORECA (19) ---
+  { key: 'Utensils', category: 'food', labelAr: 'مطاعم وتناول طعام', labelEn: 'Restaurants & Dining' },
+  { key: 'UtensilsCrossed', category: 'food', labelAr: 'مطاعم راقية وضيافة', labelEn: 'Fine Dining & Hospitality' },
+  { key: 'ChefHat', category: 'food', labelAr: 'مطابخ سحابية وشيف', labelEn: 'Cloud Kitchens & Chefs' },
+  { key: 'Coffee', category: 'food', labelAr: 'كافيهات ومشروبات ساخنة', labelEn: 'Cafes & Hot Drinks' },
+  { key: 'CupSoda', category: 'food', labelAr: 'عصائر ومشروبات باردة', labelEn: 'Beverages & Soft Drinks' },
+  { key: 'Pizza', category: 'food', labelAr: 'وجبات سريعة وفطائر', labelEn: 'Fast Food & Pizzerias' },
+  { key: 'Sandwich', category: 'food', labelAr: 'كافتيريات وسندوتشات', labelEn: 'Snacks & Delis' },
+  { key: 'Soup', category: 'food', labelAr: 'أكلات ومطابخ شعبية', labelEn: 'Soups & Local Eateries' },
+  { key: 'Salad', category: 'food', labelAr: 'أغذية صحية وسلطات', labelEn: 'Healthy Food & Salads' },
+  { key: 'Cake', category: 'food', labelAr: 'حلويات وتورت ومناسبات', labelEn: 'Pastries & Bakery' },
+  { key: 'Cookie', category: 'food', labelAr: 'مخابز وبسكويت', labelEn: 'Bakeries & Biscuits' },
+  { key: 'Croissant', category: 'food', labelAr: 'مخبوزات أفرنجية وكرواسون', labelEn: 'French Bakery' },
+  { key: 'Apple', category: 'food', labelAr: 'خضروات وفواكه طازجة', labelEn: 'Fresh Produce' },
+  { key: 'Wheat', category: 'food', labelAr: 'حبوب وغلال ومطاحن', labelEn: 'Grains & Mills' },
+  { key: 'Fish', category: 'food', labelAr: 'مأكولات بحرية وأسماك', labelEn: 'Seafood & Fish' },
+  { key: 'Beef', category: 'food', labelAr: 'لحوم وجزارة ومصنعات', labelEn: 'Meats & Butcheries' },
+  { key: 'Egg', category: 'food', labelAr: 'بيض ودواجن وألبان', labelEn: 'Poultry & Eggs' },
+  { key: 'Milk', category: 'food', labelAr: 'ألبان ومصنعات حليب', labelEn: 'Milk & Dairy' },
+  { key: 'IceCream', category: 'food', labelAr: 'جيلاتي ومثلجات', labelEn: 'Ice Cream & Gelato' },
+
+  // --- Shipping, Logistics & Delivery (15) ---
+  { key: 'Truck', category: 'shipping', labelAr: 'شاحنات وأسطول نقل بري', labelEn: 'Trucks & Road Transport' },
+  { key: 'Ship', category: 'shipping', labelAr: 'شحن بحري وملاحة وتفريغ', labelEn: 'Ocean Shipping & Freight' },
+  { key: 'Plane', category: 'shipping', labelAr: 'شحن جوي وتصدير سريع', labelEn: 'Air Cargo & Express' },
+  { key: 'Container', category: 'shipping', labelAr: 'حاويات ومحطات شحن', labelEn: 'Cargo Containers & Depots' },
+  { key: 'Anchor', category: 'shipping', labelAr: 'موانئ ومناطق جمركية', labelEn: 'Ports & Customs' },
+  { key: 'Warehouse', category: 'shipping', labelAr: 'مستودعات ومراكز توزيع', labelEn: 'Distribution Warehouses' },
+  { key: 'Factory', category: 'shipping', labelAr: 'مصانع وتصنيع للغير', labelEn: 'Industrial Plants & Packing' },
+  { key: 'Package', category: 'shipping', labelAr: 'طرود وشحنات بضاعة', labelEn: 'Parcels & Packages' },
+  { key: 'PackageCheck', category: 'shipping', labelAr: 'تسليم معتمد ومحقق', labelEn: 'Verified Deliveries' },
+  { key: 'PackageOpen', category: 'shipping', labelAr: 'توزيع وتفريغ طرود', labelEn: 'Cross-Docking & Distribution' },
+  { key: 'Boxes', category: 'shipping', labelAr: 'كراتين وبضائع مجمعة', labelEn: 'Bulk Cartons & Cargo' },
+  { key: 'Bike', category: 'shipping', labelAr: 'مناديب وتوصيل سريع', labelEn: 'Last-Mile Delivery' },
+  { key: 'MapPin', category: 'shipping', labelAr: 'فروع ومواقع جغرافية', labelEn: 'Geographical Hubs' },
+  { key: 'Compass', category: 'shipping', labelAr: 'خطوط سير ومسارات شحن', labelEn: 'Shipping Routes' },
+  { key: 'Navigation', category: 'shipping', labelAr: 'توجيه لوجستي وملاحة', labelEn: 'Logistics Navigation' },
+
+  // --- Commercial, Retail & Institutional (21) ---
+  { key: 'Building2', category: 'commercial', labelAr: 'سلاسل تجارية ومولات', labelEn: 'Modern Trade & Chains' },
+  { key: 'Store', category: 'commercial', labelAr: 'محلات ومتاجر تجزئة', labelEn: 'Retail Stores' },
+  { key: 'ShoppingBag', category: 'commercial', labelAr: 'مراكز تسوق وأكياس', labelEn: 'Shopping Outlets' },
+  { key: 'ShoppingCart', category: 'commercial', labelAr: 'سوبرماركت وعربات تسوق', labelEn: 'Supermarkets' },
+  { key: 'Hotel', category: 'commercial', labelAr: 'فنادق وقرى سياحية', labelEn: 'Hotels & Resorts' },
+  { key: 'Globe', category: 'commercial', labelAr: 'تصدير وأسواق دولية', labelEn: 'International Markets' },
+  { key: 'Building', category: 'commercial', labelAr: 'شركات ومقرات إدارية', labelEn: 'Corporate Offices' },
+  { key: 'Landmark', category: 'commercial', labelAr: 'هيئات ومؤسسات رسمية', labelEn: 'Government & Public' },
+  { key: 'School', category: 'commercial', labelAr: 'مدارس وجامعات وتعليم', labelEn: 'Schools & Universities' },
+  { key: 'HeartPulse', category: 'commercial', labelAr: 'مستشفيات ومراكز طبية', labelEn: 'Hospitals & Healthcare' },
+  { key: 'Crown', category: 'commercial', labelAr: 'عملاء كبار VIP', labelEn: 'VIP & Key Accounts' },
+  { key: 'Award', category: 'commercial', labelAr: 'عملاء ذهبيين ومميزين', labelEn: 'Premier Tier Clients' },
+  { key: 'BadgePercent', category: 'commercial', labelAr: 'منافذ عروض وتخفيضات', labelEn: 'Discount Outlets' },
+  { key: 'Receipt', category: 'commercial', labelAr: 'كاش آند كاري ومبيعات', labelEn: 'Cash & Carry' },
+  { key: 'Gift', category: 'commercial', labelAr: 'معارض وهدايا ومواسم', labelEn: 'Seasonal & Gift Accounts' },
+  { key: 'Target', category: 'commercial', labelAr: 'حسابات استراتيجية مستهدفة', labelEn: 'Strategic Target Accounts' },
+  { key: 'Users', category: 'commercial', labelAr: 'نقابات وجمعيات فئوية', labelEn: 'Syndicates & Associations' },
+  { key: 'Briefcase', category: 'commercial', labelAr: 'وكالات أعمال ووسطاء', labelEn: 'Business Agencies' },
+  { key: 'UserCheck', category: 'commercial', labelAr: 'عملاء معتمدين بالعقود', labelEn: 'Contract Clients' },
+  { key: 'Tag', category: 'commercial', labelAr: 'علامات تجارية وتوكيلات', labelEn: 'Brand Agencies' },
+  { key: 'Layers', category: 'commercial', labelAr: 'قطاعات متعددة المستويات', labelEn: 'Multi-Tier Segments' }
+];
 
 export const DEFAULT_SEGMENT_COLORS = [
   '#2563eb', // Blue
@@ -172,6 +328,12 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
   const [deleteConfirmSegment, setDeleteConfirmSegment] = useState(null);
   const [isSeeding, setIsSeeding] = useState(false);
   const [formError, setFormError] = useState('');
+  const [iconCategoryFilter, setIconCategoryFilter] = useState('all');
+
+  const displayedIcons = useMemo(() => {
+    if (iconCategoryFilter === 'all') return SEGMENT_ICONS_METADATA;
+    return SEGMENT_ICONS_METADATA.filter((m) => m.category === iconCategoryFilter);
+  }, [iconCategoryFilter]);
 
   const [formData, setFormData] = useState({
     id: '',
@@ -217,6 +379,7 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
   const handleOpenCreateModal = () => {
     setEditingSegment(null);
     setFormError('');
+    setIconCategoryFilter('all');
     setFormData({
       id: `seg_${Date.now()}`,
       nameAr: '',
@@ -232,6 +395,12 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
   const handleOpenEditModal = (segment) => {
     setEditingSegment(segment);
     setFormError('');
+    const foundMeta = SEGMENT_ICONS_METADATA.find((m) => m.key === segment.icon);
+    if (foundMeta) {
+      setIconCategoryFilter(foundMeta.category);
+    } else {
+      setIconCategoryFilter('all');
+    }
     setFormData({
       id: segment.id,
       nameAr: segment.nameAr || '',
@@ -511,7 +680,7 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
       {/* Create / Edit Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden animate__animated animate__fadeInUp animate__faster">
+          <div className="bg-white rounded-3xl max-w-xl w-full shadow-2xl border border-slate-200 overflow-hidden animate__animated animate__fadeInUp animate__faster">
             <div className="px-6 py-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div
@@ -539,7 +708,7 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
               </button>
             </div>
 
-            <form onSubmit={handleSaveSegment} className="p-6 space-y-4">
+            <form onSubmit={handleSaveSegment} className="p-5 sm:p-6 space-y-4 max-h-[85vh] overflow-y-auto">
               {formError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold rounded-xl flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0" />
@@ -636,28 +805,66 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
                 </div>
               </div>
 
-              {/* Icon Selector Grid */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  {isAr ? 'أيقونة التصنيف' : 'Segment Icon'}
-                </label>
-                <div className="grid grid-cols-8 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 max-h-36 overflow-y-auto">
-                  {Object.keys(SEGMENT_ICON_MAP).map((iconKey) => {
-                    const IconCmp = SEGMENT_ICON_MAP[iconKey];
+              {/* Icon Selector Grid with Category Tabs */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-slate-700">
+                    {isAr ? 'أيقونة التصنيف' : 'Segment Icon'}:{' '}
+                    <span className="text-purple-600 font-black">
+                      {isAr
+                        ? (SEGMENT_ICONS_METADATA.find((m) => m.key === formData.icon)?.labelAr || formData.icon)
+                        : (SEGMENT_ICONS_METADATA.find((m) => m.key === formData.icon)?.labelEn || formData.icon)}
+                    </span>
+                  </label>
+                  <span className="text-[10px] text-slate-400 font-mono font-semibold">
+                    {displayedIcons.length} {isAr ? 'أيقونة' : 'icons'}
+                  </span>
+                </div>
+
+                {/* Category Filter Tabs */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+                  {SEGMENT_ICON_CATEGORIES.map((cat) => {
+                    const count = cat.id === 'all'
+                      ? SEGMENT_ICONS_METADATA.length
+                      : SEGMENT_ICONS_METADATA.filter((m) => m.category === cat.id).length;
+                    const isActive = iconCategoryFilter === cat.id;
+                    return (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setIconCategoryFilter(cat.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition shrink-0 cursor-pointer ${
+                          isActive
+                            ? 'bg-purple-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {isAr ? cat.labelAr : cat.labelEn} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Grid of Icons */}
+                <div className="grid grid-cols-7 sm:grid-cols-9 gap-1.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200 max-h-48 overflow-y-auto">
+                  {displayedIcons.map((meta) => {
+                    const iconKey = meta.key;
+                    const IconCmp = SEGMENT_ICON_MAP[iconKey] || Layers;
                     const isSelected = formData.icon === iconKey;
+                    const label = isAr ? meta.labelAr : meta.labelEn;
                     return (
                       <button
                         key={iconKey}
                         type="button"
                         onClick={() => setFormData({ ...formData, icon: iconKey })}
-                        className={`p-2 rounded-xl flex items-center justify-center transition ${
+                        className={`p-2 rounded-xl flex items-center justify-center transition cursor-pointer relative ${
                           isSelected
-                            ? 'bg-purple-600 text-white shadow-md'
-                            : 'bg-white text-slate-600 hover:bg-slate-200 border border-slate-200'
+                            ? 'bg-purple-600 text-white shadow-md ring-2 ring-purple-300 scale-105'
+                            : 'bg-white text-slate-600 hover:bg-slate-200 hover:text-slate-900 border border-slate-200'
                         }`}
-                        title={iconKey}
+                        title={`${label} (${iconKey})`}
                       >
-                        <IconCmp className="w-4 h-4" />
+                        <IconCmp className="w-4 h-4 shrink-0" />
                       </button>
                     );
                   })}
