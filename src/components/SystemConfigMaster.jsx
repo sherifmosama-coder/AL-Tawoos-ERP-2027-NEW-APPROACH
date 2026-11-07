@@ -119,31 +119,6 @@ export default function SystemConfigMaster({
         </div>
       )}
 
-      {/* Top Banner */}
-      <div className="p-5 bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white rounded-2xl shadow-sm border border-slate-800 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="p-3 bg-white/10 rounded-xl border border-white/10">
-            <Database className="h-6 w-6 text-emerald-400" />
-          </div>
-          <div>
-            <h2 className="text-base font-extrabold">
-              {isAr ? 'تهيئة النظام والبيانات الأساسية (MDM)' : 'System Configuration & Master Data (MDM)'}
-            </h2>
-            <p className="text-xs text-slate-300 font-medium mt-0.5">
-              {isAr
-                ? `إدارة الهوية القانونية للمنشأة، وضبط المؤشرات التشغيلية، ومراقبة صحة مجموعات البيانات الأساسية الـ ${MASTER_COLLECTIONS_REGISTRY.length}.`
-                : `Manage legal organizational profile, operational defaults, and monitor live telemetry for the ${MASTER_COLLECTIONS_REGISTRY.length} master collections.`}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="px-3 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full font-mono text-xs font-bold">
-            v2.8.0 Enterprise SSOT
-          </span>
-        </div>
-      </div>
-
       {/* Grid: Company Profile Form & Live Master Collections Telemetry */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column: Organization Profile & Financial Identity (2 cols on lg) */}

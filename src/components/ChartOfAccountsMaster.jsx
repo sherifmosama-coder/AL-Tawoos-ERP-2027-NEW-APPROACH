@@ -1873,23 +1873,8 @@ export default function ChartOfAccountsMaster({
 
   return (
     <div className={`space-y-4 ${isAr ? 'text-right' : 'text-left'}`}>
-      {/* Slim Executive Header & Metrics Bar */}
-      <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-100 shrink-0">
-            <BadgeDollarSign className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
-              {isAr ? 'دليل الحسابات والأستاذ العام' : 'Chart of Accounts & General Ledger'}
-            </h2>
-            <p className="text-xs text-slate-500 font-medium">
-              {isAr ? 'الهيكل المحاسبي الشجري، قيود وسجل اليومية، ميزان المراجعة، وربط القوائم' : 'Unified COA hierarchy, journal ledger, trial balance & GL master mapping'}
-            </p>
-          </div>
-        </div>
-
-        {/* Compact Status Chips Bar & Dual-Ledger Secret Door Control */}
+      {/* Compact Metrics Bar & Dual-Ledger Secret Door Control */}
+      <div className="bg-white rounded-2xl p-3 sm:p-3.5 border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200">
             <span className="text-slate-500 font-medium">{isAr ? 'إجمالي الحسابات:' : 'Total:'}</span>
@@ -1903,17 +1888,17 @@ export default function ChartOfAccountsMaster({
             <span className="font-medium">{isAr ? 'أستاذ مساعد:' : 'Sub-Ledgers:'}</span>
             <strong className="font-mono font-bold text-indigo-700">{metrics.subCount}</strong>
           </div>
-
-          {/* Discreet Lock Access */}
-          <SecretLockButton
-            isUnlocked={isMasterDoorUnlocked}
-            activeMode={activeLedgerMode}
-            onLongPress={() => setShowSecretDoorModal(true)}
-            onLock={handleLockMaster}
-            onToggleMode={handleToggleLedgerMode}
-            isAr={isAr}
-          />
         </div>
+
+        {/* Discreet Lock Access */}
+        <SecretLockButton
+          isUnlocked={isMasterDoorUnlocked}
+          activeMode={activeLedgerMode}
+          onLongPress={() => setShowSecretDoorModal(true)}
+          onLock={handleLockMaster}
+          onToggleMode={handleToggleLedgerMode}
+          isAr={isAr}
+        />
       </div>
 
       {/* Sub-tab Navigation Dock (Segmented Control Hierarchy) */}

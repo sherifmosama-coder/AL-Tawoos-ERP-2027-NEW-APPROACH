@@ -1479,4 +1479,27 @@ All three navigation surfaces map their base tab definitions through `tabConfigs
   - Visual preview table tagging rows as Valid (green) vs. Duplicate/Conflict (red with exact reason) prior to commit.
 - **Cross-App Comments**: Integrated via `<RowCommentButton tab="clients" module="master_data" />`.
 
+---
+
+## 30. Zero Component Header Duplication Architecture (Page Header Banner SSOT)
+
+### 30.1 Background & Root Cause
+In earlier iterations of the web application, individual tab views (`*Master.jsx`) frequently rendered internal top-level header containers featuring an icon, an `<h1>` or `<h2>` tab title, and a subtitle description. 
+With the introduction of `TabPageHeaderBanner.jsx` dynamically rendered in `App.jsx` for all operational and master tabs (`activeTab !== 'landing' && activeTab !== 'admin_panel'`), this resulted in a visually redundant "double-header container" where the tab identity was displayed twice in succession.
+
+### 30.2 Architectural Standard & Mandate
+1. **Single Source of Truth (SSOT)**: `TabPageHeaderBanner.jsx` is the sole, authoritative visual banner for every tab screen. It provides:
+   - Atmospheric watercolor tint and glow matching the tab's configured color (`tabAppearanceConfig.js`).
+   - Dynamic tab icon, category tag pill, and `#tabId` badge.
+   - Screen title with full bilingual localization.
+   - Administrative action triggers ("صلاحيات التبويب" Scoped Permissions & "تخصيص مظهر التبويب" Customizer).
+2. **Tab Component Content Boundary**:
+   - Individual tab components (`src/components/*.jsx`) must **NEVER** render an internal title box, hero card, or container that duplicates the tab's name, icon, or description.
+   - All primary tab-level action buttons (e.g. "إضافة ... جديد", "استيراد CSV", "تصدير", filter selectors, view switchers) must reside cleanly in the **Search & Filter Action Ribbon**.
+3. **Audited & Compliant Tab Views**:
+   - **Master Data**: `ItemMaster`, `SupplierMaster`, `ClientMaster`, `ClientSegmentsMaster`, `CategoriesMaster`, `FinishedProductsMaster`, `FGCategoriesMaster`, `BOMRecipesMaster`, `IntermediateBOMMaster`, `ProductionProcessesMaster`, `WarehouseMaster`, `SafesMaster`, `BankAccountsMaster`, `VehiclesMaster`, `ProductionWorkersMaster`, `UsersMaster`, `SystemConfigMaster`.
+   - **Purchases & Inventory**: `POCreation`, `GoodsReceipt`, `StockTransfers`, `StockBalances`, `StockCount`, `SparePartsConsumption`.
+   - **Production**: `WorkOrdersMaster`, `LiquidTanksMaster`, `FloorLiquidStorage`, `FaultyFGReturnMaster`, `FinishedGoodsInward`, `ProductionPerformanceReports`.
+   - **Finance**: `CashSafesMaster`, `DuesTrackingMaster`, `ChartOfAccountsMaster`, `PartnerStatementsMaster`, `FinancialStatementsMaster`.
+
 

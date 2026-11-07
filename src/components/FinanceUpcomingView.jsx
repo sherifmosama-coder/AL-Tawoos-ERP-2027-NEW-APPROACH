@@ -143,8 +143,8 @@ export default function FinanceUpcomingView({
             <span>{isAr ? config.badgeAr : config.badgeEn}</span>
           </div>
 
-          <h2 className="text-2xl sm:text-3xl font-black tracking-tight mb-2">
-            {isAr ? config.titleAr : config.titleEn}
+          <h2 className="text-xl sm:text-2xl font-black tracking-tight mb-2">
+            {isAr ? `خارطة تطوير موديول: ${config.titleAr}` : `Development Roadmap: ${config.titleEn}`}
           </h2>
 
           <p className="text-sm sm:text-base text-slate-300 leading-relaxed mb-6">

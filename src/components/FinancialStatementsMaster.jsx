@@ -1371,33 +1371,23 @@ export default function FinancialStatementsMaster({
 
   return (
     <div className="space-y-4 text-start">
-      {/* 1. Slim Executive Header & Functional Action Bar */}
-      <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 shrink-0">
-            <Scale className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
-                {isAr ? 'القوائم والتقارير المالية التنفيذية' : 'Executive Financial Statements'}
-              </h2>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${
-                activeLedgerMode === LEDGER_MODES.MASTER
-                  ? 'bg-amber-50 text-amber-900 border-amber-300'
-                  : 'bg-emerald-50 text-emerald-800 border-emerald-200'
-              }`}>
-                {activeLedgerMode === LEDGER_MODES.MASTER
-                  ? (isAr ? 'النطاق: مجمع شامل (Consolidated)' : 'Scope: Consolidated')
-                  : (isAr ? 'النطاق: قياسي رسمي (Standard)' : 'Scope: Standard Official')}
-              </span>
-            </div>
-            <p className="text-xs text-slate-500 font-medium mt-0.5">
-              {isAr
-                ? 'مبنية بالكامل 100% وفق إعدادات وتوجيه شجرة الحسابات بدون أي توجيه صلب بالكود'
-                : '100% setup-driven account placement, hierarchy level roll-up, and dual-ledger scope'}
-            </p>
-          </div>
+      {/* Scope, Actions & Reporting Controls Ribbon */}
+      <div className="bg-white rounded-2xl p-3 sm:p-4 border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`px-2.5 py-1 rounded-xl text-xs font-black border ${
+            activeLedgerMode === LEDGER_MODES.MASTER
+              ? 'bg-amber-50 text-amber-900 border-amber-300'
+              : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+          }`}>
+            {activeLedgerMode === LEDGER_MODES.MASTER
+              ? (isAr ? 'نطاق الدفاتر: مجمع شامل (Consolidated)' : 'Ledger Scope: Consolidated')
+              : (isAr ? 'نطاق الدفاتر: قياسي رسمي (Standard)' : 'Ledger Scope: Standard Official')}
+          </span>
+          <span className="text-xs text-slate-400 font-medium hidden sm:inline">
+            {isAr
+              ? 'توجيه شجري 100% مستند إلى إعدادات الحسابات'
+              : '100% setup-driven account placement'}
+          </span>
         </div>
 
         {/* Functional Actions & Discreet Lock Access */}

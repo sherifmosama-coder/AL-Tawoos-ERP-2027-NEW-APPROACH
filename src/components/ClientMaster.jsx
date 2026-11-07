@@ -824,74 +824,26 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
   return (
     <div className="space-y-6">
-      {/* Header & Quick Action Bar */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100 shadow-inner">
-            <UserCheck className="w-7 h-7" />
+      {/* Search, Filter and Actions Control Bar */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-4">
+        {/* Search & Filter Dropdowns */}
+        <div className="flex flex-wrap items-center gap-2.5 flex-1">
+          <div className="relative w-full sm:w-80">
+            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={isAr ? 'بحث بالاسم، الكود، البطاقة الضريبية، الهاتف...' : 'Search by name, code, tax ID, phone...'}
+              className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
           </div>
-          <div>
-            <h1 className="text-xl font-black text-slate-800">
-              {isAr ? 'سجل العملاء المعتمدين' : 'Client Master'}
-            </h1>
-            <p className="text-sm text-slate-500 font-medium">
-              {isAr
-                ? 'إدارة قاعدة بيانات العملاء، الفروع ومواقع التسليم، استراتيجيات التسعير، وحدود الائتمان'
-                : 'Customer master directory, multi-branch shipping hubs, pricing strategies, and credit terms'}
-            </p>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          {canBulkImport && (
-            <label className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-200 transition cursor-pointer">
-              <UploadCloud className="w-4 h-4 text-slate-500" />
-              <span>{isAr ? 'استيراد عملاء (CSV)' : 'Import CSV'}</span>
-              <input type="file" accept=".csv" onChange={handleParseCsvFile} className="hidden" />
-            </label>
-          )}
-
-          <button
-            onClick={handleExportClients}
-            disabled={clients.length === 0}
-            className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-200 transition disabled:opacity-50"
-            title={isAr ? 'تصدير البيانات إلى ملف CSV' : 'Export to CSV'}
-          >
-            <Download className="w-4 h-4 text-slate-500" />
-            <span>{isAr ? 'تصدير' : 'Export'}</span>
-          </button>
-
-          {canCreate && (
-            <button
-              onClick={handleOpenCreateModal}
-              className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-md hover:bg-blue-700 transition"
-            >
-              <Plus className="w-4 h-4" />
-              {isAr ? 'إضافة عميل جديد' : 'New Client'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Filter and Search Bar */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex flex-col lg:flex-row items-center justify-between gap-4">
-        <div className="relative w-full lg:w-96">
-          <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={isAr ? 'بحث بالاسم، الكود، البطاقة الضريبية، الهاتف...' : 'Search by name, code, tax ID, phone...'}
-            className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 flex-wrap w-full lg:w-auto">
           {/* Segment Filter Pills */}
           <select
             value={selectedSegmentFilter}
             onChange={(e) => setSelectedSegmentFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
           >
             <option value="all">{isAr ? 'جميع القطاعات والتصنيفات' : 'All Segments'}</option>
             {segments.map((seg) => (
@@ -905,7 +857,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           <select
             value={selectedStrategyFilter}
             onChange={(e) => setSelectedStrategyFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
           >
             <option value="all">{isAr ? 'جميع استراتيجيات التسعير' : 'All Pricing Strategies'}</option>
             {PRICING_STRATEGIES.map((st) => (
@@ -915,10 +867,41 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             ))}
           </select>
 
-          <div className="text-xs font-bold text-slate-500 ms-auto">
+          <span className="text-xs font-bold text-slate-500 hidden sm:inline">
             {isAr ? 'عرض' : 'Showing'} <strong className="text-blue-600">{filteredClients.length}</strong>{' '}
             {isAr ? 'من أصل' : 'of'} <strong className="text-slate-800">{clients.length}</strong>
-          </div>
+          </span>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {canBulkImport && (
+            <label className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition cursor-pointer border border-slate-200">
+              <UploadCloud className="w-4 h-4 text-slate-500" />
+              <span>{isAr ? 'استيراد عملاء (CSV)' : 'Import CSV'}</span>
+              <input type="file" accept=".csv" onChange={handleParseCsvFile} className="hidden" />
+            </label>
+          )}
+
+          <button
+            onClick={handleExportClients}
+            disabled={clients.length === 0}
+            className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition disabled:opacity-50 border border-slate-200 cursor-pointer"
+            title={isAr ? 'تصدير البيانات إلى ملف CSV' : 'Export to CSV'}
+          >
+            <Download className="w-4 h-4 text-slate-500" />
+            <span>{isAr ? 'تصدير' : 'Export'}</span>
+          </button>
+
+          {canCreate && (
+            <button
+              onClick={handleOpenCreateModal}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md transition cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{isAr ? 'إضافة عميل جديد' : 'New Client'}</span>
+            </button>
+          )}
         </div>
       </div>
 

@@ -338,30 +338,40 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
 
   return (
     <div className="space-y-6">
-      {/* Header & Action Bar */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center border border-purple-100 shadow-inner">
-            <Layers className="w-7 h-7" />
+      {/* Search, Stats & Action Ribbon */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-3 flex-1">
+          <div className="relative w-full sm:w-80">
+            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={isAr ? 'بحث في أسماء التصنيفات...' : 'Search segment names...'}
+              className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+            />
           </div>
-          <div>
-            <h1 className="text-xl font-black text-slate-800">
-              {isAr ? 'تصنيفات وقطاعات العملاء' : 'Client Segments & Categories'}
-            </h1>
-            <p className="text-sm text-slate-500 font-medium">
-              {isAr
-                ? 'إدارة فئات العملاء (سلاسل، جملة، تجزئة، تصدير) والتحكم في الألوان والأيقونات المعبرة'
-                : 'Configure client market segments, visual color tags, and dashboard icons'}
-            </p>
+
+          <div className="text-xs font-bold text-slate-500 flex items-center gap-2">
+            <span>
+              {isAr ? 'التصنيفات:' : 'Segments:'}{' '}
+              <strong className="text-slate-800">{segments.length}</strong>
+            </span>
+            <span className="text-slate-300">•</span>
+            <span>
+              {isAr ? 'العملاء المصنفين:' : 'Clients:'}{' '}
+              <strong className="text-purple-600 font-black">{clients.length}</strong>
+            </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {segments.length === 0 && (
             <button
               onClick={handleSeedDefaultSegments}
               disabled={isSeeding}
-              className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl text-sm font-bold shadow-md hover:from-purple-700 hover:to-indigo-700 transition"
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl text-xs font-bold shadow-md hover:from-purple-700 hover:to-indigo-700 transition cursor-pointer"
             >
               <Sparkles className="w-4 h-4" />
               {isSeeding
@@ -373,38 +383,12 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
           {canCreate && (
             <button
               onClick={handleOpenCreateModal}
-              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold shadow-md hover:bg-emerald-700 transition"
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md transition cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              {isAr ? 'إضافة تصنيف جديد' : 'New Segment'}
+              <span>{isAr ? 'إضافة تصنيف جديد' : 'New Segment'}</span>
             </button>
           )}
-        </div>
-      </div>
-
-      {/* Search & Quick Stats Bar */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div className="relative w-full sm:w-96">
-          <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={isAr ? 'بحث في أسماء التصنيفات...' : 'Search segment names...'}
-            className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-          />
-        </div>
-
-        <div className="text-xs font-bold text-slate-500 flex items-center gap-3">
-          <span>
-            {isAr ? 'إجمالي التصنيفات:' : 'Total Segments:'}{' '}
-            <strong className="text-slate-800">{segments.length}</strong>
-          </span>
-          <span className="text-slate-300">•</span>
-          <span>
-            {isAr ? 'إجمالي العملاء المصنفين:' : 'Total Clients Categorized:'}{' '}
-            <strong className="text-purple-600 font-black">{clients.length}</strong>
-          </span>
         </div>
       </div>
 

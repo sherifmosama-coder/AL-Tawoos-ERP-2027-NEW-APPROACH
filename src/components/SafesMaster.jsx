@@ -251,41 +251,6 @@ export default function SafesMaster({ currentUser = {}, permissions = {} }) {
 
   return (
     <div className={`space-y-6 ${isAr ? 'text-right' : 'text-left'}`}>
-      {/* Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-6 text-white shadow-xl flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <div className="p-3 bg-amber-500/20 border border-amber-400/30 rounded-2xl text-amber-300">
-            <Vault className="h-7 w-7" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-black">
-                {isAr ? 'سجل الخزائن والخزن النقدية' : 'Cash Safes & Vaults Master'}
-              </h2>
-              <span className="text-[10px] bg-white/10 px-2.5 py-0.5 rounded-full font-mono text-slate-300">
-                {safesList.length} {isAr ? 'خزينة' : 'Vaults'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-300 mt-1">
-              {isAr
-                ? 'إدارة الخزائن النقدية الفعلية بالمصنع، حدود الأمان، أمناء العهد، وضبط هرمية اعتماد المدفوعات'
-                : 'Manage physical factory cash vaults, safety limits, custodians, and payment approval hierarchy'}
-            </p>
-          </div>
-        </div>
-
-        {isGeneralAdmin && (
-          <button
-            type="button"
-            onClick={handleOpenCreateSafe}
-            className="flex items-center gap-2 px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-lg transition cursor-pointer"
-          >
-            <Plus className="h-4 w-4" />
-            <span>{isAr ? 'إنشاء خزينة جديدة +' : 'Create Vault +'}</span>
-          </button>
-        )}
-      </div>
-
       {/* Toast Feedback */}
       {toastMsg && (
         <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-2xl text-emerald-900 text-xs font-bold flex items-center gap-2 shadow-xs animate-fadeIn">
@@ -436,9 +401,23 @@ export default function SafesMaster({ currentUser = {}, permissions = {} }) {
               className="w-full ps-9 pe-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
             />
           </div>
-          <span className="text-xs font-bold text-slate-500">
-            {filteredSafes.length} {isAr ? 'خزينة مسجلة' : 'vaults found'}
-          </span>
+
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-bold text-slate-500">
+              {filteredSafes.length} {isAr ? 'خزينة مسجلة' : 'vaults found'}
+            </span>
+
+            {isGeneralAdmin && (
+              <button
+                type="button"
+                onClick={handleOpenCreateSafe}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-xs transition cursor-pointer"
+              >
+                <Plus className="h-4 w-4" />
+                <span>{isAr ? 'إنشاء خزينة جديدة +' : 'Create Vault +'}</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

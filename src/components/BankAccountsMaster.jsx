@@ -222,41 +222,6 @@ export default function BankAccountsMaster({ currentUser = {}, permissions = {} 
 
   return (
     <div className={`space-y-6 ${isAr ? 'text-right' : 'text-left'}`}>
-      {/* Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 rounded-3xl p-6 text-white shadow-xl flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <div className="p-3 bg-blue-500/20 border border-blue-400/30 rounded-2xl text-blue-300">
-            <Landmark className="h-7 w-7" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-black">
-                {isAr ? 'سجل الحسابات والودائع البنكية' : 'Corporate Bank Accounts Master'}
-              </h2>
-              <span className="text-[10px] bg-white/10 px-2.5 py-0.5 rounded-full font-mono text-slate-300">
-                {banksList.length} {isAr ? 'حساب' : 'Accounts'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-300 mt-1">
-              {isAr
-                ? 'إدارة الحسابات البنكية المعتمدة للمنشأة، أرقام الآيبان (IBAN)، السويفت كود، والعملات والمفوضين بالتوقيع'
-                : 'Manage authorized corporate bank accounts, IBANs, SWIFT codes, currencies, and signatories'}
-            </p>
-          </div>
-        </div>
-
-        {isGeneralAdmin && (
-          <button
-            type="button"
-            onClick={handleOpenCreate}
-            className="flex items-center gap-2 px-5 py-2.5 bg-blue-500 hover:bg-blue-400 text-white font-black text-xs rounded-xl shadow-lg transition cursor-pointer"
-          >
-            <Plus className="h-4 w-4" />
-            <span>{isAr ? 'إضافة حساب بنكي جديد +' : 'Add Bank Account +'}</span>
-          </button>
-        )}
-      </div>
-
       {/* Toast Feedback */}
       {toastMsg && (
         <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-2xl text-emerald-900 text-xs font-bold flex items-center gap-2 shadow-xs animate-fadeIn">
@@ -323,9 +288,22 @@ export default function BankAccountsMaster({ currentUser = {}, permissions = {} 
           </select>
         </div>
 
-        <span className="text-xs font-bold text-slate-500">
-          {filteredBanks.length} {isAr ? 'حساب بنكي' : 'accounts'}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-bold text-slate-500">
+            {filteredBanks.length} {isAr ? 'حساب بنكي' : 'accounts'}
+          </span>
+
+          {isGeneralAdmin && (
+            <button
+              type="button"
+              onClick={handleOpenCreate}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-black text-xs rounded-xl shadow-xs transition cursor-pointer"
+            >
+              <Plus className="h-4 w-4" />
+              <span>{isAr ? 'إضافة حساب بنكي جديد +' : 'Add Bank Account +'}</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Bank Cards Grid */}

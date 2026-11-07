@@ -55,6 +55,8 @@ Every new module, tab, or feature must align with the global system architecture
 ---
 
 ## 3. UI/UX Global Standards
+- **Zero Component Header Duplication (Page Header Banner SSOT)**:
+  `App.jsx` automatically and globally renders `<TabPageHeaderBanner />` at the top of every tab view (displaying the tab's icon, module badge, `#tabId`, tab title, scoped permissions trigger, and appearance customizer). Individual tab components (`src/components/*Master.jsx`, etc.) must **NEVER** render an internal top title banner or container displaying the tab's name, icon, or description. All tab-level action buttons (such as "Add New", "Export", "Import CSV", filters, or switches) must reside cleanly in the search/filter action ribbon below the global header banner. Never stack a second header container inside a tab.
 - **Dropdowns**: Any selector for GL accounts, cost centers, or partners must use `SearchableSelect`.
 - **Text Accommodation**: Description and notes fields must allow long text without clipping or truncation.
 - **Native Routing & Refresh Standard**: The browser URL hash must always dynamically reflect the active tab, module, and sub-tab (`#tab?subTab=...&module=...`). On tab changes, previous parameters must be cleanly discarded. Native browser reload (F5 / Cmd+R) and mobile pull-to-refresh reliably restore the exact active screen and sub-route. Redundant in-app refresh buttons in the navbar or page header banners are deprecated to keep the UI clean.

@@ -830,27 +830,10 @@ export default function PartnerStatementsMaster({ currentUser }) {
 
   return (
     <div className={`space-y-5 font-sans ${isAr ? 'text-right' : 'text-left'}`}>
-      {/* 1. Header & Navigation Dock */}
-      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-gradient-to-br from-indigo-600 to-indigo-800 text-white shadow-md shadow-indigo-900/20 shrink-0">
-            <FileText className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
-              {isAr ? 'كشوف حسابات الموردين والعملاء' : 'Partner Statements of Account'}
-            </h2>
-            <p className="text-xs text-slate-500 font-medium">
-              {isAr
-                ? 'استخراج كشوف الحسابات التفصيلية للموردين والعملاء، تتبع الحركات المدينة والدائنة، والرصيد التراكمي'
-                : 'Generate comprehensive sub-ledger statements for vendors & clients with running balances and reversal filters'}
-            </p>
-          </div>
-        </div>
-
-        {/* Action Controls */}
-        <div className="flex items-center gap-2">
-          {/* Partner Type Toggle */}
+      {/* Top Partner Selector & Controls Bar */}
+      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-2xs space-y-4">
+        {/* Partner Type Toggle */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
           <div className="inline-flex p-1 bg-slate-100 rounded-xl border border-slate-200">
             <button
               type="button"
@@ -883,11 +866,12 @@ export default function PartnerStatementsMaster({ currentUser }) {
               </span>
             </button>
           </div>
-        </div>
-      </div>
 
-      {/* 2. Top Partner Selector Bar */}
-      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-2xs space-y-4">
+          <div className="text-xs font-bold text-slate-500">
+            {partyType === 'supplier' ? (isAr ? 'كشوف حسابات الموردين' : 'Suppliers Sub-Ledger') : (isAr ? 'كشوف حسابات العملاء' : 'Clients Sub-Ledger')}
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
           <div className="md:col-span-2">
             <label className="block text-xs font-black text-slate-700 mb-1.5">

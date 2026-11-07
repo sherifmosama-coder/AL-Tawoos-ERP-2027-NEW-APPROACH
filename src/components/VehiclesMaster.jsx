@@ -267,41 +267,6 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
 
   return (
     <div className={`space-y-6 ${isAr ? 'text-right' : 'text-left'}`}>
-      {/* Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 rounded-3xl p-6 text-white shadow-xl flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <div className="p-3 bg-emerald-500/20 border border-emerald-400/30 rounded-2xl text-emerald-300">
-            <Truck className="h-7 w-7" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-black">
-                {isAr ? 'سجل أسطول الشاحنات والسيارات' : 'Vehicles & Fleet Master'}
-              </h2>
-              <span className="text-[10px] bg-white/10 px-2.5 py-0.5 rounded-full font-mono text-slate-300">
-                {vehiclesList.length} {isAr ? 'مركبة' : 'Vehicles'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-300 mt-1">
-              {isAr
-                ? 'إدارة سيارات وشاحنات الشركة، أرقام اللوحات، السائقين، ومتابعة مصروفات الوقود والتراخيص'
-                : 'Manage company vehicles, license plates, drivers, fuel allocations, and registration expiries'}
-            </p>
-          </div>
-        </div>
-
-        {isGeneralAdmin && (
-          <button
-            type="button"
-            onClick={handleOpenCreate}
-            className="flex items-center gap-2 px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs rounded-xl shadow-lg transition cursor-pointer"
-          >
-            <Plus className="h-4 w-4" />
-            <span>{isAr ? 'إضافة مركبة جديدة +' : 'Add Vehicle +'}</span>
-          </button>
-        )}
-      </div>
-
       {/* Toast Feedback */}
       {toastMsg && (
         <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-2xl text-emerald-900 text-xs font-bold flex items-center gap-2 shadow-xs animate-fadeIn">
@@ -368,9 +333,22 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
           </select>
         </div>
 
-        <span className="text-xs font-bold text-slate-500">
-          {filteredVehicles.length} {isAr ? 'مركبة' : 'vehicles'}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-bold text-slate-500">
+            {filteredVehicles.length} {isAr ? 'مركبة' : 'vehicles'}
+          </span>
+
+          {isGeneralAdmin && (
+            <button
+              type="button"
+              onClick={handleOpenCreate}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-xl shadow-xs transition cursor-pointer"
+            >
+              <Plus className="h-4 w-4" />
+              <span>{isAr ? 'إضافة مركبة جديدة +' : 'Add Vehicle +'}</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Vehicle Cards Grid */}
