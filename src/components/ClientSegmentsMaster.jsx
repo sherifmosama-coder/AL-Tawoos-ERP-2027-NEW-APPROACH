@@ -34,7 +34,14 @@ import {
   AlertTriangle,
   X,
   UserCheck,
-  // --- Food & Beverage / Dining Icons (19) ---
+  Pipette,
+  Palette,
+  // --- Food & Beverage / Dining / Herbs Icons (25) ---
+  Leaf,
+  LeafyGreen,
+  Sprout,
+  FlaskRound,
+  CookingPot,
   Utensils,
   UtensilsCrossed,
   ChefHat,
@@ -78,9 +85,37 @@ import {
   Target
 } from 'lucide-react';
 
-// Icon Map Registry for Segment Dynamic Rendering (55 Curated Icons)
+// Mortar and Pestle icon for Apothecary, Spices & Herbs (عطارة وتوابل وأعشاب)
+export const MortarPestle = ({ size = 24, className = '', strokeWidth = 2, ...props }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    {...props}
+  >
+    <path d="M4 10a8 8 0 0 0 16 0" />
+    <path d="M3.5 10h17" />
+    <path d="M9 18l-1.2 3h8.4l-1.2 -3" />
+    <path d="M15 3.5l-4.5 7.5" />
+  </svg>
+);
+
+// Icon Map Registry for Segment Dynamic Rendering (Curated Business & Trade Icons)
 export const SEGMENT_ICON_MAP = {
-  // Food & Beverage / HORECA
+  // Food, Herbs, Spices & Beverage / HORECA
+  MortarPestle,
+  Leaf,
+  LeafyGreen,
+  Sprout,
+  FlaskRound,
+  CookingPot,
   Utensils,
   UtensilsCrossed,
   ChefHat,
@@ -144,13 +179,19 @@ export const SEGMENT_ICON_MAP = {
 
 export const SEGMENT_ICON_CATEGORIES = [
   { id: 'all', labelAr: 'الكل', labelEn: 'All' },
-  { id: 'food', labelAr: 'أغذية ومطاعم', labelEn: 'Food & Dining' },
+  { id: 'food', labelAr: 'أغذية وتوابل ومطاعم', labelEn: 'Food, Spices & Dining' },
   { id: 'shipping', labelAr: 'شحن ولوجستيات', labelEn: 'Shipping & Logistics' },
   { id: 'commercial', labelAr: 'تجارة ومؤسسات', labelEn: 'Retail & Corporate' }
 ];
 
 export const SEGMENT_ICONS_METADATA = [
-  // --- Food & Beverage / HORECA (19) ---
+  // --- Food, Herbs, Spices & Beverage / HORECA (25) ---
+  { key: 'MortarPestle', category: 'food', labelAr: 'عطارة وتوابل وأعشاب (هون ومدقة)', labelEn: 'Apothecary, Spices & Mortar' },
+  { key: 'Leaf', category: 'food', labelAr: 'أعشاب ونباتات عطرية وطبية', labelEn: 'Herbal & Botanicals' },
+  { key: 'LeafyGreen', category: 'food', labelAr: 'خضروات ورقية ومحاصيل خضراء', labelEn: 'Leafy Greens & Fresh Herbs' },
+  { key: 'Sprout', category: 'food', labelAr: 'بذور وحبوب مستنبتة وتوابل خام', labelEn: 'Sprouts & Raw Seeds' },
+  { key: 'FlaskRound', category: 'food', labelAr: 'خلاصات وزيوت عطرية وغذائية', labelEn: 'Extracts & Essential Oils' },
+  { key: 'CookingPot', category: 'food', labelAr: 'قدور تحضير وطهي وتصنيع', labelEn: 'Cooking & Processing Pots' },
   { key: 'Utensils', category: 'food', labelAr: 'مطاعم وتناول طعام', labelEn: 'Restaurants & Dining' },
   { key: 'UtensilsCrossed', category: 'food', labelAr: 'مطاعم راقية وضيافة', labelEn: 'Fine Dining & Hospitality' },
   { key: 'ChefHat', category: 'food', labelAr: 'مطابخ سحابية وشيف', labelEn: 'Cloud Kitchens & Chefs' },
@@ -212,6 +253,82 @@ export const SEGMENT_ICONS_METADATA = [
   { key: 'Layers', category: 'commercial', labelAr: 'قطاعات متعددة المستويات', labelEn: 'Multi-Tier Segments' }
 ];
 
+// Color conversion and generation utilities
+export const hexToHsl = (hex = '#2563eb') => {
+  let c = String(hex).replace('#', '').trim();
+  if (c.length === 3) c = c.split('').map(x => x + x).join('');
+  if (c.length !== 6) return { h: 217, s: 80, l: 53 };
+  const num = parseInt(c, 16);
+  if (isNaN(num)) return { h: 217, s: 80, l: 53 };
+  const r = ((num >> 16) & 255) / 255;
+  const g = ((num >> 8) & 255) / 255;
+  const b = (num & 255) / 255;
+
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+      case g: h = (b - r) / d + 2; break;
+      case b: h = (r - g) / d + 4; break;
+      default: break;
+    }
+    h = Math.round(h * 60);
+  }
+  return { h, s: Math.round(s * 100), l: Math.round(l * 100) };
+};
+
+export const hslToHex = (h, s, l) => {
+  s = Math.max(0, Math.min(100, s)) / 100;
+  l = Math.max(0, Math.min(100, l)) / 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+};
+
+export const generateShades = (hex) => {
+  const { h, s } = hexToHsl(hex);
+  const lightnessLevels = [85, 70, 55, 42, 30, 18];
+  return lightnessLevels.map(lvl => hslToHex(h, Math.max(s, 45), lvl));
+};
+
+export const SEGMENT_COLOR_GROUPS = [
+  {
+    id: 'spices_earth',
+    labelAr: 'عطارة وتوابل وألوان ترابية',
+    labelEn: 'Spices & Earth Tones',
+    colors: ['#d97706', '#ca8a04', '#9a3412', '#dc2626', '#65a30d', '#15803d', '#78350f', '#7c3aed']
+  },
+  {
+    id: 'corporate_modern',
+    labelAr: 'أعمال ومؤسسات كبرى',
+    labelEn: 'Corporate & Modern',
+    colors: ['#1e3a8a', '#2563eb', '#0284c7', '#0891b2', '#0d9488', '#059669', '#4f46e5', '#475569']
+  },
+  {
+    id: 'dining_retail',
+    labelAr: 'أغذية وتجزئة وضيافة',
+    labelEn: 'Dining & Retail',
+    colors: ['#9f1239', '#e11d48', '#ea580c', '#f59e0b', '#84cc16', '#10b981', '#c026d3', '#6366f1']
+  },
+  {
+    id: 'deep_luxury',
+    labelAr: 'ألوان عميقة وفاخرة',
+    labelEn: 'Deep & Luxury',
+    colors: ['#881337', '#0f172a', '#064e3b', '#581c87', '#451a03', '#713f12', '#334155', '#1c1917']
+  }
+];
+
 export const DEFAULT_SEGMENT_COLORS = [
   '#2563eb', // Blue
   '#059669', // Emerald
@@ -219,11 +336,11 @@ export const DEFAULT_SEGMENT_COLORS = [
   '#0891b2', // Cyan
   '#7c3aed', // Purple
   '#4f46e5', // Indigo
-  '#d97706', // Amber
+  '#d97706', // Amber / Saffron
+  '#9a3412', // Cinnamon
   '#ea580c', // Orange
   '#dc2626', // Red
   '#e11d48', // Rose
-  '#0284c7', // Sky
   '#475569'  // Slate
 ];
 
@@ -357,6 +474,14 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
     displayOrder: 1,
     description: ''
   });
+
+  const currentHue = useMemo(() => {
+    return hexToHsl(formData.color || '#2563eb').h;
+  }, [formData.color]);
+
+  const colorShades = useMemo(() => {
+    return generateShades(formData.color || '#2563eb');
+  }, [formData.color]);
 
   // Real-time listener for Client Segments
   useEffect(() => {
@@ -757,8 +882,8 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
                 </div>
               </div>
 
-              {/* Order & Slug */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Order & Color Selector Section */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     {isAr ? 'ترتيب العرض' : 'Display Order'}
@@ -777,41 +902,155 @@ export default function ClientSegmentsMaster({ currentUser = {}, permissions = n
                     {isAr ? 'الرمز اللوني المختار' : 'Selected Color Hex'}
                   </label>
                   <div className="flex items-center gap-2">
-                    <input
-                      type="color"
-                      value={formData.color}
-                      onChange={(e) => setFormData({ ...formData, color: e.target.value })}
-                      className="w-9 h-9 p-0.5 rounded-lg border border-slate-200 cursor-pointer flex-shrink-0"
-                    />
+                    {/* Custom Picker Swatch Button */}
+                    <div className="relative w-10 h-10 shrink-0">
+                      <input
+                        type="color"
+                        value={formData.color}
+                        onChange={(e) => setFormData({ ...formData, color: e.target.value })}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        title={isAr ? 'انقر لفتح منتقي الألوان المخصص' : 'Click to open custom color picker'}
+                      />
+                      <div
+                        className="w-10 h-10 rounded-xl border-2 border-white shadow-md flex items-center justify-center transition hover:scale-105"
+                        style={{ backgroundColor: formData.color }}
+                      >
+                        <Pipette className="w-4 h-4 text-white drop-shadow" />
+                      </div>
+                    </div>
                     <input
                       type="text"
                       value={formData.color}
-                      onChange={(e) => setFormData({ ...formData, color: e.target.value })}
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      onChange={(e) => {
+                        let val = e.target.value.trim();
+                        if (val && !val.startsWith('#')) val = '#' + val;
+                        setFormData({ ...formData, color: val });
+                      }}
+                      placeholder="#2563EB"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-purple-500"
                     />
                   </div>
                 </div>
               </div>
 
-              {/* Color Presets Palette */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  {isAr ? 'لوحة الألوان المعتمدة' : 'Color Presets Palette'}
-                </label>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {DEFAULT_SEGMENT_COLORS.map((hex) => (
-                    <button
-                      key={hex}
-                      type="button"
-                      onClick={() => setFormData({ ...formData, color: hex })}
-                      className={`w-7 h-7 rounded-lg transition transform hover:scale-110 flex items-center justify-center text-white shadow-sm ${
-                        formData.color === hex ? 'ring-2 ring-offset-2 ring-slate-800 scale-105' : ''
-                      }`}
-                      style={{ backgroundColor: hex }}
+              {/* Flexible Color Control Panel */}
+              <div className="bg-slate-50/80 p-3 rounded-2xl border border-slate-200 space-y-3">
+                {/* 1. Hue Spectrum Slider */}
+                <div>
+                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 mb-1.5">
+                    <span className="flex items-center gap-1.5">
+                      <Palette className="w-3.5 h-3.5 text-purple-600" />
+                      {isAr ? 'طيف تدرج الألوان المتصل (Hue)' : 'Hue Color Spectrum'}
+                    </span>
+                    <span className="font-mono text-slate-400 text-[10px]">{formData.color}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="360"
+                    value={currentHue}
+                    onChange={(e) => {
+                      const newHue = parseInt(e.target.value, 10);
+                      const { s, l } = hexToHsl(formData.color);
+                      const newHex = hslToHex(newHue, Math.max(s, 70), Math.min(Math.max(l, 35), 58));
+                      setFormData({ ...formData, color: newHex });
+                    }}
+                    className="w-full h-3 rounded-lg appearance-none cursor-pointer"
+                    style={{
+                      background: 'linear-gradient(to right, #ef4444 0%, #eab308 17%, #22c55e 33%, #06b6d4 50%, #3b82f6 67%, #a855f7 83%, #ef4444 100%)'
+                    }}
+                  />
+                </div>
+
+                {/* 2. Shades of Selected Color */}
+                <div>
+                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 mb-1">
+                    <span>{isAr ? 'درجات اللون المختار (فاتح إلى داكن)' : 'Shades of Selected Color'}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {colorShades.map((shade, idx) => {
+                      const isSelected = formData.color.toLowerCase() === shade.toLowerCase();
+                      return (
+                        <button
+                          key={shade + idx}
+                          type="button"
+                          onClick={() => setFormData({ ...formData, color: shade })}
+                          className={`flex-1 h-7 rounded-lg transition transform hover:scale-105 flex items-center justify-center shadow-xs cursor-pointer ${
+                            isSelected ? 'ring-2 ring-slate-800 scale-105' : ''
+                          }`}
+                          style={{ backgroundColor: shade }}
+                          title={shade}
+                        >
+                          {isSelected && <Check className="w-3.5 h-3.5 stroke-[3] text-white drop-shadow" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 3. Themed Palette Presets */}
+                <div className="space-y-1.5">
+                  <div className="text-[11px] font-bold text-slate-600">
+                    {isAr ? 'مجموعات ألوان الأعمال المقترحة' : 'Curated Business Palettes'}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {SEGMENT_COLOR_GROUPS.map((group) => (
+                      <div key={group.id} className="bg-white p-2 rounded-xl border border-slate-200 space-y-1">
+                        <span className="text-[10px] font-bold text-slate-500 block truncate">
+                          {isAr ? group.labelAr : group.labelEn}
+                        </span>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {group.colors.map((hex) => {
+                            const isSelected = formData.color.toLowerCase() === hex.toLowerCase();
+                            return (
+                              <button
+                                key={hex}
+                                type="button"
+                                onClick={() => setFormData({ ...formData, color: hex })}
+                                className={`w-5 h-5 rounded-md transition transform hover:scale-110 flex items-center justify-center cursor-pointer ${
+                                  isSelected ? 'ring-2 ring-slate-800 scale-110' : ''
+                                }`}
+                                style={{ backgroundColor: hex }}
+                                title={hex}
+                              >
+                                {isSelected && (
+                                  <Check className="w-3 h-3 stroke-[3] text-white drop-shadow" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 4. Live Badge Preview */}
+                <div className="bg-white p-2.5 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-slate-500">
+                    {isAr ? 'معاينة مظهر الشارة:' : 'Badge Live Preview:'}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold text-white shadow-xs"
+                      style={{ backgroundColor: formData.color }}
                     >
-                      {formData.color === hex && <Check className="w-4 h-4 stroke-[3]" />}
-                    </button>
-                  ))}
+                      {React.createElement(SEGMENT_ICON_MAP[formData.icon] || Layers, { className: 'w-3.5 h-3.5' })}
+                      <span>{formData.nameAr || formData.nameEn || (isAr ? 'اسم التصنيف' : 'Segment Name')}</span>
+                    </span>
+
+                    <span
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border"
+                      style={{
+                        backgroundColor: (formData.color.startsWith('#') && formData.color.length === 7) ? formData.color + '15' : '#f1f5f9',
+                        color: formData.color,
+                        borderColor: (formData.color.startsWith('#') && formData.color.length === 7) ? formData.color + '35' : '#cbd5e1'
+                      }}
+                    >
+                      {React.createElement(SEGMENT_ICON_MAP[formData.icon] || Layers, { className: 'w-3.5 h-3.5' })}
+                      <span>{formData.nameAr || formData.nameEn || (isAr ? 'اسم التصنيف' : 'Segment Name')}</span>
+                    </span>
+                  </div>
                 </div>
               </div>
 
