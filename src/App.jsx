@@ -56,6 +56,8 @@ import {
 } from './utils/tabAppearanceConfig';
 import ItemMaster from './components/ItemMaster';
 import SupplierMaster from './components/SupplierMaster';
+import ClientMaster from './components/ClientMaster';
+import ClientSegmentsMaster from './components/ClientSegmentsMaster';
 import CategoriesMaster from './components/CategoriesMaster';
 import FinishedProductsMaster from './components/FinishedProductsMaster';
 import FGCategoriesMaster from './components/FGCategoriesMaster';
@@ -504,6 +506,8 @@ export default function App() {
     master_data: [
       { id: 'items', labelAr: 'كارت الأصناف والخامات', labelEn: 'Item Master', icon: Package, moduleKey: 'items' },
       { id: 'suppliers', labelAr: 'سجل الموردين المعتمدين', labelEn: 'Supplier Master', icon: Building2, moduleKey: 'suppliers' },
+      { id: 'clients', labelAr: 'سجل العملاء المعتمدين', labelEn: 'Client Master', icon: UserCheck, moduleKey: 'clients' },
+      { id: 'client_segments', labelAr: 'تصنيفات وقطاعات العملاء', labelEn: 'Client Segments', icon: Layers, moduleKey: 'client_segments' },
       { id: 'categories', labelAr: 'مجموعات وتصنيفات التكويد', labelEn: 'Raw Material Categories', icon: FolderKanban, moduleKey: 'categories' },
       { id: 'finished_products', labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Goods Master', icon: PackageCheck, moduleKey: 'finished_products' },
       { id: 'finished_product_categories', labelAr: 'تصنيفات ومجموعات المنتج التام', labelEn: 'FG Categories', icon: Boxes, moduleKey: 'finished_product_categories' },
@@ -1111,6 +1115,18 @@ export default function App() {
             )}
             {activeTab === 'suppliers' && (
               <SupplierMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'clients' && (
+              <ClientMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'client_segments' && (
+              <ClientSegmentsMaster 
                 currentUser={currentUser} 
                 permissions={effectivePermissions} 
               />

@@ -1386,22 +1386,24 @@ The ERP provides three primary navigational surfaces:
 To eliminate user confusion, all three surfaces MUST remain 100% synchronized with identical tab IDs, permission module keys, localized labels, icons, default orders, and subtab routes.
 
 ### 28.2 Standard Operational Module Registry
-- **Master Database (`master_data` - 15 Tabs)**:
+- **Master Database (`master_data` - 17 Tabs)**:
   1. `items` (Item Master)
   2. `suppliers` (Supplier Master)
-  3. `categories` (Raw Material Categories)
-  4. `finished_products` (Finished Goods Master)
-  5. `finished_product_categories` (FG Categories & Lines)
-  6. `bom` (Packing & Filling BOM)
-  7. `intermediate_bom` (Intermediate Recipes)
-  8. `production_processes` (Production Processes & SOPs)
-  9. `warehouses` (Warehouses Master)
-  10. `safes` (Safes & Cash Vaults)
-  11. `bank_accounts` (Bank Accounts Master)
-  12. `vehicles` (Vehicles & Fleet Master)
-  13. `production_workers` (Production Workers)
-  14. `users` (Users & Roles)
-  15. `system_config` (System Configuration)
+  3. `clients` (Client Master)
+  4. `client_segments` (Client Segments & Categories)
+  5. `categories` (Raw Material Categories)
+  6. `finished_products` (Finished Goods Master)
+  7. `finished_product_categories` (FG Categories & Lines)
+  8. `bom` (Packing & Filling BOM)
+  9. `intermediate_bom` (Intermediate Recipes)
+  10. `production_processes` (Production Processes & SOPs)
+  11. `warehouses` (Warehouses Master)
+  12. `safes` (Safes & Cash Vaults)
+  13. `bank_accounts` (Bank Accounts Master)
+  14. `vehicles` (Vehicles & Fleet Master)
+  15. `production_workers` (Production Workers)
+  16. `users` (Users & Roles)
+  17. `system_config` (System Configuration)
 - **Materials & Procurement (`purchases` - 6 Tabs)**:
   1. `orders` (Purchase Orders)
   2. `receipts` (Goods Receipt GRN)
@@ -1427,4 +1429,54 @@ To eliminate user confusion, all three surfaces MUST remain 100% synchronized wi
 ### 28.3 Dynamic Order & Appearance Recalibration (`tabAppearanceConfig.js`)
 All three navigation surfaces map their base tab definitions through `tabConfigs[tab.id]` and sort using `(Number(tab.order) || 99)`.
 `DEFAULT_TABS_CONFIG` serves as the baseline fallback order, preventing any duplicate order numbers or dropped tabs across sessions.
+
+---
+
+## 29. Client Master & Dynamic Market Segmentation Architecture (`#clients` & `#client_segments`)
+
+### 29.1 Client Segments Master (`ClientSegmentsMaster.jsx` — `client_segments`)
+- **Collection**: `client_segments`
+- **Purge Status**: Master Data Immunity Lock (automatically registered via `modules.master_data.tabs.client_segments`).
+- **Core Entity Attributes**:
+  - `id`: Unique slug/code (e.g. `seg_chains`, `seg_wholesalers`).
+  - `nameAr`: Arabic title (e.g. `سلاسل تجارية / كبرى`).
+  - `nameEn`: English title (e.g. `Chains & Modern Trade`).
+  - `color`: Hex color code with live Tailwind visual tag.
+  - `icon`: Selectable Lucide icon (e.g. `Building2`, `Store`, `ShoppingBag`, `ShoppingCart`, `Truck`, `Hotel`, `Globe`, `Boxes`, `Users`, `Layers`).
+  - `displayOrder`: Sorting order.
+- **Pre-Seeded Default FMCG Segments**: One-click initialization for 7 standard FMCG distribution channels:
+  1. *سلاسل تجارية / كبرى* (`Building2`, `#2563eb`)
+  2. *جملة* (`Boxes`, `#059669`)
+  3. *نصف جملة* (`Store`, `#0d9488`)
+  4. *تجزئة* (`ShoppingBag`, `#0891b2`)
+  5. *موزعين* (`Truck`, `#7c3aed`)
+  6. *فنادق ومطاعم / HORECA* (`Hotel`, `#d97706`)
+  7. *تصدير* (`Globe`, `#dc2626`)
+- **Safety Lock**: Deleting a segment is blocked if active clients are currently assigned to it (`getLinkedClientsCount > 0`).
+
+### 29.2 Client Master Directory (`ClientMaster.jsx` — `clients`)
+- **Collection**: `clients`
+- **Dynamic Segment Subscription**: Client cards and dropdowns consume `client_segments` in real-time, rendering custom color badges and matching icons.
+- **Delivery-Bound Latest Activity (`latestActivityOn`)**:
+  - Replaced static active/inactive toggles with `latestActivityOn`.
+  - **Rule**: Strictly updated upon sales order delivery. Brand new clients display *"لا يوجد نشاط تسليم مسجل بعد"*.
+- **Credit Limit Semantics (`creditLimit`)**:
+  - `creditLimit: 0` (Default) $\rightarrow$ Explicitly represents **No Credit Limit / Unlimited ("حد ائتماني غير مقيد / مفتوح")**.
+  - `creditLimit > 0` $\rightarrow$ Represents active monetary cap in EGP.
+- **De-Duplication Engine (Empty Fields Exclusion)**:
+  - Real-time duplicate validation excludes empty/whitespace fields:
+    - 9-digit tax card (`taxCardNumber`) normalized match against existing non-empty tax cards.
+    - Phone and mobile numbers checked across primary contacts and all sub-branches.
+    - Arabic and English trade names string similarity match.
+  - Blank optional fields never falsely collide.
+- **Multi-Branch Hierarchy (`branches` Array)**:
+  - Supports single-branch (auto-generates "الفرع الرئيسي") or multi-branch architectures.
+  - Each branch carries: `nameAr`, `nameEn`, `isMain`, `region`, `address`, `contactPerson`, `phone`, `mobile`, `gpsCoordinates` (direct Google Maps link).
+  - Expandable drawer in main directory table.
+- **Bulk CSV Import & Export**:
+  - Downloadable 18-column CSV template (`tawoos_clients_import_template.csv`).
+  - Client-side parser cross-checks against live Firestore DB and internal CSV rows for duplicates.
+  - Visual preview table tagging rows as Valid (green) vs. Duplicate/Conflict (red with exact reason) prior to commit.
+- **Cross-App Comments**: Integrated via `<RowCommentButton tab="clients" module="master_data" />`.
+
 

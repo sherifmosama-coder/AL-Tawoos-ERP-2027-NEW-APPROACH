@@ -824,6 +824,28 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'البيانات الأساسية',
     categoryEn: 'Master Data'
   },
+  clients: {
+    id: 'clients',
+    moduleKey: 'master_data',
+    order: 2.1,
+    labelAr: 'سجل العملاء المعتمدين',
+    labelEn: 'Client Master',
+    iconName: 'UserCheck',
+    color: '#2563eb',
+    categoryAr: 'البيانات الأساسية',
+    categoryEn: 'Master Data'
+  },
+  client_segments: {
+    id: 'client_segments',
+    moduleKey: 'master_data',
+    order: 2.2,
+    labelAr: 'تصنيفات وقطاعات العملاء',
+    labelEn: 'Client Segments',
+    iconName: 'Layers',
+    color: '#7c3aed',
+    categoryAr: 'البيانات الأساسية',
+    categoryEn: 'Master Data'
+  },
   categories: {
     id: 'categories',
     moduleKey: 'master_data',

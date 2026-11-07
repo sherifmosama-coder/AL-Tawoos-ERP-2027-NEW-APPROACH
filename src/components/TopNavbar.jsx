@@ -193,6 +193,8 @@ export default function TopNavbar({
       tabs: [
         { id: 'items', moduleKey: 'items', labelAr: 'كارت الأصناف والخامات', labelEn: 'Item Master', icon: Package },
         { id: 'suppliers', moduleKey: 'suppliers', labelAr: 'سجل الموردين المعتمدين', labelEn: 'Supplier Master', icon: Building2 },
+        { id: 'clients', moduleKey: 'clients', labelAr: 'سجل العملاء المعتمدين', labelEn: 'Client Master', icon: UserCheck },
+        { id: 'client_segments', moduleKey: 'client_segments', labelAr: 'تصنيفات وقطاعات العملاء', labelEn: 'Client Segments', icon: Layers },
         { id: 'categories', moduleKey: 'categories', labelAr: 'مجموعات وتصنيفات التكويد', labelEn: 'Raw Material Categories', icon: FolderKanban },
         { id: 'finished_products', moduleKey: 'finished_products', labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Goods Master', icon: PackageCheck },
         { id: 'finished_product_categories', moduleKey: 'finished_product_categories', labelAr: 'تصنيفات ومجموعات المنتج التام', labelEn: 'FG Categories', icon: Boxes },
