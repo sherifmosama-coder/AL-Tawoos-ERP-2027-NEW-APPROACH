@@ -66,7 +66,7 @@ import {
  * Resolves sequential serial (1001, 1002, ...) for any price list period.
  * Format: 100# WHERE # STARTS AT 1 (1001, 1002, 1003, etc.)
  */
-export const resolvePeriodSerial = (period, allPriceLists = []) => {
+const resolvePeriodSerial = (period, allPriceLists = []) => {
   if (!period) return '1001';
   if (period.serial && !isNaN(Number(period.serial))) {
     return String(period.serial);
@@ -106,7 +106,7 @@ export const resolvePeriodSerial = (period, allPriceLists = []) => {
 /**
  * Computes next available serial starting at 1001 (100# where # starts at 1)
  */
-export const generateNextPeriodSerial = (allPriceLists = []) => {
+const generateNextPeriodSerial = (allPriceLists = []) => {
   const existingSerials = (allPriceLists || []).map((pl) => {
     const s = resolvePeriodSerial(pl, allPriceLists);
     const num = parseInt(s, 10);
