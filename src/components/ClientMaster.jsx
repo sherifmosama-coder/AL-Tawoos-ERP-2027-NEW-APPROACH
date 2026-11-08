@@ -7,7 +7,8 @@ import {
   doc,
   setDoc,
   deleteDoc,
-  serverTimestamp
+  serverTimestamp,
+  writeBatch
 } from 'firebase/firestore';
 import {
   UserCheck,
@@ -71,7 +72,7 @@ import { RowCommentButton } from './comments';
 // - Strips non-digits
 // - Handles international Egypt prefix (+20 or 0020 or 20)
 // - Ensures all domestic phone numbers are prefixed with 0 (e.g. 10xxxxxxxx -> 010xxxxxxxx)
-export const normalizePhone = (p) => {
+const normalizePhone = (p) => {
   if (!p) return '';
   let digits = String(p).replace(/\D/g, '').trim();
   if (!digits) return '';
@@ -93,7 +94,7 @@ export const normalizePhone = (p) => {
 const normalizeTaxCard = (t) => String(t || '').replace(/[\s-]/g, '').trim();
 
 // Days of the week dictionary
-export const WEEK_DAYS = [
+const WEEK_DAYS = [
   { id: 'friday', labelAr: 'الجمعة', labelEn: 'Friday' },
   { id: 'saturday', labelAr: 'السبت', labelEn: 'Saturday' },
   { id: 'sunday', labelAr: 'الأحد', labelEn: 'Sunday' },
@@ -104,7 +105,7 @@ export const WEEK_DAYS = [
 ];
 
 // Helper to auto-resize client logo to a lightweight square avatar (max 160px)
-export const resizeClientLogo = (file, maxDimension = 160) => {
+const resizeClientLogo = (file, maxDimension = 160) => {
   return new Promise((resolve, reject) => {
     if (!file || !file.type.startsWith('image/')) {
       return reject(new Error('Selected file is not an image'));
@@ -171,7 +172,7 @@ const PRICING_STRATEGIES = [
 ];
 
 // Helper to normalize Arabic text (collapses hamzas, taa marbuta, yaa, and whitespace)
-export const normalizeArText = (t) =>
+const normalizeArText = (t) =>
   String(t || '')
     .trim()
     .toLowerCase()
@@ -181,7 +182,7 @@ export const normalizeArText = (t) =>
     .replace(/\s+/g, ' ');
 
 // Helper to resolve raw pricing strategy input from CSV
-export const resolvePricingStrategy = (rawText) => {
+const resolvePricingStrategy = (rawText) => {
   if (!rawText) return null;
   const t = normalizeArText(rawText);
   if (!t) return null;
@@ -220,7 +221,7 @@ export const resolvePricingStrategy = (rawText) => {
 };
 
 // Helper to resolve raw settlement mode input from CSV
-export const resolveSettlementMode = (rawText) => {
+const resolveSettlementMode = (rawText) => {
   if (!rawText) return null;
   const t = normalizeArText(rawText);
   if (!t) return null;
@@ -264,7 +265,7 @@ export const resolveSettlementMode = (rawText) => {
 // Wholesale (جملة) or Serga / Attara (سرجة \ عطارة) -> wholesalers
 // Retail (تجزئة) -> retail
 // Any other valid segment (سلاسل, مطبخ, اون لاين, تصدير, اخرين, etc.) -> special_pricing
-export const resolveDefaultPricingStrategy = (segmentTextOrId, segmentsList = []) => {
+const resolveDefaultPricingStrategy = (segmentTextOrId, segmentsList = []) => {
   if (!segmentTextOrId) return '';
   const cleanRaw = String(segmentTextOrId).trim();
   if (!cleanRaw) return '';
@@ -307,7 +308,7 @@ export const resolveDefaultPricingStrategy = (segmentTextOrId, segmentsList = []
 };
 
 // RFC 4180 Streaming Lexer with Inline Quote Tolerance
-export const parseRfcCsv = (rawText) => {
+const parseRfcCsv = (rawText) => {
   const text = String(rawText || '').replace(/^\uFEFF/, '');
   const rows = [];
   let currentRow = [];
@@ -447,6 +448,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     invalid: 0
   });
   const [isCommittingImport, setIsCommittingImport] = useState(false);
+  const [commitProgress, setCommitProgress] = useState({ current: 0, total: 0, percent: 0 });
+  const [autoBackupAfterImport, setAutoBackupAfterImport] = useState(true);
   const [expandedImportClientIds, setExpandedImportClientIds] = useState(new Set());
   const [importViewMode, setImportViewMode] = useState('clients'); // 'clients' | 'raw_rows'
   const [isBatchToolOpen, setIsBatchToolOpen] = useState(false);
@@ -1882,6 +1885,127 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     e.target.value = '';
   };
 
+  // Full 23-Column Backup CSV Generator (RFC 4180 compliant with UTF-8 BOM)
+  const exportClientsBackupCsv = (clientList = [], filenamePrefix = 'tawoos_clients_backup') => {
+    if (!clientList || clientList.length === 0) {
+      alert(isAr ? 'لا توجد بيانات عملاء لتصديرها' : 'No client records to export');
+      return;
+    }
+
+    const headers = [
+      'code',
+      'tradeNameAr',
+      'tradeNameEn',
+      'legalName',
+      'segment',
+      'pricingStrategy',
+      'taxCardNumber',
+      'commercialRegister',
+      'taxDistrict',
+      'settlementMode',
+      'creditLimit',
+      'phones',
+      'emails',
+      'weeklyHolidays',
+      'workingHoursFrom',
+      'workingHoursTo',
+      'notes',
+      'branchName',
+      'address',
+      'region',
+      'contactPerson',
+      'branchPhone',
+      'gpsCoordinates'
+    ];
+
+    const escapeCsv = (val) => {
+      const str = String(val == null ? '' : val);
+      if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const rows = [];
+
+    clientList.forEach((c) => {
+      const code = c.code || c.id || '';
+      const tradeNameAr = c.tradeNameAr || c.name || '';
+      const tradeNameEn = c.tradeNameEn || '';
+      const legalName = c.legalName || tradeNameAr;
+      const seg = segmentMap[c.segmentId];
+      const segmentName = seg ? seg.nameAr : (c.segmentRaw || c.segmentId || '');
+      const pricing = c.pricingStrategy || '';
+      const taxCard = c.taxCardNumber || '';
+      const cr = c.commercialRegister || '';
+      const taxDistrict = c.taxDistrict || '';
+      const settlement = c.settlementMode || 'cod';
+      const creditLimit = c.creditLimit || 0;
+      const phones = Array.isArray(c.phones)
+        ? c.phones.map(normalizePhone).filter(Boolean).join('; ')
+        : (c.phone ? normalizePhone(c.phone) : '');
+      const emails = Array.isArray(c.emails) ? c.emails.join('; ') : (c.email || '');
+      const weeklyHolidays = Array.isArray(c.weeklyHolidays)
+        ? c.weeklyHolidays.map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h).join('; ')
+        : (c.weeklyHolidays || '');
+      const workingHoursFrom = c.workingHoursFrom || '';
+      const workingHoursTo = c.workingHoursTo || '';
+      const notes = c.notes || '';
+
+      const branches = (c.branches && c.branches.length > 0) ? c.branches : [
+        {
+          nameAr: 'الفرع الرئيسي',
+          region: c.region || '',
+          address: c.address || '',
+          contactPerson: c.contactPerson || '',
+          phone: c.phone || '',
+          gpsCoordinates: c.gpsCoordinates || ''
+        }
+      ];
+
+      branches.forEach((b) => {
+        const branchPhone = normalizePhone(b.phone || (b.phones && b.phones[0]) || '');
+        rows.push([
+          code,
+          tradeNameAr,
+          tradeNameEn,
+          legalName,
+          segmentName,
+          pricing,
+          taxCard,
+          cr,
+          taxDistrict,
+          settlement,
+          creditLimit,
+          phones,
+          emails,
+          weeklyHolidays,
+          workingHoursFrom,
+          workingHoursTo,
+          notes,
+          b.nameAr || 'الفرع الرئيسي',
+          b.address || '',
+          b.region || '',
+          b.contactPerson || '',
+          branchPhone,
+          b.gpsCoordinates || ''
+        ].map(escapeCsv).join(','));
+      });
+    });
+
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const nowStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
+    link.download = `${filenamePrefix}_${nowStr}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const handleCommitBulkImport = async () => {
     const rowsToCommit = importRows.filter(
       (r) => r.isValid && r.action !== 'skip' && r.action !== 'review_required'
@@ -1892,92 +2016,138 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     }
 
     setIsCommittingImport(true);
+    setCommitProgress({ current: 0, total: rowsToCommit.length, percent: 0 });
+
+    const BATCH_SIZE = 250;
     let createdCount = 0;
     let replacedCount = 0;
     let mergedCount = 0;
     let totalBranchesCount = 0;
+    let processedCount = 0;
 
     try {
-      for (const client of rowsToCommit) {
-        totalBranchesCount += (client.branches?.length || 1);
+      for (let i = 0; i < rowsToCommit.length; i += BATCH_SIZE) {
+        const chunk = rowsToCommit.slice(i, i + BATCH_SIZE);
+        const batch = writeBatch(db);
 
-        if (client.action === 'replace' || client.action === 'create') {
-          const payload = {
-            tradeNameAr: client.tradeNameAr,
-            tradeNameEn: client.tradeNameEn,
-            legalName: client.legalName,
-            segmentId: client.segmentId,
-            pricingStrategy: client.pricingStrategy,
-            taxCardNumber: client.taxCardNumber,
-            commercialRegister: client.commercialRegister,
-            taxDistrict: client.taxDistrict,
-            settlementMode: client.settlementMode,
-            creditLimit: client.creditLimit,
-            openingBalance: 0,
-            latestActivityOn: client.isExisting ? (client.existingClient?.latestActivityOn || null) : null,
-            phones: (client.phones || []).map((p) => normalizePhone(p)).filter(Boolean),
-            phone: normalizePhone(client.phones?.[0] || ''),
-            emails: client.emails || [],
-            email: client.emails?.[0] || '',
-            weeklyHolidays: client.weeklyHolidays?.length > 0 ? client.weeklyHolidays : ['friday'],
-            workingHoursFrom: client.workingHoursFrom || '',
-            workingHoursTo: client.workingHoursTo || '',
-            branches: (client.branches || []).map((b) => ({
-              ...b,
-              phone: normalizePhone(b.phone || (b.phones && b.phones[0]) || ''),
-              phones: (Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : [])).map((p) => normalizePhone(p)).filter(Boolean)
-            })),
-            branchesCount: (client.branches || []).length,
-            attachments: client.isExisting ? (client.existingClient?.attachments || []) : [],
-            logo: client.isExisting ? (client.existingClient?.logo || '') : '',
-            notes: (client.notes && client.notes.trim()) || 'Imported via Bulk CSV',
-            createdAt: client.isExisting ? (client.existingClient?.createdAt || serverTimestamp()) : serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
+        for (const client of chunk) {
+          totalBranchesCount += (client.branches?.length || 1);
 
-          await setDoc(doc(db, 'clients', client.code), payload, { merge: true });
-          if (client.action === 'replace') replacedCount++;
-          else createdCount++;
-        } else if (client.action === 'merge') {
-          const existing = client.existingClient || clients.find((c) => c.id === client.code);
-          const existingBranches = existing?.branches || [];
-          const mergedBranches = [...existingBranches];
-
-          for (const nb of client.branches || []) {
-            const alreadyExists = mergedBranches.some(
-              (eb) => eb.nameAr && nb.nameAr && eb.nameAr.trim().toLowerCase() === nb.nameAr.trim().toLowerCase()
-            );
-            if (!alreadyExists) {
-              mergedBranches.push({
-                ...nb,
-                phone: normalizePhone(nb.phone || (nb.phones && nb.phones[0]) || ''),
-                phones: (Array.isArray(nb.phones) ? nb.phones : (nb.phone ? [nb.phone] : [])).map((p) => normalizePhone(p)).filter(Boolean),
-                id: `br_${mergedBranches.length + 1}`,
-                isMain: mergedBranches.length === 0
-              });
-            }
-          }
-
-          const combinedPhones = Array.from(new Set([...(existing?.phones || []), ...(client.phones || [])]))
-            .map((p) => normalizePhone(p))
-            .filter(Boolean);
-          const combinedEmails = Array.from(new Set([...(existing?.emails || []), ...(client.emails || [])])).filter(Boolean);
-
-          await setDoc(
-            doc(db, 'clients', client.code),
-            {
-              branches: mergedBranches,
-              branchesCount: mergedBranches.length,
-              phones: combinedPhones,
-              phone: combinedPhones[0] || '',
-              emails: combinedEmails,
-              email: combinedEmails[0] || '',
+          if (client.action === 'replace' || client.action === 'create') {
+            const payload = {
+              tradeNameAr: String(client.tradeNameAr || '').trim(),
+              tradeNameEn: String(client.tradeNameEn || '').trim(),
+              legalName: String(client.legalName || client.tradeNameAr || '').trim(),
+              segmentId: String(client.segmentId || '').trim(),
+              pricingStrategy: String(client.pricingStrategy || 'special_pricing').trim(),
+              taxCardNumber: String(client.taxCardNumber || '').trim(),
+              commercialRegister: String(client.commercialRegister || '').trim(),
+              taxDistrict: String(client.taxDistrict || '').trim(),
+              settlementMode: String(client.settlementMode || 'cod').trim(),
+              creditLimit: Math.max(0, Number(client.creditLimit) || 0),
+              openingBalance: 0,
+              latestActivityOn: client.isExisting ? (client.existingClient?.latestActivityOn || null) : null,
+              phones: (client.phones || []).map(normalizePhone).filter(Boolean),
+              phone: normalizePhone(client.phones?.[0] || ''),
+              emails: (client.emails || []).map((e) => String(e).trim()).filter(Boolean),
+              email: String(client.emails?.[0] || '').trim(),
+              weeklyHolidays: client.weeklyHolidays?.length > 0 ? client.weeklyHolidays : ['friday'],
+              workingHoursFrom: String(client.workingHoursFrom || '').trim(),
+              workingHoursTo: String(client.workingHoursTo || '').trim(),
+              branches: (client.branches || []).map((b, bIdx) => ({
+                id: b.id || `br_${bIdx + 1}`,
+                nameAr: String(b.nameAr || 'الفرع الرئيسي').trim(),
+                nameEn: String(b.nameEn || 'Main Branch').trim(),
+                isMain: Boolean(b.isMain),
+                region: String(b.region || '').trim(),
+                address: String(b.address || '').trim(),
+                contactPerson: String(b.contactPerson || '').trim(),
+                phone: normalizePhone(b.phone || (b.phones && b.phones[0]) || ''),
+                phones: (Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : [])).map(normalizePhone).filter(Boolean),
+                gpsCoordinates: String(b.gpsCoordinates || '').trim(),
+                notes: String(b.notes || '').trim(),
+                useCustomSchedule: Boolean(b.useCustomSchedule),
+                weeklyHolidays: Array.isArray(b.weeklyHolidays) ? b.weeklyHolidays : [],
+                workingHoursFrom: String(b.workingHoursFrom || '').trim(),
+                workingHoursTo: String(b.workingHoursTo || '').trim()
+              })),
+              branchesCount: (client.branches || []).length,
+              attachments: client.isExisting ? (client.existingClient?.attachments || []) : [],
+              logo: client.isExisting ? (client.existingClient?.logo || '') : '',
+              notes: String(client.notes || '').trim() || 'Imported via Bulk CSV',
+              createdAt: client.isExisting ? (client.existingClient?.createdAt || serverTimestamp()) : serverTimestamp(),
               updatedAt: serverTimestamp()
-            },
-            { merge: true }
-          );
-          mergedCount++;
+            };
+
+            batch.set(doc(db, 'clients', String(client.code).trim()), payload, { merge: true });
+            if (client.action === 'replace') replacedCount++;
+            else createdCount++;
+          } else if (client.action === 'merge') {
+            const existing = client.existingClient || clients.find((c) => c.id === client.code);
+            const existingBranches = existing?.branches || [];
+            const mergedBranches = [...existingBranches];
+
+            for (const nb of client.branches || []) {
+              const alreadyExists = mergedBranches.some(
+                (eb) => eb.nameAr && nb.nameAr && eb.nameAr.trim().toLowerCase() === nb.nameAr.trim().toLowerCase()
+              );
+              if (!alreadyExists) {
+                mergedBranches.push({
+                  id: `br_${mergedBranches.length + 1}`,
+                  nameAr: String(nb.nameAr || '').trim(),
+                  nameEn: String(nb.nameEn || '').trim(),
+                  isMain: mergedBranches.length === 0,
+                  region: String(nb.region || '').trim(),
+                  address: String(nb.address || '').trim(),
+                  contactPerson: String(nb.contactPerson || '').trim(),
+                  phone: normalizePhone(nb.phone || (nb.phones && nb.phones[0]) || ''),
+                  phones: (Array.isArray(nb.phones) ? nb.phones : (nb.phone ? [nb.phone] : [])).map(normalizePhone).filter(Boolean),
+                  gpsCoordinates: String(nb.gpsCoordinates || '').trim(),
+                  notes: String(nb.notes || '').trim(),
+                  useCustomSchedule: Boolean(nb.useCustomSchedule),
+                  weeklyHolidays: Array.isArray(nb.weeklyHolidays) ? nb.weeklyHolidays : [],
+                  workingHoursFrom: String(nb.workingHoursFrom || '').trim(),
+                  workingHoursTo: String(nb.workingHoursTo || '').trim()
+                });
+              }
+            }
+
+            const combinedPhones = Array.from(new Set([...(existing?.phones || []), ...(client.phones || [])]))
+              .map((p) => normalizePhone(p))
+              .filter(Boolean);
+            const combinedEmails = Array.from(new Set([...(existing?.emails || []), ...(client.emails || [])]))
+              .map((e) => String(e).trim())
+              .filter(Boolean);
+
+            batch.set(
+              doc(db, 'clients', String(client.code).trim()),
+              {
+                branches: mergedBranches,
+                branchesCount: mergedBranches.length,
+                phones: combinedPhones,
+                phone: combinedPhones[0] || '',
+                emails: combinedEmails,
+                email: combinedEmails[0] || '',
+                updatedAt: serverTimestamp()
+              },
+              { merge: true }
+            );
+            mergedCount++;
+          }
         }
+
+        await batch.commit();
+        processedCount += chunk.length;
+        setCommitProgress({
+          current: processedCount,
+          total: rowsToCommit.length,
+          percent: Math.round((processedCount / rowsToCommit.length) * 100)
+        });
+      }
+
+      // If auto-backup is enabled, trigger download of all imported clients
+      if (autoBackupAfterImport) {
+        exportClientsBackupCsv(rowsToCommit, 'tawoos_clients_imported_backup');
       }
 
       setIsBulkModalOpen(false);
@@ -1994,56 +2164,13 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       alert(isAr ? 'حدث خطأ أثناء حفظ السجلات' : 'Error importing records');
     } finally {
       setIsCommittingImport(false);
+      setCommitProgress({ current: 0, total: 0, percent: 0 });
     }
   };
 
-  // Export to CSV
+  // Export to CSV (Uses full 23-column multi-branch template format)
   const handleExportClients = () => {
-    if (clients.length === 0) return;
-
-    const headers = [
-      'Code',
-      'Trade Name (Ar)',
-      'Trade Name (En)',
-      'Legal Name',
-      'Segment',
-      'Pricing Strategy',
-      'Tax Card Number',
-      'Settlement Mode',
-      'Credit Limit (EGP)',
-      'Latest Activity',
-      'Branches Count',
-      'Notes'
-    ];
-
-    const rows = clients.map((c) => {
-      const seg = segmentMap[c.segmentId];
-      return [
-        c.id,
-        c.tradeNameAr || c.name || '',
-        c.tradeNameEn || '',
-        c.legalName || '',
-        seg ? seg.nameAr : c.segmentId || '',
-        c.pricingStrategy || '',
-        c.taxCardNumber || '',
-        c.settlementMode || '',
-        c.creditLimit || 0,
-        c.latestActivityOn ? new Date(c.latestActivityOn).toLocaleDateString() : 'None',
-        (c.branches || []).length,
-        c.notes || ''
-      ]
-        .map((v) => `"${v}"`)
-        .join(',');
-    });
-
-    const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `clients_export_${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    exportClientsBackupCsv(clients, 'tawoos_clients_db_backup');
   };
 
   // Filtered Clients List
@@ -3462,14 +3589,27 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 )}
               </div>
 
-              <button
-                type="button"
-                onClick={handleDownloadTemplate}
-                className="text-blue-600 hover:underline flex items-center gap-1 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>{isAr ? 'تحميل قالب CSV الاستيراد المعتمد' : 'Download Template'}</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => exportClientsBackupCsv(clients, 'tawoos_clients_current_db_backup')}
+                  disabled={clients.length === 0}
+                  className="px-3 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs disabled:opacity-50"
+                  title={isAr ? 'تحميل نسخة احتياطية من قاعدة بيانات العملاء الحالية بصيغة CSV' : 'Download CSV backup of current database clients'}
+                >
+                  <Download className="w-3.5 h-3.5 text-blue-600" />
+                  <span>{isAr ? `نسخة احتياطية من القاعدة الحالية (${clients.length})` : `Backup Current DB (${clients.length})`}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadTemplate}
+                  className="text-blue-600 hover:underline flex items-center gap-1 cursor-pointer text-xs font-bold"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'تحميل القالب الفارغ' : 'Download Template'}</span>
+                </button>
+              </div>
             </div>
 
             {/* Prompt For Review & Quick Action Banner (When Existing Records are detected) */}
@@ -4389,17 +4529,31 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
             {/* Modal Footer Controls */}
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
-              <div className="text-xs font-bold text-slate-600">
-                {isAr ? 'السجلات الجاهزة للاستيراد:' : 'Ready to commit:'}{' '}
-                <strong className="text-emerald-700 text-sm">{importStats.readyToCommit}</strong> {isAr ? 'من إجمالي' : 'of'}{' '}
-                <strong className="text-slate-800 text-sm">{importStats.totalClients}</strong> {isAr ? 'عميل' : 'clients'}
+              <div className="flex items-center gap-4 flex-wrap">
+                <div className="text-xs font-bold text-slate-600">
+                  {isAr ? 'السجلات الجاهزة للاستيراد:' : 'Ready to commit:'}{' '}
+                  <strong className="text-emerald-700 text-sm">{importStats.readyToCommit}</strong> {isAr ? 'من إجمالي' : 'of'}{' '}
+                  <strong className="text-slate-800 text-sm">{importStats.totalClients}</strong> {isAr ? 'عميل' : 'clients'}
+                </div>
+
+                {/* Auto-backup checkbox */}
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={autoBackupAfterImport}
+                    onChange={(e) => setAutoBackupAfterImport(e.target.checked)}
+                    className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span>{isAr ? 'تنزيل نسخة احتياطية CSV تلقائياً فور نجاح الاستيراد' : 'Auto-download backup CSV upon successful import'}</span>
+                </label>
               </div>
 
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setIsBulkModalOpen(false)}
-                  className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-300 transition cursor-pointer"
+                  disabled={isCommittingImport}
+                  className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-300 transition cursor-pointer disabled:opacity-50"
                 >
                   {isAr ? 'إلغاء' : 'Cancel'}
                 </button>
@@ -4409,10 +4563,16 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                   onClick={handleCommitBulkImport}
                   className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md transition disabled:opacity-50 flex items-center gap-2 cursor-pointer"
                 >
-                  <CheckCircle2 className="w-4 h-4" />
+                  {isCommittingImport ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4" />
+                  )}
                   <span>
                     {isCommittingImport
-                      ? (isAr ? 'جاري الاستيراد والتحديث...' : 'Importing & Updating...')
+                      ? (isAr
+                          ? `جاري الحفظ: ${commitProgress.current} / ${commitProgress.total} (${commitProgress.percent}%)...`
+                          : `Saving: ${commitProgress.current} / ${commitProgress.total} (${commitProgress.percent}%)...`)
                       : (isAr
                           ? `اعتماد (${importStats.readyToCommit}) عميل (${importStats.totalBranchRows} فرع)`
                           : `Commit (${importStats.readyToCommit}) Clients (${importStats.totalBranchRows} Branches)`)}
@@ -4420,6 +4580,38 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 </button>
               </div>
             </div>
+
+            {/* Committing Progress Overlay */}
+            {isCommittingImport && (
+              <div className="absolute inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 max-w-md w-full space-y-4 text-center">
+                  <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mx-auto">
+                    <RefreshCw className="w-6 h-6 animate-spin" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-800">
+                      {isAr ? 'جاري استيراد وحفظ السجلات في قاعدة البيانات...' : 'Importing records to database...'}
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1 font-mono">
+                      {isAr
+                        ? `تم حفظ ${commitProgress.current} من إجمالي ${commitProgress.total} عميل (${commitProgress.percent}%)`
+                        : `Saved ${commitProgress.current} of ${commitProgress.total} clients (${commitProgress.percent}%)`}
+                    </p>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200">
+                    <div
+                      className="bg-emerald-500 h-full transition-all duration-300 rounded-full"
+                      style={{ width: `${commitProgress.percent}%` }}
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    {isAr
+                      ? 'يتم استخدام دفعات الحفظ السريعة (Firestore Batches) لضمان سرعة وموثوقية العملية'
+                      : 'Using high-speed Firestore batch writes for maximum speed and atomic consistency'}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
