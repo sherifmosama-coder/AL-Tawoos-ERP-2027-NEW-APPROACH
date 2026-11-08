@@ -45,6 +45,7 @@ import {
   HelpCircle
 } from 'lucide-react';
 import PricingStrategiesModal, { PricingStrategyBadge } from './PricingStrategiesModal';
+import SearchableSelect from './SearchableSelect';
 import {
   DEFAULT_PRICING_STRATEGIES,
   isProductPrivateLabel,
@@ -813,7 +814,7 @@ function PriceListEditorModal({
     items: editingPeriod?.items ? { ...editingPeriod.items } : {}
   });
 
-  const [productSearch, setProductSearch] = useState('');
+  const [selectedProductId, setSelectedProductId] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [bulkPercentInput, setBulkPercentInput] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -823,6 +824,64 @@ function PriceListEditorModal({
   const selectedStrategy = strategies.find((s) => s.id === formData.strategyId);
   const isSpecialPricing = selectedStrategy?.isSpecialPricing || formData.strategyId === 'special_pricing';
   const selectedClient = clients.find((c) => c.id === formData.clientId);
+
+  // Set of client IDs who currently have an active Special Pricing period
+  const activeSpecialClientIds = useMemo(() => {
+    const todayStr = formatDateKey(new Date());
+    const ids = new Set();
+    (allPriceLists || []).forEach((pl) => {
+      if (
+        (pl.isSpecialPricing || pl.strategyId === 'special_pricing') &&
+        pl.clientId &&
+        isPeriodActiveForDate(pl, todayStr)
+      ) {
+        ids.add(pl.clientId);
+      }
+    });
+    return ids;
+  }, [allPriceLists]);
+
+  // Options for Special Pricing Client SearchableSelect
+  // Prioritized: (1) Profile strategy = special_pricing -> (2) Active special pricing -> (3) Other strategies
+  const clientOptions = useMemo(() => {
+    const list = (clients || []).map((c) => {
+      const isProfileSpecial = c.pricingStrategy === 'special_pricing';
+      const hasActiveSpecial = activeSpecialClientIds.has(c.id);
+
+      let rank = 3;
+      let group = isAr ? 'عملاء باستراتيجيات تسعير أخرى' : 'Other Client Strategies';
+      let badgeText = '';
+
+      if (isProfileSpecial) {
+        rank = 1;
+        group = isAr ? '⭐ عملاء ملفهم الأساسي أسعار خاصة' : '⭐ Special Pricing Profile';
+        badgeText = isAr ? 'ملف خاص' : 'Special Profile';
+      } else if (hasActiveSpecial) {
+        rank = 2;
+        group = isAr ? '⚡ عملاء لديهم أسعار خاصة سارية حالياً' : '⚡ Active Special Pricing';
+        badgeText = isAr ? 'عقد ساري' : 'Active Contract';
+      }
+
+      const clientName = c.tradeNameAr || c.name || c.tradeNameEn || c.id;
+
+      return {
+        value: c.id,
+        label: clientName,
+        sublabel: c.id,
+        group,
+        badgeText,
+        rank,
+        nameForSort: clientName
+      };
+    });
+
+    list.sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.nameForSort.localeCompare(b.nameForSort, isAr ? 'ar' : 'en');
+    });
+
+    return list;
+  }, [clients, activeSpecialClientIds, isAr]);
 
   // Combine categories from finished_product_categories collection and any inline on products
   const { availableCategories, categoryMap } = useMemo(() => {
@@ -854,6 +913,52 @@ function PriceListEditorModal({
     list.sort((a, b) => a.sortOrder - b.sortOrder);
     return { availableCategories: list, categoryMap: map };
   }, [productCategories, products, isAr]);
+
+  // Options for Finished Goods Product SearchableSelect
+  const productOptions = useMemo(() => {
+    const opts = [
+      {
+        value: '',
+        label: isAr ? '📦 كافة الأصناف والمنتجات التامة' : 'All Finished Products',
+        sublabel: ''
+      }
+    ];
+
+    // Filter available products according to private label rules and category
+    const available = (products || []).filter((p) => {
+      const isPl = isProductPrivateLabel(p);
+      if (!isSpecialPricing && isPl) return false;
+      if (selectedCategory !== 'all') {
+        const prodCat = p.productionLine || p.categoryId || p.category;
+        if (prodCat !== selectedCategory) return false;
+      }
+      return true;
+    });
+
+    available.forEach((p) => {
+      const catKey = p.productionLine || p.categoryId || p.category;
+      const catLabel = categoryMap[catKey] || catKey || '';
+      opts.push({
+        value: p.id,
+        label: p.nameAr || p.name || p.id,
+        sublabel: p.id,
+        group: catLabel
+      });
+    });
+
+    return opts;
+  }, [products, isSpecialPricing, selectedCategory, categoryMap, isAr]);
+
+  const handleCategoryChange = (newCat) => {
+    setSelectedCategory(newCat);
+    if (newCat !== 'all' && selectedProductId) {
+      const prod = products.find((p) => p.id === selectedProductId);
+      const prodCat = prod?.productionLine || prod?.categoryId || prod?.category;
+      if (prodCat !== newCat) {
+        setSelectedProductId('');
+      }
+    }
+  };
 
   // Detect overlapping period of the SAME type that will be auto-closed
   const overlappingPeriod = useMemo(() => {
@@ -921,20 +1026,14 @@ function PriceListEditorModal({
         }
       }
 
-      // Search Query
-      if (productSearch.trim()) {
-        const q = productSearch.toLowerCase().trim();
-        const code = (p.id || '').toLowerCase();
-        const nameAr = (p.nameAr || '').toLowerCase();
-        const nameEn = (p.nameEn || '').toLowerCase();
-        if (!code.includes(q) && !nameAr.includes(q) && !nameEn.includes(q)) {
-          return false;
-        }
+      // Product Filter via SearchableSelect
+      if (selectedProductId && p.id !== selectedProductId) {
+        return false;
       }
 
       return true;
     });
-  }, [products, isSpecialPricing, selectedCategory, productSearch]);
+  }, [products, isSpecialPricing, selectedCategory, selectedProductId]);
 
   const handlePriceChange = (productId, valStr) => {
     const next = { ...formData.items };
@@ -1027,6 +1126,48 @@ function PriceListEditorModal({
       setErrorMsg(isAr ? 'يرجى تحديد تاريخ بداية الفترة' : 'Start date is required');
       return;
     }
+
+    // Promotional periods MUST have an end date
+    if (formData.type === 'promotional' && !formData.endDate) {
+      setErrorMsg(
+        isAr
+          ? 'يرجى تحديد تاريخ انتهاء الحملة الترويجية (تاريخ الانتهاء إلزامي لفترات العروض)'
+          : 'End date is required for promotional periods'
+      );
+      return;
+    }
+
+    if (formData.endDate && formData.endDate < formData.startDate) {
+      setErrorMsg(
+        isAr
+          ? 'تاريخ الانتهاء لا يمكن أن يكون قبل تاريخ بداية الفترة'
+          : 'End date cannot be earlier than start date'
+      );
+      return;
+    }
+
+    // Promotional price per item cannot be higher than official active price
+    if (formData.type === 'promotional') {
+      const invalidPromoItems = [];
+      Object.entries(formData.items || {}).forEach(([pId, price]) => {
+        const refOff = referencePrices.official[pId];
+        if (refOff && refOff > 0 && typeof price === 'number' && price > refOff) {
+          const prod = products.find((p) => p.id === pId);
+          const prodName = prod?.nameAr || prod?.name || pId;
+          invalidPromoItems.push(`(${prodName}: ${price} ج.م > الرسمي ${refOff} ج.م)`);
+        }
+      });
+
+      if (invalidPromoItems.length > 0) {
+        setErrorMsg(
+          isAr
+            ? `لا يمكن أن يكون سعر العرض الترويجي أعلى من السعر الرسمي النشط:\n${invalidPromoItems.slice(0, 3).join(', ')}${invalidPromoItems.length > 3 ? ` و ${invalidPromoItems.length - 3} أصناف أخرى` : ''}`
+            : `Promotional price cannot exceed active official price: ${invalidPromoItems.slice(0, 3).join(', ')}`
+        );
+        return;
+      }
+    }
+
     if (isSpecialPricing && !formData.clientId) {
       setErrorMsg(isAr ? 'يرجى اختيار العميل لتسعير العقود الخاصة' : 'Please select client for special pricing');
       return;
@@ -1228,20 +1369,33 @@ function PriceListEditorModal({
               />
             </div>
 
-            {/* 4. End Date (Optional) */}
+            {/* 4. End Date (Optional for official, Strictly Required for promotional) */}
             <div>
               <label className="block text-slate-600 font-bold mb-1">
-                {isAr ? 'تاريخ الانتهاء (اختياري)' : 'End Date (Optional)'}
+                {formData.type === 'promotional'
+                  ? (isAr ? 'تاريخ الانتهاء (إلزامي للعروض) *' : 'End Date (Required for Promo) *')
+                  : (isAr ? 'تاريخ الانتهاء (اختياري)' : 'End Date (Optional)')}
               </label>
               <input
                 type="date"
+                required={formData.type === 'promotional'}
                 value={formData.endDate}
                 onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
                 placeholder={isAr ? 'ساري حتى إشعار آخر' : 'Valid indefinitely'}
-                className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl font-bold font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className={`w-full px-3 py-1.5 bg-white border rounded-xl font-bold font-mono text-slate-800 focus:outline-none focus:ring-2 ${
+                  formData.type === 'promotional' && !formData.endDate
+                    ? 'border-rose-300 focus:ring-rose-500 bg-rose-50/20'
+                    : 'border-slate-200 focus:ring-blue-500'
+                }`}
               />
-              <span className="block text-[10px] text-slate-400 mt-0.5">
-                {isAr ? 'اتركه فارغاً للسريان حتى إشعار آخر' : 'Leave empty for indefinite validity'}
+              <span
+                className={`block text-[10px] mt-0.5 ${
+                  formData.type === 'promotional' ? 'text-rose-600 font-semibold' : 'text-slate-400'
+                }`}
+              >
+                {formData.type === 'promotional'
+                  ? (isAr ? 'حملات العروض الترويجية تتطلب تحديد تاريخ انتهاء' : 'Promotional campaigns require an end date')
+                  : (isAr ? 'اتركه فارغاً للسريان حتى إشعار آخر' : 'Leave empty for indefinite validity')}
               </span>
             </div>
           </div>
@@ -1254,20 +1408,18 @@ function PriceListEditorModal({
                 <span>{isAr ? 'العميل المستهدف بالأسعار الخاصة:' : 'Target Special Client:'}</span>
               </div>
 
-              {/* Client Selector */}
-              <select
-                required={isSpecialPricing}
-                value={formData.clientId}
-                onChange={(e) => setFormData({ ...formData, clientId: e.target.value, branchId: '' })}
-                className="px-3 py-1.5 bg-white border border-purple-200 rounded-xl font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer min-w-[200px]"
-              >
-                <option value="">{isAr ? '-- اختر العميل --' : '-- Select Client --'}</option>
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.tradeNameAr || c.name} ({c.id})
-                  </option>
-                ))}
-              </select>
+              {/* Client SearchableSelect with Tier Prioritization */}
+              <div className="w-72 sm:w-80">
+                <SearchableSelect
+                  value={formData.clientId}
+                  onChange={(val) => setFormData({ ...formData, clientId: val, branchId: '' })}
+                  options={clientOptions}
+                  placeholder={isAr ? '🔍 ابحث عن العميل بالاسم أو الكود...' : 'Search client by name or code...'}
+                  isAr={isAr}
+                  required={isSpecialPricing}
+                  emptyText={isAr ? 'لا يوجد عميل مطابق' : 'No matching client'}
+                />
+              </div>
 
               {/* Branch Scope Radio */}
               {selectedClient && (
@@ -1316,21 +1468,22 @@ function PriceListEditorModal({
           {/* Matrix Toolbar (Search, Filter, Batch Tools) */}
           <div className="p-3 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5 shrink-0 text-xs">
             <div className="flex items-center gap-2 flex-1 min-w-[200px]">
-              <div className="relative w-full max-w-xs">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute start-2.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={productSearch}
-                  onChange={(e) => setProductSearch(e.target.value)}
-                  placeholder={isAr ? 'بحث بالاسم أو الكود...' : 'Search product...'}
-                  className="w-full ps-8 pe-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+              {/* Product SearchableSelect */}
+              <div className="w-72 sm:w-80">
+                <SearchableSelect
+                  value={selectedProductId}
+                  onChange={(val) => setSelectedProductId(val)}
+                  options={productOptions}
+                  placeholder={isAr ? '🔍 كافة الأصناف والمنتجات التامة...' : 'All Finished Products...'}
+                  isAr={isAr}
+                  emptyText={isAr ? 'لا يوجد منتج مطابق' : 'No matching product'}
                 />
               </div>
 
               {/* Category Filter */}
               <select
                 value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
+                onChange={(e) => handleCategoryChange(e.target.value)}
                 className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
               >
                 <option value="all">{isAr ? 'جميع التصنيفات' : 'All Categories'}</option>
@@ -1435,6 +1588,14 @@ function PriceListEditorModal({
                     variancePct = Math.round(((newPrice - refOff) / refOff) * 100);
                   }
 
+                  // Promotion price cannot be higher than official active price
+                  const isPromoExceeding =
+                    formData.type === 'promotional' &&
+                    typeof newPrice === 'number' &&
+                    refOff &&
+                    refOff > 0 &&
+                    newPrice > refOff;
+
                   return (
                     <tr key={p.id} className="hover:bg-slate-50/70 transition">
                       {/* Code */}
@@ -1485,7 +1646,7 @@ function PriceListEditorModal({
                       </td>
 
                       {/* New Price Input */}
-                      <td className="py-2 px-3 text-center bg-blue-50/30 border-x border-blue-200">
+                      <td className={`py-2 px-3 text-center border-x ${isPromoExceeding ? 'bg-rose-50/50 border-rose-300' : 'bg-blue-50/30 border-blue-200'}`}>
                         <input
                           type="number"
                           step="0.01"
@@ -1493,8 +1654,17 @@ function PriceListEditorModal({
                           value={newPrice ?? ''}
                           onChange={(e) => handlePriceChange(p.id, e.target.value)}
                           placeholder="0.00"
-                          className="w-28 px-2 py-1 bg-white border border-slate-300 rounded-lg text-center font-mono font-black text-xs text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                          className={`w-28 px-2 py-1 bg-white border rounded-lg text-center font-mono font-black text-xs focus:outline-none focus:ring-2 shadow-2xs ${
+                            isPromoExceeding
+                              ? 'border-rose-500 text-rose-700 ring-1 ring-rose-400 focus:ring-rose-500'
+                              : 'border-slate-300 text-blue-900 focus:ring-blue-500'
+                          }`}
                         />
+                        {isPromoExceeding && (
+                          <span className="block text-[9px] text-rose-600 font-black mt-0.5 whitespace-nowrap animate-pulse">
+                            {isAr ? '⚠️ أعلى من الرسمي!' : '⚠️ Exceeds official!'}
+                          </span>
+                        )}
                       </td>
 
                       {/* Variance */}
@@ -1503,7 +1673,9 @@ function PriceListEditorModal({
                           variancePct === 0 ? (
                             <span className="text-slate-400">0%</span>
                           ) : variancePct > 0 ? (
-                            <span className="text-emerald-600">+{variancePct}%</span>
+                            <span className={isPromoExceeding ? 'text-rose-600 font-black' : 'text-emerald-600'}>
+                              {isPromoExceeding ? `⚠️ +${variancePct}%` : `+${variancePct}%`}
+                            </span>
                           ) : (
                             <span className="text-rose-600">{variancePct}%</span>
                           )
