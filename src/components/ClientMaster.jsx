@@ -200,6 +200,46 @@ export const resolvePricingStrategy = (rawText) => {
   return null;
 };
 
+// Helper to resolve raw settlement mode input from CSV
+export const resolveSettlementMode = (rawText) => {
+  if (!rawText) return null;
+  const t = normalizeArText(rawText);
+  if (!t) return null;
+
+  if (
+    t === 'cod' ||
+    t === 'cash' ||
+    t.includes('نقدي') ||
+    t.includes('نقد') ||
+    t.includes('استلام') ||
+    t.includes('كاش')
+  ) {
+    return 'cod';
+  }
+
+  if (
+    t === 'credit' ||
+    t.includes('اجل') ||
+    t.includes('عقد') ||
+    t.includes('عقود') ||
+    t.includes('استحقاق')
+  ) {
+    return 'credit';
+  }
+
+  if (
+    t === 'rolling_credit' ||
+    t === 'rolling' ||
+    t.includes('سداد السابق') ||
+    t.includes('دوار') ||
+    t.includes('سابق')
+  ) {
+    return 'rolling_credit';
+  }
+
+  return null;
+};
+
 // Helper to determine default pricing strategy from client segment
 // Rule:
 // Wholesale (جملة) or Serga / Attara (سرجة \ عطارة) -> wholesalers
@@ -1081,6 +1121,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         } else if (!mod.pricingStrategy) {
           mod.isValid = false;
           mod.errorReason = isAr ? 'يرجى تحديد استراتيجية التسعير' : 'Pricing strategy is required';
+        } else if (!mod.settlementMode) {
+          mod.isValid = false;
+          mod.errorReason = isAr ? 'يرجى تحديد طريقة السداد' : 'Settlement mode is required';
         } else {
           mod.isValid = true;
           mod.errorReason = '';
@@ -1109,6 +1152,40 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       } else if (!mod.segmentId) {
         mod.isValid = false;
         mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+      } else if (!mod.settlementMode) {
+        mod.isValid = false;
+        mod.errorReason = isAr ? 'يرجى تحديد طريقة السداد' : 'Settlement mode is required';
+      } else if (mod.isExisting && mod.action === 'review_required') {
+        mod.isValid = false;
+        mod.errorReason = isAr
+          ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
+          : 'Existing record — select action (Replace / Merge / Skip)';
+      } else {
+        mod.isValid = true;
+        mod.errorReason = '';
+      }
+      return mod;
+    });
+    setImportRows(updated);
+    setImportStats(calculateImportStats(updated));
+  };
+
+  const handleUpdateImportRowSettlementMode = (targetId, newMode) => {
+    const updated = importRows.map((row) => {
+      if (row.id !== targetId) return row;
+      const mod = { ...row };
+      mod.settlementMode = newMode;
+      mod.settlementModeRaw = '';
+
+      if (!newMode) {
+        mod.isValid = false;
+        mod.errorReason = isAr ? 'يرجى تحديد طريقة السداد' : 'Settlement mode is required';
+      } else if (!mod.segmentId) {
+        mod.isValid = false;
+        mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+      } else if (!mod.pricingStrategy) {
+        mod.isValid = false;
+        mod.errorReason = isAr ? 'يرجى تحديد استراتيجية التسعير' : 'Pricing strategy is required';
       } else if (mod.isExisting && mod.action === 'review_required') {
         mod.isValid = false;
         mod.errorReason = isAr
@@ -1199,7 +1276,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     let ready = 0;
 
     importRows.forEach((r) => {
-      const isFaulty = !r.isValid || r.action === 'review_required' || !r.segmentId || !r.pricingStrategy || Boolean(r.pricingStrategyRaw) || Boolean(r.errorReason);
+      const isFaulty = !r.isValid || r.action === 'review_required' || !r.segmentId || !r.pricingStrategy || !r.settlementMode || Boolean(r.pricingStrategyRaw) || Boolean(r.settlementModeRaw) || Boolean(r.errorReason);
       if (isFaulty) faulty++;
       if (r.action === 'review_required') review++;
       if (!r.isValid && r.action !== 'review_required') invalid++;
@@ -1220,7 +1297,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     return importRows.filter((row) => {
       // 1. Status Filter
       if (validatorStatusFilter === 'faulty') {
-        const isFaulty = !row.isValid || row.action === 'review_required' || !row.segmentId || !row.pricingStrategy || Boolean(row.pricingStrategyRaw) || Boolean(row.errorReason);
+        const isFaulty = !row.isValid || row.action === 'review_required' || !row.segmentId || !row.pricingStrategy || !row.settlementMode || Boolean(row.pricingStrategyRaw) || Boolean(row.settlementModeRaw) || Boolean(row.errorReason);
         if (!isFaulty) return false;
       } else if (validatorStatusFilter === 'review_required') {
         if (row.action !== 'review_required') return false;
@@ -1234,6 +1311,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       if (validatorIssueFilter !== 'all') {
         if (validatorIssueFilter === 'missing_segment' && row.segmentId) return false;
         if (validatorIssueFilter === 'missing_pricing' && (row.pricingStrategy && !row.pricingStrategyRaw)) return false;
+        if (validatorIssueFilter === 'missing_settlement' && (row.settlementMode && !row.settlementModeRaw)) return false;
         if (validatorIssueFilter === 'existing' && !row.isExisting) return false;
         if (
           validatorIssueFilter === 'tax_conflict' &&
@@ -1275,8 +1353,12 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       }
 
       // 6. Settlement Mode Filter
-      if (validatorSettlementFilter !== 'all' && row.settlementMode !== validatorSettlementFilter) {
-        return false;
+      if (validatorSettlementFilter !== 'all') {
+        if (validatorSettlementFilter === '__unassigned__') {
+          if (row.settlementMode && !row.settlementModeRaw) return false;
+        } else if (row.settlementMode !== validatorSettlementFilter) {
+          return false;
+        }
       }
 
       // 7. Free Text Search Query
@@ -1345,7 +1427,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       } else {
         if (batchToolField === 'segmentId' && !row.segmentId) shouldApply = true;
         if (batchToolField === 'pricingStrategy' && (!row.pricingStrategy || Boolean(row.pricingStrategyRaw))) shouldApply = true;
-        if (batchToolField === 'settlementMode' && !row.settlementMode) shouldApply = true;
+        if (batchToolField === 'settlementMode' && (!row.settlementMode || Boolean(row.settlementModeRaw))) shouldApply = true;
       }
 
       if (!shouldApply) return row;
@@ -1373,6 +1455,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         } else if (!mod.pricingStrategy) {
           mod.isValid = false;
           mod.errorReason = isAr ? 'يرجى تحديد استراتيجية التسعير' : 'Pricing strategy is required';
+        } else if (!mod.settlementMode) {
+          mod.isValid = false;
+          mod.errorReason = isAr ? 'يرجى تحديد طريقة السداد' : 'Settlement mode is required';
         } else {
           mod.isValid = true;
           mod.errorReason = '';
@@ -1384,6 +1469,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         if (!mod.segmentId) {
           mod.isValid = false;
           mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+        } else if (!mod.settlementMode) {
+          mod.isValid = false;
+          mod.errorReason = isAr ? 'يرجى تحديد طريقة السداد' : 'Settlement mode is required';
         } else if (mod.isExisting && mod.action === 'review_required') {
           mod.isValid = false;
           mod.errorReason = isAr
@@ -1395,6 +1483,22 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         }
       } else if (batchToolField === 'settlementMode') {
         mod.settlementMode = batchToolValue;
+        mod.settlementModeRaw = '';
+        if (!mod.segmentId) {
+          mod.isValid = false;
+          mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+        } else if (!mod.pricingStrategy) {
+          mod.isValid = false;
+          mod.errorReason = isAr ? 'يرجى تحديد استراتيجية التسعير' : 'Pricing strategy is required';
+        } else if (mod.isExisting && mod.action === 'review_required') {
+          mod.isValid = false;
+          mod.errorReason = isAr
+            ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
+            : 'Existing record — select action';
+        } else {
+          mod.isValid = true;
+          mod.errorReason = '';
+        }
       }
       return mod;
     });
@@ -1496,6 +1600,10 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         const resolvedStrat = resolvePricingStrategy(rawStrat);
         const isInvalidStrat = Boolean(rawStrat) && !resolvedStrat;
 
+        const rawSettlement = (cols[colMap.settlementMode] || '').trim();
+        const resolvedSettlement = resolveSettlementMode(rawSettlement);
+        const isInvalidSettlement = Boolean(rawSettlement) && !resolvedSettlement;
+
         // Track raw CSV row for full 23-column raw inspect view
         rawRowsList.push({
           lineIndex: i + 1,
@@ -1509,7 +1617,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           taxCardNumber: rawTaxCard,
           commercialRegister: cols[colMap.commercialRegister] || '',
           taxDistrict: cols[colMap.taxDistrict] || '',
-          settlementMode: cols[colMap.settlementMode] || 'cod',
+          settlementMode: rawSettlement || resolvedSettlement || 'cod',
           creditLimit: cols[colMap.creditLimit] || '0',
           phones: rowPhones.join('; '),
           emails: rowEmails.join('; '),
@@ -1550,12 +1658,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             pricingStrategy: resolvedStrat || '',
             pricingStrategyRaw: isInvalidStrat ? rawStrat : '',
             isPricingAutoFilled: false,
+            settlementMode: resolvedSettlement || (!rawSettlement ? 'cod' : ''),
+            settlementModeRaw: isInvalidSettlement ? rawSettlement : '',
             taxCardNumber: rawTaxCard,
             commercialRegister: (cols[colMap.commercialRegister] || '').trim(),
             taxDistrict: (cols[colMap.taxDistrict] || '').trim(),
-            settlementMode: ['cod', 'credit', 'rolling_credit'].includes(cols[colMap.settlementMode])
-              ? cols[colMap.settlementMode]
-              : 'cod',
             creditLimit: Math.max(0, parseFloat(cols[colMap.creditLimit]) || 0),
             phonesSet: new Set(rowPhones),
             emailsSet: new Set(rowEmails),
@@ -1679,6 +1786,20 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             clientData.errorReason = isAr
               ? `استراتيجية تسعير غير معرّفة: "${clientData.pricingStrategyRaw}" — يرجى تحديد الاستراتيجية`
               : `Unrecognized pricing strategy: "${clientData.pricingStrategyRaw}" — please select valid strategy`;
+          }
+        }
+
+        // 1.c Settlement Mode Validation
+        if (!clientData.settlementMode) {
+          if (clientData.settlementModeRaw) {
+            clientData.isValid = false;
+            if (!clientData.errorReason) {
+              clientData.errorReason = isAr
+                ? `طريقة سداد غير معرّفة: "${clientData.settlementModeRaw}" — يرجى تحديد طريقة السداد`
+                : `Unrecognized settlement mode: "${clientData.settlementModeRaw}" — please select valid mode`;
+            }
+          } else {
+            clientData.settlementMode = 'cod';
           }
         }
 
@@ -3644,6 +3765,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                   <option value="all">{isAr ? 'جميع المشاكل' : 'All Issues'}</option>
                   <option value="missing_segment">{isAr ? '⚠️ قطاع مفقود / غير معرّف' : 'Missing Segment'}</option>
                   <option value="missing_pricing">{isAr ? '⚠️ استراتيجية تسعير غير معرّفة / خطأ' : 'Missing / Invalid Pricing'}</option>
+                  <option value="missing_settlement">{isAr ? '⚠️ طريقة سداد غير معرّفة / خطأ' : 'Missing / Invalid Settlement'}</option>
                   <option value="existing">{isAr ? '🔄 مسجل مسبقاً (مطلوب مراجعة)' : 'Existing in DB'}</option>
                   <option value="tax_conflict">{isAr ? '⛔ تعارض بطاقة ضريبية' : 'Tax Card Conflict'}</option>
                   <option value="name_conflict">{isAr ? '⛔ تعارض اسم تجاري' : 'Name Conflict'}</option>
@@ -3730,6 +3852,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                   }`}
                 >
                   <option value="all">{isAr ? 'الكل' : 'All'}</option>
+                  <option value="__unassigned__">{isAr ? '⚠️ غير محدد / خطأ سداد' : 'Unassigned / Invalid'}</option>
                   {SETTLEMENT_MODES.map((sm) => (
                     <option key={sm.id} value={sm.id}>
                       {isAr ? sm.labelAr : sm.labelEn}
@@ -3977,11 +4100,29 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                               {/* Tax District */}
                               <td className="py-2.5 px-3 text-slate-600">{row.taxDistrict || '—'}</td>
 
-                              {/* Settlement Mode */}
+                              {/* Settlement Mode (Interactive Dropdown) */}
                               <td className="py-2.5 px-3">
-                                <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px]">
-                                  {SETTLEMENT_MODES.find((sm) => sm.id === row.settlementMode)?.labelAr || row.settlementMode}
-                                </span>
+                                <select
+                                  value={row.settlementMode || ''}
+                                  onChange={(e) => handleUpdateImportRowSettlementMode(row.id, e.target.value)}
+                                  className={`px-2 py-1 text-xs rounded-lg border font-bold cursor-pointer ${
+                                    !row.settlementMode
+                                      ? 'border-rose-400 bg-rose-50 text-rose-700 ring-1 ring-rose-300'
+                                      : 'border-slate-200 bg-white text-slate-800'
+                                  }`}
+                                >
+                                  <option value="">{isAr ? '-- حدد طريقة السداد --' : '-- Select Settlement --'}</option>
+                                  {SETTLEMENT_MODES.map((sm) => (
+                                    <option key={sm.id} value={sm.id}>
+                                      {isAr ? sm.labelAr : sm.labelEn}
+                                    </option>
+                                  ))}
+                                </select>
+                                {row.settlementModeRaw && !row.settlementMode && (
+                                  <span className="block text-[10px] text-rose-600 font-mono mt-0.5" title="Unmatched raw settlement in CSV">
+                                    ⚠️ {row.settlementModeRaw}
+                                  </span>
+                                )}
                               </td>
 
                               {/* Credit Limit */}
