@@ -58,7 +58,9 @@ import {
   HelpCircle,
   SlidersHorizontal,
   ListFilter,
-  CheckSquare
+  CheckSquare,
+  Filter,
+  RotateCcw
 } from 'lucide-react';
 import VatNumberInput from './VatNumberInput';
 import VatNumberDisplay from './VatNumberDisplay';
@@ -228,7 +230,16 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
   const [isBatchToolOpen, setIsBatchToolOpen] = useState(false);
   const [batchToolField, setBatchToolField] = useState('segmentId');
   const [batchToolValue, setBatchToolValue] = useState('');
-  const [batchToolTarget, setBatchToolTarget] = useState('unassigned'); // 'all' | 'unassigned'
+  const [batchToolTarget, setBatchToolTarget] = useState('filtered'); // 'filtered' | 'unassigned' | 'all'
+
+  // Validator Filtering & Drilldown States
+  const [validatorStatusFilter, setValidatorStatusFilter] = useState('all'); // 'all' | 'faulty' | 'review_required' | 'invalid' | 'ready'
+  const [validatorIssueFilter, setValidatorIssueFilter] = useState('all'); // 'all' | 'missing_segment' | 'existing' | 'tax_conflict' | 'name_conflict'
+  const [validatorSegmentFilter, setValidatorSegmentFilter] = useState('all'); // 'all' | 'unassigned' | segmentId
+  const [validatorRawSegmentFilter, setValidatorRawSegmentFilter] = useState('all'); // 'all' | rawText
+  const [validatorStrategyFilter, setValidatorStrategyFilter] = useState('all');
+  const [validatorSettlementFilter, setValidatorSettlementFilter] = useState('all');
+  const [validatorSearchQuery, setValidatorSearchQuery] = useState('');
 
   // Form State
   const initialClientForm = {
@@ -249,9 +260,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     notes: '',
     phones: [],
     emails: [],
-    weeklyHolidays: ['friday', 'saturday'],
-    workingHoursFrom: '09:00',
-    workingHoursTo: '17:00',
+    weeklyHolidays: ['friday'],
+    workingHoursFrom: '',
+    workingHoursTo: '',
     attachments: [],
     branches: [
       {
@@ -410,9 +421,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       notes: client.notes || '',
       phones: clientPhones,
       emails: clientEmails,
-      weeklyHolidays: Array.isArray(client.weeklyHolidays) ? client.weeklyHolidays : ['friday', 'saturday'],
-      workingHoursFrom: client.workingHoursFrom || '09:00',
-      workingHoursTo: client.workingHoursTo || '17:00',
+      weeklyHolidays: Array.isArray(client.weeklyHolidays) ? client.weeklyHolidays : ['friday'],
+      workingHoursFrom: client.workingHoursFrom || '',
+      workingHoursTo: client.workingHoursTo || '',
       attachments: client.attachments || [],
       branches: reconciledBranches
     });
@@ -783,7 +794,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       '0',
       '01012345678; 01212345678',
       'orders@tawfeeq.com; info@tawfeeq.com',
-      'الجمعة; السبت',
+      'الجمعة',
       '09:00',
       '17:00',
       'توريد صباحي فقط - تسليم بالمخزن الرئيسي',
@@ -810,8 +821,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       '01122334455; 01522334455',
       'baraka@supermarket.com',
       'الجمعة',
-      '08:30',
-      '22:00',
+      '',
+      '',
       'مراجعة الفواتير مع الإدارة المالية أول كل شهر',
       'فرع التجمع الخامس',
       'شارع التسعين الشمالي - مول النرجس',
@@ -880,46 +891,50 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     };
   };
 
-  const handleUpdateImportRowSegment = (rowIndex, newSegmentId) => {
-    const updated = [...importRows];
-    const row = { ...updated[rowIndex] };
-    row.segmentId = newSegmentId;
-    if (newSegmentId) {
-      const segObj = segments.find((s) => s.id === newSegmentId);
-      row.segmentRaw = segObj ? segObj.nameAr : newSegmentId;
-      if (row.isExisting && row.action === 'review_required') {
-        row.isValid = false;
-        row.errorReason = isAr
-          ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
-          : 'Existing record — select action (Replace / Merge / Skip)';
+  const handleUpdateImportRowSegment = (targetId, newSegmentId) => {
+    const updated = importRows.map((row) => {
+      if (row.id !== targetId) return row;
+      const mod = { ...row };
+      mod.segmentId = newSegmentId;
+      if (newSegmentId) {
+        const segObj = segments.find((s) => s.id === newSegmentId);
+        mod.segmentRaw = segObj ? segObj.nameAr : newSegmentId;
+        if (mod.isExisting && mod.action === 'review_required') {
+          mod.isValid = false;
+          mod.errorReason = isAr
+            ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
+            : 'Existing record — select action (Replace / Merge / Skip)';
+        } else {
+          mod.isValid = true;
+          mod.errorReason = '';
+        }
       } else {
-        row.isValid = true;
-        row.errorReason = '';
+        mod.isValid = false;
+        mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
       }
-    } else {
-      row.isValid = false;
-      row.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
-    }
-    updated[rowIndex] = row;
+      return mod;
+    });
     setImportRows(updated);
     setImportStats(calculateImportStats(updated));
   };
 
-  const handleUpdateRecordAction = (rowIndex, newAction) => {
-    const updated = [...importRows];
-    const row = { ...updated[rowIndex] };
-    row.action = newAction;
-    if (newAction === 'skip') {
-      row.isValid = true;
-      row.errorReason = '';
-    } else if (!row.segmentId) {
-      row.isValid = false;
-      row.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
-    } else {
-      row.isValid = true;
-      row.errorReason = '';
-    }
-    updated[rowIndex] = row;
+  const handleUpdateRecordAction = (targetId, newAction) => {
+    const updated = importRows.map((row) => {
+      if (row.id !== targetId) return row;
+      const mod = { ...row };
+      mod.action = newAction;
+      if (newAction === 'skip') {
+        mod.isValid = true;
+        mod.errorReason = '';
+      } else if (!mod.segmentId) {
+        mod.isValid = false;
+        mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+      } else {
+        mod.isValid = true;
+        mod.errorReason = '';
+      }
+      return mod;
+    });
     setImportRows(updated);
     setImportStats(calculateImportStats(updated));
   };
@@ -944,8 +959,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     setImportStats(calculateImportStats(updated));
   };
 
-  const handleDeleteImportRow = (rowIndex) => {
-    const updated = importRows.filter((_, idx) => idx !== rowIndex);
+  const handleDeleteImportRow = (targetId) => {
+    const updated = importRows.filter((r) => r.id !== targetId);
     setImportRows(updated);
     setImportStats(calculateImportStats(updated));
   };
@@ -960,11 +975,161 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     setExpandedImportClientIds(next);
   };
 
+  // Dynamic Unique Raw Segments in Uploaded CSV
+  const uniqueRawSegmentsInCsv = useMemo(() => {
+    const rawSet = new Set();
+    importRows.forEach((r) => {
+      const seg = (r.segmentRaw || '').trim();
+      if (seg) rawSet.add(seg);
+    });
+    return Array.from(rawSet).sort();
+  }, [importRows]);
+
+  // Derived Faulty / Issue Counts
+  const validatorCounters = useMemo(() => {
+    let faulty = 0;
+    let review = 0;
+    let invalid = 0;
+    let ready = 0;
+
+    importRows.forEach((r) => {
+      const isFaulty = !r.isValid || r.action === 'review_required' || !r.segmentId || Boolean(r.errorReason);
+      if (isFaulty) faulty++;
+      if (r.action === 'review_required') review++;
+      if (!r.isValid && r.action !== 'review_required') invalid++;
+      if (r.isValid && r.action !== 'review_required' && r.action !== 'skip') ready++;
+    });
+
+    return {
+      all: importRows.length,
+      faulty,
+      review,
+      invalid,
+      ready
+    };
+  }, [importRows]);
+
+  // Filtered Import Rows for the Validator Table
+  const filteredImportRows = useMemo(() => {
+    return importRows.filter((row) => {
+      // 1. Status Filter
+      if (validatorStatusFilter === 'faulty') {
+        const isFaulty = !row.isValid || row.action === 'review_required' || !row.segmentId || Boolean(row.errorReason);
+        if (!isFaulty) return false;
+      } else if (validatorStatusFilter === 'review_required') {
+        if (row.action !== 'review_required') return false;
+      } else if (validatorStatusFilter === 'invalid') {
+        if (row.isValid || row.action === 'review_required') return false;
+      } else if (validatorStatusFilter === 'ready') {
+        if (!row.isValid || row.action === 'review_required' || row.action === 'skip') return false;
+      }
+
+      // 2. Issue Type Filter
+      if (validatorIssueFilter !== 'all') {
+        if (validatorIssueFilter === 'missing_segment' && row.segmentId) return false;
+        if (validatorIssueFilter === 'existing' && !row.isExisting) return false;
+        if (
+          validatorIssueFilter === 'tax_conflict' &&
+          (!row.errorReason || (!row.errorReason.includes('الضريبية') && !row.errorReason.toLowerCase().includes('tax')))
+        ) {
+          return false;
+        }
+        if (
+          validatorIssueFilter === 'name_conflict' &&
+          (!row.errorReason || (!row.errorReason.includes('الاسم') && !row.errorReason.toLowerCase().includes('name')))
+        ) {
+          return false;
+        }
+      }
+
+      // 3. Segment Filter
+      if (validatorSegmentFilter !== 'all') {
+        if (validatorSegmentFilter === 'unassigned') {
+          if (row.segmentId) return false;
+        } else if (row.segmentId !== validatorSegmentFilter) {
+          return false;
+        }
+      }
+
+      // 4. Raw Segment Text Filter
+      if (validatorRawSegmentFilter !== 'all') {
+        if ((row.segmentRaw || '').trim() !== validatorRawSegmentFilter) {
+          return false;
+        }
+      }
+
+      // 5. Pricing Strategy Filter
+      if (validatorStrategyFilter !== 'all' && row.pricingStrategy !== validatorStrategyFilter) {
+        return false;
+      }
+
+      // 6. Settlement Mode Filter
+      if (validatorSettlementFilter !== 'all' && row.settlementMode !== validatorSettlementFilter) {
+        return false;
+      }
+
+      // 7. Free Text Search Query
+      if (validatorSearchQuery.trim()) {
+        const q = validatorSearchQuery.trim().toLowerCase();
+        const codeMatch = (row.code || '').toLowerCase().includes(q);
+        const nameArMatch = (row.tradeNameAr || '').toLowerCase().includes(q);
+        const nameEnMatch = (row.tradeNameEn || '').toLowerCase().includes(q);
+        const taxMatch = (row.taxCardNumber || '').includes(q);
+        const phoneMatch = (row.phones || []).some((p) => p.includes(q));
+        const errorMatch = (row.errorReason || '').toLowerCase().includes(q);
+        const branchMatch = (row.branches || []).some(
+          (b) =>
+            (b.nameAr || '').toLowerCase().includes(q) ||
+            (b.region || '').toLowerCase().includes(q) ||
+            (b.address || '').toLowerCase().includes(q) ||
+            (b.phone || '').includes(q)
+        );
+        if (!codeMatch && !nameArMatch && !nameEnMatch && !taxMatch && !phoneMatch && !errorMatch && !branchMatch) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [
+    importRows,
+    validatorStatusFilter,
+    validatorIssueFilter,
+    validatorSegmentFilter,
+    validatorRawSegmentFilter,
+    validatorStrategyFilter,
+    validatorSettlementFilter,
+    validatorSearchQuery
+  ]);
+
+  const hasActiveValidatorFilters =
+    validatorStatusFilter !== 'all' ||
+    validatorIssueFilter !== 'all' ||
+    validatorSegmentFilter !== 'all' ||
+    validatorRawSegmentFilter !== 'all' ||
+    validatorStrategyFilter !== 'all' ||
+    validatorSettlementFilter !== 'all' ||
+    Boolean(validatorSearchQuery.trim());
+
+  const handleResetValidatorFilters = () => {
+    setValidatorStatusFilter('all');
+    setValidatorIssueFilter('all');
+    setValidatorSegmentFilter('all');
+    setValidatorRawSegmentFilter('all');
+    setValidatorStrategyFilter('all');
+    setValidatorSettlementFilter('all');
+    setValidatorSearchQuery('');
+  };
+
   const handleApplyBatchFieldReplace = () => {
     if (!batchToolValue) return;
+    const filteredRowIds = new Set(filteredImportRows.map((r) => r.id));
+
     const updated = importRows.map((row) => {
       let shouldApply = false;
-      if (batchToolTarget === 'all') {
+      if (batchToolTarget === 'filtered') {
+        shouldApply = filteredRowIds.has(row.id);
+      } else if (batchToolTarget === 'all') {
         shouldApply = true;
       } else {
         if (batchToolField === 'segmentId' && !row.segmentId) shouldApply = true;
@@ -1134,7 +1299,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         });
 
         if (!clientGroups.has(clientKey)) {
-          let weeklyHolidays = ['friday', 'saturday'];
+          let weeklyHolidays = ['friday'];
           const rawHolidays = colMap.weeklyHolidays !== -1 ? parseDelimited(cols[colMap.weeklyHolidays]) : [];
           if (rawHolidays.length > 0) {
             weeklyHolidays = rawHolidays.map((h) => {
@@ -1168,8 +1333,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             phonesSet: new Set(rowPhones),
             emailsSet: new Set(rowEmails),
             weeklyHolidays,
-            workingHoursFrom: cols[colMap.workingHoursFrom] || '09:00',
-            workingHoursTo: cols[colMap.workingHoursTo] || '17:00',
+            workingHoursFrom: (cols[colMap.workingHoursFrom] || '').trim(),
+            workingHoursTo: (cols[colMap.workingHoursTo] || '').trim(),
             notes: rowNotes,
             branches: [
               {
@@ -1350,9 +1515,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             phone: client.phones?.[0] || '',
             emails: client.emails || [],
             email: client.emails?.[0] || '',
-            weeklyHolidays: client.weeklyHolidays || ['friday', 'saturday'],
-            workingHoursFrom: client.workingHoursFrom || '09:00',
-            workingHoursTo: client.workingHoursTo || '17:00',
+            weeklyHolidays: client.weeklyHolidays?.length > 0 ? client.weeklyHolidays : ['friday'],
+            workingHoursFrom: client.workingHoursFrom || '',
+            workingHoursTo: client.workingHoursTo || '',
             branches: client.branches || [],
             branchesCount: (client.branches || []).length,
             attachments: client.isExisting ? (client.existingClient?.attachments || []) : [],
@@ -3046,6 +3211,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                   onChange={(e) => setBatchToolTarget(e.target.value)}
                   className="px-2.5 py-1.5 bg-white border border-blue-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
                 >
+                  <option value="filtered">
+                    {isAr
+                      ? `السجلات الظاهرة والمفلترة حالياً فقط (${filteredImportRows.length})`
+                      : `Filtered records only (${filteredImportRows.length})`}
+                  </option>
                   <option value="unassigned">{isAr ? 'السجلات غير المحددة / بها خطأ فقط' : 'Unassigned / Invalid only'}</option>
                   <option value="all">{isAr ? 'جميع السجلات المستوردة' : 'All imported records'}</option>
                 </select>
@@ -3060,6 +3230,260 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 </button>
               </div>
             )}
+
+            {/* Primary Status Filters Ribbon */}
+            <div className="px-6 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5 text-xs shrink-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setValidatorStatusFilter('all')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    validatorStatusFilter === 'all'
+                      ? 'bg-slate-800 text-white shadow-xs'
+                      : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span>{isAr ? 'جميع السجلات' : 'All Records'}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      validatorStatusFilter === 'all' ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    {validatorCounters.all}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setValidatorStatusFilter('faulty')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    validatorStatusFilter === 'faulty'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'bg-amber-50 border border-amber-200 text-amber-900 hover:bg-amber-100'
+                  }`}
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'سجلات تحتاج مراجعة أو بها أخطاء' : 'Needs Attention / Faulty'}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      validatorStatusFilter === 'faulty' ? 'bg-amber-700 text-white' : 'bg-amber-200 text-amber-900'
+                    }`}
+                  >
+                    {validatorCounters.faulty}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setValidatorStatusFilter('review_required')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    validatorStatusFilter === 'review_required'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'مطلوب مراجعة' : 'Review Required'}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      validatorStatusFilter === 'review_required' ? 'bg-blue-700 text-white' : 'bg-blue-100 text-blue-800'
+                    }`}
+                  >
+                    {validatorCounters.review}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setValidatorStatusFilter('invalid')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    validatorStatusFilter === 'invalid'
+                      ? 'bg-rose-600 text-white shadow-xs'
+                      : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'سجلات مرفوضة أو بها تعارض' : 'Invalid / Conflicts'}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      validatorStatusFilter === 'invalid' ? 'bg-rose-700 text-white' : 'bg-rose-100 text-rose-800'
+                    }`}
+                  >
+                    {validatorCounters.invalid}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setValidatorStatusFilter('ready')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    validatorStatusFilter === 'ready'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'جاهز للاستيراد' : 'Ready to Commit'}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      validatorStatusFilter === 'ready' ? 'bg-emerald-700 text-white' : 'bg-emerald-100 text-emerald-800'
+                    }`}
+                  >
+                    {validatorCounters.ready}
+                  </span>
+                </button>
+              </div>
+
+              {hasActiveValidatorFilters && (
+                <button
+                  type="button"
+                  onClick={handleResetValidatorFilters}
+                  className="text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>{isAr ? 'إعادة ضبط كل الفلاتر' : 'Reset All Filters'}</span>
+                </button>
+              )}
+            </div>
+
+            {/* Field Drilldown & Free Search Bar */}
+            <div className="px-6 py-2.5 bg-white border-b border-slate-200 flex flex-wrap items-center gap-2.5 text-xs shrink-0">
+              {/* Free Text Search */}
+              <div className="relative min-w-[200px] flex-1 max-w-[280px]">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute start-2.5 top-2.5" />
+                <input
+                  type="text"
+                  value={validatorSearchQuery}
+                  onChange={(e) => setValidatorSearchQuery(e.target.value)}
+                  placeholder={isAr ? 'بحث بالكود، الاسم، الضريبية، الهاتف...' : 'Search code, name, tax, phone...'}
+                  className="w-full ps-8 pe-7 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium"
+                />
+                {validatorSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setValidatorSearchQuery('')}
+                    className="absolute end-2.5 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Filter by Issue Category */}
+              <div className="flex items-center gap-1">
+                <span className="text-slate-500 font-semibold">{isAr ? 'المشكلة:' : 'Issue:'}</span>
+                <select
+                  value={validatorIssueFilter}
+                  onChange={(e) => setValidatorIssueFilter(e.target.value)}
+                  className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold cursor-pointer ${
+                    validatorIssueFilter !== 'all'
+                      ? 'bg-amber-50 border-amber-300 text-amber-900 ring-1 ring-amber-300'
+                      : 'bg-white border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <option value="all">{isAr ? 'جميع المشاكل' : 'All Issues'}</option>
+                  <option value="missing_segment">{isAr ? '⚠️ قطاع مفقود / غير معرّف' : 'Missing Segment'}</option>
+                  <option value="existing">{isAr ? '🔄 مسجل مسبقاً (مطلوب مراجعة)' : 'Existing in DB'}</option>
+                  <option value="tax_conflict">{isAr ? '⛔ تعارض بطاقة ضريبية' : 'Tax Card Conflict'}</option>
+                  <option value="name_conflict">{isAr ? '⛔ تعارض اسم تجاري' : 'Name Conflict'}</option>
+                </select>
+              </div>
+
+              {/* Filter by App Segment */}
+              <div className="flex items-center gap-1">
+                <span className="text-slate-500 font-semibold">{isAr ? 'القطاع:' : 'Segment:'}</span>
+                <select
+                  value={validatorSegmentFilter}
+                  onChange={(e) => setValidatorSegmentFilter(e.target.value)}
+                  className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold cursor-pointer ${
+                    validatorSegmentFilter !== 'all'
+                      ? 'bg-blue-50 border-blue-300 text-blue-900 ring-1 ring-blue-300'
+                      : 'bg-white border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <option value="all">{isAr ? 'جميع القطاعات' : 'All Segments'}</option>
+                  <option value="unassigned">{isAr ? '⚠️ غير محدد / خطأ قطاع' : 'Unassigned / Invalid'}</option>
+                  {segments.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.nameAr}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Filter by Raw Segment in CSV */}
+              {uniqueRawSegmentsInCsv.length > 0 && (
+                <div className="flex items-center gap-1">
+                  <span className="text-slate-500 font-semibold">{isAr ? 'نص القطاع في CSV:' : 'Raw CSV Segment:'}</span>
+                  <select
+                    value={validatorRawSegmentFilter}
+                    onChange={(e) => setValidatorRawSegmentFilter(e.target.value)}
+                    className={`px-2.5 py-1.5 rounded-xl border text-xs font-mono font-bold cursor-pointer ${
+                      validatorRawSegmentFilter !== 'all'
+                        ? 'bg-purple-50 border-purple-300 text-purple-900 ring-1 ring-purple-300'
+                        : 'bg-white border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <option value="all">{isAr ? 'جميع النصوص الخام' : 'All Raw Texts'}</option>
+                    {uniqueRawSegmentsInCsv.map((raw) => (
+                      <option key={raw} value={raw}>
+                        "{raw}"
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Filter by Pricing Strategy */}
+              <div className="flex items-center gap-1">
+                <span className="text-slate-500 font-semibold">{isAr ? 'التسعير:' : 'Pricing:'}</span>
+                <select
+                  value={validatorStrategyFilter}
+                  onChange={(e) => setValidatorStrategyFilter(e.target.value)}
+                  className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold cursor-pointer ${
+                    validatorStrategyFilter !== 'all'
+                      ? 'bg-blue-50 border-blue-300 text-blue-900 ring-1 ring-blue-300'
+                      : 'bg-white border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <option value="all">{isAr ? 'الكل' : 'All'}</option>
+                  {PRICING_STRATEGIES.map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {isAr ? st.labelAr : st.labelEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Filter by Settlement Mode */}
+              <div className="flex items-center gap-1">
+                <span className="text-slate-500 font-semibold">{isAr ? 'السداد:' : 'Settlement:'}</span>
+                <select
+                  value={validatorSettlementFilter}
+                  onChange={(e) => setValidatorSettlementFilter(e.target.value)}
+                  className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold cursor-pointer ${
+                    validatorSettlementFilter !== 'all'
+                      ? 'bg-blue-50 border-blue-300 text-blue-900 ring-1 ring-blue-300'
+                      : 'bg-white border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <option value="all">{isAr ? 'الكل' : 'All'}</option>
+                  {SETTLEMENT_MODES.map((sm) => (
+                    <option key={sm.id} value={sm.id}>
+                      {isAr ? sm.labelAr : sm.labelEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Matching Count Badge */}
+              <div className="ms-auto text-[11px] font-bold text-slate-500 flex items-center gap-1">
+                <span>{isAr ? 'المطابق للفلترة:' : 'Matching:'}</span>
+                <span className="px-2 py-0.5 bg-slate-100 text-slate-800 rounded-md font-mono font-bold">
+                  {filteredImportRows.length} / {importRows.length}
+                </span>
+              </div>
+            </div>
 
             {/* Scrollable Data Table Container with Full 23 Columns */}
             <div className="p-4 overflow-auto flex-grow max-h-[62vh]">
@@ -3101,300 +3525,332 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-medium whitespace-nowrap">
-                    {importRows.map((row, idx) => {
-                      const isExpanded = expandedImportClientIds.has(row.id);
-                      return (
-                        <React.Fragment key={row.id || idx}>
-                          <tr
-                            className={`transition hover:bg-slate-50/80 ${
-                              !row.isValid
-                                ? 'bg-rose-50/50 text-rose-900'
-                                : row.action === 'skip'
-                                ? 'bg-slate-50 text-slate-400 opacity-60'
-                                : row.action === 'replace'
-                                ? 'bg-amber-50/40 text-slate-800'
-                                : row.action === 'merge'
-                                ? 'bg-blue-50/40 text-slate-800'
-                                : 'bg-emerald-50/30 text-slate-800'
-                            }`}
-                          >
-                            {/* Status & Action */}
-                            <td className="py-2.5 px-3 sticky start-0 bg-white z-10 shadow-xs">
-                              {row.isExisting ? (
-                                row.action === 'review_required' ? (
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-md font-bold text-[11px] flex items-center gap-1">
-                                      <HelpCircle className="w-3 h-3" />
-                                      {isAr ? 'مطلوب مراجعة' : 'Review Required'}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateRecordAction(idx, 'replace')}
-                                      className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-bold cursor-pointer"
-                                      title={isAr ? 'استبدال السجل بالكامل' : 'Replace Entire Record'}
-                                    >
-                                      {isAr ? 'استبدال' : 'Replace'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateRecordAction(idx, 'merge')}
-                                      className="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-bold cursor-pointer"
-                                      title={isAr ? 'دمج الفروع الجديدة' : 'Merge Branches'}
-                                    >
-                                      {isAr ? 'دمج' : 'Merge'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateRecordAction(idx, 'skip')}
-                                      className="px-2 py-0.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[10px] font-bold cursor-pointer"
-                                      title={isAr ? 'تخطي السجل' : 'Skip Record'}
-                                    >
-                                      {isAr ? 'تخطي' : 'Skip'}
-                                    </button>
-                                  </div>
+                    {filteredImportRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={26} className="py-12 text-center text-slate-500 bg-slate-50/50">
+                          <div className="flex flex-col items-center justify-center gap-2">
+                            <Filter className="w-8 h-8 text-slate-300" />
+                            <p className="font-bold text-slate-700 text-sm">
+                              {isAr ? 'لا توجد سجلات مطابقة لمعايير الفلترة المحددة' : 'No records match the selected filter criteria'}
+                            </p>
+                            <p className="text-xs text-slate-400">
+                              {isAr ? 'جرب تغيير أو إزالة بعض خيارات الفلترة لعرض السجلات' : 'Try modifying or resetting the filters to view records'}
+                            </p>
+                            {hasActiveValidatorFilters && (
+                              <button
+                                type="button"
+                                onClick={handleResetValidatorFilters}
+                                className="mt-2 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                                <span>{isAr ? 'إعادة ضبط كل الفلاتر' : 'Reset All Filters'}</span>
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredImportRows.map((row) => {
+                        const isExpanded = expandedImportClientIds.has(row.id);
+                        return (
+                          <React.Fragment key={row.id}>
+                            <tr
+                              className={`transition hover:bg-slate-50/80 ${
+                                !row.isValid
+                                  ? 'bg-rose-50/50 text-rose-900'
+                                  : row.action === 'skip'
+                                  ? 'bg-slate-50 text-slate-400 opacity-60'
+                                  : row.action === 'replace'
+                                  ? 'bg-amber-50/40 text-slate-800'
+                                  : row.action === 'merge'
+                                  ? 'bg-blue-50/40 text-slate-800'
+                                  : 'bg-emerald-50/30 text-slate-800'
+                              }`}
+                            >
+                              {/* Status & Action */}
+                              <td className="py-2.5 px-3 sticky start-0 bg-white z-10 shadow-xs">
+                                {row.isExisting ? (
+                                  row.action === 'review_required' ? (
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-md font-bold text-[11px] flex items-center gap-1">
+                                        <HelpCircle className="w-3 h-3" />
+                                        {isAr ? 'مطلوب مراجعة' : 'Review Required'}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateRecordAction(row.id, 'replace')}
+                                        className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-bold cursor-pointer"
+                                        title={isAr ? 'استبدال السجل بالكامل' : 'Replace Entire Record'}
+                                      >
+                                        {isAr ? 'استبدال' : 'Replace'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateRecordAction(row.id, 'merge')}
+                                        className="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-bold cursor-pointer"
+                                        title={isAr ? 'دمج الفروع الجديدة' : 'Merge Branches'}
+                                      >
+                                        {isAr ? 'دمج' : 'Merge'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateRecordAction(row.id, 'skip')}
+                                        className="px-2 py-0.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[10px] font-bold cursor-pointer"
+                                        title={isAr ? 'تخطي السجل' : 'Skip Record'}
+                                      >
+                                        {isAr ? 'تخطي' : 'Skip'}
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-1.5">
+                                      <select
+                                        value={row.action}
+                                        onChange={(e) => handleUpdateRecordAction(row.id, e.target.value)}
+                                        className={`px-2 py-1 text-[11px] font-bold rounded-lg border cursor-pointer ${
+                                          row.action === 'replace'
+                                            ? 'border-amber-300 bg-amber-50 text-amber-800'
+                                            : row.action === 'merge'
+                                            ? 'border-blue-300 bg-blue-50 text-blue-800'
+                                            : 'border-slate-300 bg-slate-100 text-slate-600'
+                                        }`}
+                                      >
+                                        <option value="replace">{isAr ? '🔄 استبدال السجل بالكامل' : 'Replace Entire Record'}</option>
+                                        <option value="merge">{isAr ? '🔀 دمج الفروع الجديدة' : 'Merge Branches'}</option>
+                                        <option value="skip">{isAr ? '⏭️ تخطي (عدم الاستيراد)' : 'Skip'}</option>
+                                      </select>
+                                    </div>
+                                  )
+                                ) : row.isValid ? (
+                                  <span className="text-emerald-700 font-bold flex items-center gap-1">
+                                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                                    {isAr ? 'عميل جديد (إضافة)' : 'New Client'}
+                                  </span>
                                 ) : (
-                                  <div className="flex items-center gap-1.5">
-                                    <select
-                                      value={row.action}
-                                      onChange={(e) => handleUpdateRecordAction(idx, e.target.value)}
-                                      className={`px-2 py-1 text-[11px] font-bold rounded-lg border cursor-pointer ${
-                                        row.action === 'replace'
-                                          ? 'border-amber-300 bg-amber-50 text-amber-800'
-                                          : row.action === 'merge'
-                                          ? 'border-blue-300 bg-blue-50 text-blue-800'
-                                          : 'border-slate-300 bg-slate-100 text-slate-600'
-                                      }`}
-                                    >
-                                      <option value="replace">{isAr ? '🔄 استبدال السجل بالكامل' : 'Replace Entire Record'}</option>
-                                      <option value="merge">{isAr ? '🔀 دمج الفروع الجديدة' : 'Merge Branches'}</option>
-                                      <option value="skip">{isAr ? '⏭️ تخطي (عدم الاستيراد)' : 'Skip'}</option>
-                                    </select>
-                                  </div>
-                                )
-                              ) : row.isValid ? (
-                                <span className="text-emerald-700 font-bold flex items-center gap-1">
-                                  <Check className="w-3.5 h-3.5 stroke-[3]" />
-                                  {isAr ? 'عميل جديد (إضافة)' : 'New Client'}
+                                  <span className="text-rose-600 font-bold flex items-center gap-1">
+                                    <X className="w-3.5 h-3.5 stroke-[3]" />
+                                    {isAr ? 'مرفوض' : 'Invalid'}
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* Client Code */}
+                              <td className="py-2.5 px-3 font-mono font-bold text-slate-800">{row.code}</td>
+
+                              {/* Trade Name Ar */}
+                              <td className="py-2.5 px-3 font-black text-slate-900 max-w-[200px] truncate" title={row.tradeNameAr}>
+                                {row.tradeNameAr}
+                              </td>
+
+                              {/* Trade Name En */}
+                              <td className="py-2.5 px-3 text-slate-600 max-w-[150px] truncate" title={row.tradeNameEn}>
+                                {row.tradeNameEn || '—'}
+                              </td>
+
+                              {/* Legal Name */}
+                              <td className="py-2.5 px-3 text-slate-600 max-w-[180px] truncate" title={row.legalName}>
+                                {row.legalName || '—'}
+                              </td>
+
+                              {/* Segment (Interactive Dropdown) */}
+                              <td className="py-2.5 px-3">
+                                <select
+                                  value={row.segmentId || ''}
+                                  onChange={(e) => handleUpdateImportRowSegment(row.id, e.target.value)}
+                                  className={`px-2 py-1 text-xs rounded-lg border font-bold cursor-pointer ${
+                                    !row.segmentId
+                                      ? 'border-rose-400 bg-rose-50 text-rose-700 ring-1 ring-rose-300'
+                                      : 'border-slate-200 bg-white text-slate-800'
+                                  }`}
+                                >
+                                  <option value="">{isAr ? '-- حدد القطاع --' : '-- Select Segment --'}</option>
+                                  {segments.map((s) => (
+                                    <option key={s.id} value={s.id}>
+                                      {s.nameAr}
+                                    </option>
+                                  ))}
+                                </select>
+                                {row.segmentRaw && !row.segmentId && (
+                                  <span className="block text-[10px] text-rose-600 font-mono mt-0.5" title="Unmatched raw text in CSV">
+                                    ⚠️ {row.segmentRaw}
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* Pricing Strategy */}
+                              <td className="py-2.5 px-3">
+                                <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px] font-bold">
+                                  {PRICING_STRATEGIES.find((st) => st.id === row.pricingStrategy)?.labelAr || row.pricingStrategy}
                                 </span>
-                              ) : (
-                                <span className="text-rose-600 font-bold flex items-center gap-1">
-                                  <X className="w-3.5 h-3.5 stroke-[3]" />
-                                  {isAr ? 'مرفوض' : 'Invalid'}
+                              </td>
+
+                              {/* Tax Card */}
+                              <td className="py-2.5 px-3 font-mono">{row.taxCardNumber || '—'}</td>
+
+                              {/* Commercial Register */}
+                              <td className="py-2.5 px-3 font-mono">{row.commercialRegister || '—'}</td>
+
+                              {/* Tax District */}
+                              <td className="py-2.5 px-3 text-slate-600">{row.taxDistrict || '—'}</td>
+
+                              {/* Settlement Mode */}
+                              <td className="py-2.5 px-3">
+                                <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px]">
+                                  {SETTLEMENT_MODES.find((sm) => sm.id === row.settlementMode)?.labelAr || row.settlementMode}
                                 </span>
-                              )}
-                            </td>
+                              </td>
 
-                            {/* Client Code */}
-                            <td className="py-2.5 px-3 font-mono font-bold text-slate-800">{row.code}</td>
+                              {/* Credit Limit */}
+                              <td className="py-2.5 px-3 font-mono font-bold text-slate-800">
+                                {Number(row.creditLimit).toLocaleString()} ج.م
+                              </td>
 
-                            {/* Trade Name Ar */}
-                            <td className="py-2.5 px-3 font-black text-slate-900 max-w-[200px] truncate" title={row.tradeNameAr}>
-                              {row.tradeNameAr}
-                            </td>
+                              {/* Phones */}
+                              <td className="py-2.5 px-3 font-mono max-w-[150px] truncate" title={(row.phones || []).join(', ')}>
+                                {(row.phones && row.phones.length > 0) ? row.phones.join(', ') : '—'}
+                              </td>
 
-                            {/* Trade Name En */}
-                            <td className="py-2.5 px-3 text-slate-600 max-w-[150px] truncate" title={row.tradeNameEn}>
-                              {row.tradeNameEn || '—'}
-                            </td>
+                              {/* Emails */}
+                              <td className="py-2.5 px-3 text-slate-600 max-w-[140px] truncate" title={(row.emails || []).join(', ')}>
+                                {(row.emails && row.emails.length > 0) ? row.emails.join(', ') : '—'}
+                              </td>
 
-                            {/* Legal Name */}
-                            <td className="py-2.5 px-3 text-slate-600 max-w-[180px] truncate" title={row.legalName}>
-                              {row.legalName || '—'}
-                            </td>
+                              {/* Weekly Holidays */}
+                              <td className="py-2.5 px-3 text-slate-600">
+                                {(row.weeklyHolidays || [])
+                                  .map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h)
+                                  .join('، ') || '—'}
+                              </td>
 
-                            {/* Segment (Interactive Dropdown) */}
-                            <td className="py-2.5 px-3">
-                              <select
-                                value={row.segmentId || ''}
-                                onChange={(e) => handleUpdateImportRowSegment(idx, e.target.value)}
-                                className={`px-2 py-1 text-xs rounded-lg border font-bold cursor-pointer ${
-                                  !row.segmentId
-                                    ? 'border-rose-400 bg-rose-50 text-rose-700 ring-1 ring-rose-300'
-                                    : 'border-slate-200 bg-white text-slate-800'
-                                }`}
-                              >
-                                <option value="">{isAr ? '-- حدد القطاع --' : '-- Select Segment --'}</option>
-                                {segments.map((s) => (
-                                  <option key={s.id} value={s.id}>
-                                    {s.nameAr}
-                                  </option>
-                                ))}
-                              </select>
-                              {row.segmentRaw && !row.segmentId && (
-                                <span className="block text-[10px] text-rose-600 font-mono mt-0.5" title="Unmatched raw text in CSV">
-                                  ⚠️ {row.segmentRaw}
-                                </span>
-                              )}
-                            </td>
+                              {/* Working Hours */}
+                              <td className="py-2.5 px-3 font-mono text-[11px]">
+                                {row.workingHoursFrom && row.workingHoursTo
+                                  ? `${row.workingHoursFrom} - ${row.workingHoursTo}`
+                                  : (row.workingHoursFrom
+                                      ? `${isAr ? 'من' : 'From'} ${row.workingHoursFrom}`
+                                      : (row.workingHoursTo
+                                          ? `${isAr ? 'إلى' : 'To'} ${row.workingHoursTo}`
+                                          : '—'))}
+                              </td>
 
-                            {/* Pricing Strategy */}
-                            <td className="py-2.5 px-3">
-                              <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px] font-bold">
-                                {PRICING_STRATEGIES.find((st) => st.id === row.pricingStrategy)?.labelAr || row.pricingStrategy}
-                              </span>
-                            </td>
+                              {/* Notes */}
+                              <td className="py-2.5 px-3 text-slate-500 max-w-[140px] truncate" title={row.notes}>
+                                {row.notes || '—'}
+                              </td>
 
-                            {/* Tax Card */}
-                            <td className="py-2.5 px-3 font-mono">{row.taxCardNumber || '—'}</td>
+                              {/* Branches Count & Toggle Drawer */}
+                              <td className="py-2.5 px-3">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleExpandBranches(row.id)}
+                                  className={`px-2.5 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1.5 transition cursor-pointer ${
+                                    row.branches?.length > 1
+                                      ? 'bg-blue-100 hover:bg-blue-200 text-blue-800 shadow-xs'
+                                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                                  }`}
+                                  title={isAr ? 'عرض فروع العميل التفصيلية' : 'View all branches'}
+                                >
+                                  <Boxes className="w-3.5 h-3.5" />
+                                  <span>{row.branches?.length || 1} {isAr ? (row.branches?.length === 1 ? 'فرع' : 'فروع') : 'Branches'}</span>
+                                  {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                                </button>
+                              </td>
 
-                            {/* Commercial Register */}
-                            <td className="py-2.5 px-3 font-mono">{row.commercialRegister || '—'}</td>
+                              {/* Main Branch Columns */}
+                              <td className="py-2.5 px-3 font-semibold text-slate-800">
+                                {row.branches?.[0]?.nameAr || 'الفرع الرئيسي'}
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-600">{row.branches?.[0]?.region || '—'}</td>
+                              <td className="py-2.5 px-3 text-slate-600 max-w-[160px] truncate" title={row.branches?.[0]?.address}>
+                                {row.branches?.[0]?.address || '—'}
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-700">{row.branches?.[0]?.contactPerson || '—'}</td>
+                              <td className="py-2.5 px-3 font-mono">{row.branches?.[0]?.phone || '—'}</td>
+                              <td className="py-2.5 px-3 font-mono text-[11px] max-w-[100px] truncate" title={row.branches?.[0]?.gpsCoordinates}>
+                                {row.branches?.[0]?.gpsCoordinates || '—'}
+                              </td>
 
-                            {/* Tax District */}
-                            <td className="py-2.5 px-3 text-slate-600">{row.taxDistrict || '—'}</td>
+                              {/* Conflict Reason / Alerts */}
+                              <td className="py-2.5 px-3 text-rose-700 text-[11px] font-bold max-w-[200px] truncate" title={row.errorReason}>
+                                {row.errorReason || (row.action === 'skip' ? (isAr ? 'سيتم تخطي هذا السجل' : 'Skipped') : '—')}
+                              </td>
 
-                            {/* Settlement Mode */}
-                            <td className="py-2.5 px-3">
-                              <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px]">
-                                {SETTLEMENT_MODES.find((sm) => sm.id === row.settlementMode)?.labelAr || row.settlementMode}
-                              </span>
-                            </td>
-
-                            {/* Credit Limit */}
-                            <td className="py-2.5 px-3 font-mono font-bold text-slate-800">
-                              {Number(row.creditLimit).toLocaleString()} ج.م
-                            </td>
-
-                            {/* Phones */}
-                            <td className="py-2.5 px-3 font-mono max-w-[150px] truncate" title={(row.phones || []).join(', ')}>
-                              {(row.phones && row.phones.length > 0) ? row.phones.join(', ') : '—'}
-                            </td>
-
-                            {/* Emails */}
-                            <td className="py-2.5 px-3 text-slate-600 max-w-[140px] truncate" title={(row.emails || []).join(', ')}>
-                              {(row.emails && row.emails.length > 0) ? row.emails.join(', ') : '—'}
-                            </td>
-
-                            {/* Weekly Holidays */}
-                            <td className="py-2.5 px-3 text-slate-600">
-                              {(row.weeklyHolidays || [])
-                                .map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h)
-                                .join('، ') || '—'}
-                            </td>
-
-                            {/* Working Hours */}
-                            <td className="py-2.5 px-3 font-mono text-[11px]">
-                              {row.workingHoursFrom || '09:00'} - {row.workingHoursTo || '17:00'}
-                            </td>
-
-                            {/* Notes */}
-                            <td className="py-2.5 px-3 text-slate-500 max-w-[140px] truncate" title={row.notes}>
-                              {row.notes || '—'}
-                            </td>
-
-                            {/* Branches Count & Toggle Drawer */}
-                            <td className="py-2.5 px-3">
-                              <button
-                                type="button"
-                                onClick={() => handleToggleExpandBranches(row.id)}
-                                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1.5 transition cursor-pointer ${
-                                  row.branches?.length > 1
-                                    ? 'bg-blue-100 hover:bg-blue-200 text-blue-800 shadow-xs'
-                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                                }`}
-                                title={isAr ? 'عرض فروع العميل التفصيلية' : 'View all branches'}
-                              >
-                                <Boxes className="w-3.5 h-3.5" />
-                                <span>{row.branches?.length || 1} {isAr ? (row.branches?.length === 1 ? 'فرع' : 'فروع') : 'Branches'}</span>
-                                {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                              </button>
-                            </td>
-
-                            {/* Main Branch Columns */}
-                            <td className="py-2.5 px-3 font-semibold text-slate-800">
-                              {row.branches?.[0]?.nameAr || 'الفرع الرئيسي'}
-                            </td>
-                            <td className="py-2.5 px-3 text-slate-600">{row.branches?.[0]?.region || '—'}</td>
-                            <td className="py-2.5 px-3 text-slate-600 max-w-[160px] truncate" title={row.branches?.[0]?.address}>
-                              {row.branches?.[0]?.address || '—'}
-                            </td>
-                            <td className="py-2.5 px-3 text-slate-700">{row.branches?.[0]?.contactPerson || '—'}</td>
-                            <td className="py-2.5 px-3 font-mono">{row.branches?.[0]?.phone || '—'}</td>
-                            <td className="py-2.5 px-3 font-mono text-[11px] max-w-[100px] truncate" title={row.branches?.[0]?.gpsCoordinates}>
-                              {row.branches?.[0]?.gpsCoordinates || '—'}
-                            </td>
-
-                            {/* Conflict Reason / Alerts */}
-                            <td className="py-2.5 px-3 text-rose-700 text-[11px] font-bold max-w-[200px] truncate" title={row.errorReason}>
-                              {row.errorReason || (row.action === 'skip' ? (isAr ? 'سيتم تخطي هذا السجل' : 'Skipped') : '—')}
-                            </td>
-
-                            {/* Delete Row Action */}
-                            <td className="py-2.5 px-3 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteImportRow(idx)}
-                                className="p-1 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition cursor-pointer"
-                                title={isAr ? 'استبعاد السجل من الاستيراد' : 'Remove from import'}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-
-                          {/* Expanded Multi-Branch Sub-Table */}
-                          {isExpanded && (
-                            <tr>
-                              <td colSpan={26} className="p-0 bg-slate-50 border-y-2 border-blue-200">
-                                <div className="p-3.5 space-y-2">
-                                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
-                                    <span className="flex items-center gap-1.5 text-blue-900">
-                                      <Boxes className="w-4 h-4 text-blue-600" />
-                                      {isAr
-                                        ? `تفاصيل فروع العميل (${row.tradeNameAr}) — تم تجميع (${row.branches?.length || 1}) فرع من ملف الـ CSV:`
-                                        : `Branches of (${row.tradeNameAr}) — ${row.branches?.length || 1} aggregated from CSV:`}
-                                    </span>
-                                  </div>
-
-                                  <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto shadow-xs">
-                                    <table className="w-full text-start text-xs border-collapse">
-                                      <thead>
-                                        <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200 whitespace-nowrap">
-                                          <th className="py-2 px-3 text-start">#</th>
-                                          <th className="py-2 px-3 text-start">{isAr ? 'اسم الفرع' : 'Branch Name'}</th>
-                                          <th className="py-2 px-3 text-start">{isAr ? 'النوع' : 'Type'}</th>
-                                          <th className="py-2 px-3 text-start">{isAr ? 'المنطقة' : 'Region'}</th>
-                                          <th className="py-2 px-3 text-start">{isAr ? 'العنوان' : 'Address'}</th>
-                                          <th className="py-2 px-3 text-start">{isAr ? 'المسؤول' : 'Contact Person'}</th>
-                                          <th className="py-2 px-3 text-start">{isAr ? 'هاتف الفرع' : 'Branch Phone'}</th>
-                                          <th className="py-2 px-3 text-start">{isAr ? 'الموقع / GPS' : 'GPS Coordinates'}</th>
-                                          <th className="py-2 px-3 text-start">{isAr ? 'ملاحظات الفرع' : 'Branch Notes'}</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody className="divide-y divide-slate-100 font-medium whitespace-nowrap">
-                                        {(row.branches || []).map((br, bIdx) => (
-                                          <tr key={bIdx} className="hover:bg-slate-50">
-                                            <td className="py-2 px-3 font-mono font-bold text-slate-500">{bIdx + 1}</td>
-                                            <td className="py-2 px-3 font-bold text-slate-900">{br.nameAr}</td>
-                                            <td className="py-2 px-3">
-                                              {br.isMain ? (
-                                                <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md font-bold text-[10px]">
-                                                  {isAr ? 'الفرع الرئيسي' : 'Main Branch'}
-                                                </span>
-                                              ) : (
-                                                <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px]">
-                                                  {isAr ? 'فرع إضافي' : 'Additional Branch'}
-                                                </span>
-                                              )}
-                                            </td>
-                                            <td className="py-2 px-3 text-slate-700">{br.region || '—'}</td>
-                                            <td className="py-2 px-3 text-slate-600">{br.address || '—'}</td>
-                                            <td className="py-2 px-3 text-slate-800">{br.contactPerson || '—'}</td>
-                                            <td className="py-2 px-3 font-mono">{br.phone || '—'}</td>
-                                            <td className="py-2 px-3 font-mono text-[11px]">{br.gpsCoordinates || '—'}</td>
-                                            <td className="py-2 px-3 text-slate-500">{br.notes || '—'}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                </div>
+                              {/* Delete Row Action */}
+                              <td className="py-2.5 px-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteImportRow(row.id)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition cursor-pointer"
+                                  title={isAr ? 'استبعاد السجل من الاستيراد' : 'Remove from import'}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
                               </td>
                             </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
+
+                            {/* Expanded Multi-Branch Sub-Table */}
+                            {isExpanded && (
+                              <tr>
+                                <td colSpan={26} className="p-0 bg-slate-50 border-y-2 border-blue-200">
+                                  <div className="p-3.5 space-y-2">
+                                    <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                                      <span className="flex items-center gap-1.5 text-blue-900">
+                                        <Boxes className="w-4 h-4 text-blue-600" />
+                                        {isAr
+                                          ? `تفاصيل فروع العميل (${row.tradeNameAr}) — تم تجميع (${row.branches?.length || 1}) فرع من ملف الـ CSV:`
+                                          : `Branches of (${row.tradeNameAr}) — ${row.branches?.length || 1} aggregated from CSV:`}
+                                      </span>
+                                    </div>
+
+                                    <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto shadow-xs">
+                                      <table className="w-full text-start text-xs border-collapse">
+                                        <thead>
+                                          <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200 whitespace-nowrap">
+                                            <th className="py-2 px-3 text-start">#</th>
+                                            <th className="py-2 px-3 text-start">{isAr ? 'اسم الفرع' : 'Branch Name'}</th>
+                                            <th className="py-2 px-3 text-start">{isAr ? 'النوع' : 'Type'}</th>
+                                            <th className="py-2 px-3 text-start">{isAr ? 'المنطقة' : 'Region'}</th>
+                                            <th className="py-2 px-3 text-start">{isAr ? 'العنوان' : 'Address'}</th>
+                                            <th className="py-2 px-3 text-start">{isAr ? 'المسؤول' : 'Contact Person'}</th>
+                                            <th className="py-2 px-3 text-start">{isAr ? 'هاتف الفرع' : 'Branch Phone'}</th>
+                                            <th className="py-2 px-3 text-start">{isAr ? 'الموقع / GPS' : 'GPS Coordinates'}</th>
+                                            <th className="py-2 px-3 text-start">{isAr ? 'ملاحظات الفرع' : 'Branch Notes'}</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100 font-medium whitespace-nowrap">
+                                          {(row.branches || []).map((br, bIdx) => (
+                                            <tr key={bIdx} className="hover:bg-slate-50">
+                                              <td className="py-2 px-3 font-mono font-bold text-slate-500">{bIdx + 1}</td>
+                                              <td className="py-2 px-3 font-bold text-slate-900">{br.nameAr}</td>
+                                              <td className="py-2 px-3">
+                                                {br.isMain ? (
+                                                  <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md font-bold text-[10px]">
+                                                    {isAr ? 'الفرع الرئيسي' : 'Main Branch'}
+                                                  </span>
+                                                ) : (
+                                                  <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px]">
+                                                    {isAr ? 'فرع إضافي' : 'Additional Branch'}
+                                                  </span>
+                                                )}
+                                              </td>
+                                              <td className="py-2 px-3 text-slate-700">{br.region || '—'}</td>
+                                              <td className="py-2 px-3 text-slate-600">{br.address || '—'}</td>
+                                              <td className="py-2 px-3 text-slate-800">{br.contactPerson || '—'}</td>
+                                              <td className="py-2 px-3 font-mono">{br.phone || '—'}</td>
+                                              <td className="py-2 px-3 font-mono text-[11px]">{br.gpsCoordinates || '—'}</td>
+                                              <td className="py-2 px-3 text-slate-500">{br.notes || '—'}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               ) : (
