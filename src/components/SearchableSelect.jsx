@@ -185,31 +185,31 @@ export default function SearchableSelect({
             : 'bg-white border-slate-300 hover:border-slate-400'
         }`}
       >
-        <div className="flex-1 truncate font-medium text-start">
+        <div className="flex-1 min-w-0 truncate font-medium text-start">
           {selectedOption ? (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="font-bold text-slate-900">
-                {selectedOption.sublabel && (
-                  <span className="font-mono text-slate-500 font-semibold me-1.5">
-                    [{selectedOption.sublabel}]
-                  </span>
-                )}
+            <div className="flex items-center gap-1.5 min-w-0">
+              {selectedOption.sublabel && (
+                <span className="font-mono text-slate-500 font-semibold me-1 shrink-0 text-[11px]">
+                  [{selectedOption.sublabel}]
+                </span>
+              )}
+              <span className="font-bold text-slate-900 truncate">
                 {selectedOption.label}
               </span>
               {selectedOption.isLinked && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
                   <Link2 className="h-3 w-3 text-indigo-600 shrink-0" />
                   <span>{selectedOption.badgeText || (isAr ? 'مورد مسجل' : 'Linked Supplier')}</span>
                 </span>
               )}
             </div>
           ) : (
-            <span className="text-slate-400">{placeholder}</span>
+            <span className="text-slate-400 truncate block">{placeholder}</span>
           )}
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
-          {value && !disabled && (
+          {value && value !== 'all' && !disabled && (
             <button
               type="button"
               onClick={handleClear}

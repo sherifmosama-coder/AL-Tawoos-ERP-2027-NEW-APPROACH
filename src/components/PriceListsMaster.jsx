@@ -238,7 +238,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
       {
         value: 'all',
         label: isAr ? 'جميع العملاء (كافة النطاقات)' : 'All Clients / Scopes',
-        sublabel: isAr ? 'عرض كافة القوائم العامة والخاصة' : 'Show all general and special price lists'
+        sublabel: ''
       }
     ];
 
@@ -650,9 +650,9 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
         {/* Filters Row */}
         <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100 text-xs">
           {/* Client Filter (SearchableSelect) */}
-          <div className="flex items-center gap-1.5 w-64 sm:w-72">
+          <div className="flex items-center gap-1.5 w-56 sm:w-64 min-w-0 shrink-0">
             <span className="text-slate-400 font-bold shrink-0">{isAr ? 'العميل:' : 'Client:'}</span>
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <SearchableSelect
                 value={clientFilter}
                 onChange={(val) => setClientFilter(val || 'all')}
