@@ -61,7 +61,8 @@ import {
   ListFilter,
   CheckSquare,
   Filter,
-  RotateCcw
+  RotateCcw,
+  MoreVertical
 } from 'lucide-react';
 import VatNumberInput from './VatNumberInput';
 import VatNumberDisplay from './VatNumberDisplay';
@@ -425,7 +426,20 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSegmentFilter, setSelectedSegmentFilter] = useState('all');
   const [selectedStrategyFilter, setSelectedStrategyFilter] = useState('all');
+  const [selectedSettlementFilter, setSelectedSettlementFilter] = useState('all');
+  const [selectedRegionFilter, setSelectedRegionFilter] = useState('all');
+  const [isFilterBarOpen, setIsFilterBarOpen] = useState(false);
   const [expandedClientId, setExpandedClientId] = useState(null);
+
+  // Table Row Selection & Bulk Edit State
+  const [selectedClientIds, setSelectedClientIds] = useState(new Set());
+  const [bulkEditField, setBulkEditField] = useState('segmentId');
+  const [bulkEditValue, setBulkEditValue] = useState('');
+  const [isApplyingBulkEdit, setIsApplyingBulkEdit] = useState(false);
+
+  // Row Actions 3-Dots Menu & Detail Modal State
+  const [activeActionsMenuClientId, setActiveActionsMenuClientId] = useState(null);
+  const [detailViewClient, setDetailViewClient] = useState(null);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -541,6 +555,17 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       unsubSegments();
     };
   }, []);
+
+  // Close 3-dots actions menu when clicking outside
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (activeActionsMenuClientId && !e.target.closest('[data-actions-menu]')) {
+        setActiveActionsMenuClientId(null);
+      }
+    };
+    document.addEventListener('click', handleOutsideClick);
+    return () => document.removeEventListener('click', handleOutsideClick);
+  }, [activeActionsMenuClientId]);
 
   // Map segments dictionary for fast lookup
   const segmentMap = useMemo(() => {
@@ -2074,7 +2099,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               branchesCount: (client.branches || []).length,
               attachments: client.isExisting ? (client.existingClient?.attachments || []) : [],
               logo: client.isExisting ? (client.existingClient?.logo || '') : '',
-              notes: String(client.notes || '').trim() || 'Imported via Bulk CSV',
+              notes: String(client.notes || '').trim(),
               createdAt: client.isExisting ? (client.existingClient?.createdAt || serverTimestamp()) : serverTimestamp(),
               updatedAt: serverTimestamp()
             };
@@ -2173,6 +2198,18 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     exportClientsBackupCsv(clients, 'tawoos_clients_db_backup');
   };
 
+  // Available Regions derived dynamically from all clients and their branches
+  const availableRegions = useMemo(() => {
+    const set = new Set();
+    clients.forEach((c) => {
+      if (c.region && c.region.trim()) set.add(c.region.trim());
+      (c.branches || []).forEach((b) => {
+        if (b.region && b.region.trim()) set.add(b.region.trim());
+      });
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ar'));
+  }, [clients]);
+
   // Filtered Clients List
   const filteredClients = useMemo(() => {
     return clients.filter((c) => {
@@ -2183,6 +2220,18 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       // Strategy filter
       if (selectedStrategyFilter !== 'all' && c.pricingStrategy !== selectedStrategyFilter) {
         return false;
+      }
+      // Settlement mode filter
+      if (selectedSettlementFilter !== 'all' && c.settlementMode !== selectedSettlementFilter) {
+        return false;
+      }
+      // Region filter
+      if (selectedRegionFilter !== 'all') {
+        const matchesClientRegion = c.region && c.region.trim().toLowerCase() === selectedRegionFilter.toLowerCase();
+        const matchesBranchRegion = (c.branches || []).some(
+          (b) => b.region && b.region.trim().toLowerCase() === selectedRegionFilter.toLowerCase()
+        );
+        if (!matchesClientRegion && !matchesBranchRegion) return false;
       }
       // Text Search
       if (searchQuery.trim()) {
@@ -2203,100 +2252,290 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       }
       return true;
     });
-  }, [clients, selectedSegmentFilter, selectedStrategyFilter, searchQuery]);
+  }, [clients, selectedSegmentFilter, selectedStrategyFilter, selectedSettlementFilter, selectedRegionFilter, searchQuery]);
+
+  const activeFiltersCount =
+    (selectedSegmentFilter !== 'all' ? 1 : 0) +
+    (selectedStrategyFilter !== 'all' ? 1 : 0) +
+    (selectedSettlementFilter !== 'all' ? 1 : 0) +
+    (selectedRegionFilter !== 'all' ? 1 : 0);
+
+  const handleResetFilters = () => {
+    setSelectedSegmentFilter('all');
+    setSelectedStrategyFilter('all');
+    setSelectedSettlementFilter('all');
+    setSelectedRegionFilter('all');
+    setSearchQuery('');
+  };
+
+  // Selection Helpers
+  const isAllFilteredSelected =
+    filteredClients.length > 0 &&
+    filteredClients.every((c) => selectedClientIds.has(c.id));
+
+  const isSomeFilteredSelected =
+    filteredClients.some((c) => selectedClientIds.has(c.id));
+
+  const handleToggleSelectAll = () => {
+    if (isAllFilteredSelected) {
+      const next = new Set(selectedClientIds);
+      filteredClients.forEach((c) => next.delete(c.id));
+      setSelectedClientIds(next);
+    } else {
+      const next = new Set(selectedClientIds);
+      filteredClients.forEach((c) => next.add(c.id));
+      setSelectedClientIds(next);
+    }
+  };
+
+  const handleToggleSelectClient = (clientId) => {
+    const next = new Set(selectedClientIds);
+    if (next.has(clientId)) {
+      next.delete(clientId);
+    } else {
+      next.add(clientId);
+    }
+    setSelectedClientIds(next);
+  };
+
+  const handleSelectAllFiltered = () => {
+    const next = new Set(selectedClientIds);
+    filteredClients.forEach((c) => next.add(c.id));
+    setSelectedClientIds(next);
+  };
+
+  const handleApplyBulkEdit = async () => {
+    if (!bulkEditValue || selectedClientIds.size === 0) return;
+
+    setIsApplyingBulkEdit(true);
+    try {
+      const selectedList = Array.from(selectedClientIds);
+      const BATCH_SIZE = 250;
+
+      for (let i = 0; i < selectedList.length; i += BATCH_SIZE) {
+        const chunk = selectedList.slice(i, i + BATCH_SIZE);
+        const batch = writeBatch(db);
+
+        chunk.forEach((clientId) => {
+          batch.update(doc(db, 'clients', clientId), {
+            [bulkEditField]: bulkEditValue,
+            updatedAt: serverTimestamp()
+          });
+        });
+
+        await batch.commit();
+      }
+
+      alert(
+        isAr
+          ? `تم بنجاح تحديث (${selectedList.length}) عميل.`
+          : `Successfully updated ${selectedList.length} clients.`
+      );
+      setSelectedClientIds(new Set());
+      setBulkEditValue('');
+    } catch (err) {
+      console.error('Error applying bulk edit:', err);
+      alert(isAr ? 'حدث خطأ أثناء تطبيق التعديل الجماعي' : 'Error updating clients in bulk');
+    } finally {
+      setIsApplyingBulkEdit(false);
+    }
+  };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Search, Filter and Actions Control Bar */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-4">
-        {/* Search & Filter Dropdowns */}
-        <div className="flex flex-wrap items-center gap-2.5 flex-1">
-          <div className="relative w-full sm:w-80">
-            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={isAr ? 'بحث بالاسم، الكود، البطاقة الضريبية، الهاتف...' : 'Search by name, code, tax ID, phone...'}
-              className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 space-y-3">
+        <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
+          {/* Search Box & Advanced Filters Toggle */}
+          <div className="flex flex-wrap items-center gap-2.5 flex-1">
+            <div className="relative w-full sm:w-80">
+              <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={isAr ? 'بحث بالاسم، الكود، البطاقة الضريبية، الهاتف...' : 'Search by name, code, tax ID, phone...'}
+                className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute end-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer p-0.5"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
 
-          {/* Segment Filter Pills */}
-          <select
-            value={selectedSegmentFilter}
-            onChange={(e) => setSelectedSegmentFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-          >
-            <option value="all">{isAr ? 'جميع القطاعات والتصنيفات' : 'All Segments'}</option>
-            {segments.map((seg) => (
-              <option key={seg.id} value={seg.id}>
-                {seg.nameAr}
-              </option>
-            ))}
-          </select>
+            {/* Advanced Filters Button (Collapsed by default) */}
+            <button
+              type="button"
+              onClick={() => setIsFilterBarOpen(!isFilterBarOpen)}
+              className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border cursor-pointer ${
+                isFilterBarOpen || activeFiltersCount > 0
+                  ? 'bg-blue-50 border-blue-300 text-blue-700 shadow-xs'
+                  : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+              }`}
+              title={isAr ? 'عرض فلاتر التخصيص المتقدمة' : 'Toggle Advanced Filters'}
+            >
+              <Filter className="w-3.5 h-3.5" />
+              <span>{isAr ? 'تصفية متقدمة' : 'Advanced Filters'}</span>
+              {activeFiltersCount > 0 && (
+                <span className="px-1.5 py-0.2 bg-blue-600 text-white rounded-full text-[10px] font-bold">
+                  {activeFiltersCount}
+                </span>
+              )}
+            </button>
 
-          {/* Pricing Strategy Filter */}
-          <select
-            value={selectedStrategyFilter}
-            onChange={(e) => setSelectedStrategyFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-          >
-            <option value="all">{isAr ? 'جميع استراتيجيات التسعير' : 'All Pricing Strategies'}</option>
-            {PRICING_STRATEGIES.map((st) => (
-              <option key={st.id} value={st.id}>
-                {isAr ? st.labelAr : st.labelEn}
-              </option>
-            ))}
-          </select>
-
-          <span className="text-xs font-bold text-slate-500 hidden sm:inline">
-            {isAr ? 'عرض' : 'Showing'} <strong className="text-blue-600">{filteredClients.length}</strong>{' '}
-            {isAr ? 'من أصل' : 'of'} <strong className="text-slate-800">{clients.length}</strong>
-          </span>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex items-center gap-2 flex-wrap shrink-0">
-          {canBulkImport && (
-            <div className="flex items-center gap-1">
-              <label className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition cursor-pointer border border-slate-200">
-                <UploadCloud className="w-4 h-4 text-slate-500" />
-                <span>{isAr ? 'استيراد عملاء (CSV)' : 'Import CSV'}</span>
-                <input type="file" accept=".csv" onChange={handleParseCsvFile} className="hidden" />
-              </label>
-
+            {activeFiltersCount > 0 && (
               <button
                 type="button"
-                onClick={handleDownloadTemplate}
-                className="p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition border border-transparent hover:border-slate-200 cursor-pointer"
-                title={isAr ? 'تحميل نموذج قالب CSV فارغ للاستيراد' : 'Download blank CSV template'}
+                onClick={handleResetFilters}
+                className="text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline flex items-center gap-1 cursor-pointer"
               >
-                <FileSpreadsheet className="w-4 h-4" />
+                <RotateCcw className="w-3 h-3" />
+                <span>{isAr ? 'إعادة ضبط' : 'Reset'}</span>
               </button>
-            </div>
-          )}
+            )}
 
-          <button
-            onClick={handleExportClients}
-            disabled={clients.length === 0}
-            className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition disabled:opacity-50 border border-slate-200 cursor-pointer"
-            title={isAr ? 'تصدير البيانات إلى ملف CSV' : 'Export to CSV'}
-          >
-            <Download className="w-4 h-4 text-slate-500" />
-            <span>{isAr ? 'تصدير' : 'Export'}</span>
-          </button>
+            <span className="text-xs font-bold text-slate-500 hidden sm:inline">
+              {isAr ? 'عرض' : 'Showing'} <strong className="text-blue-600">{filteredClients.length}</strong>{' '}
+              {isAr ? 'من أصل' : 'of'} <strong className="text-slate-800">{clients.length}</strong>
+            </span>
+          </div>
 
-          {canCreate && (
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2 flex-wrap shrink-0">
+            {canBulkImport && (
+              <div className="flex items-center gap-1">
+                <label className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition cursor-pointer border border-slate-200">
+                  <UploadCloud className="w-4 h-4 text-slate-500" />
+                  <span>{isAr ? 'استيراد عملاء (CSV)' : 'Import CSV'}</span>
+                  <input type="file" accept=".csv" onChange={handleParseCsvFile} className="hidden" />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadTemplate}
+                  className="p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition border border-transparent hover:border-slate-200 cursor-pointer"
+                  title={isAr ? 'تحميل نموذج قالب CSV فارغ للاستيراد' : 'Download blank CSV template'}
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
             <button
-              onClick={handleOpenCreateModal}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md transition cursor-pointer"
+              onClick={handleExportClients}
+              disabled={clients.length === 0}
+              className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition disabled:opacity-50 border border-slate-200 cursor-pointer"
+              title={isAr ? 'تصدير نسخة احتياطية شاملة لجميع العملاء وفروعهم (23 عمود)' : 'Export full re-importable CSV backup (23 columns)'}
             >
-              <Plus className="w-4 h-4" />
-              <span>{isAr ? 'إضافة عميل جديد' : 'New Client'}</span>
+              <Download className="w-4 h-4 text-slate-500" />
+              <span>{isAr ? 'تصدير نسخة احتياطية' : 'Export Backup'}</span>
             </button>
-          )}
+
+            {canCreate && (
+              <button
+                onClick={handleOpenCreateModal}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>{isAr ? 'إضافة عميل جديد' : 'New Client'}</span>
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Collapsible Advanced Filter Bar (Collapsed by default) */}
+        {isFilterBarOpen && (
+          <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3 text-xs animate__animated animate__fadeInDown animate__faster">
+            <div className="flex items-center gap-1 font-bold text-slate-700">
+              <SlidersHorizontal className="w-3.5 h-3.5 text-blue-600" />
+              <span>{isAr ? 'الفلاتر المتقدمة:' : 'Advanced Filters:'}</span>
+            </div>
+
+            {/* 1. Segment Filter */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-500 font-semibold">{isAr ? 'القطاع:' : 'Segment:'}</span>
+              <select
+                value={selectedSegmentFilter}
+                onChange={(e) => setSelectedSegmentFilter(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+              >
+                <option value="all">{isAr ? 'جميع القطاعات' : 'All Segments'}</option>
+                {segments.map((seg) => (
+                  <option key={seg.id} value={seg.id}>
+                    {seg.nameAr}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 2. Pricing Strategy Filter */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-500 font-semibold">{isAr ? 'التسعير:' : 'Pricing:'}</span>
+              <select
+                value={selectedStrategyFilter}
+                onChange={(e) => setSelectedStrategyFilter(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+              >
+                <option value="all">{isAr ? 'جميع استراتيجيات التسعير' : 'All Pricing'}</option>
+                {PRICING_STRATEGIES.map((st) => (
+                  <option key={st.id} value={st.id}>
+                    {isAr ? st.labelAr : st.labelEn}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 3. Settlement Mode Filter */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-500 font-semibold">{isAr ? 'طريقة السداد:' : 'Settlement:'}</span>
+              <select
+                value={selectedSettlementFilter}
+                onChange={(e) => setSelectedSettlementFilter(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+              >
+                <option value="all">{isAr ? 'جميع طرق السداد' : 'All Settlement Modes'}</option>
+                {SETTLEMENT_MODES.map((sm) => (
+                  <option key={sm.id} value={sm.id}>
+                    {isAr ? sm.labelAr : sm.labelEn}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 4. Region Filter */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-500 font-semibold">{isAr ? 'المنطقة:' : 'Region:'}</span>
+              <select
+                value={selectedRegionFilter}
+                onChange={(e) => setSelectedRegionFilter(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+              >
+                <option value="all">{isAr ? 'جميع المناطق' : 'All Regions'}</option>
+                {availableRegions.map((reg) => (
+                  <option key={reg} value={reg}>
+                    {reg}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {activeFiltersCount > 0 && (
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="ms-auto text-rose-600 hover:text-rose-800 text-xs font-bold hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>{isAr ? 'إعادة ضبط كل الفلاتر' : 'Reset All Filters'}</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Table / Directory */}
@@ -2318,14 +2557,27 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           <div className="overflow-x-auto">
             <table className="w-full text-start border-collapse">
               <thead>
-                <tr className="bg-slate-50 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider">
+                <tr className="bg-slate-50 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                  {/* Master Checkbox */}
+                  <th className="py-3.5 px-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={isAllFilteredSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = isSomeFilteredSelected && !isAllFilteredSelected;
+                      }}
+                      onChange={handleToggleSelectAll}
+                      className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer w-4 h-4"
+                      title={isAr ? 'تحديد الكل المفلتر' : 'Select all filtered'}
+                    />
+                  </th>
                   <th className="py-3.5 px-4 text-start">{isAr ? 'كود العميل' : 'Code'}</th>
                   <th className="py-3.5 px-4 text-start">{isAr ? 'العميل والشهرة' : 'Client Name'}</th>
                   <th className="py-3.5 px-4 text-start">{isAr ? 'القطاع' : 'Segment'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'التسعير والسداد' : 'Pricing & Terms'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'حد الائتمان' : 'Credit Limit'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'آخر تسليم فعلي' : 'Latest Delivery'}</th>
+                  <th className="py-3.5 px-4 text-start">{isAr ? 'استراتيجية التسعير' : 'Pricing Strategy'}</th>
+                  <th className="py-3.5 px-4 text-start">{isAr ? 'طريقة السداد' : 'Settlement Strategy'}</th>
                   <th className="py-3.5 px-4 text-start">{isAr ? 'الفروع' : 'Branches'}</th>
+                  <th className="py-3.5 px-4 text-start">{isAr ? 'آخر تسليم فعلي' : 'Latest Delivery'}</th>
                   <th className="py-3.5 px-4 text-center">{isAr ? 'الإجراءات' : 'Actions'}</th>
                 </tr>
               </thead>
@@ -2334,11 +2586,21 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                   const seg = segmentMap[client.segmentId];
                   const IconCmp = seg ? SEGMENT_ICON_MAP[seg.icon] || Layers : UserCheck;
                   const isExpanded = expandedClientId === client.id;
-                  const mainBranch = (client.branches || []).find((b) => b.isMain) || (client.branches || [])[0] || {};
+                  const isSelected = selectedClientIds.has(client.id);
 
                   return (
                     <React.Fragment key={client.id}>
-                      <tr className="hover:bg-slate-50/70 transition group">
+                      <tr className={`hover:bg-slate-50/70 transition group ${isSelected ? 'bg-blue-50/40' : ''}`}>
+                        {/* Checkbox */}
+                        <td className="py-3.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectClient(client.id)}
+                            className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer w-4 h-4"
+                          />
+                        </td>
+
                         {/* Client Code */}
                         <td className="py-3.5 px-4 font-mono font-bold text-xs text-blue-700 whitespace-nowrap">
                           {client.id}
@@ -2377,7 +2639,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                           </div>
                         </td>
 
-                        {/* Segment Badge (Logo replaces icon if present) */}
+                        {/* Segment Badge */}
                         <td className="py-3.5 px-4 whitespace-nowrap">
                           {seg ? (
                             <span
@@ -2406,34 +2668,43 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                           )}
                         </td>
 
-                        {/* Pricing & Settlement */}
+                        {/* Pricing Strategy */}
                         <td className="py-3.5 px-4 whitespace-nowrap">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-xs font-bold text-slate-700">
-                              {PRICING_STRATEGIES.find((s) => s.id === client.pricingStrategy)?.labelAr || client.pricingStrategy}
-                            </span>
-                            <span className="text-[11px] font-semibold text-slate-500">
-                              {SETTLEMENT_MODES.find((m) => m.id === client.settlementMode)?.labelAr || client.settlementMode}
-                            </span>
-                          </div>
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200">
+                            {PRICING_STRATEGIES.find((s) => s.id === client.pricingStrategy)?.labelAr || client.pricingStrategy || '—'}
+                          </span>
                         </td>
 
-                        {/* Credit Limit */}
+                        {/* Settlement Strategy */}
                         <td className="py-3.5 px-4 whitespace-nowrap">
-                          {canViewCreditLimit ? (
-                            Number(client.creditLimit) === 0 ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                <CheckCircle2 className="w-3 h-3" />
-                                {isAr ? 'مفتوح (غير مقيد)' : 'Unlimited'}
-                              </span>
-                            ) : (
-                              <span className="font-mono font-bold text-slate-800 text-xs">
-                                {Number(client.creditLimit).toLocaleString()} {isAr ? 'ج.م' : 'EGP'}
-                              </span>
-                            )
+                          {client.settlementMode === 'credit' ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                              <CreditCard className="w-3.5 h-3.5" />
+                              <span>{isAr ? 'دفع آجل (عقود)' : 'Credit (Contracts)'}</span>
+                            </span>
+                          ) : client.settlementMode === 'rolling_credit' ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>{isAr ? 'سداد مع الشحنة التالية' : 'Rolling Credit'}</span>
+                            </span>
                           ) : (
-                            <span className="text-xs text-slate-400 font-mono">••••••</span>
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <Zap className="w-3.5 h-3.5" />
+                              <span>{isAr ? 'نقدي عند الاستلام (COD)' : 'Cash On Delivery'}</span>
+                            </span>
                           )}
+                        </td>
+
+                        {/* Branches Quick Badge */}
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          <button
+                            onClick={() => setExpandedClientId(isExpanded ? null : client.id)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+                          >
+                            <MapPin className="w-3.5 h-3.5 text-blue-600" />
+                            <span>{(client.branches || []).length} {isAr ? 'فرع' : 'branch(es)'}</span>
+                            {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                          </button>
                         </td>
 
                         {/* Latest Activity (Only Updated on Delivery) */}
@@ -2450,22 +2721,10 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                           )}
                         </td>
 
-                        {/* Branches Quick Badge */}
-                        <td className="py-3.5 px-4 whitespace-nowrap">
-                          <button
-                            onClick={() => setExpandedClientId(isExpanded ? null : client.id)}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
-                          >
-                            <MapPin className="w-3.5 h-3.5 text-blue-600" />
-                            <span>{(client.branches || []).length} {isAr ? 'فرع' : 'branch(es)'}</span>
-                            {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          </button>
-                        </td>
-
-                        {/* Actions */}
+                        {/* Actions (Standalone Comment + 3-Dots Dropdown) */}
                         <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                          <div className="flex items-center justify-center gap-1">
-                            {/* Row Comments Action */}
+                          <div className="flex items-center justify-center gap-1.5" data-actions-menu>
+                            {/* Standalone Row Comments Action */}
                             <RowCommentButton
                               docId={client.id}
                               docNumber={client.id}
@@ -2473,25 +2732,75 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                               module="master_data"
                             />
 
-                            {canEdit && (
+                            {/* 3-Dots More Options Menu */}
+                            <div className="relative">
                               <button
-                                onClick={() => handleOpenEditModal(client)}
-                                className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                                title={isAr ? 'تعديل العميل' : 'Edit Client'}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveActionsMenuClientId(activeActionsMenuClientId === client.id ? null : client.id);
+                                }}
+                                className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                                  activeActionsMenuClientId === client.id
+                                    ? 'bg-slate-900 text-white border-slate-900 shadow-md'
+                                    : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100 border-transparent hover:border-slate-200'
+                                }`}
+                                title={isAr ? 'خيارات إضافية' : 'More Options'}
                               >
-                                <Edit3 className="w-4 h-4" />
+                                <MoreVertical className="w-4 h-4" />
                               </button>
-                            )}
 
-                            {canDelete && (
-                              <button
-                                onClick={() => setDeleteConfirmClient(client)}
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                                title={isAr ? 'حذف العميل' : 'Delete Client'}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
+                              {activeActionsMenuClientId === client.id && (
+                                <div
+                                  className={`absolute z-40 top-full mt-1.5 ${
+                                    isAr ? 'left-0' : 'right-0'
+                                  } w-52 bg-white border border-slate-200 rounded-2xl shadow-2xl py-1.5 text-xs text-slate-700 animate__animated animate__fadeIn animate__faster text-start`}
+                                >
+                                  {/* 1. Full Detailed View */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionsMenuClientId(null);
+                                      setDetailViewClient(client);
+                                    }}
+                                    className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-blue-50 text-blue-700 font-bold transition cursor-pointer"
+                                  >
+                                    <Eye className="w-4 h-4 text-blue-600 shrink-0" />
+                                    <span>{isAr ? 'عرض التفاصيل بالكامل' : 'Full Detailed View'}</span>
+                                  </button>
+
+                                  {/* 2. Edit */}
+                                  {canEdit && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveActionsMenuClientId(null);
+                                        handleOpenEditModal(client);
+                                      }}
+                                      className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-slate-50 text-slate-700 font-semibold transition cursor-pointer"
+                                    >
+                                      <Edit3 className="w-4 h-4 text-slate-500 shrink-0" />
+                                      <span>{isAr ? 'تعديل بيانات العميل' : 'Edit Client'}</span>
+                                    </button>
+                                  )}
+
+                                  {/* 3. Delete */}
+                                  {canDelete && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveActionsMenuClientId(null);
+                                        setDeleteConfirmClient(client);
+                                      }}
+                                      className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-rose-50 text-rose-600 font-semibold transition cursor-pointer border-t border-slate-100"
+                                    >
+                                      <Trash2 className="w-4 h-4 text-rose-500 shrink-0" />
+                                      <span>{isAr ? 'حذف العميل' : 'Delete Client'}</span>
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -2499,7 +2808,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                       {/* Expandable Branches Detail Drawer */}
                       {isExpanded && (
                         <tr className="bg-slate-50/90 border-b border-slate-200 animate__animated animate__fadeIn">
-                          <td colSpan={8} className="p-4">
+                          <td colSpan={9} className="p-4">
                             <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-inner space-y-3">
                               {/* Client Operational & Communication Banner */}
                               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
@@ -2535,7 +2844,13 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                     <Clock className="w-3.5 h-3.5 text-emerald-600" />
                                     <span className="font-bold text-slate-700">{isAr ? 'مواعيد العمل:' : 'Hours:'}</span>
                                     <span className="font-mono font-bold text-slate-600">
-                                      {client.workingHoursFrom || '09:00'} - {client.workingHoursTo || '17:00'}
+                                      {client.workingHoursFrom && client.workingHoursTo
+                                        ? `${client.workingHoursFrom} - ${client.workingHoursTo}`
+                                        : (client.workingHoursFrom
+                                            ? `${isAr ? 'من' : 'From'} ${client.workingHoursFrom}`
+                                            : (client.workingHoursTo
+                                                ? `${isAr ? 'إلى' : 'To'} ${client.workingHoursTo}`
+                                                : '—'))}
                                     </span>
                                   </div>
 
@@ -2632,7 +2947,16 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
                                     {b.useCustomSchedule ? (
                                       <div className="pt-1 border-t border-slate-200/60 text-[10px] text-amber-800 font-bold">
-                                        <span>{isAr ? 'مواعيد خاصة:' : 'Custom hours:'} {b.workingHoursFrom || '09:00'} - {b.workingHoursTo || '17:00'}</span>
+                                        <span>
+                                          {isAr ? 'مواعيد خاصة:' : 'Custom hours:'}{' '}
+                                          {b.workingHoursFrom && b.workingHoursTo
+                                            ? `${b.workingHoursFrom} - ${b.workingHoursTo}`
+                                            : (b.workingHoursFrom
+                                                ? `${isAr ? 'من' : 'From'} ${b.workingHoursFrom}`
+                                                : (b.workingHoursTo
+                                                    ? `${isAr ? 'إلى' : 'To'} ${b.workingHoursTo}`
+                                                    : '—'))}
+                                        </span>
                                         {b.weeklyHolidays && b.weeklyHolidays.length > 0 && (
                                           <span className="ms-1">({b.weeklyHolidays.map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h).join('، ')})</span>
                                         )}
@@ -2657,6 +2981,472 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           </div>
         )}
       </div>
+
+      {/* ========================================================================= */}
+      {/* FLOATING STICKY BULK ACTION BAR                                           */}
+      {/* ========================================================================= */}
+      {selectedClientIds.size > 0 && (
+        <div className="fixed bottom-6 inset-x-4 md:inset-x-auto md:start-1/2 md:-translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl border border-slate-700 flex flex-wrap items-center gap-3 animate__animated animate__fadeInUp">
+          <div className="flex items-center gap-2">
+            <CheckSquare className="w-4 h-4 text-blue-400 shrink-0" />
+            <span className="text-xs font-bold whitespace-nowrap">
+              {isAr ? `تم تحديد (${selectedClientIds.size}) عميل` : `${selectedClientIds.size} clients selected`}
+            </span>
+            {selectedClientIds.size < filteredClients.length && (
+              <button
+                type="button"
+                onClick={handleSelectAllFiltered}
+                className="text-[11px] text-blue-300 hover:text-white underline cursor-pointer ms-1 font-semibold whitespace-nowrap"
+              >
+                {isAr ? `تحديد الكل المفلتر (${filteredClients.length})` : `Select all filtered (${filteredClients.length})`}
+              </button>
+            )}
+          </div>
+
+          <div className="h-5 w-px bg-slate-700 hidden sm:block" />
+
+          {/* Bulk Edit Controls */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-slate-300 font-semibold whitespace-nowrap">{isAr ? 'تعديل جماعي:' : 'Bulk Edit:'}</span>
+            <select
+              value={bulkEditField}
+              onChange={(e) => {
+                setBulkEditField(e.target.value);
+                setBulkEditValue('');
+              }}
+              className="px-2.5 py-1.5 bg-slate-800 border border-slate-600 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+            >
+              <option value="segmentId">{isAr ? 'القطاع' : 'Segment'}</option>
+              <option value="pricingStrategy">{isAr ? 'استراتيجية التسعير' : 'Pricing Strategy'}</option>
+              <option value="settlementMode">{isAr ? 'طريقة السداد' : 'Settlement Mode'}</option>
+            </select>
+
+            {bulkEditField === 'segmentId' && (
+              <select
+                value={bulkEditValue}
+                onChange={(e) => setBulkEditValue(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-800 border border-slate-600 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+              >
+                <option value="">{isAr ? '-- اختر القطاع --' : '-- Select Segment --'}</option>
+                {segments.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.nameAr}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {bulkEditField === 'pricingStrategy' && (
+              <select
+                value={bulkEditValue}
+                onChange={(e) => setBulkEditValue(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-800 border border-slate-600 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+              >
+                <option value="">{isAr ? '-- اختر الاستراتيجية --' : '-- Select Strategy --'}</option>
+                {PRICING_STRATEGIES.map((st) => (
+                  <option key={st.id} value={st.id}>
+                    {isAr ? st.labelAr : st.labelEn}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {bulkEditField === 'settlementMode' && (
+              <select
+                value={bulkEditValue}
+                onChange={(e) => setBulkEditValue(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-800 border border-slate-600 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+              >
+                <option value="">{isAr ? '-- اختر طريقة السداد --' : '-- Select Settlement --'}</option>
+                {SETTLEMENT_MODES.map((sm) => (
+                  <option key={sm.id} value={sm.id}>
+                    {isAr ? sm.labelAr : sm.labelEn}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <button
+              type="button"
+              disabled={!bulkEditValue || isApplyingBulkEdit}
+              onClick={handleApplyBulkEdit}
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
+            >
+              {isApplyingBulkEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              <span>{isAr ? 'تطبيق' : 'Apply'}</span>
+            </button>
+          </div>
+
+          <div className="h-5 w-px bg-slate-700 hidden sm:block" />
+
+          <button
+            type="button"
+            onClick={() => setSelectedClientIds(new Set())}
+            className="p-1 text-slate-400 hover:text-white rounded-lg transition cursor-pointer"
+            title={isAr ? 'إلغاء التحديد' : 'Clear selection'}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* FULL DETAILED VIEW CLIENT PROFILE MODAL                                   */}
+      {/* ========================================================================= */}
+      {detailViewClient && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] animate__animated animate__fadeInUp animate__faster">
+            {/* Modal Header */}
+            <div className="px-6 py-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center overflow-hidden shadow-sm shrink-0">
+                  {detailViewClient.logo ? (
+                    <img
+                      src={detailViewClient.logo}
+                      alt={detailViewClient.tradeNameAr}
+                      className="w-full h-full object-contain p-1"
+                    />
+                  ) : (
+                    <Building2 className="w-6 h-6 text-blue-400" />
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-300 border border-blue-400/30 font-bold">
+                      {detailViewClient.id}
+                    </span>
+                    <h3 className="font-black text-lg text-white">
+                      {detailViewClient.tradeNameAr || detailViewClient.name}
+                    </h3>
+                  </div>
+                  {detailViewClient.tradeNameEn && (
+                    <p className="text-xs text-slate-400 font-semibold" dir="ltr">
+                      {detailViewClient.tradeNameEn}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const c = detailViewClient;
+                      setDetailViewClient(null);
+                      handleOpenEditModal(c);
+                    }}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'تعديل البيانات' : 'Edit Profile'}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setDetailViewClient(null)}
+                  className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-5 flex-grow text-slate-700">
+              {/* Top Key Attributes Ribbon */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {/* Segment */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                  <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'القطاع والتصنيف:' : 'Segment:'}</span>
+                  <span className="text-xs font-black text-slate-800">
+                    {segmentMap[detailViewClient.segmentId]?.nameAr || detailViewClient.segmentId || '—'}
+                  </span>
+                </div>
+
+                {/* Pricing Strategy */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                  <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'استراتيجية التسعير:' : 'Pricing Strategy:'}</span>
+                  <span className="text-xs font-black text-slate-800">
+                    {PRICING_STRATEGIES.find((s) => s.id === detailViewClient.pricingStrategy)?.labelAr || detailViewClient.pricingStrategy || '—'}
+                  </span>
+                </div>
+
+                {/* Settlement Mode */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                  <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'طريقة السداد:' : 'Settlement Mode:'}</span>
+                  <span className="text-xs font-black text-slate-800">
+                    {SETTLEMENT_MODES.find((m) => m.id === detailViewClient.settlementMode)?.labelAr || detailViewClient.settlementMode || '—'}
+                  </span>
+                </div>
+
+                {/* Credit Limit */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                  <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'الحد الائتماني:' : 'Credit Limit:'}</span>
+                  <span className="text-xs font-mono font-black text-slate-800">
+                    {Number(detailViewClient.creditLimit) === 0
+                      ? (isAr ? 'مفتوح (غير مقيد)' : 'Unlimited')
+                      : `${Number(detailViewClient.creditLimit).toLocaleString()} ${isAr ? 'ج.م' : 'EGP'}`}
+                  </span>
+                </div>
+              </div>
+
+              {/* Commercial & Tax Identification */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3 shadow-2xs">
+                <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                  <FileText className="w-4 h-4 text-blue-600" />
+                  <span>{isAr ? 'البيانات التجارية والقانونية' : 'Commercial & Legal Identification'}</span>
+                </h4>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'الاسم القانوني / الرسمي:' : 'Legal Name:'}</span>
+                    <span className="font-bold text-slate-800">{detailViewClient.legalName || '—'}</span>
+                  </div>
+
+                  <div>
+                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'رقم البطاقة الضريبية:' : 'Tax Card ID:'}</span>
+                    {detailViewClient.taxCardNumber ? (
+                      <VatNumberDisplay value={detailViewClient.taxCardNumber} className="font-mono font-bold text-slate-800" />
+                    ) : (
+                      <span className="text-slate-400 font-mono">—</span>
+                    )}
+                  </div>
+
+                  <div>
+                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'السجل التجاري:' : 'Commercial Register:'}</span>
+                    <span className="font-mono font-bold text-slate-800">{detailViewClient.commercialRegister || '—'}</span>
+                  </div>
+
+                  <div>
+                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'المأمورية الضريبية:' : 'Tax District:'}</span>
+                    <span className="font-bold text-slate-800">{detailViewClient.taxDistrict || '—'}</span>
+                  </div>
+
+                  <div>
+                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'آخر نشاط تسليم فعلي:' : 'Latest Delivery Activity:'}</span>
+                    <span className="font-bold text-slate-800">
+                      {detailViewClient.latestActivityOn
+                        ? new Date(detailViewClient.latestActivityOn).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')
+                        : (isAr ? 'لا يوجد تسليم مسجل بعد' : 'None recorded')}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'مواعيد العمل والعطلات:' : 'Schedule & Holidays:'}</span>
+                    <span className="font-bold text-slate-800">
+                      {detailViewClient.workingHoursFrom && detailViewClient.workingHoursTo
+                        ? `${detailViewClient.workingHoursFrom} - ${detailViewClient.workingHoursTo}`
+                        : (isAr ? 'غير محددة' : 'Not specified')}{' '}
+                      {detailViewClient.weeklyHolidays && detailViewClient.weeklyHolidays.length > 0 && (
+                        <span className="text-slate-500 font-semibold">
+                          (العطلة: {detailViewClient.weeklyHolidays.map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h).join('، ')})
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Contact Channels */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3 shadow-2xs">
+                <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                  <Phone className="w-4 h-4 text-emerald-600" />
+                  <span>{isAr ? 'قنوات الاتصال والتواصل' : 'Contact Channels'}</span>
+                </h4>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <span className="block text-slate-400 font-semibold mb-1">{isAr ? 'أرقام الهواتف:' : 'Phone Numbers:'}</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(detailViewClient.phones && detailViewClient.phones.length > 0) ? (
+                        detailViewClient.phones.map((p, idx) => (
+                          <a
+                            key={idx}
+                            href={`tel:${p}`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-mono font-bold hover:bg-emerald-100 transition"
+                          >
+                            <Phone className="w-3 h-3 text-emerald-600" />
+                            <span>{p}</span>
+                          </a>
+                        ))
+                      ) : detailViewClient.phone ? (
+                        <a
+                          href={`tel:${detailViewClient.phone}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-mono font-bold hover:bg-emerald-100 transition"
+                        >
+                          <Phone className="w-3 h-3 text-emerald-600" />
+                          <span>{detailViewClient.phone}</span>
+                        </a>
+                      ) : (
+                        <span className="text-slate-400 font-mono">—</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="block text-slate-400 font-semibold mb-1">{isAr ? 'عناوين البريد الإلكتروني:' : 'Email Addresses:'}</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(detailViewClient.emails && detailViewClient.emails.length > 0) ? (
+                        detailViewClient.emails.map((em, idx) => (
+                          <a
+                            key={idx}
+                            href={`mailto:${em}`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-purple-50 text-purple-800 border border-purple-200 rounded-lg font-mono font-bold hover:bg-purple-100 transition"
+                          >
+                            <Mail className="w-3 h-3 text-purple-600" />
+                            <span>{em}</span>
+                          </a>
+                        ))
+                      ) : detailViewClient.email ? (
+                        <a
+                          href={`mailto:${detailViewClient.email}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-purple-50 text-purple-800 border border-purple-200 rounded-lg font-mono font-bold hover:bg-purple-100 transition"
+                        >
+                          <Mail className="w-3 h-3 text-purple-600" />
+                          <span>{detailViewClient.email}</span>
+                        </a>
+                      ) : (
+                        <span className="text-slate-400 font-mono">—</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {detailViewClient.notes && (
+                  <div className="pt-2 border-t border-slate-100 text-xs">
+                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'ملاحظات العميل:' : 'Notes:'}</span>
+                    <p className="text-slate-700 bg-slate-50 p-2.5 rounded-xl border border-slate-200 font-medium whitespace-pre-wrap">
+                      {detailViewClient.notes}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Multi-Branch Cards Gallery */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                    <Boxes className="w-4 h-4 text-blue-600" />
+                    <span>{isAr ? 'الفروع المسجلة للعميل' : 'Registered Branches'} ({(detailViewClient.branches || []).length})</span>
+                  </h4>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {(detailViewClient.branches || []).map((b, bIdx) => (
+                    <div key={b.id || bIdx} className="p-3.5 bg-slate-50/80 border border-slate-200 rounded-2xl space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-black text-xs text-slate-900">{b.nameAr}</span>
+                        {b.isMain ? (
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded-md text-[10px] font-bold">
+                            {isAr ? 'الفرع الرئيسي' : 'Main Branch'}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md text-[10px] font-semibold">
+                            {isAr ? 'فرع إضافي' : 'Additional'}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-xs space-y-1 text-slate-600">
+                        {b.region && (
+                          <div>
+                            <strong className="text-slate-700">{isAr ? 'المنطقة:' : 'Region:'}</strong> {b.region}
+                          </div>
+                        )}
+                        {b.address && (
+                          <div>
+                            <strong className="text-slate-700">{isAr ? 'العنوان:' : 'Address:'}</strong> {b.address}
+                          </div>
+                        )}
+                        {b.contactPerson && (
+                          <div>
+                            <strong className="text-slate-700">{isAr ? 'المسؤول:' : 'Contact:'}</strong> {b.contactPerson}
+                          </div>
+                        )}
+                        {b.phone && (
+                          <div className="font-mono">
+                            <strong className="text-slate-700">{isAr ? 'الهاتف:' : 'Phone:'}</strong> {b.phone}
+                          </div>
+                        )}
+                      </div>
+
+                      {b.gpsCoordinates && (
+                        <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
+                          <span className="font-mono text-[11px] text-slate-500 truncate max-w-[200px]" title={b.gpsCoordinates}>
+                            {b.gpsCoordinates}
+                          </span>
+                          <a
+                            href={b.gpsCoordinates.startsWith('http') ? b.gpsCoordinates : `https://maps.google.com/?q=${encodeURIComponent(b.gpsCoordinates)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-xs font-bold transition"
+                          >
+                            <Navigation className="w-3 h-3" />
+                            <span>{isAr ? 'فتح بالخريطة' : 'Open in Maps'}</span>
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Documents & Contracts Attachments */}
+              {detailViewClient.attachments && detailViewClient.attachments.length > 0 && (
+                <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3 shadow-2xs">
+                  <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                    <Paperclip className="w-4 h-4 text-amber-600" />
+                    <span>{isAr ? 'المستندات والعقود المرفقة' : 'Attached Documents & Contracts'} ({detailViewClient.attachments.length})</span>
+                  </h4>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    {detailViewClient.attachments.map((att, aIdx) => (
+                      <div
+                        key={att.id || aIdx}
+                        className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                          <div className="min-w-0">
+                            <span className="block font-bold text-slate-800 truncate" title={att.name}>
+                              {att.name}
+                            </span>
+                            <span className="block text-[10px] text-slate-400 font-mono">
+                              {att.size}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => openBase64Document(att)}
+                          className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg font-bold text-[11px] transition flex items-center gap-1 shrink-0 cursor-pointer"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>{isAr ? 'معاينة' : 'View'}</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setDetailViewClient(null)}
+                className="px-5 py-2 bg-slate-200 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-300 transition cursor-pointer"
+              >
+                {isAr ? 'إغلاق' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================================= */}
       {/* CREATE / EDIT CLIENT MODAL                                                */}
@@ -3163,7 +3953,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                         </label>
                         <input
                           type="time"
-                          value={formData.workingHoursFrom || '09:00'}
+                          value={formData.workingHoursFrom || ''}
                           onChange={(e) => setFormData({ ...formData, workingHoursFrom: e.target.value })}
                           className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
@@ -3175,7 +3965,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                         </label>
                         <input
                           type="time"
-                          value={formData.workingHoursTo || '17:00'}
+                          value={formData.workingHoursTo || ''}
                           onChange={(e) => setFormData({ ...formData, workingHoursTo: e.target.value })}
                           className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
@@ -3404,7 +4194,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                   </span>
                                   <input
                                     type="time"
-                                    value={branch.workingHoursFrom || '09:00'}
+                                    value={branch.workingHoursFrom || ''}
                                     onChange={(e) => handleUpdateBranch(bIdx, 'workingHoursFrom', e.target.value)}
                                     className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold"
                                   />
@@ -3415,7 +4205,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                   </span>
                                   <input
                                     type="time"
-                                    value={branch.workingHoursTo || '17:00'}
+                                    value={branch.workingHoursTo || ''}
                                     onChange={(e) => handleUpdateBranch(bIdx, 'workingHoursTo', e.target.value)}
                                     className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold"
                                   />
