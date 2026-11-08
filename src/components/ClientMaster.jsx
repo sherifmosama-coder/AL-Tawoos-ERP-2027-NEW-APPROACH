@@ -151,6 +151,169 @@ const PRICING_STRATEGIES = [
   { id: 'special_pricing', labelAr: 'أسعار خاصة (عقود وتفاوض)', labelEn: 'Special Client Pricing' }
 ];
 
+// Helper to normalize Arabic text (collapses hamzas, taa marbuta, yaa, and whitespace)
+export const normalizeArText = (t) =>
+  String(t || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/\s+/g, ' ');
+
+// Helper to resolve raw pricing strategy input from CSV
+export const resolvePricingStrategy = (rawText) => {
+  if (!rawText) return null;
+  const t = normalizeArText(rawText);
+  if (!t) return null;
+
+  if (
+    t === 'wholesalers' ||
+    t === 'wholesale' ||
+    t.includes('جمله') ||
+    t.includes('اسعار جمله') ||
+    t === 'رسمي'
+  ) {
+    return 'wholesalers';
+  }
+
+  if (
+    t === 'retail' ||
+    t.includes('تجزئه') ||
+    t.includes('اسعار تجزئه')
+  ) {
+    return 'retail';
+  }
+
+  if (
+    t === 'special_pricing' ||
+    t === 'special' ||
+    t.includes('خاصه') ||
+    t.includes('خاص') ||
+    t.includes('اسعار خاصه') ||
+    t.includes('عقود') ||
+    t.includes('تفاوض')
+  ) {
+    return 'special_pricing';
+  }
+
+  return null;
+};
+
+// Helper to determine default pricing strategy from client segment
+// Rule:
+// Wholesale (جملة) or Serga / Attara (سرجة \ عطارة) -> wholesalers
+// Retail (تجزئة) -> retail
+// Any other valid segment (سلاسل, مطبخ, اون لاين, تصدير, اخرين, etc.) -> special_pricing
+export const resolveDefaultPricingStrategy = (segmentTextOrId, segmentsList = []) => {
+  if (!segmentTextOrId) return '';
+  const cleanRaw = String(segmentTextOrId).trim();
+  if (!cleanRaw) return '';
+
+  const normRaw = normalizeArText(cleanRaw);
+  const matchedSeg = (segmentsList || []).find(
+    (s) =>
+      s.id === cleanRaw ||
+      s.nameAr === cleanRaw ||
+      s.nameEn?.toLowerCase() === cleanRaw.toLowerCase() ||
+      normalizeArText(s.nameAr) === normRaw ||
+      normalizeArText(s.nameEn) === normRaw
+  );
+
+  const testNameAr = matchedSeg?.nameAr ? normalizeArText(matchedSeg.nameAr) : normRaw;
+  const testId = (matchedSeg?.id || cleanRaw).toLowerCase();
+
+  // Rule 1: Wholesale (جملة) or Serga / Attara (سرجة \ عطارة) -> wholesalers
+  if (
+    testNameAr.includes('جمله') ||
+    testId.includes('wholesale') ||
+    testNameAr.includes('سرجه') ||
+    testNameAr.includes('عطاره') ||
+    testId.includes('attara') ||
+    testId.includes('serga')
+  ) {
+    return 'wholesalers';
+  }
+
+  // Rule 2: Retail (تجزئة) -> retail
+  if (
+    testNameAr.includes('تجزئه') ||
+    testId.includes('retail')
+  ) {
+    return 'retail';
+  }
+
+  // Rule 3: Any other valid segment -> special_pricing
+  return 'special_pricing';
+};
+
+// RFC 4180 Streaming Lexer with Inline Quote Tolerance
+export const parseRfcCsv = (rawText) => {
+  const text = String(rawText || '').replace(/^\uFEFF/, '');
+  const rows = [];
+  let currentRow = [];
+  let currentField = '';
+  let inQuotes = false;
+  const len = text.length;
+
+  for (let i = 0; i < len; i++) {
+    const char = text[i];
+
+    if (char === '"') {
+      if (!inQuotes) {
+        if (currentField.trim() === '') {
+          inQuotes = true;
+          currentField = '';
+        } else {
+          currentField += '"';
+        }
+      } else {
+        const nextChar = i + 1 < len ? text[i + 1] : null;
+        if (nextChar === '"') {
+          currentField += '"';
+          i++;
+        } else if (
+          nextChar === ',' ||
+          nextChar === '\r' ||
+          nextChar === '\n' ||
+          nextChar === null
+        ) {
+          inQuotes = false;
+        } else {
+          currentField += '"';
+        }
+      }
+    } else if (char === ',' && !inQuotes) {
+      currentRow.push(currentField);
+      currentField = '';
+    } else if ((char === '\r' || char === '\n') && !inQuotes) {
+      if (char === '\r' && i + 1 < len && text[i + 1] === '\n') {
+        i++;
+      }
+      currentRow.push(currentField);
+      currentField = '';
+
+      const hasContent = currentRow.some((c) => c.trim().length > 0);
+      if (hasContent && !currentRow[0]?.trim()?.startsWith('#')) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+    } else {
+      currentField += char;
+    }
+  }
+
+  if (currentField.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentField);
+    const hasContent = currentRow.some((c) => c.trim().length > 0);
+    if (hasContent && !currentRow[0]?.trim()?.startsWith('#')) {
+      rows.push(currentRow);
+    }
+  }
+
+  return rows;
+};
+
 export default function ClientMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
@@ -899,11 +1062,25 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       if (newSegmentId) {
         const segObj = segments.find((s) => s.id === newSegmentId);
         mod.segmentRaw = segObj ? segObj.nameAr : newSegmentId;
+
+        // Auto-update pricing strategy if it was auto-filled or empty (and no manual invalid raw text waiting)
+        if (!mod.pricingStrategy || mod.isPricingAutoFilled) {
+          const autoPricing = resolveDefaultPricingStrategy(newSegmentId, segments);
+          if (autoPricing) {
+            mod.pricingStrategy = autoPricing;
+            mod.isPricingAutoFilled = true;
+            mod.pricingStrategyRaw = '';
+          }
+        }
+
         if (mod.isExisting && mod.action === 'review_required') {
           mod.isValid = false;
           mod.errorReason = isAr
             ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
             : 'Existing record — select action (Replace / Merge / Skip)';
+        } else if (!mod.pricingStrategy) {
+          mod.isValid = false;
+          mod.errorReason = isAr ? 'يرجى تحديد استراتيجية التسعير' : 'Pricing strategy is required';
         } else {
           mod.isValid = true;
           mod.errorReason = '';
@@ -911,6 +1088,35 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       } else {
         mod.isValid = false;
         mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+      }
+      return mod;
+    });
+    setImportRows(updated);
+    setImportStats(calculateImportStats(updated));
+  };
+
+  const handleUpdateImportRowPricingStrategy = (targetId, newStrategy) => {
+    const updated = importRows.map((row) => {
+      if (row.id !== targetId) return row;
+      const mod = { ...row };
+      mod.pricingStrategy = newStrategy;
+      mod.pricingStrategyRaw = '';
+      mod.isPricingAutoFilled = false;
+
+      if (!newStrategy) {
+        mod.isValid = false;
+        mod.errorReason = isAr ? 'يرجى تحديد استراتيجية التسعير' : 'Pricing strategy is required';
+      } else if (!mod.segmentId) {
+        mod.isValid = false;
+        mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+      } else if (mod.isExisting && mod.action === 'review_required') {
+        mod.isValid = false;
+        mod.errorReason = isAr
+          ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
+          : 'Existing record — select action (Replace / Merge / Skip)';
+      } else {
+        mod.isValid = true;
+        mod.errorReason = '';
       }
       return mod;
     });
@@ -993,7 +1199,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     let ready = 0;
 
     importRows.forEach((r) => {
-      const isFaulty = !r.isValid || r.action === 'review_required' || !r.segmentId || Boolean(r.errorReason);
+      const isFaulty = !r.isValid || r.action === 'review_required' || !r.segmentId || !r.pricingStrategy || Boolean(r.pricingStrategyRaw) || Boolean(r.errorReason);
       if (isFaulty) faulty++;
       if (r.action === 'review_required') review++;
       if (!r.isValid && r.action !== 'review_required') invalid++;
@@ -1014,7 +1220,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     return importRows.filter((row) => {
       // 1. Status Filter
       if (validatorStatusFilter === 'faulty') {
-        const isFaulty = !row.isValid || row.action === 'review_required' || !row.segmentId || Boolean(row.errorReason);
+        const isFaulty = !row.isValid || row.action === 'review_required' || !row.segmentId || !row.pricingStrategy || Boolean(row.pricingStrategyRaw) || Boolean(row.errorReason);
         if (!isFaulty) return false;
       } else if (validatorStatusFilter === 'review_required') {
         if (row.action !== 'review_required') return false;
@@ -1027,6 +1233,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       // 2. Issue Type Filter
       if (validatorIssueFilter !== 'all') {
         if (validatorIssueFilter === 'missing_segment' && row.segmentId) return false;
+        if (validatorIssueFilter === 'missing_pricing' && (row.pricingStrategy && !row.pricingStrategyRaw)) return false;
         if (validatorIssueFilter === 'existing' && !row.isExisting) return false;
         if (
           validatorIssueFilter === 'tax_conflict' &&
@@ -1059,8 +1266,12 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       }
 
       // 5. Pricing Strategy Filter
-      if (validatorStrategyFilter !== 'all' && row.pricingStrategy !== validatorStrategyFilter) {
-        return false;
+      if (validatorStrategyFilter !== 'all') {
+        if (validatorStrategyFilter === '__unassigned__') {
+          if (row.pricingStrategy && !row.pricingStrategyRaw) return false;
+        } else if (row.pricingStrategy !== validatorStrategyFilter) {
+          return false;
+        }
       }
 
       // 6. Settlement Mode Filter
@@ -1133,7 +1344,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         shouldApply = true;
       } else {
         if (batchToolField === 'segmentId' && !row.segmentId) shouldApply = true;
-        if (batchToolField === 'pricingStrategy' && !row.pricingStrategy) shouldApply = true;
+        if (batchToolField === 'pricingStrategy' && (!row.pricingStrategy || Boolean(row.pricingStrategyRaw))) shouldApply = true;
         if (batchToolField === 'settlementMode' && !row.settlementMode) shouldApply = true;
       }
 
@@ -1144,7 +1355,36 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         mod.segmentId = batchToolValue;
         const segObj = segments.find((s) => s.id === batchToolValue);
         mod.segmentRaw = segObj ? segObj.nameAr : batchToolValue;
+
+        if (!mod.pricingStrategy || mod.isPricingAutoFilled) {
+          const autoStrat = resolveDefaultPricingStrategy(batchToolValue, segments);
+          if (autoStrat) {
+            mod.pricingStrategy = autoStrat;
+            mod.isPricingAutoFilled = true;
+            mod.pricingStrategyRaw = '';
+          }
+        }
+
         if (mod.isExisting && mod.action === 'review_required') {
+          mod.isValid = false;
+          mod.errorReason = isAr
+            ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
+            : 'Existing record — select action';
+        } else if (!mod.pricingStrategy) {
+          mod.isValid = false;
+          mod.errorReason = isAr ? 'يرجى تحديد استراتيجية التسعير' : 'Pricing strategy is required';
+        } else {
+          mod.isValid = true;
+          mod.errorReason = '';
+        }
+      } else if (batchToolField === 'pricingStrategy') {
+        mod.pricingStrategy = batchToolValue;
+        mod.pricingStrategyRaw = '';
+        mod.isPricingAutoFilled = false;
+        if (!mod.segmentId) {
+          mod.isValid = false;
+          mod.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+        } else if (mod.isExisting && mod.action === 'review_required') {
           mod.isValid = false;
           mod.errorReason = isAr
             ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
@@ -1153,8 +1393,6 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           mod.isValid = true;
           mod.errorReason = '';
         }
-      } else if (batchToolField === 'pricingStrategy') {
-        mod.pricingStrategy = batchToolValue;
       } else if (batchToolField === 'settlementMode') {
         mod.settlementMode = batchToolValue;
       }
@@ -1176,29 +1414,16 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         .map((s) => s.trim())
         .filter(Boolean);
 
-    const normalizeArText = (t) =>
-      String(t || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[أإآ]/g, 'ا')
-        .replace(/ة/g, 'ه')
-        .replace(/ى/g, 'ي')
-        .replace(/\s+/g, ' ');
-
     const reader = new FileReader();
     reader.onload = (evt) => {
       const text = evt.target.result;
-      const lines = text
-        .split(/\r?\n/)
-        .filter((l) => l.trim().length > 0 && !l.trim().startsWith('#'));
-      if (lines.length < 2) {
+      const parsedRows = parseRfcCsv(text);
+      if (parsedRows.length < 2) {
         alert(isAr ? 'الملف لا يحتوي على بيانات كافية' : 'CSV file is empty');
         return;
       }
 
-      const headerRow = lines[0]
-        .split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)
-        .map((v) => v.replace(/^"|"$/g, '').trim());
+      const headerRow = parsedRows[0].map((v) => v.trim());
 
       const getColIdx = (aliases, fallbackIdx) => {
         const idx = headerRow.findIndex((h) =>
@@ -1240,10 +1465,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       const clientGroups = new Map();
       const rawRowsList = [];
 
-      for (let i = 1; i < lines.length; i++) {
-        const cols = lines[i]
-          .split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)
-          .map((v) => v.replace(/^"|"$/g, '').trim());
+      for (let i = 1; i < parsedRows.length; i++) {
+        const cols = parsedRows[i];
 
         if (cols.length < 2 || (!cols[colMap.tradeNameAr] && !cols[colMap.code])) continue;
 
@@ -1269,6 +1492,10 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         if (branchPhone && !rowPhones.includes(branchPhone)) rowPhones.push(branchPhone);
         const rowEmails = colMap.emails !== -1 ? parseDelimited(cols[colMap.emails]) : [];
 
+        const rawStrat = (cols[colMap.pricingStrategy] || '').trim();
+        const resolvedStrat = resolvePricingStrategy(rawStrat);
+        const isInvalidStrat = Boolean(rawStrat) && !resolvedStrat;
+
         // Track raw CSV row for full 23-column raw inspect view
         rawRowsList.push({
           lineIndex: i + 1,
@@ -1278,7 +1505,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           tradeNameEn: rawNameEn,
           legalName: cols[colMap.legalName] || '',
           segment: cols[colMap.segment] || '',
-          pricingStrategy: cols[colMap.pricingStrategy] || 'wholesalers',
+          pricingStrategy: rawStrat || resolvedStrat || '',
           taxCardNumber: rawTaxCard,
           commercialRegister: cols[colMap.commercialRegister] || '',
           taxDistrict: cols[colMap.taxDistrict] || '',
@@ -1320,9 +1547,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             tradeNameEn: rawNameEn,
             legalName: (cols[colMap.legalName] || rawNameAr).trim(),
             segmentRaw: (cols[colMap.segment] || '').trim(),
-            pricingStrategy: ['wholesalers', 'retail', 'special_pricing'].includes(cols[colMap.pricingStrategy])
-              ? cols[colMap.pricingStrategy]
-              : 'wholesalers',
+            pricingStrategy: resolvedStrat || '',
+            pricingStrategyRaw: isInvalidStrat ? rawStrat : '',
+            isPricingAutoFilled: false,
             taxCardNumber: rawTaxCard,
             commercialRegister: (cols[colMap.commercialRegister] || '').trim(),
             taxDistrict: (cols[colMap.taxDistrict] || '').trim(),
@@ -1428,6 +1655,31 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           clientData.errorReason = isAr
             ? `قطاع غير معرّف أو به خطأ: "${cleanSegRaw || 'فارغ'}". القطاعات المتاحة: (${availableSegs})`
             : `Unrecognized segment: "${cleanSegRaw || 'empty'}". Allowed segments: (${availableSegs})`;
+        }
+
+        // 1.b Pricing Strategy Auto-filling and Validation
+        if (!clientData.pricingStrategy) {
+          if (!clientData.pricingStrategyRaw) {
+            // Left empty in CSV -> Auto-fill based on segment rule!
+            const autoPricing = resolveDefaultPricingStrategy(clientData.segmentId || clientData.segmentRaw, segments);
+            if (autoPricing) {
+              clientData.pricingStrategy = autoPricing;
+              clientData.isPricingAutoFilled = true;
+            } else {
+              clientData.isValid = false;
+              if (!clientData.errorReason) {
+                clientData.errorReason = isAr
+                  ? 'يرجى تحديد استراتيجية تسعير للعميل'
+                  : 'Pricing strategy selection is required';
+              }
+            }
+          } else {
+            // Non-empty but unrecognized in CSV -> Keep for user review and replacement
+            clientData.isValid = false;
+            clientData.errorReason = isAr
+              ? `استراتيجية تسعير غير معرّفة: "${clientData.pricingStrategyRaw}" — يرجى تحديد الاستراتيجية`
+              : `Unrecognized pricing strategy: "${clientData.pricingStrategyRaw}" — please select valid strategy`;
+          }
         }
 
         // 2. Check Database Existence (Client ID / Code, Tax Card, or Trade Name)
@@ -2315,7 +2567,15 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                       <select
                         required
                         value={formData.segmentId}
-                        onChange={(e) => setFormData({ ...formData, segmentId: e.target.value })}
+                        onChange={(e) => {
+                          const newSegId = e.target.value;
+                          const defaultPricing = resolveDefaultPricingStrategy(newSegId, segments);
+                          setFormData((prev) => ({
+                            ...prev,
+                            segmentId: newSegId,
+                            pricingStrategy: defaultPricing || prev.pricingStrategy
+                          }));
+                        }}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       >
                         <option value="">{isAr ? '-- اختر القطاع --' : '-- Select Segment --'}</option>
@@ -3383,6 +3643,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 >
                   <option value="all">{isAr ? 'جميع المشاكل' : 'All Issues'}</option>
                   <option value="missing_segment">{isAr ? '⚠️ قطاع مفقود / غير معرّف' : 'Missing Segment'}</option>
+                  <option value="missing_pricing">{isAr ? '⚠️ استراتيجية تسعير غير معرّفة / خطأ' : 'Missing / Invalid Pricing'}</option>
                   <option value="existing">{isAr ? '🔄 مسجل مسبقاً (مطلوب مراجعة)' : 'Existing in DB'}</option>
                   <option value="tax_conflict">{isAr ? '⛔ تعارض بطاقة ضريبية' : 'Tax Card Conflict'}</option>
                   <option value="name_conflict">{isAr ? '⛔ تعارض اسم تجاري' : 'Name Conflict'}</option>
@@ -3447,6 +3708,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                   }`}
                 >
                   <option value="all">{isAr ? 'الكل' : 'All'}</option>
+                  <option value="__unassigned__">{isAr ? '⚠️ غير محدد / خطأ تسعير' : 'Unassigned / Invalid'}</option>
                   {PRICING_STRATEGIES.map((st) => (
                     <option key={st.id} value={st.id}>
                       {isAr ? st.labelAr : st.labelEn}
@@ -3676,11 +3938,34 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                 )}
                               </td>
 
-                              {/* Pricing Strategy */}
+                              {/* Pricing Strategy (Interactive Dropdown) */}
                               <td className="py-2.5 px-3">
-                                <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px] font-bold">
-                                  {PRICING_STRATEGIES.find((st) => st.id === row.pricingStrategy)?.labelAr || row.pricingStrategy}
-                                </span>
+                                <select
+                                  value={row.pricingStrategy || ''}
+                                  onChange={(e) => handleUpdateImportRowPricingStrategy(row.id, e.target.value)}
+                                  className={`px-2 py-1 text-xs rounded-lg border font-bold cursor-pointer ${
+                                    !row.pricingStrategy
+                                      ? 'border-rose-400 bg-rose-50 text-rose-700 ring-1 ring-rose-300'
+                                      : 'border-slate-200 bg-white text-slate-800'
+                                  }`}
+                                >
+                                  <option value="">{isAr ? '-- حدد استراتيجية التسعير --' : '-- Select Pricing Strategy --'}</option>
+                                  {PRICING_STRATEGIES.map((st) => (
+                                    <option key={st.id} value={st.id}>
+                                      {isAr ? st.labelAr : st.labelEn}
+                                    </option>
+                                  ))}
+                                </select>
+                                {row.pricingStrategyRaw && !row.pricingStrategy && (
+                                  <span className="block text-[10px] text-rose-600 font-mono mt-0.5" title="Unmatched raw pricing in CSV">
+                                    ⚠️ {row.pricingStrategyRaw}
+                                  </span>
+                                )}
+                                {row.isPricingAutoFilled && row.pricingStrategy && (
+                                  <span className="block text-[10px] text-emerald-600 font-medium mt-0.5">
+                                    {isAr ? '✓ افتراضي حسب القطاع' : '✓ Auto by segment'}
+                                  </span>
+                                )}
                               </td>
 
                               {/* Tax Card */}
