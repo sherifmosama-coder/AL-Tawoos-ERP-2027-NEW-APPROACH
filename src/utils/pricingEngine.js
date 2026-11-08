@@ -81,6 +81,9 @@ export const formatDateKey = (dateInput) => {
  */
 export const isPeriodActiveForDate = (period, targetDate = new Date()) => {
   if (!period) return false;
+  if (period.status === 'draft') return false; // Drafts must NEVER resolve into operational pricing
+  if (period.status === 'expired') return false;
+
   const targetStr = formatDateKey(targetDate);
   const startStr = formatDateKey(period.startDate);
   const endStr = period.endDate ? formatDateKey(period.endDate) : null;
@@ -91,10 +94,13 @@ export const isPeriodActiveForDate = (period, targetDate = new Date()) => {
 };
 
 /**
- * Computes status of a price list period: 'active', 'upcoming', or 'expired'
+ * Computes status of a price list period: 'draft', 'active', 'upcoming', or 'expired'
  */
 export const computePeriodStatus = (period, targetDate = new Date()) => {
   if (!period) return 'expired';
+  if (period.status === 'draft') return 'draft';
+  if (period.status === 'expired') return 'expired';
+
   const targetStr = formatDateKey(targetDate);
   const startStr = formatDateKey(period.startDate);
   const endStr = period.endDate ? formatDateKey(period.endDate) : null;

@@ -33,6 +33,7 @@ import {
   Building2,
   MapPin,
   FileSpreadsheet,
+  FileText,
   Download,
   Upload,
   ArrowRight,
@@ -60,6 +61,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
   const [priceLists, setPriceLists] = useState([]);
   const [strategies, setStrategies] = useState(DEFAULT_PRICING_STRATEGIES);
   const [products, setProducts] = useState([]);
+  const [productCategories, setProductCategories] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -119,6 +121,18 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
     return () => unsub();
   }, []);
 
+  // 5. Subscribe to Finished Goods Categories
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'finished_product_categories'), (snapshot) => {
+      if (!snapshot.empty) {
+        const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        loaded.sort((a, b) => (Number(a.sortOrder) || 99) - (Number(b.sortOrder) || 99));
+        setProductCategories(loaded);
+      }
+    });
+    return () => unsub();
+  }, []);
+
   // Close 3-dots actions menu on outside click
   useEffect(() => {
     const handleClick = (e) => {
@@ -174,21 +188,25 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
     let activeCount = 0;
     let promoCount = 0;
     let indefiniteCount = 0;
+    let draftCount = 0;
 
     priceLists.forEach((pl) => {
       const status = computePeriodStatus(pl, todayStr);
-      if (status === 'active') {
+      if (status === 'draft') {
+        draftCount++;
+      } else if (status === 'active') {
         activeCount++;
         if (pl.type === 'promotional') promoCount++;
       }
-      if (!pl.endDate) indefiniteCount++;
+      if (status !== 'draft' && !pl.endDate) indefiniteCount++;
     });
 
     return {
       total: priceLists.length,
       active: activeCount,
       promo: promoCount,
-      indefinite: indefiniteCount
+      indefinite: indefiniteCount,
+      drafts: draftCount
     };
   }, [priceLists]);
 
@@ -239,6 +257,60 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
     }
   };
 
+  const handleActivateDraft = async (period) => {
+    const todayStr = formatDateKey(new Date());
+    const isPassed = period.startDate && period.startDate < todayStr;
+    const effectiveStartDate = isPassed ? todayStr : period.startDate;
+
+    const confirmMsg = isPassed
+      ? (isAr
+          ? `تنبيه: تاريخ بداية المسودة (${period.startDate}) قد مضى.\nسيتم تحديث تاريخ البداية تلقائياً إلى تاريخ اليوم (${todayStr}) واعتماد الفترة وإغلاق أي فترة سابقة نشطة.\n\nهل تريد المتابعة؟`
+          : `Notice: The draft's start date (${period.startDate}) has passed. It will be automatically updated to today (${todayStr}) upon activation.\n\nProceed?`)
+      : (isAr
+          ? `هل أنت متأكد من اعتماد وتفعيل هذه الفترة الآن؟ سيتم إغلاق أي فترة نشطة سابقة متداخلة.`
+          : `Are you sure you want to activate this period now? Any overlapping active period will be closed.`);
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const batch = writeBatch(db);
+
+      // Find active overlapping period of the same strategy, type, client/branch
+      const activeOverlapping = priceLists.find((pl) => {
+        if (pl.id === period.id || pl.status === 'draft' || pl.status === 'expired') return false;
+        if (pl.strategyId !== period.strategyId || pl.type !== period.type) return false;
+        if (period.isSpecialPricing) {
+          if (pl.clientId !== period.clientId) return false;
+          if (period.allBranches && !pl.allBranches) return false;
+          if (!period.allBranches && pl.branchId !== period.branchId) return false;
+        }
+        return isPeriodActiveForDate(pl, effectiveStartDate);
+      });
+
+      if (activeOverlapping) {
+        const prevDateObj = new Date(effectiveStartDate);
+        prevDateObj.setDate(prevDateObj.getDate() - 1);
+        batch.update(doc(db, 'price_lists', activeOverlapping.id), {
+          endDate: formatDateKey(prevDateObj),
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      batch.update(doc(db, 'price_lists', period.id), {
+        status: 'active',
+        startDate: effectiveStartDate,
+        autoClosedPeriodId: activeOverlapping ? activeOverlapping.id : null,
+        updatedAt: serverTimestamp()
+      });
+
+      await batch.commit();
+      setActiveActionsMenuId(null);
+    } catch (err) {
+      console.error('Error activating draft period:', err);
+      alert(isAr ? 'حدث خطأ أثناء تفعيل الفترة' : 'Error activating period');
+    }
+  };
+
   const handleDeletePeriod = async (periodId) => {
     try {
       await deleteDoc(doc(db, 'price_lists', periodId));
@@ -252,7 +324,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
   return (
     <div className="space-y-4">
       {/* KPI Cards Ribbon */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex items-center gap-3">
           <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
             <CheckCircle2 className="w-5 h-5" />
@@ -274,6 +346,18 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
               {isAr ? 'حملات عروض ترويجية' : 'Promotional Campaigns'}
             </span>
             <span className="text-xl font-black text-slate-800">{kpis.promo}</span>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+            <FileText className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="block text-slate-400 text-xs font-semibold">
+              {isAr ? 'مسودات قيد الإعداد' : 'Draft Lists'}
+            </span>
+            <span className="text-xl font-black text-slate-800">{kpis.drafts}</span>
           </div>
         </div>
 
@@ -385,6 +469,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
             >
               <option value="all">{isAr ? 'جميع الحالات' : 'All Statuses'}</option>
               <option value="active">{isAr ? 'ساري حالياً' : 'Active Now'}</option>
+              <option value="draft">{isAr ? 'مسودات قيد الإعداد' : 'Drafts'}</option>
               <option value="upcoming">{isAr ? 'مستقبلي' : 'Upcoming'}</option>
               <option value="expired">{isAr ? 'منتهي ومغلق' : 'Expired / Closed'}</option>
             </select>
@@ -521,7 +606,12 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
 
                       {/* Status */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
-                        {status === 'active' ? (
+                        {status === 'draft' ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                            <FileText className="w-3.5 h-3.5 text-amber-600" />
+                            <span>{isAr ? 'مسودة' : 'Draft'}</span>
+                          </span>
+                        ) : status === 'active' ? (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                             <span>{isAr ? 'نشط حالياً' : 'Active'}</span>
@@ -541,61 +631,86 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
 
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                        <div className="relative inline-block" data-period-menu>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setActiveActionsMenuId(activeActionsMenuId === period.id ? null : period.id)
-                            }
-                            className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-slate-800 transition cursor-pointer"
-                          >
-                            <MoreVertical className="w-4 h-4" />
-                          </button>
+                        <div className="flex items-center justify-center gap-1">
+                          {status === 'draft' && (
+                            <button
+                              type="button"
+                              onClick={() => handleActivateDraft(period)}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title={isAr ? 'اعتماد وتفعيل المسودة الآن' : 'Activate draft now'}
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>{isAr ? 'تفعيل' : 'Activate'}</span>
+                            </button>
+                          )}
 
-                          {activeActionsMenuId === period.id && (
-                            <div className="absolute end-0 top-full mt-1 w-48 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-30 text-xs font-bold text-slate-700 divide-y divide-slate-100 animate__animated animate__fadeIn animate__faster">
-                              <button
-                                type="button"
-                                onClick={() => handleOpenEditPeriod(period)}
-                                className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
-                              >
-                                <Edit3 className="w-3.5 h-3.5 text-blue-600" />
-                                <span>{isAr ? 'تعديل الأسعار والفترة' : 'Edit Prices'}</span>
-                              </button>
+                          <div className="relative inline-block" data-period-menu>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setActiveActionsMenuId(activeActionsMenuId === period.id ? null : period.id)
+                              }
+                              className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-slate-800 transition cursor-pointer"
+                            >
+                              <MoreVertical className="w-4 h-4" />
+                            </button>
 
-                              <button
-                                type="button"
-                                onClick={() => handleDuplicatePeriod(period)}
-                                className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
-                              >
-                                <Copy className="w-3.5 h-3.5 text-slate-600" />
-                                <span>{isAr ? 'تكرار كفترة جديدة' : 'Duplicate Period'}</span>
-                              </button>
+                            {activeActionsMenuId === period.id && (
+                              <div className="absolute end-0 top-full mt-1 w-48 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-30 text-xs font-bold text-slate-700 divide-y divide-slate-100 animate__animated animate__fadeIn animate__faster">
+                                {status === 'draft' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleActivateDraft(period)}
+                                    className="w-full px-3 py-2 text-start hover:bg-emerald-50 text-emerald-800 flex items-center gap-2 cursor-pointer font-bold"
+                                  >
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                    <span>{isAr ? 'اعتماد وتفعيل المسودة' : 'Activate Draft'}</span>
+                                  </button>
+                                )}
 
-                              {status === 'active' && (
                                 <button
                                   type="button"
-                                  onClick={() => handleClosePeriodNow(period)}
-                                  className="w-full px-3 py-2 text-start hover:bg-amber-50 text-amber-800 flex items-center gap-2 cursor-pointer"
+                                  onClick={() => handleOpenEditPeriod(period)}
+                                  className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
                                 >
-                                  <Clock className="w-3.5 h-3.5 text-amber-600" />
-                                  <span>{isAr ? 'إغلاق الفترة فوراً' : 'Close Period Now'}</span>
+                                  <Edit3 className="w-3.5 h-3.5 text-blue-600" />
+                                  <span>{isAr ? 'تعديل الأسعار والفترة' : 'Edit Prices'}</span>
                                 </button>
-                              )}
 
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setDeleteConfirmPeriod(period);
-                                  setActiveActionsMenuId(null);
-                                }}
-                                className="w-full px-3 py-2 text-start hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>{isAr ? 'حذف الفترة' : 'Delete'}</span>
-                              </button>
-                            </div>
-                          )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDuplicatePeriod(period)}
+                                  className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+                                >
+                                  <Copy className="w-3.5 h-3.5 text-slate-600" />
+                                  <span>{isAr ? 'تكرار كفترة جديدة' : 'Duplicate Period'}</span>
+                                </button>
+
+                                {status === 'active' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleClosePeriodNow(period)}
+                                    className="w-full px-3 py-2 text-start hover:bg-amber-50 text-amber-800 flex items-center gap-2 cursor-pointer"
+                                  >
+                                    <Clock className="w-3.5 h-3.5 text-amber-600" />
+                                    <span>{isAr ? 'إغلاق الفترة فوراً' : 'Close Period Now'}</span>
+                                  </button>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setDeleteConfirmPeriod(period);
+                                    setActiveActionsMenuId(null);
+                                  }}
+                                  className="w-full px-3 py-2 text-start hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>{isAr ? 'حذف الفترة' : 'Delete'}</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -623,6 +738,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
           editingPeriod={editingPeriod}
           strategies={strategies}
           products={products}
+          productCategories={productCategories}
           clients={clients}
           allPriceLists={priceLists}
           isAr={isAr}
@@ -678,6 +794,7 @@ function PriceListEditorModal({
   editingPeriod,
   strategies,
   products,
+  productCategories = [],
   clients,
   allPriceLists,
   isAr
@@ -686,6 +803,7 @@ function PriceListEditorModal({
     id: editingPeriod?.id || `PL-${Date.now().toString().slice(-6)}`,
     strategyId: editingPeriod?.strategyId || (strategies[0]?.id || 'wholesalers'),
     type: editingPeriod?.type || 'official', // 'official' | 'promotional'
+    status: editingPeriod?.status || 'active', // 'active' | 'draft'
     clientId: editingPeriod?.clientId || '',
     branchId: editingPeriod?.branchId || '',
     allBranches: editingPeriod?.allBranches ?? true,
@@ -706,6 +824,37 @@ function PriceListEditorModal({
   const isSpecialPricing = selectedStrategy?.isSpecialPricing || formData.strategyId === 'special_pricing';
   const selectedClient = clients.find((c) => c.id === formData.clientId);
 
+  // Combine categories from finished_product_categories collection and any inline on products
+  const { availableCategories, categoryMap } = useMemo(() => {
+    const map = {};
+    const list = [];
+    const seenKeys = new Set();
+
+    // 1. From Firestore finished_product_categories
+    (productCategories || []).forEach((cat) => {
+      const key = cat.key || cat.id;
+      if (!key || seenKeys.has(key)) return;
+      seenKeys.add(key);
+      const label = isAr ? (cat.nameAr || cat.nameEn || key) : (cat.nameEn || cat.nameAr || key);
+      map[key] = label;
+      if (cat.id && !map[cat.id]) map[cat.id] = label;
+      list.push({ key, label, sortOrder: Number(cat.sortOrder) || 99 });
+    });
+
+    // 2. Discover any uncategorized lines from products
+    (products || []).forEach((p) => {
+      const line = p.productionLine || p.categoryId || p.category;
+      if (line && !seenKeys.has(line)) {
+        seenKeys.add(line);
+        map[line] = line;
+        list.push({ key: line, label: line, sortOrder: 999 });
+      }
+    });
+
+    list.sort((a, b) => a.sortOrder - b.sortOrder);
+    return { availableCategories: list, categoryMap: map };
+  }, [productCategories, products, isAr]);
+
   // Detect overlapping period of the SAME type that will be auto-closed
   const overlappingPeriod = useMemo(() => {
     if (!formData.strategyId || !formData.startDate || !formData.type) return null;
@@ -713,6 +862,8 @@ function PriceListEditorModal({
     return allPriceLists.find((pl) => {
       // Exclude self if editing
       if (editingPeriod && pl.id === editingPeriod.id) return false;
+      // Exclude drafts or expired
+      if (pl.status === 'draft' || pl.status === 'expired') return false;
       // Must match strategy
       if (pl.strategyId !== formData.strategyId) return false;
       // Must match type (official vs promo)
@@ -763,8 +914,11 @@ function PriceListEditorModal({
       }
 
       // Category filter
-      if (selectedCategory !== 'all' && p.category !== selectedCategory) {
-        return false;
+      if (selectedCategory !== 'all') {
+        const prodCat = p.productionLine || p.categoryId || p.category;
+        if (prodCat !== selectedCategory) {
+          return false;
+        }
       }
 
       // Search Query
@@ -781,15 +935,6 @@ function PriceListEditorModal({
       return true;
     });
   }, [products, isSpecialPricing, selectedCategory, productSearch]);
-
-  // Available categories for pills
-  const categories = useMemo(() => {
-    const set = new Set();
-    products.forEach((p) => {
-      if (p.category) set.add(p.category);
-    });
-    return Array.from(set);
-  }, [products]);
 
   const handlePriceChange = (productId, valStr) => {
     const next = { ...formData.items };
@@ -877,8 +1022,7 @@ function PriceListEditorModal({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleSave = async (e) => {
-    e.preventDefault();
+  const handleSaveWithStatus = async (targetStatus = 'active') => {
     if (!formData.startDate) {
       setErrorMsg(isAr ? 'يرجى تحديد تاريخ بداية الفترة' : 'Start date is required');
       return;
@@ -892,12 +1036,21 @@ function PriceListEditorModal({
     setErrorMsg('');
 
     try {
+      const todayStr = formatDateKey(new Date());
+      let effectiveStartDate = formData.startDate;
+
+      // When moving to active state, if startDate has passed, auto-update to today
+      if (targetStatus === 'active' && effectiveStartDate < todayStr) {
+        effectiveStartDate = todayStr;
+      }
+
       const batch = writeBatch(db);
       const periodRef = doc(db, 'price_lists', formData.id);
 
-      // 1. Auto-close previous overlapping period if exists
-      if (overlappingPeriod) {
-        const startDateObj = new Date(formData.startDate);
+      // Auto-close overlapping active period ONLY when activating (targetStatus === 'active')
+      let autoClosedId = null;
+      if (targetStatus === 'active' && overlappingPeriod) {
+        const startDateObj = new Date(effectiveStartDate);
         startDateObj.setDate(startDateObj.getDate() - 1);
         const dayBeforeStart = formatDateKey(startDateObj);
 
@@ -906,14 +1059,15 @@ function PriceListEditorModal({
           endDate: dayBeforeStart,
           updatedAt: serverTimestamp()
         });
+        autoClosedId = overlappingPeriod.id;
       }
 
-      // 2. Save new period
       const payload = {
         id: formData.id,
         strategyId: formData.strategyId,
         strategyNameAr: selectedStrategy?.nameAr || formData.strategyId,
         type: formData.type,
+        status: targetStatus,
         isSpecialPricing,
         clientId: isSpecialPricing ? formData.clientId : null,
         clientName: isSpecialPricing ? (selectedClient?.tradeNameAr || selectedClient?.name || '') : null,
@@ -922,11 +1076,11 @@ function PriceListEditorModal({
           ? selectedClient?.branches?.find((b) => b.id === formData.branchId)?.nameAr || null
           : null,
         allBranches: Boolean(formData.allBranches),
-        startDate: formData.startDate,
+        startDate: effectiveStartDate,
         endDate: formData.endDate || null,
-        notes: formData.notes.trim(),
+        notes: (formData.notes || '').trim(),
         items: formData.items,
-        autoClosedPeriodId: overlappingPeriod ? overlappingPeriod.id : null,
+        autoClosedPeriodId: autoClosedId,
         updatedAt: serverTimestamp()
       };
 
@@ -982,7 +1136,13 @@ function PriceListEditorModal({
         </div>
 
         {/* Modal Form & Matrix Body */}
-        <form onSubmit={handleSave} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSaveWithStatus(formData.status || 'active');
+          }}
+          className="flex flex-col flex-1 min-h-0 overflow-hidden"
+        >
           {errorMsg && (
             <div className="mx-6 mt-4 p-3 bg-rose-50 text-rose-700 rounded-xl text-xs font-bold border border-rose-200 shrink-0">
               {errorMsg}
@@ -995,8 +1155,8 @@ function PriceListEditorModal({
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
               <span>
                 {isAr
-                  ? `تنبيه: توجد فترة نشطة حالياً لنفس الاستراتيجية والنوع (${overlappingPeriod.id} - من ${overlappingPeriod.startDate}). عند الحفظ، سيتم إغلاقها تلقائياً بيوم يسبق بداية الفترة الجديدة.`
-                  : `Notice: Existing active period (${overlappingPeriod.id}) will be automatically closed prior to this period's start date.`}
+                  ? `تنبيه: توجد فترة نشطة حالياً لنفس الاستراتيجية والنوع (${overlappingPeriod.id} - من ${overlappingPeriod.startDate}). عند الاعتماد والتفعيل، سيتم إغلاقها تلقائياً بيوم يسبق بداية الفترة الجديدة (لن تتأثر في حالة الحفظ كمسودة).`
+                  : `Notice: Existing active period (${overlappingPeriod.id}) will be automatically closed prior to this period's start date when activated (drafts will not close active periods).`}
               </span>
             </div>
           )}
@@ -1174,9 +1334,9 @@ function PriceListEditorModal({
                 className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
               >
                 <option value="all">{isAr ? 'جميع التصنيفات' : 'All Categories'}</option>
-                {categories.map((cat) => (
-                  <option key={cat} value={cat}>
-                    {cat}
+                {availableCategories.map((cat) => (
+                  <option key={cat.key} value={cat.key}>
+                    {cat.label}
                   </option>
                 ))}
               </select>
@@ -1286,11 +1446,18 @@ function PriceListEditorModal({
                       <td className="py-2 px-3">
                         <div className="flex flex-col">
                           <span className="font-bold text-slate-800">{p.nameAr || p.name}</span>
-                          {p.nameEn && (
-                            <span className="text-[10px] text-slate-400 font-semibold" dir="ltr">
-                              {p.nameEn}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            {p.nameEn && (
+                              <span className="text-[10px] text-slate-400 font-semibold" dir="ltr">
+                                {p.nameEn}
+                              </span>
+                            )}
+                            {(p.productionLine || p.categoryId || p.category) && (
+                              <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded font-medium">
+                                {categoryMap[p.productionLine || p.categoryId || p.category] || (p.productionLine || p.categoryId || p.category)}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </td>
 
@@ -1368,13 +1535,25 @@ function PriceListEditorModal({
               >
                 {isAr ? 'إلغاء' : 'Cancel'}
               </button>
+
               <button
-                type="submit"
+                type="button"
                 disabled={isSaving}
+                onClick={() => handleSaveWithStatus('draft')}
+                className="px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-xl text-xs font-bold transition shadow-2xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <FileText className="w-4 h-4 text-amber-600" />
+                <span>{isSaving ? (isAr ? 'جاري الحفظ...' : 'Saving...') : isAr ? 'حفظ كمسودة' : 'Save as Draft'}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={() => handleSaveWithStatus('active')}
                 className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
               >
-                <Check className="w-4 h-4" />
-                <span>{isSaving ? (isAr ? 'جاري الحفظ...' : 'Saving...') : isAr ? 'حفظ فترة الأسعار' : 'Save Price List'}</span>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{isSaving ? (isAr ? 'جاري الاعتماد...' : 'Activating...') : isAr ? 'اعتماد وتفعيل الفترة' : 'Activate Period'}</span>
               </button>
             </div>
           </div>
