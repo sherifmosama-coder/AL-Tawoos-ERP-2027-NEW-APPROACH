@@ -1,6 +1,27 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, ChevronDown, Check, X, Link2, Boxes, PlusCircle } from 'lucide-react';
+import { Search, ChevronDown, Check, X, Link2, Boxes, PlusCircle, Tag } from 'lucide-react';
+import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster';
+
+/**
+ * Robust renderer for option icons supporting:
+ * - Lucide forwardRef icon components (typeof === 'object')
+ * - Functional components (typeof === 'function')
+ * - Instantiated React elements (React.isValidElement)
+ * - String icon keys resolved against SEGMENT_ICON_MAP (e.g. 'Award', 'Boxes', 'Store')
+ */
+function renderOptionIcon(icon, className = 'w-3.5 h-3.5 shrink-0') {
+  if (!icon) return null;
+  if (React.isValidElement(icon)) return icon;
+  let Comp = icon;
+  if (typeof icon === 'string') {
+    Comp = SEGMENT_ICON_MAP[icon] || Tag;
+  }
+  if (typeof Comp === 'function' || (typeof Comp === 'object' && Comp !== null)) {
+    return React.createElement(Comp, { className });
+  }
+  return null;
+}
 
 export default function SearchableSelect({
   options = [],
@@ -196,23 +217,23 @@ export default function SearchableSelect({
         <div className="flex-1 min-w-0 truncate font-medium text-start">
           {selectedOption ? (
             <div className="flex items-center gap-1.5 min-w-0">
-              {selectedOption.icon && (
-                <span
-                  className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 shadow-2xs"
-                  style={{
-                    backgroundColor: selectedOption.iconBg || (selectedOption.iconColor ? `${selectedOption.iconColor}18` : '#f1f5f9'),
-                    color: selectedOption.iconColor || '#475569',
-                    border: `1px solid ${selectedOption.iconColor ? `${selectedOption.iconColor}35` : '#e2e8f0'}`
-                  }}
-                  title={selectedOption.iconTitle || ''}
-                >
-                  {typeof selectedOption.icon === 'function' ? (
-                    <selectedOption.icon className="w-3.5 h-3.5 shrink-0" />
-                  ) : React.isValidElement(selectedOption.icon) ? (
-                    selectedOption.icon
-                  ) : null}
-                </span>
-              )}
+              {(() => {
+                const iconEl = renderOptionIcon(selectedOption.icon, 'w-3.5 h-3.5 shrink-0');
+                if (!iconEl) return null;
+                return (
+                  <span
+                    className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 shadow-2xs"
+                    style={{
+                      backgroundColor: selectedOption.iconBg || (selectedOption.iconColor ? `${selectedOption.iconColor}18` : '#f1f5f9'),
+                      color: selectedOption.iconColor || '#475569',
+                      border: `1px solid ${selectedOption.iconColor ? `${selectedOption.iconColor}35` : '#e2e8f0'}`
+                    }}
+                    title={selectedOption.iconTitle || ''}
+                  >
+                    {iconEl}
+                  </span>
+                );
+              })()}
               {selectedOption.sublabel && (
                 <span className="font-mono text-slate-500 font-semibold me-1 shrink-0 text-[11px]">
                   [{selectedOption.sublabel}]
@@ -332,23 +353,23 @@ export default function SearchableSelect({
                         }`}
                       >
                         <div className="truncate flex-1 text-start flex items-center gap-2 min-w-0">
-                          {opt.icon && (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 shadow-2xs"
-                              style={{
-                                backgroundColor: opt.iconBg || (opt.iconColor ? `${opt.iconColor}18` : '#f1f5f9'),
-                                color: opt.iconColor || '#475569',
-                                border: `1px solid ${opt.iconColor ? `${opt.iconColor}35` : '#e2e8f0'}`
-                              }}
-                              title={opt.iconTitle || ''}
-                            >
-                              {typeof opt.icon === 'function' ? (
-                                <opt.icon className="w-3.5 h-3.5 shrink-0" />
-                              ) : React.isValidElement(opt.icon) ? (
-                                opt.icon
-                              ) : null}
-                            </span>
-                          )}
+                          {(() => {
+                            const iconEl = renderOptionIcon(opt.icon, 'w-3.5 h-3.5 shrink-0');
+                            if (!iconEl) return null;
+                            return (
+                              <span
+                                className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 shadow-2xs"
+                                style={{
+                                  backgroundColor: opt.iconBg || (opt.iconColor ? `${opt.iconColor}18` : '#f1f5f9'),
+                                  color: opt.iconColor || '#475569',
+                                  border: `1px solid ${opt.iconColor ? `${opt.iconColor}35` : '#e2e8f0'}`
+                                }}
+                                title={opt.iconTitle || ''}
+                              >
+                                {iconEl}
+                              </span>
+                            );
+                          })()}
                           {opt.sublabel && (
                             <span className="font-mono text-[11px] text-slate-500 font-semibold shrink-0">
                               [{opt.sublabel}]
