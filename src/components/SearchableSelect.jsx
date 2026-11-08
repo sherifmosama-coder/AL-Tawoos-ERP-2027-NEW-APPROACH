@@ -32,11 +32,19 @@ export default function SearchableSelect({
       const lbl = opt.label ?? opt.nameAr ?? opt.name ?? opt.nameEn ?? val;
       const sub = opt.sublabel ?? (opt.code && opt.code !== lbl ? opt.code : opt.id && opt.id !== lbl ? opt.id : '');
       const group = opt.group || '';
-      const searchStr = `${val} ${lbl} ${sub} ${opt.specs || ''} ${group}`.toLowerCase();
+      const icon = opt.icon || null;
+      const iconColor = opt.iconColor || null;
+      const iconBg = opt.iconBg || null;
+      const iconTitle = opt.iconTitle || '';
+      const searchStr = `${val} ${lbl} ${sub} ${iconTitle} ${opt.specs || ''} ${group}`.toLowerCase();
       return {
         value: val,
         label: lbl,
         sublabel: sub,
+        icon,
+        iconColor,
+        iconBg,
+        iconTitle,
         searchStr,
         group,
         isLinked: Boolean(opt.isLinked),
@@ -188,6 +196,23 @@ export default function SearchableSelect({
         <div className="flex-1 min-w-0 truncate font-medium text-start">
           {selectedOption ? (
             <div className="flex items-center gap-1.5 min-w-0">
+              {selectedOption.icon && (
+                <span
+                  className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 shadow-2xs"
+                  style={{
+                    backgroundColor: selectedOption.iconBg || (selectedOption.iconColor ? `${selectedOption.iconColor}18` : '#f1f5f9'),
+                    color: selectedOption.iconColor || '#475569',
+                    border: `1px solid ${selectedOption.iconColor ? `${selectedOption.iconColor}35` : '#e2e8f0'}`
+                  }}
+                  title={selectedOption.iconTitle || ''}
+                >
+                  {typeof selectedOption.icon === 'function' ? (
+                    <selectedOption.icon className="w-3.5 h-3.5 shrink-0" />
+                  ) : React.isValidElement(selectedOption.icon) ? (
+                    selectedOption.icon
+                  ) : null}
+                </span>
+              )}
               {selectedOption.sublabel && (
                 <span className="font-mono text-slate-500 font-semibold me-1 shrink-0 text-[11px]">
                   [{selectedOption.sublabel}]
@@ -306,7 +331,24 @@ export default function SearchableSelect({
                             : 'hover:bg-slate-100 text-slate-800 cursor-pointer'
                         }`}
                       >
-                        <div className="truncate flex-1 text-start flex items-center gap-1.5 min-w-0">
+                        <div className="truncate flex-1 text-start flex items-center gap-2 min-w-0">
+                          {opt.icon && (
+                            <span
+                              className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 shadow-2xs"
+                              style={{
+                                backgroundColor: opt.iconBg || (opt.iconColor ? `${opt.iconColor}18` : '#f1f5f9'),
+                                color: opt.iconColor || '#475569',
+                                border: `1px solid ${opt.iconColor ? `${opt.iconColor}35` : '#e2e8f0'}`
+                              }}
+                              title={opt.iconTitle || ''}
+                            >
+                              {typeof opt.icon === 'function' ? (
+                                <opt.icon className="w-3.5 h-3.5 shrink-0" />
+                              ) : React.isValidElement(opt.icon) ? (
+                                opt.icon
+                              ) : null}
+                            </span>
+                          )}
                           {opt.sublabel && (
                             <span className="font-mono text-[11px] text-slate-500 font-semibold shrink-0">
                               [{opt.sublabel}]

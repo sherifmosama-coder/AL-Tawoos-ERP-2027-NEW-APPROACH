@@ -51,6 +51,7 @@ import {
   Eye
 } from 'lucide-react';
 import PricingStrategiesModal, { PricingStrategyBadge } from './PricingStrategiesModal';
+import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster';
 import SearchableSelect from './SearchableSelect';
 import PricePeriodAuditModal from './PricePeriodAuditModal';
 import {
@@ -213,12 +214,28 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
         ? (c.tradeNameAr || c.legalNameAr || c.tradeNameEn || c.name || '')
         : (c.tradeNameEn || c.tradeNameAr || c.legalNameEn || c.name || '');
       const fullLabel = `${codeStr}${name}`.trim();
+
+      // Resolve strategy icon and color configured in PricingStrategiesModal
+      const clientStratId = c.pricingStrategy || 'wholesalers';
+      const strat =
+        strategies.find((s) => s.id === clientStratId) ||
+        DEFAULT_PRICING_STRATEGIES.find((s) => s.id === clientStratId) || {
+          id: clientStratId,
+          nameAr: clientStratId,
+          nameEn: clientStratId,
+          color: '#64748b',
+          icon: 'Tag'
+        };
+      const StratIcon = SEGMENT_ICON_MAP[strat.icon] || Tag;
+      const stratTitle = isAr ? strat.nameAr : strat.nameEn;
+
       const opt = {
         value: c.id,
         label: fullLabel,
-        sublabel: isAr
-          ? (c.pricingStrategy === 'special_pricing' ? 'ملف العميل: أسعار خاصة' : `استراتيجية: ${c.pricingStrategy || 'افتراضي'}`)
-          : `Strategy: ${c.pricingStrategy || 'default'}`
+        sublabel: '',
+        icon: StratIcon,
+        iconColor: strat.color || '#2563eb',
+        iconTitle: `${isAr ? 'الاستراتيجية:' : 'Strategy:'} ${stratTitle}`
       };
 
       if (c.pricingStrategy === 'special_pricing') {
@@ -238,7 +255,10 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
       {
         value: 'all',
         label: isAr ? 'جميع العملاء (كافة النطاقات)' : 'All Clients / Scopes',
-        sublabel: ''
+        sublabel: '',
+        icon: Building2,
+        iconColor: '#3b82f6',
+        iconTitle: isAr ? 'كافة النطاقات والعملاء' : 'All Scopes & Clients'
       }
     ];
 
@@ -1221,10 +1241,26 @@ function PriceListEditorModal({
 
       const clientName = c.tradeNameAr || c.name || c.tradeNameEn || c.id;
 
+      // Strategy icon & color
+      const clientStratId = c.pricingStrategy || 'wholesalers';
+      const strat =
+        strategies.find((s) => s.id === clientStratId) ||
+        DEFAULT_PRICING_STRATEGIES.find((s) => s.id === clientStratId) || {
+          id: clientStratId,
+          nameAr: clientStratId,
+          nameEn: clientStratId,
+          color: '#64748b',
+          icon: 'Tag'
+        };
+      const StratIcon = SEGMENT_ICON_MAP[strat.icon] || Tag;
+
       return {
         value: c.id,
         label: clientName,
-        sublabel: c.id,
+        sublabel: c.code && c.code !== clientName ? c.code : '',
+        icon: StratIcon,
+        iconColor: strat.color || '#2563eb',
+        iconTitle: `${isAr ? 'الاستراتيجية:' : 'Strategy:'} ${isAr ? strat.nameAr : strat.nameEn}`,
         group,
         badgeText,
         rank,
