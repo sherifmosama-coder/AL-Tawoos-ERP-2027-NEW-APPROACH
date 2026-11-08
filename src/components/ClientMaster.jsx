@@ -51,7 +51,14 @@ import {
   Boxes,
   CalendarDays,
   FileSpreadsheet,
-  Image as ImageIcon
+  Image as ImageIcon,
+  RefreshCw,
+  GitMerge,
+  SkipForward,
+  HelpCircle,
+  SlidersHorizontal,
+  ListFilter,
+  CheckSquare
 } from 'lucide-react';
 import VatNumberInput from './VatNumberInput';
 import VatNumberDisplay from './VatNumberDisplay';
@@ -205,8 +212,23 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
   // Bulk Import Modal State
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
   const [importRows, setImportRows] = useState([]);
-  const [importStats, setImportStats] = useState({ total: 0, valid: 0, invalid: 0 });
+  const [rawImportRows, setRawImportRows] = useState([]);
+  const [importStats, setImportStats] = useState({
+    totalClients: 0,
+    totalBranchRows: 0,
+    newClients: 0,
+    existingClients: 0,
+    requiresReview: 0,
+    readyToCommit: 0,
+    invalid: 0
+  });
   const [isCommittingImport, setIsCommittingImport] = useState(false);
+  const [expandedImportClientIds, setExpandedImportClientIds] = useState(new Set());
+  const [importViewMode, setImportViewMode] = useState('clients'); // 'clients' | 'raw_rows'
+  const [isBatchToolOpen, setIsBatchToolOpen] = useState(false);
+  const [batchToolField, setBatchToolField] = useState('segmentId');
+  const [batchToolValue, setBatchToolValue] = useState('');
+  const [batchToolTarget, setBatchToolTarget] = useState('unassigned'); // 'all' | 'unassigned'
 
   // Form State
   const initialClientForm = {
@@ -819,6 +841,45 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const calculateImportStats = (rows) => {
+    let totalBranchRows = 0;
+    let newClients = 0;
+    let existingClients = 0;
+    let requiresReview = 0;
+    let readyToCommit = 0;
+    let invalid = 0;
+
+    rows.forEach((r) => {
+      totalBranchRows += (r.branches?.length || 1);
+      if (r.isExisting) {
+        existingClients++;
+        if (r.action === 'review_required') {
+          requiresReview++;
+        } else if (r.action === 'replace' || r.action === 'merge') {
+          if (r.isValid) readyToCommit++;
+          else invalid++;
+        }
+      } else {
+        newClients++;
+        if (r.isValid && r.action !== 'skip') {
+          readyToCommit++;
+        } else if (!r.isValid) {
+          invalid++;
+        }
+      }
+    });
+
+    return {
+      totalClients: rows.length,
+      totalBranchRows,
+      newClients,
+      existingClients,
+      requiresReview,
+      readyToCommit,
+      invalid
+    };
+  };
+
   const handleUpdateImportRowSegment = (rowIndex, newSegmentId) => {
     const updated = [...importRows];
     const row = { ...updated[rowIndex] };
@@ -826,17 +887,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     if (newSegmentId) {
       const segObj = segments.find((s) => s.id === newSegmentId);
       row.segmentRaw = segObj ? segObj.nameAr : newSegmentId;
-      // Re-evaluate duplicates and errors
-      const dupCheck = checkDuplicates({
-        taxCardNumber: row.taxCardNumber,
-        tradeNameAr: row.tradeNameAr,
-        tradeNameEn: row.tradeNameEn,
-        phones: row.phones,
-        branches: [{ phone: row.branchPhone, mobile: row.branchPhone, phones: row.phones }]
-      });
-      if (dupCheck) {
+      if (row.isExisting && row.action === 'review_required') {
         row.isValid = false;
-        row.errorReason = dupCheck;
+        row.errorReason = isAr
+          ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
+          : 'Existing record — select action (Replace / Merge / Skip)';
       } else {
         row.isValid = true;
         row.errorReason = '';
@@ -847,13 +902,103 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     }
     updated[rowIndex] = row;
     setImportRows(updated);
+    setImportStats(calculateImportStats(updated));
+  };
 
-    const validCount = updated.filter((r) => r.isValid).length;
-    setImportStats({
-      total: updated.length,
-      valid: validCount,
-      invalid: updated.length - validCount
+  const handleUpdateRecordAction = (rowIndex, newAction) => {
+    const updated = [...importRows];
+    const row = { ...updated[rowIndex] };
+    row.action = newAction;
+    if (newAction === 'skip') {
+      row.isValid = true;
+      row.errorReason = '';
+    } else if (!row.segmentId) {
+      row.isValid = false;
+      row.errorReason = isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required';
+    } else {
+      row.isValid = true;
+      row.errorReason = '';
+    }
+    updated[rowIndex] = row;
+    setImportRows(updated);
+    setImportStats(calculateImportStats(updated));
+  };
+
+  const handleBatchSetExistingAction = (targetAction) => {
+    const updated = importRows.map((row) => {
+      if (!row.isExisting) return row;
+      const hasUnmappedSegment = !row.segmentId;
+      return {
+        ...row,
+        action: targetAction,
+        isValid: targetAction === 'skip' ? true : !hasUnmappedSegment,
+        errorReason:
+          targetAction === 'skip'
+            ? ''
+            : hasUnmappedSegment
+            ? (isAr ? 'يرجى تحديد قطاع العميل' : 'Segment selection is required')
+            : ''
+      };
     });
+    setImportRows(updated);
+    setImportStats(calculateImportStats(updated));
+  };
+
+  const handleDeleteImportRow = (rowIndex) => {
+    const updated = importRows.filter((_, idx) => idx !== rowIndex);
+    setImportRows(updated);
+    setImportStats(calculateImportStats(updated));
+  };
+
+  const handleToggleExpandBranches = (clientKey) => {
+    const next = new Set(expandedImportClientIds);
+    if (next.has(clientKey)) {
+      next.delete(clientKey);
+    } else {
+      next.add(clientKey);
+    }
+    setExpandedImportClientIds(next);
+  };
+
+  const handleApplyBatchFieldReplace = () => {
+    if (!batchToolValue) return;
+    const updated = importRows.map((row) => {
+      let shouldApply = false;
+      if (batchToolTarget === 'all') {
+        shouldApply = true;
+      } else {
+        if (batchToolField === 'segmentId' && !row.segmentId) shouldApply = true;
+        if (batchToolField === 'pricingStrategy' && !row.pricingStrategy) shouldApply = true;
+        if (batchToolField === 'settlementMode' && !row.settlementMode) shouldApply = true;
+      }
+
+      if (!shouldApply) return row;
+
+      const mod = { ...row };
+      if (batchToolField === 'segmentId') {
+        mod.segmentId = batchToolValue;
+        const segObj = segments.find((s) => s.id === batchToolValue);
+        mod.segmentRaw = segObj ? segObj.nameAr : batchToolValue;
+        if (mod.isExisting && mod.action === 'review_required') {
+          mod.isValid = false;
+          mod.errorReason = isAr
+            ? 'مسجل مسبقاً — يرجى تحديد الإجراء (استبدال / دمج / تخطي)'
+            : 'Existing record — select action';
+        } else {
+          mod.isValid = true;
+          mod.errorReason = '';
+        }
+      } else if (batchToolField === 'pricingStrategy') {
+        mod.pricingStrategy = batchToolValue;
+      } else if (batchToolField === 'settlementMode') {
+        mod.settlementMode = batchToolValue;
+      }
+      return mod;
+    });
+
+    setImportRows(updated);
+    setImportStats(calculateImportStats(updated));
+    setIsBatchToolOpen(false);
   };
 
   const handleParseCsvFile = (e) => {
@@ -901,38 +1046,96 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         ['notes', 'ملاحظات', 'الملاحظات', 'note'].includes(h.toLowerCase())
       );
 
-      const notesIdx = getColIdx(['notes', 'ملاحظات', 'الملاحظات', 'note'], 16);
+      const colMap = {
+        code: getColIdx(['code', 'كود', 'كود العميل'], 0),
+        tradeNameAr: getColIdx(['tradeNameAr', 'الاسم التجاري', 'اسم العميل', 'الاسم التجاري (عربي)'], 1),
+        tradeNameEn: getColIdx(['tradeNameEn', 'الاسم بالإنجليزية', 'Trade Name (En)'], 2),
+        legalName: getColIdx(['legalName', 'الاسم القانوني'], 3),
+        segment: getColIdx(['segment', 'القطاع', 'التصنيف'], 4),
+        pricingStrategy: getColIdx(['pricingStrategy', 'استراتيجية التسعير'], 5),
+        taxCardNumber: getColIdx(['taxCardNumber', 'البطاقة الضريبية', 'رقم البطاقة الضريبية'], 6),
+        commercialRegister: getColIdx(['commercialRegister', 'السجل التجاري'], 7),
+        taxDistrict: getColIdx(['taxDistrict', 'المأمورية', 'مأمورية الضرائب'], 8),
+        settlementMode: getColIdx(['settlementMode', 'طريقة الدفع', 'طريقة السداد'], 9),
+        creditLimit: getColIdx(['creditLimit', 'الحد الائتماني'], 10),
+        phones: getColIdx(['phones', 'الهواتف', 'أرقام الهاتف'], 11),
+        emails: getColIdx(['emails', 'البريد الإلكتروني'], 12),
+        weeklyHolidays: getColIdx(['weeklyHolidays', 'العطلات الأسبوعية'], 13),
+        workingHoursFrom: getColIdx(['workingHoursFrom', 'مواعيد العمل من', 'ساعات العمل من'], 14),
+        workingHoursTo: getColIdx(['workingHoursTo', 'مواعيد العمل إلى', 'ساعات العمل إلى'], 15),
+        notes: hasNotesCol ? getColIdx(['notes', 'ملاحظات', 'الملاحظات', 'note'], 16) : -1,
+        branchName: hasNotesCol ? getColIdx(['branchName', 'اسم الفرع'], 17) : (headerRow.length >= 22 ? 16 : 11),
+        address: hasNotesCol ? getColIdx(['address', 'العنوان'], 18) : (headerRow.length >= 22 ? 17 : 12),
+        region: hasNotesCol ? getColIdx(['region', 'المنطقة', 'المحافظة'], 19) : (headerRow.length >= 22 ? 18 : 13),
+        contactPerson: hasNotesCol ? getColIdx(['contactPerson', 'المسؤول', 'شخص الاتصال'], 20) : (headerRow.length >= 22 ? 19 : 14),
+        branchPhone: hasNotesCol ? getColIdx(['branchPhone', 'هاتف الفرع'], 21) : (headerRow.length >= 22 ? 20 : 15),
+        gpsCoordinates: hasNotesCol ? getColIdx(['gpsCoordinates', 'الإحداثيات', 'الموقع'], 22) : (headerRow.length >= 22 ? 21 : 17),
+      };
 
-      const rows = [];
-      const seenInCsvTax = new Set();
-      const seenInCsvPhones = new Set();
-      const seenInCsvNames = new Set();
+      const clientGroups = new Map();
+      const rawRowsList = [];
 
       for (let i = 1; i < lines.length; i++) {
         const cols = lines[i]
           .split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)
           .map((v) => v.replace(/^"|"$/g, '').trim());
 
-        if (cols.length < 2 || !cols[1]) continue;
+        if (cols.length < 2 || (!cols[colMap.tradeNameAr] && !cols[colMap.code])) continue;
 
-        let phones = [];
-        let emails = [];
-        let weeklyHolidays = ['friday', 'saturday'];
-        let workingHoursFrom = '09:00';
-        let workingHoursTo = '17:00';
-        let notes = '';
-        let branchName = 'الفرع الرئيسي';
-        let address = '';
-        let region = '';
-        let contactPerson = '';
-        let branchPhone = '';
-        let gpsCoordinates = '';
+        const rawCode = (cols[colMap.code] || '').trim();
+        const rawNameAr = (cols[colMap.tradeNameAr] || '').trim();
+        const rawNameEn = (cols[colMap.tradeNameEn] || '').trim();
+        const rawTaxCard = (cols[colMap.taxCardNumber] || '').trim();
+        const cleanTax = normalizeTaxCard(rawTaxCard);
+        const normName = normalizeArText(rawNameAr);
 
-        if (hasNotesCol || cols.length >= 23) {
-          // New 23-column template with notes
-          phones = parseDelimited(cols[11]);
-          emails = parseDelimited(cols[12]);
-          const rawHolidays = parseDelimited(cols[13]);
+        // Group key: prefer non-empty code, then clean tax card, then normalized name
+        const clientKey = rawCode.toLowerCase() || (cleanTax ? `tax_${cleanTax}` : (normName ? `name_${normName}` : `row_${i}`));
+
+        const branchName = (cols[colMap.branchName] || '').trim();
+        const branchRegion = (cols[colMap.region] || '').trim();
+        const branchAddress = (cols[colMap.address] || '').trim();
+        const branchContact = (cols[colMap.contactPerson] || '').trim();
+        const branchPhone = (cols[colMap.branchPhone] || '').trim();
+        const branchGps = (cols[colMap.gpsCoordinates] || '').trim();
+        const rowNotes = colMap.notes !== -1 ? (cols[colMap.notes] || '').trim() : '';
+
+        const rowPhones = colMap.phones !== -1 ? parseDelimited(cols[colMap.phones]) : [];
+        if (branchPhone && !rowPhones.includes(branchPhone)) rowPhones.push(branchPhone);
+        const rowEmails = colMap.emails !== -1 ? parseDelimited(cols[colMap.emails]) : [];
+
+        // Track raw CSV row for full 23-column raw inspect view
+        rawRowsList.push({
+          lineIndex: i + 1,
+          clientKey,
+          code: rawCode,
+          tradeNameAr: rawNameAr,
+          tradeNameEn: rawNameEn,
+          legalName: cols[colMap.legalName] || '',
+          segment: cols[colMap.segment] || '',
+          pricingStrategy: cols[colMap.pricingStrategy] || 'wholesalers',
+          taxCardNumber: rawTaxCard,
+          commercialRegister: cols[colMap.commercialRegister] || '',
+          taxDistrict: cols[colMap.taxDistrict] || '',
+          settlementMode: cols[colMap.settlementMode] || 'cod',
+          creditLimit: cols[colMap.creditLimit] || '0',
+          phones: rowPhones.join('; '),
+          emails: rowEmails.join('; '),
+          weeklyHolidays: cols[colMap.weeklyHolidays] || '',
+          workingHoursFrom: cols[colMap.workingHoursFrom] || '',
+          workingHoursTo: cols[colMap.workingHoursTo] || '',
+          notes: rowNotes,
+          branchName: branchName || (clientGroups.has(clientKey) ? `فرع ${clientGroups.get(clientKey).branches.length + 1}` : 'الفرع الرئيسي'),
+          address: branchAddress,
+          region: branchRegion,
+          contactPerson: branchContact,
+          branchPhone,
+          gpsCoordinates: branchGps
+        });
+
+        if (!clientGroups.has(clientKey)) {
+          let weeklyHolidays = ['friday', 'saturday'];
+          const rawHolidays = colMap.weeklyHolidays !== -1 ? parseDelimited(cols[colMap.weeklyHolidays]) : [];
           if (rawHolidays.length > 0) {
             weeklyHolidays = rawHolidays.map((h) => {
               const day = WEEK_DAYS.find(
@@ -944,83 +1147,102 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               return day ? day.id : h;
             });
           }
-          workingHoursFrom = cols[14] || '09:00';
-          workingHoursTo = cols[15] || '17:00';
-          notes = cols[notesIdx] || cols[16] || '';
-          branchName = cols[17] || 'الفرع الرئيسي';
-          address = cols[18] || '';
-          region = cols[19] || '';
-          contactPerson = cols[20] || '';
-          branchPhone = cols[21] || '';
-          gpsCoordinates = cols[22] || '';
-        } else if (cols.length >= 22) {
-          // 22-column template without notes
-          phones = parseDelimited(cols[11]);
-          emails = parseDelimited(cols[12]);
-          const rawHolidays = parseDelimited(cols[13]);
-          if (rawHolidays.length > 0) {
-            weeklyHolidays = rawHolidays.map((h) => {
-              const day = WEEK_DAYS.find(
-                (d) =>
-                  d.id === h.toLowerCase() ||
-                  d.labelAr === h ||
-                  d.labelEn.toLowerCase() === h.toLowerCase()
-              );
-              return day ? day.id : h;
-            });
-          }
-          workingHoursFrom = cols[14] || '09:00';
-          workingHoursTo = cols[15] || '17:00';
-          branchName = cols[16] || 'الفرع الرئيسي';
-          address = cols[17] || '';
-          region = cols[18] || '';
-          contactPerson = cols[19] || '';
-          branchPhone = cols[20] || '';
-          gpsCoordinates = cols[21] || '';
+
+          clientGroups.set(clientKey, {
+            id: clientKey,
+            code: rawCode || `CLI-${Date.now() + i}`,
+            tradeNameAr: rawNameAr,
+            tradeNameEn: rawNameEn,
+            legalName: (cols[colMap.legalName] || rawNameAr).trim(),
+            segmentRaw: (cols[colMap.segment] || '').trim(),
+            pricingStrategy: ['wholesalers', 'retail', 'special_pricing'].includes(cols[colMap.pricingStrategy])
+              ? cols[colMap.pricingStrategy]
+              : 'wholesalers',
+            taxCardNumber: rawTaxCard,
+            commercialRegister: (cols[colMap.commercialRegister] || '').trim(),
+            taxDistrict: (cols[colMap.taxDistrict] || '').trim(),
+            settlementMode: ['cod', 'credit', 'rolling_credit'].includes(cols[colMap.settlementMode])
+              ? cols[colMap.settlementMode]
+              : 'cod',
+            creditLimit: Math.max(0, parseFloat(cols[colMap.creditLimit]) || 0),
+            phonesSet: new Set(rowPhones),
+            emailsSet: new Set(rowEmails),
+            weeklyHolidays,
+            workingHoursFrom: cols[colMap.workingHoursFrom] || '09:00',
+            workingHoursTo: cols[colMap.workingHoursTo] || '17:00',
+            notes: rowNotes,
+            branches: [
+              {
+                id: 'br_1',
+                nameAr: branchName || 'الفرع الرئيسي',
+                nameEn: 'Main Branch',
+                isMain: true,
+                region: branchRegion,
+                address: branchAddress,
+                contactPerson: branchContact,
+                phone: branchPhone || rowPhones[0] || '',
+                phones: rowPhones,
+                gpsCoordinates: branchGps,
+                notes: rowNotes,
+                useCustomSchedule: false,
+                weeklyHolidays: [],
+                workingHoursFrom: '',
+                workingHoursTo: ''
+              }
+            ],
+            rawRowsCount: 1
+          });
         } else {
-          // Backward-compatible mapping for older 18-col template
-          branchName = cols[11] || 'الفرع الرئيسي';
-          address = cols[12] || '';
-          region = cols[13] || '';
-          contactPerson = cols[14] || '';
-          const p1 = cols[15] || '';
-          const p2 = cols[16] || '';
-          if (p1) phones.push(p1);
-          if (p2 && p2 !== p1) phones.push(p2);
-          branchPhone = p1;
-          gpsCoordinates = cols[17] || '';
-        }
+          // Additional branch belonging to this same client entity
+          const client = clientGroups.get(clientKey);
+          client.rawRowsCount += 1;
+          rowPhones.forEach((p) => client.phonesSet.add(p));
+          rowEmails.forEach((e) => client.emailsSet.add(e));
+          if (!client.notes && rowNotes) client.notes = rowNotes;
 
-        const rowData = {
-          code: cols[0] || `CLI-${Date.now() + i}`,
-          tradeNameAr: cols[1] || '',
-          tradeNameEn: cols[2] || '',
-          legalName: cols[3] || cols[1] || '',
-          segmentRaw: cols[4] || '',
-          pricingStrategy: ['wholesalers', 'retail', 'special_pricing'].includes(cols[5]) ? cols[5] : 'wholesalers',
-          taxCardNumber: cols[6] || '',
-          commercialRegister: cols[7] || '',
-          taxDistrict: cols[8] || '',
-          settlementMode: ['cod', 'credit', 'rolling_credit'].includes(cols[9]) ? cols[9] : 'cod',
-          creditLimit: Math.max(0, parseFloat(cols[10]) || 0),
+          const branchIndex = client.branches.length + 1;
+          const fallbackBranchName = branchRegion ? `فرع ${branchRegion}` : `فرع ${branchIndex}`;
+          client.branches.push({
+            id: `br_${branchIndex}`,
+            nameAr: branchName || fallbackBranchName,
+            nameEn: `Branch ${branchIndex}`,
+            isMain: false,
+            region: branchRegion,
+            address: branchAddress,
+            contactPerson: branchContact,
+            phone: branchPhone || '',
+            phones: rowPhones,
+            gpsCoordinates: branchGps,
+            notes: rowNotes,
+            useCustomSchedule: false,
+            weeklyHolidays: [],
+            workingHoursFrom: '',
+            workingHoursTo: ''
+          });
+        }
+      }
+
+      // Validate staged clients against segments and live Firestore database
+      const stagedClients = [];
+
+      for (const [key, group] of clientGroups.entries()) {
+        const phones = Array.from(group.phonesSet).filter(Boolean);
+        const emails = Array.from(group.emailsSet).filter(Boolean);
+
+        const clientData = {
+          ...group,
           phones,
           emails,
-          weeklyHolidays,
-          workingHoursFrom,
-          workingHoursTo,
-          notes,
-          branchName,
-          address,
-          region,
-          contactPerson,
-          branchPhone,
-          gpsCoordinates,
           isValid: true,
-          errorReason: ''
+          errorReason: '',
+          isExisting: false,
+          existingClientId: null,
+          existingClient: null,
+          action: 'create' // 'create' | 'review_required' | 'replace' | 'merge' | 'skip'
         };
 
-        // Strict segment matching with Arabic normalization and no silent fallback
-        const cleanSegRaw = (rowData.segmentRaw || '').trim();
+        // 1. Strict Segment Resolution with Arabic Normalization
+        const cleanSegRaw = (clientData.segmentRaw || '').trim();
         const normRaw = normalizeArText(cleanSegRaw);
         const matchedSeg = segments.find(
           (s) =>
@@ -1032,136 +1254,164 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         );
 
         if (matchedSeg) {
-          rowData.segmentId = matchedSeg.id;
-          rowData.segmentRaw = matchedSeg.nameAr;
+          clientData.segmentId = matchedSeg.id;
+          clientData.segmentRaw = matchedSeg.nameAr;
         } else {
-          rowData.segmentId = '';
-          rowData.isValid = false;
+          clientData.segmentId = '';
+          clientData.isValid = false;
           const availableSegs = segments.map((s) => s.nameAr).join('، ');
-          rowData.errorReason = isAr
+          clientData.errorReason = isAr
             ? `قطاع غير معرّف أو به خطأ: "${cleanSegRaw || 'فارغ'}". القطاعات المتاحة: (${availableSegs})`
             : `Unrecognized segment: "${cleanSegRaw || 'empty'}". Allowed segments: (${availableSegs})`;
         }
 
-        // Validation against live database
-        if (rowData.isValid) {
-          const dupCheck = checkDuplicates({
-            taxCardNumber: rowData.taxCardNumber,
-            tradeNameAr: rowData.tradeNameAr,
-            tradeNameEn: rowData.tradeNameEn,
-            phones: rowData.phones,
-            branches: [{ phone: rowData.branchPhone, mobile: rowData.branchPhone, phones: rowData.phones }]
-          });
+        // 2. Check Database Existence (Client ID / Code, Tax Card, or Trade Name)
+        const cleanTax = normalizeTaxCard(clientData.taxCardNumber);
+        const cleanNameAr = (clientData.tradeNameAr || '').trim().toLowerCase();
 
-          if (dupCheck) {
-            rowData.isValid = false;
-            rowData.errorReason = dupCheck;
-          }
-        }
+        const existingInDb = clients.find((c) => {
+          if (clientData.code && c.id?.toLowerCase() === clientData.code.toLowerCase()) return true;
+          if (cleanTax && normalizeTaxCard(c.taxCardNumber) === cleanTax) return true;
+          if (cleanNameAr && (c.tradeNameAr || c.name || '').trim().toLowerCase() === cleanNameAr) return true;
+          return false;
+        });
 
-        // Check internal duplicates within CSV
-        if (rowData.isValid) {
-          const cleanTax = normalizeTaxCard(rowData.taxCardNumber);
-          const cleanName = rowData.tradeNameAr.toLowerCase();
-          const cleanPhones = rowData.phones.map(normalizePhone).filter(Boolean);
-
-          if (cleanTax && seenInCsvTax.has(cleanTax)) {
-            rowData.isValid = false;
-            rowData.errorReason = isAr ? 'رقم البطاقة الضريبية مكرر داخل نفس الملف' : 'Tax Card duplicated inside CSV';
-          } else if (cleanName && seenInCsvNames.has(cleanName)) {
-            rowData.isValid = false;
-            rowData.errorReason = isAr ? 'اسم العميل مكرر داخل نفس الملف' : 'Client name duplicated inside CSV';
-          } else {
-            for (const cp of cleanPhones) {
-              if (seenInCsvPhones.has(cp)) {
-                rowData.isValid = false;
-                rowData.errorReason = isAr ? `رقم الهاتف (${cp}) مكرر داخل نفس الملف` : `Phone (${cp}) duplicated inside CSV`;
-                break;
-              }
+        if (existingInDb) {
+          clientData.isExisting = true;
+          clientData.existingClientId = existingInDb.id;
+          clientData.existingClient = existingInDb;
+          // Prompt for user review as requested!
+          clientData.action = 'review_required';
+          clientData.isValid = false;
+          clientData.errorReason = isAr
+            ? `مسجل مسبقاً (${existingInDb.tradeNameAr || existingInDb.id}) — يرجى تحديد الإجراء (استبدال / دمج / تخطي)`
+            : `Already registered (${existingInDb.tradeNameAr || existingInDb.id}) — select action (Replace / Merge / Skip)`;
+        } else {
+          // If not existing, verify tax card uniqueness against other clients
+          if (cleanTax) {
+            const taxConflict = clients.find((c) => normalizeTaxCard(c.taxCardNumber) === cleanTax);
+            if (taxConflict) {
+              clientData.isValid = false;
+              clientData.errorReason = isAr
+                ? `رقم البطاقة الضريبية (${clientData.taxCardNumber}) مسجل مسبقاً للعميل: ${taxConflict.tradeNameAr || taxConflict.id}`
+                : `Tax Card ID (${clientData.taxCardNumber}) is already registered to: ${taxConflict.tradeNameAr || taxConflict.id}`;
             }
           }
-
-          if (cleanTax) seenInCsvTax.add(cleanTax);
-          if (cleanName) seenInCsvNames.add(cleanName);
-          cleanPhones.forEach((cp) => seenInCsvPhones.add(cp));
         }
 
-        rows.push(rowData);
+        stagedClients.push(clientData);
       }
 
-      const validCount = rows.filter((r) => r.isValid).length;
-      setImportRows(rows);
-      setImportStats({
-        total: rows.length,
-        valid: validCount,
-        invalid: rows.length - validCount
-      });
+      setImportRows(stagedClients);
+      setRawImportRows(rawRowsList);
+      setExpandedImportClientIds(new Set());
+      setImportStats(calculateImportStats(stagedClients));
       setIsBulkModalOpen(true);
     };
+
     reader.readAsText(file, 'utf-8');
     e.target.value = '';
   };
 
   const handleCommitBulkImport = async () => {
-    const validRows = importRows.filter((r) => r.isValid);
-    if (validRows.length === 0) return;
+    const rowsToCommit = importRows.filter(
+      (r) => r.isValid && r.action !== 'skip' && r.action !== 'review_required'
+    );
+    if (rowsToCommit.length === 0) {
+      alert(isAr ? 'لا توجد سجلات صالحة ومعتمدة للاستيراد' : 'No valid records ready to commit');
+      return;
+    }
 
     setIsCommittingImport(true);
-    try {
-      for (const r of validRows) {
-        const payload = {
-          tradeNameAr: r.tradeNameAr,
-          tradeNameEn: r.tradeNameEn,
-          legalName: r.legalName,
-          segmentId: r.segmentId,
-          pricingStrategy: r.pricingStrategy,
-          taxCardNumber: r.taxCardNumber,
-          commercialRegister: r.commercialRegister,
-          taxDistrict: r.taxDistrict,
-          settlementMode: r.settlementMode,
-          creditLimit: r.creditLimit,
-          openingBalance: 0,
-          latestActivityOn: null,
-          phones: r.phones || [],
-          phone: (r.phones && r.phones[0]) || r.branchPhone || '',
-          emails: r.emails || [],
-          email: (r.emails && r.emails[0]) || '',
-          weeklyHolidays: r.weeklyHolidays || ['friday', 'saturday'],
-          workingHoursFrom: r.workingHoursFrom || '09:00',
-          workingHoursTo: r.workingHoursTo || '17:00',
-          branches: [
-            {
-              id: 'br_main',
-              nameAr: r.branchName || 'الفرع الرئيسي',
-              nameEn: 'Main Branch',
-              isMain: true,
-              region: r.region,
-              address: r.address,
-              contactPerson: r.contactPerson,
-              phone: r.branchPhone || (r.phones && r.phones[0]) || '',
-              mobile: (r.phones && r.phones[1]) || '',
-              phones: r.phones || [],
-              useCustomSchedule: false,
-              weeklyHolidays: [],
-              workingHoursFrom: '',
-              workingHoursTo: '',
-              gpsCoordinates: r.gpsCoordinates,
-              notes: (r.notes && r.notes.trim()) || ''
-            }
-          ],
-          branchesCount: 1,
-          attachments: [],
-          notes: (r.notes && r.notes.trim()) || 'Imported via Bulk CSV',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        };
+    let createdCount = 0;
+    let replacedCount = 0;
+    let mergedCount = 0;
+    let totalBranchesCount = 0;
 
-        await setDoc(doc(db, 'clients', r.code), payload, { merge: true });
+    try {
+      for (const client of rowsToCommit) {
+        totalBranchesCount += (client.branches?.length || 1);
+
+        if (client.action === 'replace' || client.action === 'create') {
+          const payload = {
+            tradeNameAr: client.tradeNameAr,
+            tradeNameEn: client.tradeNameEn,
+            legalName: client.legalName,
+            segmentId: client.segmentId,
+            pricingStrategy: client.pricingStrategy,
+            taxCardNumber: client.taxCardNumber,
+            commercialRegister: client.commercialRegister,
+            taxDistrict: client.taxDistrict,
+            settlementMode: client.settlementMode,
+            creditLimit: client.creditLimit,
+            openingBalance: 0,
+            latestActivityOn: client.isExisting ? (client.existingClient?.latestActivityOn || null) : null,
+            phones: client.phones || [],
+            phone: client.phones?.[0] || '',
+            emails: client.emails || [],
+            email: client.emails?.[0] || '',
+            weeklyHolidays: client.weeklyHolidays || ['friday', 'saturday'],
+            workingHoursFrom: client.workingHoursFrom || '09:00',
+            workingHoursTo: client.workingHoursTo || '17:00',
+            branches: client.branches || [],
+            branchesCount: (client.branches || []).length,
+            attachments: client.isExisting ? (client.existingClient?.attachments || []) : [],
+            logo: client.isExisting ? (client.existingClient?.logo || '') : '',
+            notes: (client.notes && client.notes.trim()) || 'Imported via Bulk CSV',
+            createdAt: client.isExisting ? (client.existingClient?.createdAt || serverTimestamp()) : serverTimestamp(),
+            updatedAt: serverTimestamp()
+          };
+
+          await setDoc(doc(db, 'clients', client.code), payload, { merge: true });
+          if (client.action === 'replace') replacedCount++;
+          else createdCount++;
+        } else if (client.action === 'merge') {
+          const existing = client.existingClient || clients.find((c) => c.id === client.code);
+          const existingBranches = existing?.branches || [];
+          const mergedBranches = [...existingBranches];
+
+          for (const nb of client.branches || []) {
+            const alreadyExists = mergedBranches.some(
+              (eb) => eb.nameAr && nb.nameAr && eb.nameAr.trim().toLowerCase() === nb.nameAr.trim().toLowerCase()
+            );
+            if (!alreadyExists) {
+              mergedBranches.push({
+                ...nb,
+                id: `br_${mergedBranches.length + 1}`,
+                isMain: mergedBranches.length === 0
+              });
+            }
+          }
+
+          const combinedPhones = Array.from(new Set([...(existing?.phones || []), ...(client.phones || [])])).filter(Boolean);
+          const combinedEmails = Array.from(new Set([...(existing?.emails || []), ...(client.emails || [])])).filter(Boolean);
+
+          await setDoc(
+            doc(db, 'clients', client.code),
+            {
+              branches: mergedBranches,
+              branchesCount: mergedBranches.length,
+              phones: combinedPhones,
+              phone: combinedPhones[0] || '',
+              emails: combinedEmails,
+              email: combinedEmails[0] || '',
+              updatedAt: serverTimestamp()
+            },
+            { merge: true }
+          );
+          mergedCount++;
+        }
       }
 
       setIsBulkModalOpen(false);
       setImportRows([]);
-      alert(isAr ? `تم بنجاح استيراد (${validRows.length}) عميل جديد.` : `Successfully imported ${validRows.length} clients.`);
+      setRawImportRows([]);
+      setExpandedImportClientIds(new Set());
+      alert(
+        isAr
+          ? `تم بنجاح معالجة (${rowsToCommit.length}) عميل (${createdCount} عميل جديد، ${replacedCount} استبدال، ${mergedCount} دمج فروع) بإجمالي (${totalBranchesCount}) فرع.`
+          : `Successfully processed ${rowsToCommit.length} clients (${createdCount} new, ${replacedCount} replaced, ${mergedCount} merged) with ${totalBranchesCount} total branches.`
+      );
     } catch (err) {
       console.error('Error committing bulk import:', err);
       alert(isAr ? 'حدث خطأ أثناء حفظ السجلات' : 'Error importing records');
@@ -2568,39 +2818,61 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       {/* BULK CSV IMPORT PREVIEW MODAL                                             */}
       {/* ========================================================================= */}
       {isBulkModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] animate__animated animate__fadeInUp animate__faster">
-            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 md:p-6">
+          <div className="bg-white rounded-3xl max-w-[96vw] xl:max-w-7xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[94vh] animate__animated animate__fadeInUp animate__faster">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-3">
-                <UploadCloud className="w-6 h-6 text-blue-400" />
+                <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center border border-blue-400/30">
+                  <UploadCloud className="w-5 h-5" />
+                </div>
                 <div>
                   <h3 className="font-black text-base">
-                    {isAr ? 'معاينة استيراد العملاء الجماعي' : 'Bulk Clients Import Preview'}
+                    {isAr ? 'معاينة وتدقيق استيراد العملاء والفروع (CSV)' : 'Bulk Clients & Multi-Branch Import Validator'}
                   </h3>
                   <p className="text-xs text-slate-300">
-                    {isAr ? 'مراجعة السجلات والتحقق من التكرارات وصحة البيانات قبل الحفظ' : 'Audit rows and duplicate locks before commit'}
+                    {isAr
+                      ? 'تجميع فروع كل عميل آلياً، مراجعة وتدقيق السجلات القائمة، واستبدال البيانات بدقة'
+                      : 'Auto-consolidate branches per client, audit existing database records, and fast replacement'}
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => setIsBulkModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg transition"
+                className="text-slate-400 hover:text-white p-1.5 rounded-xl hover:bg-slate-800 transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs font-bold">
-              <div className="flex items-center gap-3">
-                <span className="text-slate-700">
-                  {isAr ? 'إجمالي السجلات:' : 'Total Records:'} <strong>{importStats.total}</strong>
+            {/* Metrics Summary Ribbon */}
+            <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs font-bold shrink-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="px-3 py-1 bg-slate-200 text-slate-800 rounded-lg">
+                  {isAr ? 'العملاء المكتشفين:' : 'Clients:'} <strong>{importStats.totalClients}</strong>
                 </span>
-                <span className="text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-full">
-                  {isAr ? 'صالحة للاستيراد:' : 'Valid:'} {importStats.valid}
+                <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-lg flex items-center gap-1">
+                  <Boxes className="w-3.5 h-3.5" />
+                  {isAr ? 'إجمالي أسطر الفروع:' : 'Branches:'} <strong>{importStats.totalBranchRows}</strong>
+                </span>
+                <span className="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-lg flex items-center gap-1">
+                  <PlusCircle className="w-3.5 h-3.5" />
+                  {isAr ? 'عملاء جدد:' : 'New:'} <strong>{importStats.newClients}</strong>
+                </span>
+                {importStats.existingClients > 0 && (
+                  <span className="px-3 py-1 bg-amber-100 text-amber-800 rounded-lg flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    {isAr ? 'مسجلين مسبقاً (مطلوب مراجعة):' : 'Existing (Review Required):'} <strong>{importStats.requiresReview}</strong>
+                  </span>
+                )}
+                <span className="px-3 py-1 bg-teal-100 text-teal-800 rounded-lg flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  {isAr ? 'جاهز للاستيراد:' : 'Ready:'} <strong>{importStats.readyToCommit}</strong>
                 </span>
                 {importStats.invalid > 0 && (
-                  <span className="text-rose-700 bg-rose-100 px-2.5 py-0.5 rounded-full">
-                    {isAr ? 'مرفوضة / تكرار:' : 'Conflicts:'} {importStats.invalid}
+                  <span className="px-3 py-1 bg-rose-100 text-rose-800 rounded-lg flex items-center gap-1">
+                    <XCircle className="w-3.5 h-3.5" />
+                    {isAr ? 'أخطاء تحتاج لتصحيح:' : 'Conflicts/Errors:'} <strong>{importStats.invalid}</strong>
                   </span>
                 )}
               </div>
@@ -2608,110 +2880,624 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               <button
                 type="button"
                 onClick={handleDownloadTemplate}
-                className="text-blue-600 hover:underline flex items-center gap-1"
+                className="text-blue-600 hover:underline flex items-center gap-1 cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>{isAr ? 'تحميل قالب CSV الاستيراد' : 'Download Template'}</span>
+                <span>{isAr ? 'تحميل قالب CSV الاستيراد المعتمد' : 'Download Template'}</span>
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto flex-grow max-h-[60vh]">
-              <table className="w-full text-xs text-start border-collapse">
-                <thead>
-                  <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
-                    <th className="py-2 px-3 text-start">{isAr ? 'الحالة' : 'Status'}</th>
-                    <th className="py-2 px-3 text-start">{isAr ? 'الكود' : 'Code'}</th>
-                    <th className="py-2 px-3 text-start">{isAr ? 'اسم العميل' : 'Client Name'}</th>
-                    <th className="py-2 px-3 text-start">{isAr ? 'القطاع' : 'Segment'}</th>
-                    <th className="py-2 px-3 text-start">{isAr ? 'البطاقة الضريبية' : 'Tax Card'}</th>
-                    <th className="py-2 px-3 text-start">{isAr ? 'الهاتف' : 'Phone'}</th>
-                    <th className="py-2 px-3 text-start">{isAr ? 'ملاحظات' : 'Notes'}</th>
-                    <th className="py-2 px-3 text-start">{isAr ? 'سبب التعارض' : 'Conflict Reason'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-medium">
-                  {importRows.map((row, idx) => (
-                    <tr
-                      key={idx}
-                      className={row.isValid ? 'bg-emerald-50/30 text-slate-800' : 'bg-rose-50/60 text-rose-900'}
-                    >
-                      <td className="py-2 px-3 whitespace-nowrap">
-                        {row.isValid ? (
-                          <span className="text-emerald-700 font-bold flex items-center gap-1">
-                            <Check className="w-3.5 h-3.5 stroke-[3]" />
-                            {isAr ? 'صالح' : 'Valid'}
-                          </span>
-                        ) : (
-                          <span className="text-rose-600 font-bold flex items-center gap-1">
-                            <X className="w-3.5 h-3.5 stroke-[3]" />
-                            {isAr ? 'مرفوض' : 'Invalid'}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 px-3 font-mono">{row.code}</td>
-                      <td className="py-2 px-3 font-bold">{row.tradeNameAr}</td>
-                      <td className="py-2 px-3">
-                        <select
-                          value={row.segmentId || ''}
-                          onChange={(e) => handleUpdateImportRowSegment(idx, e.target.value)}
-                          className={`px-2 py-1 text-xs rounded-lg border font-bold cursor-pointer ${
-                            !row.segmentId
-                              ? 'border-rose-400 bg-rose-50 text-rose-700 ring-1 ring-rose-300'
-                              : 'border-slate-200 bg-white text-slate-800'
-                          }`}
-                        >
-                          <option value="">{isAr ? '-- حدد القطاع --' : '-- Select Segment --'}</option>
-                          {segments.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.nameAr}
-                            </option>
-                          ))}
-                        </select>
-                        {row.segmentRaw && !row.segmentId && (
-                          <span className="block text-[10px] text-rose-600 font-mono mt-0.5" title="Unmatched raw text in CSV">
-                            ⚠️ {row.segmentRaw}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 px-3 font-mono">{row.taxCardNumber || '—'}</td>
-                      <td className="py-2 px-3 font-mono">
-                        {(row.phones && row.phones.length > 0)
-                          ? row.phones.join(', ')
-                          : (row.branchPhone || row.phone || '—')}
-                      </td>
-                      <td className="py-2 px-3 text-slate-500 max-w-[140px] truncate" title={row.notes}>
-                        {row.notes || '—'}
-                      </td>
-                      <td className="py-2 px-3 text-rose-700 text-[11px] font-bold">
-                        {row.errorReason || '—'}
-                      </td>
+            {/* Prompt For Review & Quick Action Banner (When Existing Records are detected) */}
+            {importStats.existingClients > 0 && (
+              <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs shrink-0">
+                <div className="flex items-center gap-2.5 text-amber-900 font-bold">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                  <span>
+                    {isAr
+                      ? `تم اكتشاف (${importStats.existingClients}) عميل مسجل مسبقاً. يرجى تحديد الإجراء المطلوب لكل عميل بالجدول، أو استخدام أدوات الاستبدال السريع:`
+                      : `Detected (${importStats.existingClients}) existing clients in database. Review actions in table or use quick batch tools:`}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap shrink-0 font-bold">
+                  <button
+                    type="button"
+                    onClick={() => handleBatchSetExistingAction('replace')}
+                    className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+                    title={isAr ? 'استبدال بيانات وفروع جميع السجلات القائمة بالكامل' : 'Replace all existing records'}
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'استبدال جميع القائمة بالكامل' : 'Replace All Existing'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBatchSetExistingAction('merge')}
+                    className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+                    title={isAr ? 'الحفاظ على فروع العميل الحالية وإضافة فروع CSV الجديدة فقط' : 'Merge branches for all existing'}
+                  >
+                    <GitMerge className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'دمج فروع القائمة' : 'Merge Branches for All'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBatchSetExistingAction('skip')}
+                    className="px-3.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl flex items-center gap-1.5 transition cursor-pointer"
+                    title={isAr ? 'تخطي وعدم تعديل أي عميل مسجل مسبقاً' : 'Skip all existing records'}
+                  >
+                    <SkipForward className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'تخطي جميع القائمة' : 'Skip All Existing'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* View Mode & Batch Find-and-Replace Ribbon */}
+            <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                {/* View Switcher */}
+                <div className="bg-white p-0.5 rounded-xl border border-slate-200 flex items-center shadow-xs">
+                  <button
+                    type="button"
+                    onClick={() => setImportViewMode('clients')}
+                    className={`px-3 py-1 rounded-lg font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                      importViewMode === 'clients' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Boxes className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'عرض العملاء المجمعة (Consolidated)' : 'Consolidated Clients View'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportViewMode('raw_rows')}
+                    className={`px-3 py-1 rounded-lg font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                      importViewMode === 'raw_rows' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span>{isAr ? `عرض أسطر الملف التفصيلية (${rawImportRows.length})` : `All Raw CSV Rows (${rawImportRows.length})`}</span>
+                  </button>
+                </div>
+
+                {/* Batch Replace Tool Trigger */}
+                <button
+                  type="button"
+                  onClick={() => setIsBatchToolOpen(!isBatchToolOpen)}
+                  className={`px-3 py-1.5 rounded-xl border font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    isBatchToolOpen
+                      ? 'bg-blue-50 border-blue-300 text-blue-700 shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'أداة الاستبدال السريع للحقول' : 'Batch Quick Replace'}</span>
+                </button>
+              </div>
+
+              <span className="text-[11px] text-slate-500 font-semibold hidden md:inline">
+                {isAr
+                  ? 'عرض شامل لجميع أعمدة ملف CSV الـ 23 بالكامل مع التمرير الأفقي'
+                  : 'Displaying all 23 CSV columns with horizontal scrolling'}
+              </span>
+            </div>
+
+            {/* Collapsible Batch Replace Drawer */}
+            {isBatchToolOpen && (
+              <div className="px-6 py-3 bg-blue-50/80 border-b border-blue-200 flex flex-wrap items-center gap-2.5 text-xs font-bold animate__animated animate__fadeInDown animate__faster shrink-0">
+                <span className="text-blue-900">{isAr ? 'استبدال الحقل:' : 'Field:'}</span>
+                <select
+                  value={batchToolField}
+                  onChange={(e) => {
+                    setBatchToolField(e.target.value);
+                    setBatchToolValue('');
+                  }}
+                  className="px-2.5 py-1.5 bg-white border border-blue-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                >
+                  <option value="segmentId">{isAr ? 'القطاع والتصنيف' : 'Segment'}</option>
+                  <option value="pricingStrategy">{isAr ? 'استراتيجية التسعير' : 'Pricing Strategy'}</option>
+                  <option value="settlementMode">{isAr ? 'طريقة السداد' : 'Settlement Mode'}</option>
+                </select>
+
+                <span className="text-blue-900">{isAr ? 'القيمة الجديدة:' : 'New Value:'}</span>
+                {batchToolField === 'segmentId' && (
+                  <select
+                    value={batchToolValue}
+                    onChange={(e) => setBatchToolValue(e.target.value)}
+                    className="px-2.5 py-1.5 bg-white border border-blue-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                  >
+                    <option value="">{isAr ? '-- اختر القطاع المطلوب --' : '-- Select Segment --'}</option>
+                    {segments.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.nameAr}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {batchToolField === 'pricingStrategy' && (
+                  <select
+                    value={batchToolValue}
+                    onChange={(e) => setBatchToolValue(e.target.value)}
+                    className="px-2.5 py-1.5 bg-white border border-blue-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                  >
+                    <option value="">{isAr ? '-- اختر الاستراتيجية --' : '-- Select Strategy --'}</option>
+                    {PRICING_STRATEGIES.map((st) => (
+                      <option key={st.id} value={st.id}>
+                        {isAr ? st.labelAr : st.labelEn}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {batchToolField === 'settlementMode' && (
+                  <select
+                    value={batchToolValue}
+                    onChange={(e) => setBatchToolValue(e.target.value)}
+                    className="px-2.5 py-1.5 bg-white border border-blue-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                  >
+                    <option value="">{isAr ? '-- اختر طريقة السداد --' : '-- Select Settlement --'}</option>
+                    {SETTLEMENT_MODES.map((sm) => (
+                      <option key={sm.id} value={sm.id}>
+                        {isAr ? sm.labelAr : sm.labelEn}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                <span className="text-blue-900 ms-2">{isAr ? 'نطاق التطبيق:' : 'Apply to:'}</span>
+                <select
+                  value={batchToolTarget}
+                  onChange={(e) => setBatchToolTarget(e.target.value)}
+                  className="px-2.5 py-1.5 bg-white border border-blue-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                >
+                  <option value="unassigned">{isAr ? 'السجلات غير المحددة / بها خطأ فقط' : 'Unassigned / Invalid only'}</option>
+                  <option value="all">{isAr ? 'جميع السجلات المستوردة' : 'All imported records'}</option>
+                </select>
+
+                <button
+                  type="button"
+                  disabled={!batchToolValue}
+                  onClick={handleApplyBatchFieldReplace}
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl transition shadow-sm cursor-pointer"
+                >
+                  {isAr ? 'تطبيق الاستبدال' : 'Apply Replace'}
+                </button>
+              </div>
+            )}
+
+            {/* Scrollable Data Table Container with Full 23 Columns */}
+            <div className="p-4 overflow-auto flex-grow max-h-[62vh]">
+              {importViewMode === 'clients' ? (
+                /* ========================================================= */
+                /* CONSOLIDATED CLIENTS VIEW                                 */
+                /* ========================================================= */
+                <table className="w-full text-xs text-start border-collapse">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200 sticky top-0 z-20 shadow-xs whitespace-nowrap">
+                      <th className="py-2.5 px-3 text-start sticky start-0 bg-slate-100 z-30 shadow-xs">
+                        {isAr ? 'الحالة / الإجراء' : 'Status / Action'}
+                      </th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الكود' : 'Code'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الاسم التجاري (عربي)' : 'Trade Name (Ar)'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الاسم بالإنجليزي' : 'Trade Name (En)'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الاسم القانوني' : 'Legal Name'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'القطاع' : 'Segment'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'استراتيجية التسعير' : 'Pricing Strategy'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'البطاقة الضريبية' : 'Tax Card'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'السجل التجاري' : 'Comm. Reg'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'المأمورية' : 'Tax District'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'طريقة السداد' : 'Settlement'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الحد الائتماني' : 'Credit Limit'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الهواتف' : 'Phones'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'البريد الإلكتروني' : 'Emails'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'العطلات' : 'Holidays'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'مواعيد العمل' : 'Working Hours'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الملاحظات' : 'Notes'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الفروع المكتشفة' : 'Branches'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'اسم الفرع' : 'Branch Name'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'المنطقة' : 'Region'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'العنوان' : 'Address'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'المسؤول' : 'Contact Person'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'هاتف الفرع' : 'Branch Phone'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الموقع / GPS' : 'GPS'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'تنبيهات / تعارض' : 'Alerts / Conflict'}</th>
+                      <th className="py-2.5 px-3 text-center">{isAr ? 'إجراء' : 'Action'}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium whitespace-nowrap">
+                    {importRows.map((row, idx) => {
+                      const isExpanded = expandedImportClientIds.has(row.id);
+                      return (
+                        <React.Fragment key={row.id || idx}>
+                          <tr
+                            className={`transition hover:bg-slate-50/80 ${
+                              !row.isValid
+                                ? 'bg-rose-50/50 text-rose-900'
+                                : row.action === 'skip'
+                                ? 'bg-slate-50 text-slate-400 opacity-60'
+                                : row.action === 'replace'
+                                ? 'bg-amber-50/40 text-slate-800'
+                                : row.action === 'merge'
+                                ? 'bg-blue-50/40 text-slate-800'
+                                : 'bg-emerald-50/30 text-slate-800'
+                            }`}
+                          >
+                            {/* Status & Action */}
+                            <td className="py-2.5 px-3 sticky start-0 bg-white z-10 shadow-xs">
+                              {row.isExisting ? (
+                                row.action === 'review_required' ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-md font-bold text-[11px] flex items-center gap-1">
+                                      <HelpCircle className="w-3 h-3" />
+                                      {isAr ? 'مطلوب مراجعة' : 'Review Required'}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUpdateRecordAction(idx, 'replace')}
+                                      className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-bold cursor-pointer"
+                                      title={isAr ? 'استبدال السجل بالكامل' : 'Replace Entire Record'}
+                                    >
+                                      {isAr ? 'استبدال' : 'Replace'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUpdateRecordAction(idx, 'merge')}
+                                      className="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-bold cursor-pointer"
+                                      title={isAr ? 'دمج الفروع الجديدة' : 'Merge Branches'}
+                                    >
+                                      {isAr ? 'دمج' : 'Merge'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUpdateRecordAction(idx, 'skip')}
+                                      className="px-2 py-0.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[10px] font-bold cursor-pointer"
+                                      title={isAr ? 'تخطي السجل' : 'Skip Record'}
+                                    >
+                                      {isAr ? 'تخطي' : 'Skip'}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-1.5">
+                                    <select
+                                      value={row.action}
+                                      onChange={(e) => handleUpdateRecordAction(idx, e.target.value)}
+                                      className={`px-2 py-1 text-[11px] font-bold rounded-lg border cursor-pointer ${
+                                        row.action === 'replace'
+                                          ? 'border-amber-300 bg-amber-50 text-amber-800'
+                                          : row.action === 'merge'
+                                          ? 'border-blue-300 bg-blue-50 text-blue-800'
+                                          : 'border-slate-300 bg-slate-100 text-slate-600'
+                                      }`}
+                                    >
+                                      <option value="replace">{isAr ? '🔄 استبدال السجل بالكامل' : 'Replace Entire Record'}</option>
+                                      <option value="merge">{isAr ? '🔀 دمج الفروع الجديدة' : 'Merge Branches'}</option>
+                                      <option value="skip">{isAr ? '⏭️ تخطي (عدم الاستيراد)' : 'Skip'}</option>
+                                    </select>
+                                  </div>
+                                )
+                              ) : row.isValid ? (
+                                <span className="text-emerald-700 font-bold flex items-center gap-1">
+                                  <Check className="w-3.5 h-3.5 stroke-[3]" />
+                                  {isAr ? 'عميل جديد (إضافة)' : 'New Client'}
+                                </span>
+                              ) : (
+                                <span className="text-rose-600 font-bold flex items-center gap-1">
+                                  <X className="w-3.5 h-3.5 stroke-[3]" />
+                                  {isAr ? 'مرفوض' : 'Invalid'}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Client Code */}
+                            <td className="py-2.5 px-3 font-mono font-bold text-slate-800">{row.code}</td>
+
+                            {/* Trade Name Ar */}
+                            <td className="py-2.5 px-3 font-black text-slate-900 max-w-[200px] truncate" title={row.tradeNameAr}>
+                              {row.tradeNameAr}
+                            </td>
+
+                            {/* Trade Name En */}
+                            <td className="py-2.5 px-3 text-slate-600 max-w-[150px] truncate" title={row.tradeNameEn}>
+                              {row.tradeNameEn || '—'}
+                            </td>
+
+                            {/* Legal Name */}
+                            <td className="py-2.5 px-3 text-slate-600 max-w-[180px] truncate" title={row.legalName}>
+                              {row.legalName || '—'}
+                            </td>
+
+                            {/* Segment (Interactive Dropdown) */}
+                            <td className="py-2.5 px-3">
+                              <select
+                                value={row.segmentId || ''}
+                                onChange={(e) => handleUpdateImportRowSegment(idx, e.target.value)}
+                                className={`px-2 py-1 text-xs rounded-lg border font-bold cursor-pointer ${
+                                  !row.segmentId
+                                    ? 'border-rose-400 bg-rose-50 text-rose-700 ring-1 ring-rose-300'
+                                    : 'border-slate-200 bg-white text-slate-800'
+                                }`}
+                              >
+                                <option value="">{isAr ? '-- حدد القطاع --' : '-- Select Segment --'}</option>
+                                {segments.map((s) => (
+                                  <option key={s.id} value={s.id}>
+                                    {s.nameAr}
+                                  </option>
+                                ))}
+                              </select>
+                              {row.segmentRaw && !row.segmentId && (
+                                <span className="block text-[10px] text-rose-600 font-mono mt-0.5" title="Unmatched raw text in CSV">
+                                  ⚠️ {row.segmentRaw}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Pricing Strategy */}
+                            <td className="py-2.5 px-3">
+                              <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px] font-bold">
+                                {PRICING_STRATEGIES.find((st) => st.id === row.pricingStrategy)?.labelAr || row.pricingStrategy}
+                              </span>
+                            </td>
+
+                            {/* Tax Card */}
+                            <td className="py-2.5 px-3 font-mono">{row.taxCardNumber || '—'}</td>
+
+                            {/* Commercial Register */}
+                            <td className="py-2.5 px-3 font-mono">{row.commercialRegister || '—'}</td>
+
+                            {/* Tax District */}
+                            <td className="py-2.5 px-3 text-slate-600">{row.taxDistrict || '—'}</td>
+
+                            {/* Settlement Mode */}
+                            <td className="py-2.5 px-3">
+                              <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px]">
+                                {SETTLEMENT_MODES.find((sm) => sm.id === row.settlementMode)?.labelAr || row.settlementMode}
+                              </span>
+                            </td>
+
+                            {/* Credit Limit */}
+                            <td className="py-2.5 px-3 font-mono font-bold text-slate-800">
+                              {Number(row.creditLimit).toLocaleString()} ج.م
+                            </td>
+
+                            {/* Phones */}
+                            <td className="py-2.5 px-3 font-mono max-w-[150px] truncate" title={(row.phones || []).join(', ')}>
+                              {(row.phones && row.phones.length > 0) ? row.phones.join(', ') : '—'}
+                            </td>
+
+                            {/* Emails */}
+                            <td className="py-2.5 px-3 text-slate-600 max-w-[140px] truncate" title={(row.emails || []).join(', ')}>
+                              {(row.emails && row.emails.length > 0) ? row.emails.join(', ') : '—'}
+                            </td>
+
+                            {/* Weekly Holidays */}
+                            <td className="py-2.5 px-3 text-slate-600">
+                              {(row.weeklyHolidays || [])
+                                .map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h)
+                                .join('، ') || '—'}
+                            </td>
+
+                            {/* Working Hours */}
+                            <td className="py-2.5 px-3 font-mono text-[11px]">
+                              {row.workingHoursFrom || '09:00'} - {row.workingHoursTo || '17:00'}
+                            </td>
+
+                            {/* Notes */}
+                            <td className="py-2.5 px-3 text-slate-500 max-w-[140px] truncate" title={row.notes}>
+                              {row.notes || '—'}
+                            </td>
+
+                            {/* Branches Count & Toggle Drawer */}
+                            <td className="py-2.5 px-3">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleExpandBranches(row.id)}
+                                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] flex items-center gap-1.5 transition cursor-pointer ${
+                                  row.branches?.length > 1
+                                    ? 'bg-blue-100 hover:bg-blue-200 text-blue-800 shadow-xs'
+                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                                }`}
+                                title={isAr ? 'عرض فروع العميل التفصيلية' : 'View all branches'}
+                              >
+                                <Boxes className="w-3.5 h-3.5" />
+                                <span>{row.branches?.length || 1} {isAr ? (row.branches?.length === 1 ? 'فرع' : 'فروع') : 'Branches'}</span>
+                                {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                              </button>
+                            </td>
+
+                            {/* Main Branch Columns */}
+                            <td className="py-2.5 px-3 font-semibold text-slate-800">
+                              {row.branches?.[0]?.nameAr || 'الفرع الرئيسي'}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-600">{row.branches?.[0]?.region || '—'}</td>
+                            <td className="py-2.5 px-3 text-slate-600 max-w-[160px] truncate" title={row.branches?.[0]?.address}>
+                              {row.branches?.[0]?.address || '—'}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-700">{row.branches?.[0]?.contactPerson || '—'}</td>
+                            <td className="py-2.5 px-3 font-mono">{row.branches?.[0]?.phone || '—'}</td>
+                            <td className="py-2.5 px-3 font-mono text-[11px] max-w-[100px] truncate" title={row.branches?.[0]?.gpsCoordinates}>
+                              {row.branches?.[0]?.gpsCoordinates || '—'}
+                            </td>
+
+                            {/* Conflict Reason / Alerts */}
+                            <td className="py-2.5 px-3 text-rose-700 text-[11px] font-bold max-w-[200px] truncate" title={row.errorReason}>
+                              {row.errorReason || (row.action === 'skip' ? (isAr ? 'سيتم تخطي هذا السجل' : 'Skipped') : '—')}
+                            </td>
+
+                            {/* Delete Row Action */}
+                            <td className="py-2.5 px-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteImportRow(idx)}
+                                className="p-1 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition cursor-pointer"
+                                title={isAr ? 'استبعاد السجل من الاستيراد' : 'Remove from import'}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+
+                          {/* Expanded Multi-Branch Sub-Table */}
+                          {isExpanded && (
+                            <tr>
+                              <td colSpan={26} className="p-0 bg-slate-50 border-y-2 border-blue-200">
+                                <div className="p-3.5 space-y-2">
+                                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                                    <span className="flex items-center gap-1.5 text-blue-900">
+                                      <Boxes className="w-4 h-4 text-blue-600" />
+                                      {isAr
+                                        ? `تفاصيل فروع العميل (${row.tradeNameAr}) — تم تجميع (${row.branches?.length || 1}) فرع من ملف الـ CSV:`
+                                        : `Branches of (${row.tradeNameAr}) — ${row.branches?.length || 1} aggregated from CSV:`}
+                                    </span>
+                                  </div>
+
+                                  <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto shadow-xs">
+                                    <table className="w-full text-start text-xs border-collapse">
+                                      <thead>
+                                        <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200 whitespace-nowrap">
+                                          <th className="py-2 px-3 text-start">#</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'اسم الفرع' : 'Branch Name'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'النوع' : 'Type'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'المنطقة' : 'Region'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'العنوان' : 'Address'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'المسؤول' : 'Contact Person'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'هاتف الفرع' : 'Branch Phone'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'الموقع / GPS' : 'GPS Coordinates'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'ملاحظات الفرع' : 'Branch Notes'}</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100 font-medium whitespace-nowrap">
+                                        {(row.branches || []).map((br, bIdx) => (
+                                          <tr key={bIdx} className="hover:bg-slate-50">
+                                            <td className="py-2 px-3 font-mono font-bold text-slate-500">{bIdx + 1}</td>
+                                            <td className="py-2 px-3 font-bold text-slate-900">{br.nameAr}</td>
+                                            <td className="py-2 px-3">
+                                              {br.isMain ? (
+                                                <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md font-bold text-[10px]">
+                                                  {isAr ? 'الفرع الرئيسي' : 'Main Branch'}
+                                                </span>
+                                              ) : (
+                                                <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px]">
+                                                  {isAr ? 'فرع إضافي' : 'Additional Branch'}
+                                                </span>
+                                              )}
+                                            </td>
+                                            <td className="py-2 px-3 text-slate-700">{br.region || '—'}</td>
+                                            <td className="py-2 px-3 text-slate-600">{br.address || '—'}</td>
+                                            <td className="py-2 px-3 text-slate-800">{br.contactPerson || '—'}</td>
+                                            <td className="py-2 px-3 font-mono">{br.phone || '—'}</td>
+                                            <td className="py-2 px-3 font-mono text-[11px]">{br.gpsCoordinates || '—'}</td>
+                                            <td className="py-2 px-3 text-slate-500">{br.notes || '—'}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                /* ========================================================= */
+                /* ALL RAW CSV ROWS VIEW (LINE BY LINE INSPECT)             */
+                /* ========================================================= */
+                <table className="w-full text-xs text-start border-collapse">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200 sticky top-0 z-20 shadow-xs whitespace-nowrap">
+                      <th className="py-2.5 px-3 text-start sticky start-0 bg-slate-100 z-30"># سطر</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الكود' : 'Code'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الاسم التجاري (عربي)' : 'Trade Name (Ar)'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الاسم التجاري (إنجليزي)' : 'Trade Name (En)'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الاسم القانوني' : 'Legal Name'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'القطاع' : 'Segment'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'استراتيجية التسعير' : 'Pricing Strategy'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'البطاقة الضريبية' : 'Tax Card'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'السجل التجاري' : 'Comm. Reg'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'المأمورية' : 'Tax District'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'طريقة السداد' : 'Settlement'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الحد الائتماني' : 'Credit Limit'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الهواتف' : 'Phones'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'البريد الإلكتروني' : 'Emails'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'العطلات' : 'Holidays'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'مواعيد العمل (من)' : 'Hours From'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'مواعيد العمل (إلى)' : 'Hours To'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الملاحظات' : 'Notes'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'اسم الفرع' : 'Branch Name'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'المنطقة' : 'Region'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'العنوان' : 'Address'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'المسؤول' : 'Contact Person'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'هاتف الفرع' : 'Branch Phone'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الموقع / GPS' : 'GPS'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium whitespace-nowrap">
+                    {rawImportRows.map((raw, rIdx) => (
+                      <tr key={rIdx} className="hover:bg-slate-50 transition">
+                        <td className="py-2.5 px-3 font-mono font-bold text-slate-500 sticky start-0 bg-white z-10 shadow-xs">
+                          {raw.lineIndex}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-slate-800">{raw.code}</td>
+                        <td className="py-2.5 px-3 font-black text-slate-900">{raw.tradeNameAr}</td>
+                        <td className="py-2.5 px-3 text-slate-600">{raw.tradeNameEn || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-600">{raw.legalName || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-700">{raw.segment || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-700">{raw.pricingStrategy || '—'}</td>
+                        <td className="py-2.5 px-3 font-mono">{raw.taxCardNumber || '—'}</td>
+                        <td className="py-2.5 px-3 font-mono">{raw.commercialRegister || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-600">{raw.taxDistrict || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-700">{raw.settlementMode || '—'}</td>
+                        <td className="py-2.5 px-3 font-mono">{raw.creditLimit || '0'}</td>
+                        <td className="py-2.5 px-3 font-mono">{raw.phones || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-600">{raw.emails || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-600">{raw.weeklyHolidays || '—'}</td>
+                        <td className="py-2.5 px-3 font-mono">{raw.workingHoursFrom || '—'}</td>
+                        <td className="py-2.5 px-3 font-mono">{raw.workingHoursTo || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-500">{raw.notes || '—'}</td>
+                        <td className="py-2.5 px-3 font-bold text-blue-700">{raw.branchName || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-700">{raw.region || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-600">{raw.address || '—'}</td>
+                        <td className="py-2.5 px-3 text-slate-800">{raw.contactPerson || '—'}</td>
+                        <td className="py-2.5 px-3 font-mono">{raw.branchPhone || '—'}</td>
+                        <td className="py-2.5 px-3 font-mono text-[11px]">{raw.gpsCoordinates || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
 
-            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setIsBulkModalOpen(false)}
-                className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-300 transition"
-              >
-                {isAr ? 'إلغاء' : 'Cancel'}
-              </button>
-              <button
-                type="button"
-                disabled={importStats.valid === 0 || isCommittingImport}
-                onClick={handleCommitBulkImport}
-                className="px-6 py-2 bg-emerald-600 text-white rounded-xl text-sm font-bold shadow-md hover:bg-emerald-700 transition disabled:opacity-50 flex items-center gap-2"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>
-                  {isCommittingImport
-                    ? (isAr ? 'جاري الاستيراد...' : 'Importing...')
-                    : (isAr ? `اعتماد (${importStats.valid}) سجل صالح` : `Commit (${importStats.valid}) Valid`)}
-                </span>
-              </button>
+            {/* Modal Footer Controls */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="text-xs font-bold text-slate-600">
+                {isAr ? 'السجلات الجاهزة للاستيراد:' : 'Ready to commit:'}{' '}
+                <strong className="text-emerald-700 text-sm">{importStats.readyToCommit}</strong> {isAr ? 'من إجمالي' : 'of'}{' '}
+                <strong className="text-slate-800 text-sm">{importStats.totalClients}</strong> {isAr ? 'عميل' : 'clients'}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkModalOpen(false)}
+                  className="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-300 transition cursor-pointer"
+                >
+                  {isAr ? 'إلغاء' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  disabled={importStats.readyToCommit === 0 || isCommittingImport}
+                  onClick={handleCommitBulkImport}
+                  className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md transition disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>
+                    {isCommittingImport
+                      ? (isAr ? 'جاري الاستيراد والتحديث...' : 'Importing & Updating...')
+                      : (isAr
+                          ? `اعتماد (${importStats.readyToCommit}) عميل (${importStats.totalBranchRows} فرع)`
+                          : `Commit (${importStats.readyToCommit}) Clients (${importStats.totalBranchRows} Branches)`)}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
