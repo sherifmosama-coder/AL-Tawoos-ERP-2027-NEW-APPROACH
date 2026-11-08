@@ -858,6 +858,77 @@ export const APP_ARCHITECTURE = {
           }
         }
       }
+    },
+    sales: {
+      id: "sales",
+      labelAr: "المبيعات والتوزيع",
+      labelEn: "Sales & Distribution",
+      icon: "TrendingUp",
+      tabs: {
+        price_lists: {
+          id: "price_lists",
+          collection: "price_lists",
+          labelAr: "قوائم الأسعار وسياسات التسعير",
+          labelEn: "Price Lists & Strategies",
+          icon: "BadgeDollarSign",
+          actions: [
+            { key: "canCreate", labelAr: "إنشاء قائمة أسعار جديدة", labelEn: "Create Price List" },
+            { key: "canEdit", labelAr: "تعديل قائمة أسعار", labelEn: "Edit Price List" },
+            { key: "canDelete", labelAr: "حذف قائمة أسعار", labelEn: "Delete Price List" },
+          ],
+          fields: {
+            strategyId: { labelAr: "استراتيجية التسعير", labelEn: "Pricing Strategy", type: "string", required: true, sample: "wholesale" },
+            type: { labelAr: "نوع الفترة (رسمي / عرض)", labelEn: "Period Type", type: "enum", options: ["official", "promotional"], sample: "official" },
+            startDate: { labelAr: "تاريخ السريان", labelEn: "Effective Start Date", type: "date", required: true, sample: "2026-11-01" },
+            endDate: { labelAr: "تاريخ الانتهاء", labelEn: "Effective End Date", type: "date", sample: "2026-12-31" },
+            clientId: { labelAr: "العميل المرتبط (للتسعير الخاص)", labelEn: "Client ID (Special Pricing)", type: "string", sample: "CLI-001" },
+            branchId: { labelAr: "الفرع المرتبط", labelEn: "Branch ID", type: "string", sample: "BR-01" },
+            status: { labelAr: "حالة القائمة", labelEn: "Status", type: "enum", options: ["active", "closed", "draft"], sample: "active" },
+            items: { labelAr: "مصفوفة أسعار المنتجات", labelEn: "Product Price Matrix", type: "array", sample: [] }
+          }
+        },
+        client_contracts: {
+          id: "client_contracts",
+          collection: "client_contracts",
+          labelAr: "عقود وخصومات العملاء",
+          labelEn: "Client Contracts & Discounts",
+          icon: "Handshake",
+          actions: [
+            { key: "canCreate", labelAr: "تحرير عقد عميل جديد", labelEn: "Create Client Contract" },
+            { key: "canEdit", labelAr: "تعديل بنود العقد", labelEn: "Edit Contract" },
+            { key: "canDelete", labelAr: "إنهاء أو إلغاء العقد", labelEn: "Terminate/Delete Contract" },
+          ],
+          fields: {
+            contractNumber: { labelAr: "رقم العقد", labelEn: "Contract Number", type: "string", required: true, sample: "CNT-2026-001" },
+            clientId: { labelAr: "معرف العميل", labelEn: "Client ID", type: "string", required: true, sample: "CLI-001" },
+            startDate: { labelAr: "تاريخ بدء العقد", labelEn: "Contract Start Date", type: "date", required: true, sample: "2026-01-01" },
+            endDate: { labelAr: "تاريخ انتهاء العقد", labelEn: "Contract End Date", type: "date", sample: "2026-12-31" },
+            rebateRate: { labelAr: "نسبة الخصم / العمولة السنوية", labelEn: "Rebate Rate (%)", type: "number", sample: 3.5 },
+            paymentTerms: { labelAr: "شروط وتسهيلات السداد", labelEn: "Payment Terms", type: "string", sample: "30 days rolling" },
+            status: { labelAr: "حالة العقد", labelEn: "Contract Status", type: "enum", options: ["active", "expired", "terminated"], sample: "active" }
+          }
+        },
+        customers: {
+          id: "customers",
+          collection: "clients",
+          labelAr: "سجل العملاء المعتمدين",
+          labelEn: "Customers Master Directory",
+          icon: "Users",
+          actions: [
+            { key: "canCreate", labelAr: "تسجيل عميل جديد", labelEn: "Create Customer" },
+            { key: "canEdit", labelAr: "تعديل بيانات العميل", labelEn: "Edit Customer" },
+            { key: "canDelete", labelAr: "حذف أو تجميد عميل", labelEn: "Delete Customer" },
+          ],
+          fields: {
+            code: { labelAr: "كود العميل", labelEn: "Client Code", type: "string", required: true, sample: "CLI-001" },
+            nameAr: { labelAr: "اسم العميل (عربي)", labelEn: "Client Name (Ar)", type: "string", required: true, sample: "شركة الأمل للتجارة" },
+            nameEn: { labelAr: "اسم العميل (إنجليزي)", labelEn: "Client Name (En)", type: "string", sample: "Al-Amal Trading" },
+            segmentId: { labelAr: "قطاع العميل", labelEn: "Segment ID", type: "string", sample: "wholesale" },
+            pricingStrategy: { labelAr: "استراتيجية التسعير الافتراضية", labelEn: "Pricing Strategy", type: "string", sample: "wholesalers" },
+            settlementMode: { labelAr: "طريقة السداد", labelEn: "Settlement Mode", type: "string", sample: "credit" }
+          }
+        }
+      }
     }
   },
 
@@ -914,6 +985,10 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       accounts: true,
       party_statements: true,
       financial_statements: true,
+      sales: true,
+      price_lists: true,
+      client_contracts: true,
+      customers: true,
       admin_panel: true
     },
     actions: {
@@ -1017,6 +1092,10 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       accounts: true,
       party_statements: true,
       financial_statements: true,
+      sales: true,
+      price_lists: true,
+      client_contracts: true,
+      customers: true,
       admin_panel: false
     },
     actions: {

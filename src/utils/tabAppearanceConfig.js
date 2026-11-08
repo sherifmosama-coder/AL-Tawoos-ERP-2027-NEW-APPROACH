@@ -1198,6 +1198,42 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'المالية والحسابات والسيولة',
     categoryEn: 'Finance & Treasury'
   },
+  // ==========================================
+  // SALES & COMMERCIAL MODULE (3 TABS)
+  // ==========================================
+  price_lists: {
+    id: 'price_lists',
+    moduleKey: 'sales',
+    order: 1,
+    labelAr: 'قوائم الأسعار',
+    labelEn: 'Price Lists',
+    iconName: 'BadgeDollarSign',
+    color: '#d97706',
+    categoryAr: 'المبيعات والتوزيع',
+    categoryEn: 'Sales & Distribution'
+  },
+  client_contracts: {
+    id: 'client_contracts',
+    moduleKey: 'sales',
+    order: 2,
+    labelAr: 'عقود وخصومات العملاء',
+    labelEn: 'Client Contracts',
+    iconName: 'Handshake',
+    color: '#0284c7',
+    categoryAr: 'المبيعات والتوزيع',
+    categoryEn: 'Sales & Distribution'
+  },
+  customers: {
+    id: 'customers',
+    moduleKey: 'sales',
+    order: 3,
+    labelAr: 'سجل العملاء',
+    labelEn: 'Customers Master',
+    iconName: 'Users',
+    color: '#2563eb',
+    categoryAr: 'المبيعات والتوزيع',
+    categoryEn: 'Sales & Distribution'
+  },
   admin_panel: {
     id: 'admin_panel',
     moduleKey: 'settings',

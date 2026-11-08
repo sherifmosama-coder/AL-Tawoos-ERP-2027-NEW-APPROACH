@@ -52,7 +52,8 @@ import {
   Landmark,
   Truck,
   MessageSquare,
-  Receipt
+  Receipt,
+  Handshake
 } from 'lucide-react';
 import { HeaderPresencePill } from './UIUXComponents';
 import { useRecordComments } from '../context/CommentContext';
@@ -357,9 +358,30 @@ export default function TopNavbar({
       labelAr: 'المبيعات والتوزيع',
       labelEn: 'Sales & Distribution',
       icon: TrendingUp,
-      defaultTab: 'sales_orders',
-      status: 'upcoming',
-      tabs: []
+      defaultTab: 'price_lists',
+      tabs: [
+        {
+          id: 'price_lists',
+          moduleKey: 'price_lists',
+          labelAr: 'قوائم الأسعار',
+          labelEn: 'Price Lists',
+          icon: BadgeDollarSign,
+        },
+        {
+          id: 'client_contracts',
+          moduleKey: 'client_contracts',
+          labelAr: 'عقود وخصومات العملاء',
+          labelEn: 'Client Contracts',
+          icon: Handshake,
+        },
+        {
+          id: 'customers',
+          moduleKey: 'customers',
+          labelAr: 'سجل العملاء',
+          labelEn: 'Customers Master',
+          icon: Users,
+        },
+      ]
     },
     {
       id: 'hr',

@@ -44,6 +44,8 @@ import {
   Layers,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
+  BadgeDollarSign,
   ShieldAlert,
   Smartphone,
   Navigation,
@@ -2314,6 +2316,192 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     setSearchQuery('');
   };
 
+  // Grouping State (Defaults to 'segment')
+  const [groupBy, setGroupBy] = useState('segment'); // 'segment' | 'pricingStrategy' | 'settlementMode' | 'activityStatus' | 'none'
+  const [collapsedGroups, setCollapsedGroups] = useState(new Set());
+
+  const strategyMap = useMemo(() => {
+    const map = {};
+    (pricingStrategies || []).forEach((st) => {
+      map[st.id] = st;
+    });
+    return map;
+  }, [pricingStrategies]);
+
+  const toggleGroupCollapse = (groupId) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleSelectGroup = (groupClients) => {
+    const groupClientIds = groupClients.map((c) => c.id);
+    const allSelected = groupClientIds.length > 0 && groupClientIds.every((id) => selectedClientIds.has(id));
+    const next = new Set(selectedClientIds);
+    if (allSelected) {
+      groupClientIds.forEach((id) => next.delete(id));
+    } else {
+      groupClientIds.forEach((id) => next.add(id));
+    }
+    setSelectedClientIds(next);
+  };
+
+  const groupedClients = useMemo(() => {
+    if (groupBy === 'none') {
+      return [{ id: 'all', titleAr: 'جميع العملاء', titleEn: 'All Clients', color: '#3b82f6', icon: UserCheck, clients: filteredClients }];
+    }
+
+    if (groupBy === 'segment') {
+      const groupsMap = {};
+      segments.forEach((seg) => {
+        groupsMap[seg.id] = {
+          id: seg.id,
+          titleAr: seg.nameAr || seg.nameEn,
+          titleEn: seg.nameEn || seg.nameAr,
+          color: seg.color || '#2563eb',
+          icon: SEGMENT_ICON_MAP[seg.icon] || Layers,
+          clients: []
+        };
+      });
+      const unassigned = {
+        id: 'unassigned',
+        titleAr: 'غير مصنف بقطاع',
+        titleEn: 'Unassigned Segment',
+        color: '#64748b',
+        icon: HelpCircle,
+        clients: []
+      };
+
+      filteredClients.forEach((client) => {
+        if (client.segmentId && groupsMap[client.segmentId]) {
+          groupsMap[client.segmentId].clients.push(client);
+        } else {
+          unassigned.clients.push(client);
+        }
+      });
+
+      const list = Object.values(groupsMap).filter((g) => g.clients.length > 0);
+      if (unassigned.clients.length > 0) list.push(unassigned);
+      return list;
+    }
+
+    if (groupBy === 'pricingStrategy') {
+      const groupsMap = {};
+      (pricingStrategies || []).forEach((st) => {
+        groupsMap[st.id] = {
+          id: st.id,
+          titleAr: st.nameAr,
+          titleEn: st.nameEn,
+          color: st.color || '#d97706',
+          icon: BadgeDollarSign,
+          clients: []
+        };
+      });
+      const unassigned = {
+        id: 'unassigned',
+        titleAr: 'غير محدد باستراتيجية',
+        titleEn: 'Unassigned Strategy',
+        color: '#64748b',
+        icon: HelpCircle,
+        clients: []
+      };
+
+      filteredClients.forEach((client) => {
+        const s = client.pricingStrategy;
+        if (s && groupsMap[s]) {
+          groupsMap[s].clients.push(client);
+        } else {
+          unassigned.clients.push(client);
+        }
+      });
+
+      const list = Object.values(groupsMap).filter((g) => g.clients.length > 0);
+      if (unassigned.clients.length > 0) list.push(unassigned);
+      return list;
+    }
+
+    if (groupBy === 'settlementMode') {
+      const modesConfig = [
+        { id: 'cod', titleAr: 'سداد نقدي / فوري', titleEn: 'Cash / COD', color: '#059669', icon: Coins },
+        { id: 'credit', titleAr: 'سداد آجل (ائتمان)', titleEn: 'Credit Terms', color: '#d97706', icon: Calendar },
+        { id: 'rolling_credit', titleAr: 'فاتورة دايرة', titleEn: 'Rolling Invoice', color: '#2563eb', icon: RefreshCw },
+      ];
+      const groupsMap = {};
+      modesConfig.forEach((m) => {
+        groupsMap[m.id] = { ...m, clients: [] };
+      });
+      const unassigned = {
+        id: 'unassigned',
+        titleAr: 'غير محدد طريقة السداد',
+        titleEn: 'Unassigned Settlement',
+        color: '#64748b',
+        icon: HelpCircle,
+        clients: []
+      };
+
+      filteredClients.forEach((client) => {
+        const mode = client.settlementMode;
+        if (mode && groupsMap[mode]) {
+          groupsMap[mode].clients.push(client);
+        } else {
+          unassigned.clients.push(client);
+        }
+      });
+
+      const list = Object.values(groupsMap).filter((g) => g.clients.length > 0);
+      if (unassigned.clients.length > 0) list.push(unassigned);
+      return list;
+    }
+
+    if (groupBy === 'activityStatus') {
+      const activeGroup = {
+        id: 'active',
+        titleAr: 'عملاء نشطون (مسجل لهم تسليم فعلي)',
+        titleEn: 'Active Clients (Delivery Recorded)',
+        color: '#059669',
+        icon: CheckCircle2,
+        clients: []
+      };
+      const inactiveGroup = {
+        id: 'inactive',
+        titleAr: 'لا يوجد نشاط تسليم مسجل',
+        titleEn: 'No Delivery Records Yet',
+        color: '#64748b',
+        icon: Clock,
+        clients: []
+      };
+
+      filteredClients.forEach((client) => {
+        if (client.latestActivityOn) {
+          activeGroup.clients.push(client);
+        } else {
+          inactiveGroup.clients.push(client);
+        }
+      });
+
+      const list = [];
+      if (activeGroup.clients.length > 0) list.push(activeGroup);
+      if (inactiveGroup.clients.length > 0) list.push(inactiveGroup);
+      return list;
+    }
+
+    return [{ id: 'all', titleAr: 'جميع العملاء', titleEn: 'All Clients', color: '#3b82f6', icon: UserCheck, clients: filteredClients }];
+  }, [groupBy, filteredClients, segments, pricingStrategies]);
+
+  const handleToggleCollapseAll = () => {
+    if (collapsedGroups.size > 0) {
+      setCollapsedGroups(new Set());
+    } else {
+      setCollapsedGroups(new Set(groupedClients.map((g) => g.id)));
+    }
+  };
+
   // Selection Helpers
   const isAllFilteredSelected =
     filteredClients.length > 0 &&
@@ -2521,6 +2709,37 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 <span>{isAr ? 'إعادة ضبط' : 'Reset'}</span>
               </button>
             )}
+
+            {/* Group By Selector */}
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-2xs">
+              <Layers className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span className="text-[11px] font-bold text-slate-500 shrink-0 hidden md:inline">
+                {isAr ? 'تجميع حسب:' : 'Group By:'}
+              </span>
+              <select
+                value={groupBy}
+                onChange={(e) => setGroupBy(e.target.value)}
+                className="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer"
+              >
+                <option value="segment">{isAr ? 'القطاع (افتراضي)' : 'Segment (Default)'}</option>
+                <option value="pricingStrategy">{isAr ? 'استراتيجية التسعير' : 'Pricing Strategy'}</option>
+                <option value="settlementMode">{isAr ? 'طريقة السداد' : 'Settlement Mode'}</option>
+                <option value="activityStatus">{isAr ? 'حالة النشاط' : 'Activity Status'}</option>
+                <option value="none">{isAr ? 'بدون تجميع' : 'No Grouping'}</option>
+              </select>
+              {groupBy !== 'none' && (
+                <div className="flex items-center border-s border-slate-200 ps-1.5 ms-1">
+                  <button
+                    type="button"
+                    onClick={handleToggleCollapseAll}
+                    className="text-[10px] font-bold text-slate-500 hover:text-blue-600 transition cursor-pointer whitespace-nowrap"
+                    title={collapsedGroups.size > 0 ? (isAr ? 'توسيع كافة المجموعات' : 'Expand All') : (isAr ? 'طي كافة المجموعات' : 'Collapse All')}
+                  >
+                    {collapsedGroups.size > 0 ? (isAr ? 'توسيع الكل' : 'Expand All') : (isAr ? 'طي الكل' : 'Collapse All')}
+                  </button>
+                </div>
+              )}
+            </div>
 
             <span className="text-xs font-bold text-slate-500 hidden sm:inline">
               {isAr ? 'عرض' : 'Showing'} <strong className="text-blue-600">{filteredClients.length}</strong>{' '}
@@ -2790,14 +3009,89 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-sm">
-                {filteredClients.map((client) => {
-                  const seg = segmentMap[client.segmentId];
-                  const IconCmp = seg ? SEGMENT_ICON_MAP[seg.icon] || Layers : UserCheck;
-                  const isExpanded = expandedClientId === client.id;
-                  const isSelected = selectedClientIds.has(client.id);
+                {groupedClients.map((group) => {
+                  const isCollapsed = collapsedGroups.has(group.id);
+                  const GroupIcon = group.icon || Layers;
+                  const groupClientIds = group.clients.map((c) => c.id);
+                  const isGroupAllSelected =
+                    group.clients.length > 0 &&
+                    groupClientIds.every((id) => selectedClientIds.has(id));
+                  const isGroupSomeSelected =
+                    groupClientIds.some((id) => selectedClientIds.has(id));
 
                   return (
-                    <React.Fragment key={client.id}>
+                    <React.Fragment key={`group-block-${group.id}`}>
+                      {groupBy !== 'none' && (
+                        <tr className="bg-slate-100/95 border-y border-slate-200 sticky top-[41px] z-10 backdrop-blur-xs select-none">
+                          <td colSpan={9} className="py-2.5 px-3">
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                              <div
+                                className="flex items-center gap-2 cursor-pointer"
+                                onClick={() => toggleGroupCollapse(group.id)}
+                              >
+                                <button
+                                  type="button"
+                                  className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-200/60 transition"
+                                  title={isCollapsed ? (isAr ? 'توسيع المجموعة' : 'Expand Group') : (isAr ? 'طي المجموعة' : 'Collapse Group')}
+                                >
+                                  {isCollapsed ? (
+                                    <ChevronRight className={`w-4 h-4 transition-transform ${isAr ? 'rotate-180' : ''}`} />
+                                  ) : (
+                                    <ChevronDown className="w-4 h-4" />
+                                  )}
+                                </button>
+
+                                <div
+                                  className="w-6 h-6 rounded-lg flex items-center justify-center text-xs shadow-2xs font-bold"
+                                  style={{
+                                    backgroundColor: `${group.color}18`,
+                                    color: group.color,
+                                    border: `1px solid ${group.color}40`,
+                                  }}
+                                >
+                                  <GroupIcon className="w-3.5 h-3.5" />
+                                </div>
+
+                                <span className="text-xs font-black text-slate-900">
+                                  {isAr ? group.titleAr : group.titleEn}
+                                </span>
+
+                                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-white text-slate-600 border border-slate-200 shadow-2xs">
+                                  {group.clients.length} {isAr ? 'عميل' : 'clients'}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-2 text-xs">
+                                <label
+                                  className="flex items-center gap-1.5 cursor-pointer text-slate-500 hover:text-slate-800 text-[11px] font-semibold"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isGroupAllSelected}
+                                    ref={(el) => {
+                                      if (el) el.indeterminate = isGroupSomeSelected && !isGroupAllSelected;
+                                    }}
+                                    onChange={() => handleToggleSelectGroup(group.clients)}
+                                    className="rounded text-blue-600 focus:ring-0 focus:ring-offset-0 border-slate-300 cursor-pointer w-3.5 h-3.5"
+                                  />
+                                  <span>{isAr ? 'تحديد عملاء المجموعة' : 'Select group'}</span>
+                                </label>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+
+                      {(!isCollapsed || groupBy === 'none') &&
+                        group.clients.map((client) => {
+                          const seg = segmentMap[client.segmentId];
+                          const IconCmp = seg ? SEGMENT_ICON_MAP[seg.icon] || Layers : UserCheck;
+                          const isExpanded = expandedClientId === client.id;
+                          const isSelected = selectedClientIds.has(client.id);
+
+                          return (
+                            <React.Fragment key={client.id}>
                       <tr className={`hover:bg-slate-50/70 transition group ${isSelected ? 'bg-blue-50/40' : ''}`}>
                         {/* Checkbox */}
                         <td className="py-3 px-2 text-center" onClick={(e) => e.stopPropagation()}>
@@ -3185,6 +3479,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                           </td>
                         </tr>
                       )}
+                            </React.Fragment>
+                          );
+                        })}
                     </React.Fragment>
                   );
                 })}

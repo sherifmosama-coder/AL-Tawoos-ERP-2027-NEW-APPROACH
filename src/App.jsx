@@ -43,7 +43,8 @@ import {
   Landmark,
   FileText,
   Receipt,
-  Truck
+  Truck,
+  Handshake
 } from 'lucide-react';
 import LandingPage from './components/LandingPage';
 import TopNavbar from './components/TopNavbar';
@@ -549,8 +550,8 @@ export default function App() {
     ],
     sales: [
       { id: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign, moduleKey: 'price_lists' },
+      { id: 'client_contracts', labelAr: 'عقود وخصومات العملاء', labelEn: 'Client Contracts', icon: Handshake, moduleKey: 'client_contracts' },
       { id: 'customers', labelAr: 'سجل العملاء', labelEn: 'Customers Master', icon: Users, moduleKey: 'customers' },
-      { id: 'sales_orders', labelAr: 'أوامر البيع والتوريد', labelEn: 'Sales Orders', icon: TrendingUp, moduleKey: 'sales_orders' },
     ],
     hr: [
       { id: 'employees', labelAr: 'سجل العاملين', labelEn: 'Employees Directory', icon: Users, moduleKey: 'employees' },
@@ -1078,7 +1079,8 @@ export default function App() {
                         ...(MODULE_NAV_DEFINITIONS.master_data || []),
                         ...(MODULE_NAV_DEFINITIONS.purchases || []),
                         ...(MODULE_NAV_DEFINITIONS.production || []),
-                        ...(MODULE_NAV_DEFINITIONS.finance || [])
+                        ...(MODULE_NAV_DEFINITIONS.finance || []),
+                        ...(MODULE_NAV_DEFINITIONS.sales || [])
                       ];
                       const item = allNavItems.find((n) => n.id === tabId);
                       handleOpenScopedMatrix('tab', item?.moduleKey || tabId);
@@ -1308,6 +1310,29 @@ export default function App() {
                 currentUser={currentUser} 
                 permissions={effectivePermissions} 
               />
+            )}
+            {activeTab === 'client_contracts' && (
+              <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center max-w-2xl mx-auto my-8 shadow-xs space-y-4">
+                <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center mx-auto shadow-inner">
+                  <Handshake className="w-8 h-8" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-lg font-black text-slate-900">
+                    {isAr ? 'عقود وخصومات العملاء' : 'Client Contracts & Rebates'}
+                  </h3>
+                  <p className="text-sm text-slate-500 font-medium">
+                    {isAr
+                      ? 'المرحلة القادمة: سيتم ربط اتفاقيات العملاء السنوية، والخصومات الممنوحة، والعمولات الشرائحية في هذا التبويب.'
+                      : 'Upcoming milestone: Annual customer volume agreements, progressive discount tiers, and contractual rebates will be managed here.'}
+                  </p>
+                </div>
+                <div className="pt-2">
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'قيد التطوير والتجهيز' : 'In Progress'}</span>
+                  </span>
+                </div>
+              </div>
             )}
             {activeTab === 'customers' && (
               <ClientMaster 
