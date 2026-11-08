@@ -67,8 +67,27 @@ import VatNumberDisplay from './VatNumberDisplay';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster';
 import { RowCommentButton } from './comments';
 
-// Helper to normalize phone numbers (removes non-digits)
-const normalizePhone = (p) => String(p || '').replace(/\D/g, '').trim();
+// Helper to normalize phone numbers:
+// - Strips non-digits
+// - Handles international Egypt prefix (+20 or 0020 or 20)
+// - Ensures all domestic phone numbers are prefixed with 0 (e.g. 10xxxxxxxx -> 010xxxxxxxx)
+export const normalizePhone = (p) => {
+  if (!p) return '';
+  let digits = String(p).replace(/\D/g, '').trim();
+  if (!digits) return '';
+
+  if (digits.startsWith('0020')) {
+    digits = digits.slice(4);
+  } else if (digits.startsWith('20') && digits.length >= 11) {
+    digits = digits.slice(2);
+  }
+
+  if (digits.startsWith('0')) {
+    return digits;
+  }
+
+  return `0${digits}`;
+};
 
 // Helper to normalize tax card (removes dashes/spaces)
 const normalizeTaxCard = (t) => String(t || '').replace(/[\s-]/g, '').trim();
@@ -564,10 +583,16 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     setEmailInput('');
 
     // Reconcile phones
-    let clientPhones = Array.isArray(client.phones) ? [...client.phones] : [];
+    let clientPhones = (Array.isArray(client.phones) ? client.phones : []).map(normalizePhone).filter(Boolean);
     if (clientPhones.length === 0) {
-      if (client.phone) clientPhones.push(client.phone);
-      if (client.mobile && client.mobile !== client.phone) clientPhones.push(client.mobile);
+      if (client.phone) {
+        const np = normalizePhone(client.phone);
+        if (np) clientPhones.push(np);
+      }
+      if (client.mobile) {
+        const nm = normalizePhone(client.mobile);
+        if (nm && !clientPhones.includes(nm)) clientPhones.push(nm);
+      }
     }
 
     // Reconcile emails
@@ -579,7 +604,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     const reconciledBranches = (client.branches && client.branches.length > 0)
       ? client.branches.map((b) => ({
           ...b,
-          phones: Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : []),
+          phone: normalizePhone(b.phone || (b.phones && b.phones[0]) || ''),
+          phones: (Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : [])).map(normalizePhone).filter(Boolean),
           useCustomSchedule: b.useCustomSchedule === true,
           weeklyHolidays: Array.isArray(b.weeklyHolidays) ? b.weeklyHolidays : [],
           workingHoursFrom: b.workingHoursFrom || '',
@@ -767,8 +793,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         openingBalance: Number(formData.openingBalance) || 0,
         notes: formData.notes.trim(),
         logo: formData.logo || '',
-        phones: formData.phones || [],
-        phone: (formData.phones && formData.phones[0]) || '',
+        phones: (formData.phones || []).map((p) => normalizePhone(p)).filter(Boolean),
+        phone: normalizePhone((formData.phones && formData.phones[0]) || ''),
         emails: formData.emails || [],
         email: (formData.emails && formData.emails[0]) || '',
         weeklyHolidays: formData.weeklyHolidays || [],
@@ -776,7 +802,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         workingHoursTo: formData.workingHoursTo || '',
         branches: (formData.branches || []).map((b) => ({
           ...b,
-          phone: (b.phones && b.phones[0]) || b.phone || ''
+          phone: normalizePhone((b.phones && b.phones[0]) || b.phone || ''),
+          phones: (Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : [])).map((p) => normalizePhone(p)).filter(Boolean)
         })),
         branchesCount: (formData.branches || []).length,
         attachments: formData.attachments || [],
@@ -812,7 +839,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
   // Multiple Phones & Emails Handlers
   const handleAddPhone = () => {
-    const p = phoneInput.trim();
+    const p = normalizePhone(phoneInput.trim());
     if (!p) return;
     const current = formData.phones || [];
     if (!current.includes(p)) {
@@ -1588,12 +1615,16 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         const branchRegion = (cols[colMap.region] || '').trim();
         const branchAddress = (cols[colMap.address] || '').trim();
         const branchContact = (cols[colMap.contactPerson] || '').trim();
-        const branchPhone = (cols[colMap.branchPhone] || '').trim();
+        const rawBranchPhone = (cols[colMap.branchPhone] || '').trim();
+        const normBranchPhone = normalizePhone(rawBranchPhone);
         const branchGps = (cols[colMap.gpsCoordinates] || '').trim();
         const rowNotes = colMap.notes !== -1 ? (cols[colMap.notes] || '').trim() : '';
 
-        const rowPhones = colMap.phones !== -1 ? parseDelimited(cols[colMap.phones]) : [];
-        if (branchPhone && !rowPhones.includes(branchPhone)) rowPhones.push(branchPhone);
+        const rawPhones = colMap.phones !== -1 ? parseDelimited(cols[colMap.phones]) : [];
+        const rowPhones = rawPhones.map((p) => normalizePhone(p)).filter(Boolean);
+        if (normBranchPhone && !rowPhones.includes(normBranchPhone)) {
+          rowPhones.push(normBranchPhone);
+        }
         const rowEmails = colMap.emails !== -1 ? parseDelimited(cols[colMap.emails]) : [];
 
         const rawStrat = (cols[colMap.pricingStrategy] || '').trim();
@@ -1629,7 +1660,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           address: branchAddress,
           region: branchRegion,
           contactPerson: branchContact,
-          branchPhone,
+          branchPhone: normBranchPhone || rawBranchPhone,
           gpsCoordinates: branchGps
         });
 
@@ -1679,7 +1710,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 region: branchRegion,
                 address: branchAddress,
                 contactPerson: branchContact,
-                phone: branchPhone || rowPhones[0] || '',
+                phone: normBranchPhone || rowPhones[0] || '',
                 phones: rowPhones,
                 gpsCoordinates: branchGps,
                 notes: rowNotes,
@@ -1709,7 +1740,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             region: branchRegion,
             address: branchAddress,
             contactPerson: branchContact,
-            phone: branchPhone || '',
+            phone: normBranchPhone || '',
             phones: rowPhones,
             gpsCoordinates: branchGps,
             notes: rowNotes,
@@ -1725,7 +1756,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       const stagedClients = [];
 
       for (const [key, group] of clientGroups.entries()) {
-        const phones = Array.from(group.phonesSet).filter(Boolean);
+        const phones = Array.from(group.phonesSet).map((p) => normalizePhone(p)).filter(Boolean);
         const emails = Array.from(group.emailsSet).filter(Boolean);
 
         const clientData = {
@@ -1884,14 +1915,18 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             creditLimit: client.creditLimit,
             openingBalance: 0,
             latestActivityOn: client.isExisting ? (client.existingClient?.latestActivityOn || null) : null,
-            phones: client.phones || [],
-            phone: client.phones?.[0] || '',
+            phones: (client.phones || []).map((p) => normalizePhone(p)).filter(Boolean),
+            phone: normalizePhone(client.phones?.[0] || ''),
             emails: client.emails || [],
             email: client.emails?.[0] || '',
             weeklyHolidays: client.weeklyHolidays?.length > 0 ? client.weeklyHolidays : ['friday'],
             workingHoursFrom: client.workingHoursFrom || '',
             workingHoursTo: client.workingHoursTo || '',
-            branches: client.branches || [],
+            branches: (client.branches || []).map((b) => ({
+              ...b,
+              phone: normalizePhone(b.phone || (b.phones && b.phones[0]) || ''),
+              phones: (Array.isArray(b.phones) ? b.phones : (b.phone ? [b.phone] : [])).map((p) => normalizePhone(p)).filter(Boolean)
+            })),
             branchesCount: (client.branches || []).length,
             attachments: client.isExisting ? (client.existingClient?.attachments || []) : [],
             logo: client.isExisting ? (client.existingClient?.logo || '') : '',
@@ -1915,13 +1950,17 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             if (!alreadyExists) {
               mergedBranches.push({
                 ...nb,
+                phone: normalizePhone(nb.phone || (nb.phones && nb.phones[0]) || ''),
+                phones: (Array.isArray(nb.phones) ? nb.phones : (nb.phone ? [nb.phone] : [])).map((p) => normalizePhone(p)).filter(Boolean),
                 id: `br_${mergedBranches.length + 1}`,
                 isMain: mergedBranches.length === 0
               });
             }
           }
 
-          const combinedPhones = Array.from(new Set([...(existing?.phones || []), ...(client.phones || [])])).filter(Boolean);
+          const combinedPhones = Array.from(new Set([...(existing?.phones || []), ...(client.phones || [])]))
+            .map((p) => normalizePhone(p))
+            .filter(Boolean);
           const combinedEmails = Array.from(new Set([...(existing?.emails || []), ...(client.emails || [])])).filter(Boolean);
 
           await setDoc(
