@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { db } from '../firebase';
 import {
@@ -77,7 +78,13 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
   const [isEditorModalOpen, setIsEditorModalOpen] = useState(false);
   const [editingPeriod, setEditingPeriod] = useState(null);
   const [activeActionsMenuId, setActiveActionsMenuId] = useState(null);
+  const [actionsMenuAnchor, setActionsMenuAnchor] = useState(null);
   const [deleteConfirmPeriod, setDeleteConfirmPeriod] = useState(null);
+
+  const activePeriodForMenu = useMemo(() => {
+    if (!activeActionsMenuId) return null;
+    return priceLists.find((p) => p.id === activeActionsMenuId) || null;
+  }, [activeActionsMenuId, priceLists]);
 
   // 1. Subscribe to Price Lists
   useEffect(() => {
@@ -134,15 +141,30 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
     return () => unsub();
   }, []);
 
-  // Close 3-dots actions menu on outside click
+  // Close 3-dots actions menu on outside click or scroll/resize
   useEffect(() => {
+    if (!activeActionsMenuId) return;
+
     const handleClick = (e) => {
-      if (activeActionsMenuId && !e.target.closest('[data-period-menu]')) {
+      if (!e.target.closest('[data-period-menu]')) {
         setActiveActionsMenuId(null);
+        setActionsMenuAnchor(null);
       }
     };
+    const handleScrollOrResize = () => {
+      setActiveActionsMenuId(null);
+      setActionsMenuAnchor(null);
+    };
+
     document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
+    window.addEventListener('scroll', handleScrollOrResize, true);
+    window.addEventListener('resize', handleScrollOrResize);
+
+    return () => {
+      document.removeEventListener('click', handleClick);
+      window.removeEventListener('scroll', handleScrollOrResize, true);
+      window.removeEventListener('resize', handleScrollOrResize);
+    };
   }, [activeActionsMenuId]);
 
   // Derived Filtered Periods
@@ -648,69 +670,24 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
                           <div className="relative inline-block" data-period-menu>
                             <button
                               type="button"
-                              onClick={() =>
-                                setActiveActionsMenuId(activeActionsMenuId === period.id ? null : period.id)
-                              }
-                              className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-slate-800 transition cursor-pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (activeActionsMenuId === period.id) {
+                                  setActiveActionsMenuId(null);
+                                  setActionsMenuAnchor(null);
+                                } else {
+                                  setActiveActionsMenuId(period.id);
+                                  setActionsMenuAnchor(e.currentTarget.getBoundingClientRect());
+                                }
+                              }}
+                              className={`p-1.5 rounded-lg transition cursor-pointer ${
+                                activeActionsMenuId === period.id
+                                  ? 'bg-slate-900 text-white shadow-md'
+                                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+                              }`}
                             >
                               <MoreVertical className="w-4 h-4" />
                             </button>
-
-                            {activeActionsMenuId === period.id && (
-                              <div className="absolute end-0 top-full mt-1 w-48 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-30 text-xs font-bold text-slate-700 divide-y divide-slate-100 animate__animated animate__fadeIn animate__faster">
-                                {status === 'draft' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleActivateDraft(period)}
-                                    className="w-full px-3 py-2 text-start hover:bg-emerald-50 text-emerald-800 flex items-center gap-2 cursor-pointer font-bold"
-                                  >
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                                    <span>{isAr ? 'اعتماد وتفعيل المسودة' : 'Activate Draft'}</span>
-                                  </button>
-                                )}
-
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEditPeriod(period)}
-                                  className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
-                                >
-                                  <Edit3 className="w-3.5 h-3.5 text-blue-600" />
-                                  <span>{isAr ? 'تعديل الأسعار والفترة' : 'Edit Prices'}</span>
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => handleDuplicatePeriod(period)}
-                                  className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
-                                >
-                                  <Copy className="w-3.5 h-3.5 text-slate-600" />
-                                  <span>{isAr ? 'تكرار كفترة جديدة' : 'Duplicate Period'}</span>
-                                </button>
-
-                                {status === 'active' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleClosePeriodNow(period)}
-                                    className="w-full px-3 py-2 text-start hover:bg-amber-50 text-amber-800 flex items-center gap-2 cursor-pointer"
-                                  >
-                                    <Clock className="w-3.5 h-3.5 text-amber-600" />
-                                    <span>{isAr ? 'إغلاق الفترة فوراً' : 'Close Period Now'}</span>
-                                  </button>
-                                )}
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setDeleteConfirmPeriod(period);
-                                    setActiveActionsMenuId(null);
-                                  }}
-                                  className="w-full px-3 py-2 text-start hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  <span>{isAr ? 'حذف الفترة' : 'Delete'}</span>
-                                </button>
-                              </div>
-                            )}
                           </div>
                         </div>
                       </td>
@@ -722,6 +699,110 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
           </div>
         )}
       </div>
+
+      {/* Floating Portal Actions Menu for Price Periods */}
+      {activePeriodForMenu && actionsMenuAnchor && typeof document !== 'undefined' && createPortal(
+        (() => {
+          const menuWidth = 192; // w-48
+          const menuHeight = 180;
+          const spaceBelow = window.innerHeight - actionsMenuAnchor.bottom;
+          const openUpward = spaceBelow < menuHeight && actionsMenuAnchor.top > spaceBelow;
+          const top = openUpward
+            ? Math.max(10, actionsMenuAnchor.top - menuHeight - 4)
+            : actionsMenuAnchor.bottom + 4;
+          let left = actionsMenuAnchor.right - menuWidth;
+          if (left < 10) left = 10;
+          if (left + menuWidth > window.innerWidth - 10) left = window.innerWidth - menuWidth - 10;
+
+          const period = activePeriodForMenu;
+          const todayStr = formatDateKey(new Date());
+          const status = computePeriodStatus(period, todayStr);
+
+          return (
+            <div
+              data-period-menu
+              style={{
+                position: 'fixed',
+                top: `${top}px`,
+                left: `${left}px`,
+                width: `${menuWidth}px`,
+                zIndex: 99999
+              }}
+              className="bg-white rounded-xl shadow-2xl border border-slate-200 py-1 text-xs font-bold text-slate-700 divide-y divide-slate-100 animate__animated animate__fadeIn animate__faster"
+            >
+              {status === 'draft' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveActionsMenuId(null);
+                    setActionsMenuAnchor(null);
+                    handleActivateDraft(period);
+                  }}
+                  className="w-full px-3 py-2 text-start hover:bg-emerald-50 text-emerald-800 flex items-center gap-2 cursor-pointer font-bold"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>{isAr ? 'اعتماد وتفعيل المسودة' : 'Activate Draft'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveActionsMenuId(null);
+                  setActionsMenuAnchor(null);
+                  handleOpenEditPeriod(period);
+                }}
+                className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+              >
+                <Edit3 className="w-3.5 h-3.5 text-blue-600" />
+                <span>{isAr ? 'تعديل الأسعار والفترة' : 'Edit Prices'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveActionsMenuId(null);
+                  setActionsMenuAnchor(null);
+                  handleDuplicatePeriod(period);
+                }}
+                className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5 text-slate-600" />
+                <span>{isAr ? 'تكرار كفترة جديدة' : 'Duplicate Period'}</span>
+              </button>
+
+              {status === 'active' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveActionsMenuId(null);
+                    setActionsMenuAnchor(null);
+                    handleClosePeriodNow(period);
+                  }}
+                  className="w-full px-3 py-2 text-start hover:bg-amber-50 text-amber-800 flex items-center gap-2 cursor-pointer"
+                >
+                  <Clock className="w-3.5 h-3.5 text-amber-600" />
+                  <span>{isAr ? 'إغلاق الفترة فوراً' : 'Close Period Now'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteConfirmPeriod(period);
+                  setActiveActionsMenuId(null);
+                  setActionsMenuAnchor(null);
+                }}
+                className="w-full px-3 py-2 text-start hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isAr ? 'حذف الفترة' : 'Delete'}</span>
+              </button>
+            </div>
+          );
+        })(),
+        document.body
+      )}
 
       {/* Strategies Manager Modal */}
       <PricingStrategiesModal

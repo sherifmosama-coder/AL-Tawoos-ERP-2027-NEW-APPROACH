@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { db, fileToDataUrl, openBase64Document } from '../firebase';
 import {
@@ -472,7 +473,13 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
   // Row Actions 3-Dots Menu & Detail Modal State
   const [activeActionsMenuClientId, setActiveActionsMenuClientId] = useState(null);
+  const [actionsMenuAnchor, setActionsMenuAnchor] = useState(null);
   const [detailViewClient, setDetailViewClient] = useState(null);
+
+  const activeClientForMenu = useMemo(() => {
+    if (!activeActionsMenuClientId) return null;
+    return clients.find((c) => c.id === activeActionsMenuClientId) || null;
+  }, [activeActionsMenuClientId, clients]);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -605,15 +612,30 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     };
   }, []);
 
-  // Close 3-dots actions menu when clicking outside
+  // Close 3-dots actions menu when clicking outside or scrolling/resizing
   useEffect(() => {
+    if (!activeActionsMenuClientId) return;
+
     const handleOutsideClick = (e) => {
-      if (activeActionsMenuClientId && !e.target.closest('[data-actions-menu]')) {
+      if (!e.target.closest('[data-actions-menu]')) {
         setActiveActionsMenuClientId(null);
+        setActionsMenuAnchor(null);
       }
     };
+    const handleScrollOrResize = () => {
+      setActiveActionsMenuClientId(null);
+      setActionsMenuAnchor(null);
+    };
+
     document.addEventListener('click', handleOutsideClick);
-    return () => document.removeEventListener('click', handleOutsideClick);
+    window.addEventListener('scroll', handleScrollOrResize, true);
+    window.addEventListener('resize', handleScrollOrResize);
+
+    return () => {
+      document.removeEventListener('click', handleOutsideClick);
+      window.removeEventListener('scroll', handleScrollOrResize, true);
+      window.removeEventListener('resize', handleScrollOrResize);
+    };
   }, [activeActionsMenuClientId]);
 
   // Map segments dictionary for fast lookup
@@ -3245,7 +3267,13 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setActiveActionsMenuClientId(activeActionsMenuClientId === client.id ? null : client.id);
+                                  if (activeActionsMenuClientId === client.id) {
+                                    setActiveActionsMenuClientId(null);
+                                    setActionsMenuAnchor(null);
+                                  } else {
+                                    setActiveActionsMenuClientId(client.id);
+                                    setActionsMenuAnchor(e.currentTarget.getBoundingClientRect());
+                                  }
                                 }}
                                 className={`p-1.5 rounded-lg border transition cursor-pointer ${
                                   activeActionsMenuClientId === client.id
@@ -3256,57 +3284,6 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                               >
                                 <MoreVertical className="w-4 h-4" />
                               </button>
-
-                              {activeActionsMenuClientId === client.id && (
-                                <div
-                                  className={`absolute z-40 top-full mt-1.5 ${
-                                    isAr ? 'left-0' : 'right-0'
-                                  } w-52 bg-white border border-slate-200 rounded-2xl shadow-2xl py-1.5 text-xs text-slate-700 animate__animated animate__fadeIn animate__faster text-start`}
-                                >
-                                  {/* 1. Full Detailed View */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setActiveActionsMenuClientId(null);
-                                      setDetailViewClient(client);
-                                    }}
-                                    className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-blue-50 text-blue-700 font-bold transition cursor-pointer"
-                                  >
-                                    <Eye className="w-4 h-4 text-blue-600 shrink-0" />
-                                    <span>{isAr ? 'عرض التفاصيل بالكامل' : 'Full Detailed View'}</span>
-                                  </button>
-
-                                  {/* 2. Edit */}
-                                  {canEdit && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setActiveActionsMenuClientId(null);
-                                        handleOpenEditModal(client);
-                                      }}
-                                      className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-slate-50 text-slate-700 font-semibold transition cursor-pointer"
-                                    >
-                                      <Edit3 className="w-4 h-4 text-slate-500 shrink-0" />
-                                      <span>{isAr ? 'تعديل بيانات العميل' : 'Edit Client'}</span>
-                                    </button>
-                                  )}
-
-                                  {/* 3. Delete */}
-                                  {canDelete && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setActiveActionsMenuClientId(null);
-                                        setDeleteConfirmClient(client);
-                                      }}
-                                      className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-rose-50 text-rose-600 font-semibold transition cursor-pointer border-t border-slate-100"
-                                    >
-                                      <Trash2 className="w-4 h-4 text-rose-500 shrink-0" />
-                                      <span>{isAr ? 'حذف العميل' : 'Delete Client'}</span>
-                                    </button>
-                                  )}
-                                </div>
-                              )}
                             </div>
                           </div>
                         </td>
@@ -3492,11 +3469,90 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         )}
       </div>
 
+      {/* Floating Portal Actions Menu for Client Rows */}
+      {activeClientForMenu && actionsMenuAnchor && typeof document !== 'undefined' && createPortal(
+        (() => {
+          const menuWidth = 208; // w-52
+          const menuHeight = 150;
+          const spaceBelow = window.innerHeight - actionsMenuAnchor.bottom;
+          const openUpward = spaceBelow < menuHeight && actionsMenuAnchor.top > spaceBelow;
+          const top = openUpward
+            ? Math.max(10, actionsMenuAnchor.top - menuHeight - 4)
+            : actionsMenuAnchor.bottom + 4;
+          let left = actionsMenuAnchor.right - menuWidth;
+          if (left < 10) left = 10;
+          if (left + menuWidth > window.innerWidth - 10) left = window.innerWidth - menuWidth - 10;
+
+          const client = activeClientForMenu;
+
+          return (
+            <div
+              data-actions-menu
+              style={{
+                position: 'fixed',
+                top: `${top}px`,
+                left: `${left}px`,
+                width: `${menuWidth}px`,
+                zIndex: 99999
+              }}
+              className="bg-white border border-slate-200 rounded-2xl shadow-2xl py-1.5 text-xs text-slate-700 animate__animated animate__fadeIn animate__faster text-start"
+            >
+              {/* 1. Full Detailed View */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveActionsMenuClientId(null);
+                  setActionsMenuAnchor(null);
+                  setDetailViewClient(client);
+                }}
+                className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-blue-50 text-blue-700 font-bold transition cursor-pointer"
+              >
+                <Eye className="w-4 h-4 text-blue-600 shrink-0" />
+                <span>{isAr ? 'عرض التفاصيل بالكامل' : 'Full Detailed View'}</span>
+              </button>
+
+              {/* 2. Edit */}
+              {canEdit && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveActionsMenuClientId(null);
+                    setActionsMenuAnchor(null);
+                    handleOpenEditModal(client);
+                  }}
+                  className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-slate-50 text-slate-700 font-semibold transition cursor-pointer"
+                >
+                  <Edit3 className="w-4 h-4 text-slate-500 shrink-0" />
+                  <span>{isAr ? 'تعديل بيانات العميل' : 'Edit Client'}</span>
+                </button>
+              )}
+
+              {/* 3. Delete */}
+              {canDelete && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveActionsMenuClientId(null);
+                    setActionsMenuAnchor(null);
+                    setDeleteConfirmClient(client);
+                  }}
+                  className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-rose-50 text-rose-600 font-semibold transition cursor-pointer border-t border-slate-100"
+                >
+                  <Trash2 className="w-4 h-4 text-rose-500 shrink-0" />
+                  <span>{isAr ? 'حذف العميل' : 'Delete Client'}</span>
+                </button>
+              )}
+            </div>
+          );
+        })(),
+        document.body
+      )}
+
       {/* ========================================================================= */}
       {/* FLOATING STICKY BULK ACTION BAR                                           */}
       {/* ========================================================================= */}
       {selectedClientIds.size > 0 && (
-        <div className="fixed bottom-6 inset-x-4 md:inset-x-auto md:start-1/2 md:-translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl border border-slate-700 flex flex-wrap items-center gap-3 animate__animated animate__fadeInUp">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl border border-slate-700 flex flex-wrap items-center gap-3 animate__animated animate__fadeInUp max-w-[95vw] w-fit">
           <div className="flex items-center gap-2">
             <CheckSquare className="w-4 h-4 text-blue-400 shrink-0" />
             <span className="text-xs font-bold whitespace-nowrap">
