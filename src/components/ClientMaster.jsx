@@ -68,6 +68,8 @@ import VatNumberInput from './VatNumberInput';
 import VatNumberDisplay from './VatNumberDisplay';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster';
 import { RowCommentButton } from './comments';
+import { PricingStrategyBadge } from './PricingStrategiesModal';
+import { DEFAULT_PRICING_STRATEGIES } from '../utils/pricingEngine';
 
 // Helper to normalize phone numbers:
 // - Strips non-digits
@@ -435,6 +437,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
   // Firestore Subscriptions
   const [clients, setClients] = useState([]);
   const [segments, setSegments] = useState([]);
+  const [pricingStrategies, setPricingStrategies] = useState(DEFAULT_PRICING_STRATEGIES);
   const [loading, setLoading] = useState(true);
 
   // Filters & Search
@@ -577,9 +580,25 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
       setSegments(segList);
     });
 
+    const unsubStrategies = onSnapshot(collection(db, 'pricing_strategies'), (snapshot) => {
+      if (!snapshot.empty) {
+        const stratList = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          return {
+            id: docSnap.id,
+            ...data,
+            labelAr: data.nameAr || data.labelAr || docSnap.id,
+            labelEn: data.nameEn || data.labelEn || docSnap.id
+          };
+        });
+        setPricingStrategies(stratList);
+      }
+    });
+
     return () => {
       unsubClients();
       unsubSegments();
+      unsubStrategies();
     };
   }, []);
 
@@ -2586,9 +2605,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
               >
                 <option value="all">{isAr ? 'جميع استراتيجيات التسعير' : 'All Pricing'}</option>
-                {PRICING_STRATEGIES.map((st) => (
+                {pricingStrategies.map((st) => (
                   <option key={st.id} value={st.id}>
-                    {isAr ? st.labelAr : st.labelEn}
+                    {isAr ? (st.nameAr || st.labelAr) : (st.nameEn || st.labelEn)}
                   </option>
                 ))}
               </select>
@@ -2861,9 +2880,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
                         {/* Pricing Strategy */}
                         <td className="py-3 px-3 break-words whitespace-normal">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200">
-                            {PRICING_STRATEGIES.find((s) => s.id === client.pricingStrategy)?.labelAr || client.pricingStrategy || '—'}
-                          </span>
+                          <PricingStrategyBadge
+                            strategyId={client.pricingStrategy}
+                            strategies={pricingStrategies}
+                            isAr={isAr}
+                          />
                         </td>
 
                         {/* Settlement Strategy */}
@@ -3234,9 +3255,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 className="px-2.5 py-1.5 bg-slate-800 border border-slate-600 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
               >
                 <option value="">{isAr ? '-- اختر الاستراتيجية --' : '-- Select Strategy --'}</option>
-                {PRICING_STRATEGIES.map((st) => (
+                {pricingStrategies.map((st) => (
                   <option key={st.id} value={st.id}>
-                    {isAr ? st.labelAr : st.labelEn}
+                    {isAr ? (st.nameAr || st.labelAr) : (st.nameEn || st.labelEn)}
                   </option>
                 ))}
               </select>
@@ -3427,9 +3448,11 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 {/* Pricing Strategy */}
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
                   <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'استراتيجية التسعير:' : 'Pricing Strategy:'}</span>
-                  <span className="text-xs font-black text-slate-800">
-                    {PRICING_STRATEGIES.find((s) => s.id === detailViewClient.pricingStrategy)?.labelAr || detailViewClient.pricingStrategy || '—'}
-                  </span>
+                  <PricingStrategyBadge
+                    strategyId={detailViewClient.pricingStrategy}
+                    strategies={pricingStrategies}
+                    isAr={isAr}
+                  />
                 </div>
 
                 {/* Settlement Mode */}
@@ -3962,9 +3985,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                         onChange={(e) => setFormData({ ...formData, pricingStrategy: e.target.value })}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       >
-                        {PRICING_STRATEGIES.map((st) => (
+                        {pricingStrategies.map((st) => (
                           <option key={st.id} value={st.id}>
-                            {isAr ? st.labelAr : st.labelEn}
+                            {isAr ? (st.nameAr || st.labelAr) : (st.nameEn || st.labelEn)}
                           </option>
                         ))}
                       </select>
@@ -4792,9 +4815,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                     className="px-2.5 py-1.5 bg-white border border-blue-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
                   >
                     <option value="">{isAr ? '-- اختر الاستراتيجية --' : '-- Select Strategy --'}</option>
-                    {PRICING_STRATEGIES.map((st) => (
+                    {pricingStrategies.map((st) => (
                       <option key={st.id} value={st.id}>
-                        {isAr ? st.labelAr : st.labelEn}
+                        {isAr ? (st.nameAr || st.labelAr) : (st.nameEn || st.labelEn)}
                       </option>
                     ))}
                   </select>
@@ -5059,9 +5082,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 >
                   <option value="all">{isAr ? 'الكل' : 'All'}</option>
                   <option value="__unassigned__">{isAr ? '⚠️ غير محدد / خطأ تسعير' : 'Unassigned / Invalid'}</option>
-                  {PRICING_STRATEGIES.map((st) => (
+                  {pricingStrategies.map((st) => (
                     <option key={st.id} value={st.id}>
-                      {isAr ? st.labelAr : st.labelEn}
+                      {isAr ? (st.nameAr || st.labelAr) : (st.nameEn || st.labelEn)}
                     </option>
                   ))}
                 </select>
@@ -5301,9 +5324,9 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                   }`}
                                 >
                                   <option value="">{isAr ? '-- حدد استراتيجية التسعير --' : '-- Select Pricing Strategy --'}</option>
-                                  {PRICING_STRATEGIES.map((st) => (
+                                  {pricingStrategies.map((st) => (
                                     <option key={st.id} value={st.id}>
-                                      {isAr ? st.labelAr : st.labelEn}
+                                      {isAr ? (st.nameAr || st.labelAr) : (st.nameEn || st.labelEn)}
                                     </option>
                                   ))}
                                 </select>

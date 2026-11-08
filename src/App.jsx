@@ -58,6 +58,7 @@ import ItemMaster from './components/ItemMaster';
 import SupplierMaster from './components/SupplierMaster';
 import ClientMaster from './components/ClientMaster';
 import ClientSegmentsMaster from './components/ClientSegmentsMaster';
+import PriceListsMaster from './components/PriceListsMaster';
 import CategoriesMaster from './components/CategoriesMaster';
 import FinishedProductsMaster from './components/FinishedProductsMaster';
 import FGCategoriesMaster from './components/FGCategoriesMaster';
@@ -547,6 +548,7 @@ export default function App() {
       { id: 'financial_statements', labelAr: 'القوائم المالية والتقارير', labelEn: 'Financial Statements', icon: BarChart3, moduleKey: 'financial_statements' },
     ],
     sales: [
+      { id: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign, moduleKey: 'price_lists' },
       { id: 'customers', labelAr: 'سجل العملاء', labelEn: 'Customers Master', icon: Users, moduleKey: 'customers' },
       { id: 'sales_orders', labelAr: 'أوامر البيع والتوريد', labelEn: 'Sales Orders', icon: TrendingUp, moduleKey: 'sales_orders' },
     ],
@@ -1293,6 +1295,22 @@ export default function App() {
             )}
             {activeTab === 'production_reports' && (
               <ProductionPerformanceReports 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+
+            {/* ========================================================================= */}
+            {/* SALES & COMMERCIAL MODULE                                                 */}
+            {/* ========================================================================= */}
+            {activeTab === 'price_lists' && (
+              <PriceListsMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'customers' && (
+              <ClientMaster 
                 currentUser={currentUser} 
                 permissions={effectivePermissions} 
               />

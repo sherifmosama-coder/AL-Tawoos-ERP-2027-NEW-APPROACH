@@ -1,0 +1,1385 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+import { db } from '../firebase';
+import {
+  collection,
+  onSnapshot,
+  doc,
+  setDoc,
+  deleteDoc,
+  serverTimestamp,
+  writeBatch
+} from 'firebase/firestore';
+import {
+  BadgeDollarSign,
+  Plus,
+  Search,
+  Filter,
+  SlidersHorizontal,
+  Calendar,
+  Layers,
+  Sparkles,
+  Zap,
+  Tag,
+  CheckCircle2,
+  Clock,
+  AlertTriangle,
+  XCircle,
+  MoreVertical,
+  Edit3,
+  Copy,
+  Trash2,
+  X,
+  Building2,
+  MapPin,
+  FileSpreadsheet,
+  Download,
+  Upload,
+  ArrowRight,
+  TrendingUp,
+  Percent,
+  Check,
+  RotateCcw,
+  Boxes,
+  HelpCircle
+} from 'lucide-react';
+import PricingStrategiesModal, { PricingStrategyBadge } from './PricingStrategiesModal';
+import {
+  DEFAULT_PRICING_STRATEGIES,
+  isProductPrivateLabel,
+  formatDateKey,
+  isPeriodActiveForDate,
+  computePeriodStatus
+} from '../utils/pricingEngine';
+
+export default function PriceListsMaster({ currentUser = {}, permissions = null }) {
+  const { t, i18n } = useTranslation();
+  const isAr = i18n.language === 'ar';
+
+  // Subscriptions & Data State
+  const [priceLists, setPriceLists] = useState([]);
+  const [strategies, setStrategies] = useState(DEFAULT_PRICING_STRATEGIES);
+  const [products, setProducts] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Filters State
+  const [searchQuery, setSearchQuery] = useState('');
+  const [strategyFilter, setStrategyFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  // Modals State
+  const [isStratModalOpen, setIsStratModalOpen] = useState(false);
+  const [isEditorModalOpen, setIsEditorModalOpen] = useState(false);
+  const [editingPeriod, setEditingPeriod] = useState(null);
+  const [activeActionsMenuId, setActiveActionsMenuId] = useState(null);
+  const [deleteConfirmPeriod, setDeleteConfirmPeriod] = useState(null);
+
+  // 1. Subscribe to Price Lists
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'price_lists'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      // Sort newest start date first
+      loaded.sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')));
+      setPriceLists(loaded);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // 2. Subscribe to Pricing Strategies
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'pricing_strategies'), (snapshot) => {
+      if (!snapshot.empty) {
+        const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setStrategies(loaded);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // 3. Subscribe to Finished Goods
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'finished_products'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      loaded.sort((a, b) => (a.nameAr || '').localeCompare(b.nameAr || '', 'ar'));
+      setProducts(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // 4. Subscribe to Clients
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'clients'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      loaded.sort((a, b) => (a.tradeNameAr || '').localeCompare(b.tradeNameAr || '', 'ar'));
+      setClients(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // Close 3-dots actions menu on outside click
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (activeActionsMenuId && !e.target.closest('[data-period-menu]')) {
+        setActiveActionsMenuId(null);
+      }
+    };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [activeActionsMenuId]);
+
+  // Derived Filtered Periods
+  const filteredPeriods = useMemo(() => {
+    const todayStr = formatDateKey(new Date());
+
+    return priceLists.filter((pl) => {
+      // Strategy filter
+      if (strategyFilter !== 'all' && pl.strategyId !== strategyFilter) {
+        return false;
+      }
+      // Type filter (official vs promotional)
+      if (typeFilter !== 'all' && pl.type !== typeFilter) {
+        return false;
+      }
+      // Status filter
+      if (statusFilter !== 'all') {
+        const computed = computePeriodStatus(pl, todayStr);
+        if (computed !== statusFilter) return false;
+      }
+      // Search Query
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const code = (pl.id || '').toLowerCase();
+        const clientName = (pl.clientName || '').toLowerCase();
+        const stratName = (pl.strategyNameAr || '').toLowerCase();
+        const notes = (pl.notes || '').toLowerCase();
+        if (
+          !code.includes(q) &&
+          !clientName.includes(q) &&
+          !stratName.includes(q) &&
+          !notes.includes(q)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [priceLists, strategyFilter, typeFilter, statusFilter, searchQuery]);
+
+  // KPIs
+  const kpis = useMemo(() => {
+    const todayStr = formatDateKey(new Date());
+    let activeCount = 0;
+    let promoCount = 0;
+    let indefiniteCount = 0;
+
+    priceLists.forEach((pl) => {
+      const status = computePeriodStatus(pl, todayStr);
+      if (status === 'active') {
+        activeCount++;
+        if (pl.type === 'promotional') promoCount++;
+      }
+      if (!pl.endDate) indefiniteCount++;
+    });
+
+    return {
+      total: priceLists.length,
+      active: activeCount,
+      promo: promoCount,
+      indefinite: indefiniteCount
+    };
+  }, [priceLists]);
+
+  const handleOpenNewPeriod = () => {
+    setEditingPeriod(null);
+    setIsEditorModalOpen(true);
+  };
+
+  const handleOpenEditPeriod = (period) => {
+    setEditingPeriod(period);
+    setIsEditorModalOpen(true);
+    setActiveActionsMenuId(null);
+  };
+
+  const handleDuplicatePeriod = (period) => {
+    // Clone items and metadata with new ID and fresh dates
+    const cloned = {
+      ...period,
+      id: '', // Will generate new code
+      startDate: formatDateKey(new Date()),
+      endDate: null,
+      notes: `${period.notes ? period.notes + ' - ' : ''}${isAr ? 'نسخة مكررة' : 'Duplicate copy'}`
+    };
+    setEditingPeriod(cloned);
+    setIsEditorModalOpen(true);
+    setActiveActionsMenuId(null);
+  };
+
+  const handleClosePeriodNow = async (period) => {
+    try {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const closeDateStr = formatDateKey(yesterday);
+
+      await setDoc(
+        doc(db, 'price_lists', period.id),
+        {
+          endDate: closeDateStr,
+          status: 'expired',
+          updatedAt: serverTimestamp()
+        },
+        { merge: true }
+      );
+      setActiveActionsMenuId(null);
+    } catch (e) {
+      console.error('Error closing period:', e);
+      alert(isAr ? 'تعذر إغلاق الفترة' : 'Failed to close period');
+    }
+  };
+
+  const handleDeletePeriod = async (periodId) => {
+    try {
+      await deleteDoc(doc(db, 'price_lists', periodId));
+      setDeleteConfirmPeriod(null);
+    } catch (e) {
+      console.error('Error deleting price list period:', e);
+      alert(isAr ? 'تعذر حذف فترة الأسعار' : 'Failed to delete period');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* KPI Cards Ribbon */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+            <CheckCircle2 className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="block text-slate-400 text-xs font-semibold">
+              {isAr ? 'فترات أسعار نشطة حالياً' : 'Active Price Periods'}
+            </span>
+            <span className="text-xl font-black text-slate-800">{kpis.active}</span>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+            <Zap className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="block text-slate-400 text-xs font-semibold">
+              {isAr ? 'حملات عروض ترويجية' : 'Promotional Campaigns'}
+            </span>
+            <span className="text-xl font-black text-slate-800">{kpis.promo}</span>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+            <Calendar className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="block text-slate-400 text-xs font-semibold">
+              {isAr ? 'فترات سارية حتى إشعار آخر' : 'Open-Ended Lists'}
+            </span>
+            <span className="text-xl font-black text-slate-800">{kpis.indefinite}</span>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
+            <Boxes className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="block text-slate-400 text-xs font-semibold">
+              {isAr ? 'أصناف تامة في الكتالوج' : 'Finished Goods Catalog'}
+            </span>
+            <span className="text-xl font-black text-slate-800">{products.length}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Control Bar */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 space-y-3">
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+          {/* Search Box */}
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={isAr ? 'بحث بالكود، العميل، الاستراتيجية، أو الملاحظات...' : 'Search code, client, strategy...'}
+              className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Non-prominent Strategies Configuration Button */}
+            <button
+              type="button"
+              onClick={() => setIsStratModalOpen(true)}
+              className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
+              title={isAr ? 'تخصيص استراتيجيات وبطاقات التسعير' : 'Configure Pricing Strategies'}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 text-slate-500" />
+              <span>{isAr ? 'إعداد الاستراتيجيات' : 'Strategies'}</span>
+            </button>
+
+            {/* Primary New Period Button */}
+            <button
+              type="button"
+              onClick={handleOpenNewPeriod}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{isAr ? 'إضافة فترة أسعار جديدة' : 'New Price Period'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Filters Row */}
+        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100 text-xs">
+          {/* Strategy Filter */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-400 font-bold">{isAr ? 'الاستراتيجية:' : 'Strategy:'}</span>
+            <select
+              value={strategyFilter}
+              onChange={(e) => setStrategyFilter(e.target.value)}
+              className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+            >
+              <option value="all">{isAr ? 'جميع الاستراتيجيات' : 'All Strategies'}</option>
+              {strategies.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {isAr ? s.nameAr : s.nameEn}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Type Filter */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-400 font-bold">{isAr ? 'النوع:' : 'Type:'}</span>
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+              className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+            >
+              <option value="all">{isAr ? 'رسمي وعروض' : 'All Types'}</option>
+              <option value="official">{isAr ? 'رسمي (Official)' : 'Official'}</option>
+              <option value="promotional">{isAr ? 'عرض ترويجي (Promotional)' : 'Promotional'}</option>
+            </select>
+          </div>
+
+          {/* Status Filter */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-400 font-bold">{isAr ? 'الحالة:' : 'Status:'}</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+            >
+              <option value="all">{isAr ? 'جميع الحالات' : 'All Statuses'}</option>
+              <option value="active">{isAr ? 'ساري حالياً' : 'Active Now'}</option>
+              <option value="upcoming">{isAr ? 'مستقبلي' : 'Upcoming'}</option>
+              <option value="expired">{isAr ? 'منتهي ومغلق' : 'Expired / Closed'}</option>
+            </select>
+          </div>
+
+          {(strategyFilter !== 'all' || typeFilter !== 'all' || statusFilter !== 'all' || searchQuery) && (
+            <button
+              type="button"
+              onClick={() => {
+                setStrategyFilter('all');
+                setTypeFilter('all');
+                setStatusFilter('all');
+                setSearchQuery('');
+              }}
+              className="ms-auto text-rose-600 hover:text-rose-800 text-xs font-bold hover:underline flex items-center gap-1 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>{isAr ? 'إعادة ضبط الفلاتر' : 'Reset Filters'}</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Master Periods Table */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        {loading ? (
+          <div className="p-12 text-center text-slate-400 font-bold text-xs">
+            {isAr ? 'جاري تحميل قوائم وفترات الأسعار...' : 'Loading price lists...'}
+          </div>
+        ) : filteredPeriods.length === 0 ? (
+          <div className="p-12 text-center space-y-3">
+            <BadgeDollarSign className="w-12 h-12 text-slate-300 mx-auto" />
+            <p className="text-slate-500 font-bold text-xs">
+              {isAr ? 'لا توجد فترات أسعار تطابق معايير البحث' : 'No matching price periods found'}
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-start border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                  <th className="py-3 px-4 text-start">{isAr ? 'كود الفترة والاستراتيجية' : 'Code & Strategy'}</th>
+                  <th className="py-3 px-4 text-start">{isAr ? 'نطاق التطبيق (العميل / الفروع)' : 'Scope & Target'}</th>
+                  <th className="py-3 px-4 text-start">{isAr ? 'نوع الفترة' : 'Type'}</th>
+                  <th className="py-3 px-4 text-start">{isAr ? 'صلاحية الفترة' : 'Validity'}</th>
+                  <th className="py-3 px-4 text-start">{isAr ? 'الأصناف المسعرة' : 'Priced Items'}</th>
+                  <th className="py-3 px-4 text-start">{isAr ? 'الحالة' : 'Status'}</th>
+                  <th className="py-3 px-4 text-center">{isAr ? 'الإجراءات' : 'Actions'}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm">
+                {filteredPeriods.map((period) => {
+                  const todayStr = formatDateKey(new Date());
+                  const status = computePeriodStatus(period, todayStr);
+                  const isSpecial = period.isSpecialPricing || period.strategyId === 'special_pricing';
+                  const pricedCount = Object.keys(period.items || {}).length;
+
+                  return (
+                    <tr key={period.id} className="hover:bg-slate-50/70 transition">
+                      {/* Code & Strategy */}
+                      <td className="py-3.5 px-4">
+                        <div className="flex flex-col gap-1">
+                          <span className="font-mono font-bold text-xs text-blue-700">
+                            {period.id}
+                          </span>
+                          <PricingStrategyBadge
+                            strategyId={period.strategyId}
+                            strategies={strategies}
+                            isAr={isAr}
+                          />
+                        </div>
+                      </td>
+
+                      {/* Scope (Client / Branches) */}
+                      <td className="py-3.5 px-4 text-xs">
+                        {isSpecial ? (
+                          <div className="flex flex-col gap-1">
+                            <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                              <Building2 className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                              <span>{period.clientName || period.clientId || 'عميل محدد'}</span>
+                            </span>
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
+                              <MapPin className="w-3 h-3 text-slate-400" />
+                              <span>
+                                {period.allBranches
+                                  ? (isAr ? 'جميع فروع العميل' : 'All Branches')
+                                  : (period.branchName || isAr ? 'فرع محدد' : 'Specific Branch')}
+                              </span>
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="font-semibold text-slate-600">
+                            {isAr ? 'كتالوج عام (جميع عملاء الاستراتيجية)' : 'General Strategy Catalog'}
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Type Badge */}
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        {period.type === 'promotional' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                            <Zap className="w-3.5 h-3.5" />
+                            <span>{isAr ? 'عرض ترويجي' : 'Promotional'}</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>{isAr ? 'أسعار رسمية' : 'Official Base'}</span>
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Validity Dates */}
+                      <td className="py-3.5 px-4 font-mono text-xs whitespace-nowrap">
+                        <div className="flex flex-col">
+                          <span className="text-slate-700 font-bold">
+                            {isAr ? 'من:' : 'From:'} {period.startDate}
+                          </span>
+                          <span className={period.endDate ? 'text-slate-600' : 'text-emerald-700 font-bold'}>
+                            {period.endDate
+                              ? `${isAr ? 'إلى:' : 'To:'} ${period.endDate}`
+                              : (isAr ? 'ساري حتى إشعار آخر' : 'Valid Indefinitely')}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* Priced Items Count */}
+                      <td className="py-3.5 px-4 whitespace-nowrap text-xs">
+                        <span className="inline-flex items-center gap-1 font-bold text-slate-700">
+                          <Boxes className="w-3.5 h-3.5 text-slate-400" />
+                          <span>{pricedCount} {isAr ? 'صنف' : 'items'}</span>
+                        </span>
+                      </td>
+
+                      {/* Status */}
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        {status === 'active' ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                            <span>{isAr ? 'نشط حالياً' : 'Active'}</span>
+                          </span>
+                        ) : status === 'upcoming' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                            <Clock className="w-3.5 h-3.5" />
+                            <span>{isAr ? 'مستقبلي' : 'Upcoming'}</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-500 border border-slate-200">
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>{isAr ? 'منتهي ومغلق' : 'Closed'}</span>
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        <div className="relative inline-block" data-period-menu>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setActiveActionsMenuId(activeActionsMenuId === period.id ? null : period.id)
+                            }
+                            className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-slate-800 transition cursor-pointer"
+                          >
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+
+                          {activeActionsMenuId === period.id && (
+                            <div className="absolute end-0 top-full mt-1 w-48 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-30 text-xs font-bold text-slate-700 divide-y divide-slate-100 animate__animated animate__fadeIn animate__faster">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditPeriod(period)}
+                                className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+                              >
+                                <Edit3 className="w-3.5 h-3.5 text-blue-600" />
+                                <span>{isAr ? 'تعديل الأسعار والفترة' : 'Edit Prices'}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDuplicatePeriod(period)}
+                                className="w-full px-3 py-2 text-start hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+                              >
+                                <Copy className="w-3.5 h-3.5 text-slate-600" />
+                                <span>{isAr ? 'تكرار كفترة جديدة' : 'Duplicate Period'}</span>
+                              </button>
+
+                              {status === 'active' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleClosePeriodNow(period)}
+                                  className="w-full px-3 py-2 text-start hover:bg-amber-50 text-amber-800 flex items-center gap-2 cursor-pointer"
+                                >
+                                  <Clock className="w-3.5 h-3.5 text-amber-600" />
+                                  <span>{isAr ? 'إغلاق الفترة فوراً' : 'Close Period Now'}</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDeleteConfirmPeriod(period);
+                                  setActiveActionsMenuId(null);
+                                }}
+                                className="w-full px-3 py-2 text-start hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>{isAr ? 'حذف الفترة' : 'Delete'}</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Strategies Manager Modal */}
+      <PricingStrategiesModal
+        isOpen={isStratModalOpen}
+        onClose={() => setIsStratModalOpen(false)}
+        isAr={isAr}
+        canManage={permissions?.canManagePricingStrategies !== false}
+      />
+
+      {/* Price List Editor Modal */}
+      {isEditorModalOpen && (
+        <PriceListEditorModal
+          isOpen={isEditorModalOpen}
+          onClose={() => setIsEditorModalOpen(false)}
+          editingPeriod={editingPeriod}
+          strategies={strategies}
+          products={products}
+          clients={clients}
+          allPriceLists={priceLists}
+          isAr={isAr}
+        />
+      )}
+
+      {/* Delete Confirmation Alert */}
+      {deleteConfirmPeriod && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 text-center space-y-3">
+            <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <h4 className="font-black text-slate-800 text-sm">
+              {isAr ? 'تأكيد حذف فترة الأسعار؟' : 'Delete Price Period?'}
+            </h4>
+            <p className="text-xs text-slate-500">
+              {isAr
+                ? `هل أنت متأكد من حذف قائمة الأسعار (${deleteConfirmPeriod.id})؟`
+                : `Are you sure you want to delete price period (${deleteConfirmPeriod.id})?`}
+            </p>
+            <div className="flex items-center justify-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmPeriod(null)}
+                className="px-4 py-1.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 cursor-pointer"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeletePeriod(deleteConfirmPeriod.id)}
+                className="px-4 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 cursor-pointer"
+              >
+                {isAr ? 'حذف نهائي' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * =========================================================================
+ * PRICE LIST EDITOR MODAL (Product Grid + Reference Columns + Private Label Control)
+ * =========================================================================
+ */
+function PriceListEditorModal({
+  isOpen,
+  onClose,
+  editingPeriod,
+  strategies,
+  products,
+  clients,
+  allPriceLists,
+  isAr
+}) {
+  const [formData, setFormData] = useState({
+    id: editingPeriod?.id || `PL-${Date.now().toString().slice(-6)}`,
+    strategyId: editingPeriod?.strategyId || (strategies[0]?.id || 'wholesalers'),
+    type: editingPeriod?.type || 'official', // 'official' | 'promotional'
+    clientId: editingPeriod?.clientId || '',
+    branchId: editingPeriod?.branchId || '',
+    allBranches: editingPeriod?.allBranches ?? true,
+    startDate: editingPeriod?.startDate || formatDateKey(new Date()),
+    endDate: editingPeriod?.endDate || '',
+    notes: editingPeriod?.notes || '',
+    items: editingPeriod?.items ? { ...editingPeriod.items } : {}
+  });
+
+  const [productSearch, setProductSearch] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [bulkPercentInput, setBulkPercentInput] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const fileInputRef = useRef(null);
+
+  const selectedStrategy = strategies.find((s) => s.id === formData.strategyId);
+  const isSpecialPricing = selectedStrategy?.isSpecialPricing || formData.strategyId === 'special_pricing';
+  const selectedClient = clients.find((c) => c.id === formData.clientId);
+
+  // Detect overlapping period of the SAME type that will be auto-closed
+  const overlappingPeriod = useMemo(() => {
+    if (!formData.strategyId || !formData.startDate || !formData.type) return null;
+
+    return allPriceLists.find((pl) => {
+      // Exclude self if editing
+      if (editingPeriod && pl.id === editingPeriod.id) return false;
+      // Must match strategy
+      if (pl.strategyId !== formData.strategyId) return false;
+      // Must match type (official vs promo)
+      if (pl.type !== formData.type) return false;
+      // If special pricing, must match client & branch
+      if (isSpecialPricing) {
+        if (pl.clientId !== formData.clientId) return false;
+        if (formData.allBranches && !pl.allBranches) return false;
+        if (!formData.allBranches && pl.branchId !== formData.branchId) return false;
+      }
+      // Check active on new startDate
+      return isPeriodActiveForDate(pl, formData.startDate);
+    });
+  }, [formData, allPriceLists, editingPeriod, isSpecialPricing]);
+
+  // Compute reference prices: active Official and Promotional prices
+  const referencePrices = useMemo(() => {
+    const todayStr = formatDateKey(new Date());
+    const refOfficial = {};
+    const refPromo = {};
+
+    allPriceLists.forEach((pl) => {
+      // Must match strategy (and client if special)
+      if (pl.strategyId !== formData.strategyId) return false;
+      if (isSpecialPricing && pl.clientId !== formData.clientId) return false;
+      if (!isPeriodActiveForDate(pl, todayStr)) return;
+
+      Object.entries(pl.items || {}).forEach(([pId, price]) => {
+        if (pl.type === 'official' && !refOfficial[pId]) {
+          refOfficial[pId] = price;
+        } else if (pl.type === 'promotional' && !refPromo[pId]) {
+          refPromo[pId] = price;
+        }
+      });
+    });
+
+    return { official: refOfficial, promotional: refPromo };
+  }, [allPriceLists, formData.strategyId, formData.clientId, isSpecialPricing]);
+
+  // Filter finished goods according to Private Label rule and search
+  const visibleProducts = useMemo(() => {
+    return products.filter((p) => {
+      const isPl = isProductPrivateLabel(p);
+
+      // STRICT RULE: Private label products cannot be priced on non-special-pricing lists
+      if (!isSpecialPricing && isPl) {
+        return false;
+      }
+
+      // Category filter
+      if (selectedCategory !== 'all' && p.category !== selectedCategory) {
+        return false;
+      }
+
+      // Search Query
+      if (productSearch.trim()) {
+        const q = productSearch.toLowerCase().trim();
+        const code = (p.id || '').toLowerCase();
+        const nameAr = (p.nameAr || '').toLowerCase();
+        const nameEn = (p.nameEn || '').toLowerCase();
+        if (!code.includes(q) && !nameAr.includes(q) && !nameEn.includes(q)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [products, isSpecialPricing, selectedCategory, productSearch]);
+
+  // Available categories for pills
+  const categories = useMemo(() => {
+    const set = new Set();
+    products.forEach((p) => {
+      if (p.category) set.add(p.category);
+    });
+    return Array.from(set);
+  }, [products]);
+
+  const handlePriceChange = (productId, valStr) => {
+    const next = { ...formData.items };
+    if (valStr === '' || isNaN(valStr)) {
+      delete next[productId];
+    } else {
+      next[productId] = Math.max(0, parseFloat(valStr));
+    }
+    setFormData({ ...formData, items: next });
+  };
+
+  const handleCopyCurrentOfficial = () => {
+    const next = { ...formData.items };
+    visibleProducts.forEach((p) => {
+      if (referencePrices.official[p.id]) {
+        next[p.id] = referencePrices.official[p.id];
+      }
+    });
+    setFormData({ ...formData, items: next });
+  };
+
+  const handleApplyBulkPercent = () => {
+    const pct = parseFloat(bulkPercentInput);
+    if (isNaN(pct) || pct === 0) return;
+
+    const multiplier = 1 + pct / 100;
+    const next = { ...formData.items };
+
+    visibleProducts.forEach((p) => {
+      const currentVal = next[p.id] || referencePrices.official[p.id];
+      if (currentVal && currentVal > 0) {
+        next[p.id] = Math.round(currentVal * multiplier * 100) / 100;
+      }
+    });
+
+    setFormData({ ...formData, items: next });
+    setBulkPercentInput('');
+  };
+
+  // CSV Template Export
+  const handleExportCsv = () => {
+    const headers = ['Product_Code', 'Product_Name', 'Is_Private_Label', 'Current_Price'];
+    const rows = visibleProducts.map((p) => [
+      `"${p.id}"`,
+      `"${p.nameAr || ''}"`,
+      `"${isProductPrivateLabel(p) ? 'YES' : 'NO'}"`,
+      formData.items[p.id] ?? ''
+    ]);
+
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `price_list_template_${formData.id}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // CSV Import
+  const handleImportCsv = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const text = evt.target.result;
+      const lines = text.split(/\r?\n/);
+      if (lines.length < 2) return;
+
+      const next = { ...formData.items };
+      for (let i = 1; i < lines.length; i++) {
+        const parts = lines[i].split(',');
+        if (parts.length >= 4) {
+          const code = parts[0].replace(/"/g, '').trim();
+          const price = parseFloat(parts[3].replace(/"/g, '').trim());
+          if (code && !isNaN(price) && price > 0) {
+            next[code] = price;
+          }
+        }
+      }
+      setFormData((prev) => ({ ...prev, items: next }));
+    };
+    reader.readAsText(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!formData.startDate) {
+      setErrorMsg(isAr ? 'يرجى تحديد تاريخ بداية الفترة' : 'Start date is required');
+      return;
+    }
+    if (isSpecialPricing && !formData.clientId) {
+      setErrorMsg(isAr ? 'يرجى اختيار العميل لتسعير العقود الخاصة' : 'Please select client for special pricing');
+      return;
+    }
+
+    setIsSaving(true);
+    setErrorMsg('');
+
+    try {
+      const batch = writeBatch(db);
+      const periodRef = doc(db, 'price_lists', formData.id);
+
+      // 1. Auto-close previous overlapping period if exists
+      if (overlappingPeriod) {
+        const startDateObj = new Date(formData.startDate);
+        startDateObj.setDate(startDateObj.getDate() - 1);
+        const dayBeforeStart = formatDateKey(startDateObj);
+
+        const oldRef = doc(db, 'price_lists', overlappingPeriod.id);
+        batch.update(oldRef, {
+          endDate: dayBeforeStart,
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      // 2. Save new period
+      const payload = {
+        id: formData.id,
+        strategyId: formData.strategyId,
+        strategyNameAr: selectedStrategy?.nameAr || formData.strategyId,
+        type: formData.type,
+        isSpecialPricing,
+        clientId: isSpecialPricing ? formData.clientId : null,
+        clientName: isSpecialPricing ? (selectedClient?.tradeNameAr || selectedClient?.name || '') : null,
+        branchId: isSpecialPricing && !formData.allBranches ? formData.branchId : null,
+        branchName: isSpecialPricing && !formData.allBranches
+          ? selectedClient?.branches?.find((b) => b.id === formData.branchId)?.nameAr || null
+          : null,
+        allBranches: Boolean(formData.allBranches),
+        startDate: formData.startDate,
+        endDate: formData.endDate || null,
+        notes: formData.notes.trim(),
+        items: formData.items,
+        autoClosedPeriodId: overlappingPeriod ? overlappingPeriod.id : null,
+        updatedAt: serverTimestamp()
+      };
+
+      if (!editingPeriod) {
+        payload.createdAt = serverTimestamp();
+      }
+
+      batch.set(periodRef, payload, { merge: true });
+      await batch.commit();
+
+      onClose();
+    } catch (err) {
+      console.error('Error saving price list period:', err);
+      setErrorMsg(isAr ? 'حدث خطأ أثناء حفظ قائمة الأسعار' : 'Error saving price period');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+      <div className="bg-white rounded-3xl max-w-5xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[95vh] animate__animated animate__fadeInUp animate__faster">
+        {/* Modal Header */}
+        <div className="px-6 py-4 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center shadow-inner">
+              <BadgeDollarSign className="w-5 h-5 text-blue-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 font-bold">
+                  {formData.id}
+                </span>
+                <h3 className="text-base font-black">
+                  {editingPeriod
+                    ? (isAr ? 'تعديل فترة وأسعار المنتجات' : 'Edit Price List Period')
+                    : (isAr ? 'إنشاء فترة أسعار جديدة' : 'New Price List Period')}
+                </h3>
+              </div>
+              <p className="text-xs text-slate-400 font-medium">
+                {isAr ? 'تحديد نطاق التطبيق، الفترات الزمنية، وجدول أسعار المنتجات التامة' : 'Configure strategy, dates, and finished goods prices'}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 hover:text-white transition cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Modal Form & Matrix Body */}
+        <form onSubmit={handleSave} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          {errorMsg && (
+            <div className="mx-6 mt-4 p-3 bg-rose-50 text-rose-700 rounded-xl text-xs font-bold border border-rose-200 shrink-0">
+              {errorMsg}
+            </div>
+          )}
+
+          {/* Overlapping Period Auto-Close Alert */}
+          {overlappingPeriod && (
+            <div className="mx-6 mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs font-semibold flex items-center gap-2.5 shrink-0 animate__animated animate__fadeIn">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                {isAr
+                  ? `تنبيه: توجد فترة نشطة حالياً لنفس الاستراتيجية والنوع (${overlappingPeriod.id} - من ${overlappingPeriod.startDate}). عند الحفظ، سيتم إغلاقها تلقائياً بيوم يسبق بداية الفترة الجديدة.`
+                  : `Notice: Existing active period (${overlappingPeriod.id}) will be automatically closed prior to this period's start date.`}
+              </span>
+            </div>
+          )}
+
+          {/* Configuration Parameters Ribbon */}
+          <div className="p-4 bg-slate-50 border-b border-slate-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs shrink-0">
+            {/* 1. Strategy Selector */}
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">
+                {isAr ? 'استراتيجية التسعير *' : 'Strategy *'}
+              </label>
+              <select
+                value={formData.strategyId}
+                onChange={(e) => setFormData({ ...formData, strategyId: e.target.value })}
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+              >
+                {strategies.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {isAr ? s.nameAr : s.nameEn} {s.isSpecialPricing ? (isAr ? '⭐ (أسعار خاصة)' : '⭐ (Special)') : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 2. Period Type (Official vs Promo) */}
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">
+                {isAr ? 'نوع الفترة *' : 'Period Type *'}
+              </label>
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-white border border-slate-200 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, type: 'official' })}
+                  className={`py-1 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                    formData.type === 'official'
+                      ? 'bg-indigo-600 text-white shadow-2xs'
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'رسمي' : 'Official'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, type: 'promotional' })}
+                  className={`py-1 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                    formData.type === 'promotional'
+                      ? 'bg-rose-600 text-white shadow-2xs'
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'عرض' : 'Promo'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 3. Start Date */}
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">
+                {isAr ? 'تاريخ البداية (ساري من) *' : 'Start Date *'}
+              </label>
+              <input
+                type="date"
+                required
+                value={formData.startDate}
+                onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+                className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl font-bold font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* 4. End Date (Optional) */}
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">
+                {isAr ? 'تاريخ الانتهاء (اختياري)' : 'End Date (Optional)'}
+              </label>
+              <input
+                type="date"
+                value={formData.endDate}
+                onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
+                placeholder={isAr ? 'ساري حتى إشعار آخر' : 'Valid indefinitely'}
+                className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl font-bold font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="block text-[10px] text-slate-400 mt-0.5">
+                {isAr ? 'اتركه فارغاً للسريان حتى إشعار آخر' : 'Leave empty for indefinite validity'}
+              </span>
+            </div>
+          </div>
+
+          {/* Special Pricing Target Client & Branch Selector */}
+          {isSpecialPricing && (
+            <div className="p-3 bg-purple-50/50 border-b border-purple-100 flex flex-wrap items-center gap-3 text-xs shrink-0">
+              <div className="flex items-center gap-1 text-purple-900 font-bold shrink-0">
+                <Building2 className="w-4 h-4 text-purple-600" />
+                <span>{isAr ? 'العميل المستهدف بالأسعار الخاصة:' : 'Target Special Client:'}</span>
+              </div>
+
+              {/* Client Selector */}
+              <select
+                required={isSpecialPricing}
+                value={formData.clientId}
+                onChange={(e) => setFormData({ ...formData, clientId: e.target.value, branchId: '' })}
+                className="px-3 py-1.5 bg-white border border-purple-200 rounded-xl font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer min-w-[200px]"
+              >
+                <option value="">{isAr ? '-- اختر العميل --' : '-- Select Client --'}</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.tradeNameAr || c.name} ({c.id})
+                  </option>
+                ))}
+              </select>
+
+              {/* Branch Scope Radio */}
+              {selectedClient && (
+                <div className="flex items-center gap-3 ms-2">
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer font-bold text-slate-700">
+                    <input
+                      type="radio"
+                      name="branchScope"
+                      checked={formData.allBranches}
+                      onChange={() => setFormData({ ...formData, allBranches: true, branchId: '' })}
+                      className="text-purple-600 focus:ring-0"
+                    />
+                    <span>{isAr ? 'جميع الفروع' : 'All Branches'}</span>
+                  </label>
+
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer font-bold text-slate-700">
+                    <input
+                      type="radio"
+                      name="branchScope"
+                      checked={!formData.allBranches}
+                      onChange={() => setFormData({ ...formData, allBranches: false })}
+                      className="text-purple-600 focus:ring-0"
+                    />
+                    <span>{isAr ? 'فرع محدد' : 'Specific Branch'}</span>
+                  </label>
+
+                  {!formData.allBranches && (
+                    <select
+                      value={formData.branchId}
+                      onChange={(e) => setFormData({ ...formData, branchId: e.target.value })}
+                      className="px-2.5 py-1 bg-white border border-purple-200 rounded-lg font-bold text-slate-800 text-xs focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer"
+                    >
+                      <option value="">{isAr ? '-- اختر الفرع --' : '-- Select Branch --'}</option>
+                      {(selectedClient.branches || []).map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.nameAr || b.nameEn} {b.region ? `(${b.region})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Matrix Toolbar (Search, Filter, Batch Tools) */}
+          <div className="p-3 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5 shrink-0 text-xs">
+            <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+              <div className="relative w-full max-w-xs">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute start-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                  placeholder={isAr ? 'بحث بالاسم أو الكود...' : 'Search product...'}
+                  className="w-full ps-8 pe-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              {/* Category Filter */}
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
+              >
+                <option value="all">{isAr ? 'جميع التصنيفات' : 'All Categories'}</option>
+                {categories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Batch Acceleration Tools */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Copy Current Official Button */}
+              <button
+                type="button"
+                onClick={handleCopyCurrentOfficial}
+                className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition flex items-center gap-1 cursor-pointer text-xs"
+                title={isAr ? 'نسخ الأسعار الرسمية الحالية لجميع المنتجات' : 'Copy current official prices'}
+              >
+                <Copy className="w-3.5 h-3.5 text-blue-600" />
+                <span>{isAr ? 'نسخ الرسمي' : 'Copy Official'}</span>
+              </button>
+
+              {/* Bulk % Adjustment */}
+              <div className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded-xl">
+                <Percent className="w-3.5 h-3.5 text-slate-500" />
+                <input
+                  type="number"
+                  step="0.5"
+                  value={bulkPercentInput}
+                  onChange={(e) => setBulkPercentInput(e.target.value)}
+                  placeholder="+5 / -10"
+                  className="w-16 px-1.5 py-0.5 bg-white border border-slate-200 rounded text-center font-mono font-bold text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={handleApplyBulkPercent}
+                  className="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded font-bold text-xs cursor-pointer"
+                >
+                  {isAr ? 'تطبيق %' : 'Apply %'}
+                </button>
+              </div>
+
+              {/* Export CSV Template */}
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition flex items-center gap-1 cursor-pointer text-xs"
+                title={isAr ? 'تصدير جدول الأسعار كقالب Excel/CSV' : 'Export CSV'}
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{isAr ? 'تصدير' : 'Export'}</span>
+              </button>
+
+              {/* Import CSV */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition flex items-center gap-1 cursor-pointer text-xs"
+                title={isAr ? 'استيراد الأسعار من ملف CSV' : 'Import CSV'}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>{isAr ? 'استيراد' : 'Import'}</span>
+              </button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleImportCsv}
+                accept=".csv"
+                className="hidden"
+              />
+            </div>
+          </div>
+
+          {/* Product Price Matrix Table (Scrollable Body) */}
+          <div className="flex-1 overflow-y-auto min-h-[300px]">
+            <table className="w-full text-start border-collapse text-xs">
+              <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 shadow-2xs font-black text-slate-500 uppercase tracking-wider">
+                <tr>
+                  <th className="py-2.5 px-3 text-start">{isAr ? 'كود الصنف' : 'Code'}</th>
+                  <th className="py-2.5 px-3 text-start">{isAr ? 'المنتج التام' : 'Finished Good'}</th>
+                  <th className="py-2.5 px-3 text-start">{isAr ? 'الملكية' : 'Brand'}</th>
+                  <th className="py-2.5 px-3 text-end">{isAr ? 'الرسمي الحالي (مرجعي)' : 'Ref Official'}</th>
+                  <th className="py-2.5 px-3 text-end">{isAr ? 'العرض الحالي (مرجعي)' : 'Ref Promo'}</th>
+                  <th className="py-2.5 px-4 text-center w-36 bg-blue-50/60 text-blue-900 border-x border-blue-200">
+                    {isAr ? 'السعر الجديد (ج.م) *' : 'New Price (EGP) *'}
+                  </th>
+                  <th className="py-2.5 px-3 text-center">{isAr ? 'فرق السعر' : 'Variance'}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-medium">
+                {visibleProducts.map((p) => {
+                  const isPl = isProductPrivateLabel(p);
+                  const newPrice = formData.items[p.id];
+                  const refOff = referencePrices.official[p.id];
+                  const refPro = referencePrices.promotional[p.id];
+
+                  // Calculate variance vs official
+                  let variancePct = null;
+                  if (typeof newPrice === 'number' && refOff && refOff > 0) {
+                    variancePct = Math.round(((newPrice - refOff) / refOff) * 100);
+                  }
+
+                  return (
+                    <tr key={p.id} className="hover:bg-slate-50/70 transition">
+                      {/* Code */}
+                      <td className="py-2 px-3 font-mono font-bold text-blue-700">
+                        {p.id}
+                      </td>
+
+                      {/* Product Name */}
+                      <td className="py-2 px-3">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-slate-800">{p.nameAr || p.name}</span>
+                          {p.nameEn && (
+                            <span className="text-[10px] text-slate-400 font-semibold" dir="ltr">
+                              {p.nameEn}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Ownership / Private Label Badge */}
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        {isPl ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200">
+                            <span>{isAr ? 'خاص / Private Label' : 'Private Label'}</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-600">
+                            <span>{isAr ? 'علامة الطاووس' : 'Own Brand'}</span>
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Ref Official Price */}
+                      <td className="py-2 px-3 text-end font-mono text-slate-500">
+                        {refOff ? `${refOff.toFixed(2)}` : '—'}
+                      </td>
+
+                      {/* Ref Promo Price */}
+                      <td className="py-2 px-3 text-end font-mono text-rose-600">
+                        {refPro ? `${refPro.toFixed(2)}` : '—'}
+                      </td>
+
+                      {/* New Price Input */}
+                      <td className="py-2 px-3 text-center bg-blue-50/30 border-x border-blue-200">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={newPrice ?? ''}
+                          onChange={(e) => handlePriceChange(p.id, e.target.value)}
+                          placeholder="0.00"
+                          className="w-28 px-2 py-1 bg-white border border-slate-300 rounded-lg text-center font-mono font-black text-xs text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                        />
+                      </td>
+
+                      {/* Variance */}
+                      <td className="py-2 px-3 text-center font-mono font-bold whitespace-nowrap">
+                        {variancePct !== null ? (
+                          variancePct === 0 ? (
+                            <span className="text-slate-400">0%</span>
+                          ) : variancePct > 0 ? (
+                            <span className="text-emerald-600">+{variancePct}%</span>
+                          ) : (
+                            <span className="text-rose-600">{variancePct}%</span>
+                          )
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Modal Footer */}
+          <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2 text-xs text-slate-500 font-semibold">
+              <span>{isAr ? 'الأصناف المسعرة:' : 'Priced Products:'}</span>
+              <span className="font-mono font-bold text-slate-800">
+                {Object.keys(formData.items).length} / {visibleProducts.length}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={isSaving}
+                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
+              >
+                <Check className="w-4 h-4" />
+                <span>{isSaving ? (isAr ? 'جاري الحفظ...' : 'Saving...') : isAr ? 'حفظ فترة الأسعار' : 'Save Price List'}</span>
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
