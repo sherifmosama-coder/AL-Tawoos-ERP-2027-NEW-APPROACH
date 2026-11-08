@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { db, fileToDataUrl, openBase64Document } from '../firebase';
 import {
@@ -160,10 +160,23 @@ const resizeClientLogo = (file, maxDimension = 160) => {
 
 // Settlement Modes Dictionary
 const SETTLEMENT_MODES = [
-  { id: 'cod', labelAr: 'دفع عند الاستلام (COD)', labelEn: 'Cash on Delivery (COD)' },
-  { id: 'credit', labelAr: 'دفع آجل (تواريخ استحقاق محددة)', labelEn: 'Contractual Credit (Due Dates)' },
-  { id: 'rolling_credit', labelAr: 'سداد السابق مع استلام الحالي', labelEn: 'Rolling Credit (Order-for-Order)' }
+  { id: 'cod', labelAr: 'نقدي', labelEn: 'Cash' },
+  { id: 'credit', labelAr: 'آجل', labelEn: 'Credit' },
+  { id: 'rolling_credit', labelAr: 'فاتورة دايرة', labelEn: 'Rolling invoice' }
 ];
+
+// Default Column Widths for Client Directory Table (px)
+const DEFAULT_COL_WIDTHS = {
+  checkbox: 44,
+  code: 110,
+  name: 240,
+  segment: 130,
+  pricing: 135,
+  settlement: 110,
+  branches: 105,
+  latestActivity: 115,
+  actions: 95
+};
 
 // Pricing Strategies Dictionary
 const PRICING_STRATEGIES = [
@@ -253,7 +266,9 @@ const resolveSettlementMode = (rawText) => {
     t === 'rolling' ||
     t.includes('سداد السابق') ||
     t.includes('دوار') ||
-    t.includes('سابق')
+    t.includes('سابق') ||
+    t.includes('دايرة') ||
+    t.includes('دائرة')
   ) {
     return 'rolling_credit';
   }
@@ -436,6 +451,18 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
   const [bulkEditField, setBulkEditField] = useState('segmentId');
   const [bulkEditValue, setBulkEditValue] = useState('');
   const [isApplyingBulkEdit, setIsApplyingBulkEdit] = useState(false);
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [isDeletingBulk, setIsDeletingBulk] = useState(false);
+
+  // Column Resizing State
+  const [columnWidths, setColumnWidths] = useState(() => {
+    try {
+      const saved = localStorage.getItem('tawoos_client_table_col_widths_v1');
+      if (saved) return { ...DEFAULT_COL_WIDTHS, ...JSON.parse(saved) };
+    } catch (e) {}
+    return DEFAULT_COL_WIDTHS;
+  });
+  const resizingRef = useRef(null);
 
   // Row Actions 3-Dots Menu & Detail Modal State
   const [activeActionsMenuClientId, setActiveActionsMenuClientId] = useState(null);
@@ -2341,6 +2368,83 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
     }
   };
 
+  const handleBulkDelete = async () => {
+    if (selectedClientIds.size === 0) return;
+
+    setIsDeletingBulk(true);
+    try {
+      const selectedList = Array.from(selectedClientIds);
+      const BATCH_SIZE = 250;
+
+      for (let i = 0; i < selectedList.length; i += BATCH_SIZE) {
+        const chunk = selectedList.slice(i, i + BATCH_SIZE);
+        const batch = writeBatch(db);
+
+        chunk.forEach((clientId) => {
+          batch.delete(doc(db, 'clients', clientId));
+        });
+
+        await batch.commit();
+      }
+
+      setSelectedClientIds(new Set());
+      setShowBulkDeleteModal(false);
+    } catch (err) {
+      console.error('Error deleting clients in bulk:', err);
+      alert(isAr ? 'حدث خطأ أثناء حذف العملاء المحددين' : 'Error deleting selected clients');
+    } finally {
+      setIsDeletingBulk(false);
+    }
+  };
+
+  const handleResizeStart = (e, colKey) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizingRef.current = {
+      colKey,
+      startX: e.clientX,
+      startWidth: columnWidths[colKey] || DEFAULT_COL_WIDTHS[colKey] || 100
+    };
+
+    const handleMouseMove = (moveEvent) => {
+      if (!resizingRef.current) return;
+      const { colKey, startX, startWidth } = resizingRef.current;
+      // In RTL (Arabic), dragging to the left increases width; dragging to the right decreases width.
+      // In LTR, dragging to the right increases width.
+      const delta = isAr ? (startX - moveEvent.clientX) : (moveEvent.clientX - startX);
+      const minWidth = colKey === 'checkbox' ? 36 : 75;
+      const newWidth = Math.max(minWidth, Math.min(800, startWidth + delta));
+      setColumnWidths((prev) => ({ ...prev, [colKey]: newWidth }));
+    };
+
+    const handleMouseUp = () => {
+      if (resizingRef.current) {
+        setColumnWidths((current) => {
+          try {
+            localStorage.setItem('tawoos_client_table_col_widths_v1', JSON.stringify(current));
+          } catch (e) {}
+          return current;
+        });
+        resizingRef.current = null;
+      }
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleResetColumnWidth = (colKey) => {
+    setColumnWidths((prev) => {
+      const updated = { ...prev, [colKey]: DEFAULT_COL_WIDTHS[colKey] };
+      try {
+        localStorage.setItem('tawoos_client_table_col_widths_v1', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+  };
+
   return (
     <div className="space-y-4">
       {/* Search, Filter and Actions Control Bar */}
@@ -2554,12 +2658,23 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-start border-collapse">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider whitespace-nowrap">
+          <div className="overflow-x-auto max-h-[calc(100vh-270px)] overflow-y-auto relative">
+            <table className="w-full text-start border-collapse table-fixed">
+              <colgroup>
+                <col style={{ width: columnWidths.checkbox }} />
+                <col style={{ width: columnWidths.code }} />
+                <col style={{ width: columnWidths.name }} />
+                <col style={{ width: columnWidths.segment }} />
+                <col style={{ width: columnWidths.pricing }} />
+                <col style={{ width: columnWidths.settlement }} />
+                <col style={{ width: columnWidths.branches }} />
+                <col style={{ width: columnWidths.latestActivity }} />
+                <col style={{ width: columnWidths.actions }} />
+              </colgroup>
+              <thead className="sticky top-0 z-20 shadow-xs">
+                <tr className="bg-slate-50 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider">
                   {/* Master Checkbox */}
-                  <th className="py-3.5 px-3 text-center w-10">
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-2 text-center relative group select-none">
                     <input
                       type="checkbox"
                       checked={isAllFilteredSelected}
@@ -2567,18 +2682,92 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                         if (el) el.indeterminate = isSomeFilteredSelected && !isAllFilteredSelected;
                       }}
                       onChange={handleToggleSelectAll}
-                      className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer w-4 h-4"
+                      className="rounded text-blue-600 focus:ring-0 focus:ring-offset-0 border-slate-300 cursor-pointer w-3.5 h-3.5"
                       title={isAr ? 'تحديد الكل المفلتر' : 'Select all filtered'}
                     />
                   </th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'كود العميل' : 'Code'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'العميل والشهرة' : 'Client Name'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'القطاع' : 'Segment'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'استراتيجية التسعير' : 'Pricing Strategy'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'طريقة السداد' : 'Settlement Strategy'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'الفروع' : 'Branches'}</th>
-                  <th className="py-3.5 px-4 text-start">{isAr ? 'آخر تسليم فعلي' : 'Latest Delivery'}</th>
-                  <th className="py-3.5 px-4 text-center">{isAr ? 'الإجراءات' : 'Actions'}</th>
+
+                  {/* Code */}
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-3 text-start relative group select-none">
+                    <span>{isAr ? 'كود العميل' : 'Code'}</span>
+                    <div
+                      onMouseDown={(e) => handleResizeStart(e, 'code')}
+                      onDoubleClick={() => handleResetColumnWidth('code')}
+                      className="absolute top-0 bottom-0 end-0 w-2.5 cursor-col-resize hover:bg-blue-400 group-hover:bg-slate-300 transition-colors z-30"
+                      title={isAr ? 'اسحب لتغيير العرض (انقر مرتين لإعادة الضبط)' : 'Drag to resize (double-click to reset)'}
+                    />
+                  </th>
+
+                  {/* Client Name */}
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-3 text-start relative group select-none">
+                    <span>{isAr ? 'العميل والشهرة' : 'Client Name'}</span>
+                    <div
+                      onMouseDown={(e) => handleResizeStart(e, 'name')}
+                      onDoubleClick={() => handleResetColumnWidth('name')}
+                      className="absolute top-0 bottom-0 end-0 w-2.5 cursor-col-resize hover:bg-blue-400 group-hover:bg-slate-300 transition-colors z-30"
+                      title={isAr ? 'اسحب لتغيير العرض (انقر مرتين لإعادة الضبط)' : 'Drag to resize (double-click to reset)'}
+                    />
+                  </th>
+
+                  {/* Segment */}
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-3 text-start relative group select-none">
+                    <span>{isAr ? 'القطاع' : 'Segment'}</span>
+                    <div
+                      onMouseDown={(e) => handleResizeStart(e, 'segment')}
+                      onDoubleClick={() => handleResetColumnWidth('segment')}
+                      className="absolute top-0 bottom-0 end-0 w-2.5 cursor-col-resize hover:bg-blue-400 group-hover:bg-slate-300 transition-colors z-30"
+                      title={isAr ? 'اسحب لتغيير العرض (انقر مرتين لإعادة الضبط)' : 'Drag to resize (double-click to reset)'}
+                    />
+                  </th>
+
+                  {/* Pricing Strategy */}
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-3 text-start relative group select-none">
+                    <span>{isAr ? 'استراتيجية التسعير' : 'Pricing Strategy'}</span>
+                    <div
+                      onMouseDown={(e) => handleResizeStart(e, 'pricing')}
+                      onDoubleClick={() => handleResetColumnWidth('pricing')}
+                      className="absolute top-0 bottom-0 end-0 w-2.5 cursor-col-resize hover:bg-blue-400 group-hover:bg-slate-300 transition-colors z-30"
+                      title={isAr ? 'اسحب لتغيير العرض (انقر مرتين لإعادة الضبط)' : 'Drag to resize (double-click to reset)'}
+                    />
+                  </th>
+
+                  {/* Settlement Strategy */}
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-3 text-start relative group select-none">
+                    <span>{isAr ? 'طريقة السداد' : 'Settlement Strategy'}</span>
+                    <div
+                      onMouseDown={(e) => handleResizeStart(e, 'settlement')}
+                      onDoubleClick={() => handleResetColumnWidth('settlement')}
+                      className="absolute top-0 bottom-0 end-0 w-2.5 cursor-col-resize hover:bg-blue-400 group-hover:bg-slate-300 transition-colors z-30"
+                      title={isAr ? 'اسحب لتغيير العرض (انقر مرتين لإعادة الضبط)' : 'Drag to resize (double-click to reset)'}
+                    />
+                  </th>
+
+                  {/* Branches */}
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-3 text-start relative group select-none">
+                    <span>{isAr ? 'الفروع' : 'Branches'}</span>
+                    <div
+                      onMouseDown={(e) => handleResizeStart(e, 'branches')}
+                      onDoubleClick={() => handleResetColumnWidth('branches')}
+                      className="absolute top-0 bottom-0 end-0 w-2.5 cursor-col-resize hover:bg-blue-400 group-hover:bg-slate-300 transition-colors z-30"
+                      title={isAr ? 'اسحب لتغيير العرض (انقر مرتين لإعادة الضبط)' : 'Drag to resize (double-click to reset)'}
+                    />
+                  </th>
+
+                  {/* Latest Activity */}
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-3 text-start relative group select-none">
+                    <span>{isAr ? 'آخر تسليم فعلي' : 'Latest Delivery'}</span>
+                    <div
+                      onMouseDown={(e) => handleResizeStart(e, 'latestActivity')}
+                      onDoubleClick={() => handleResetColumnWidth('latestActivity')}
+                      className="absolute top-0 bottom-0 end-0 w-2.5 cursor-col-resize hover:bg-blue-400 group-hover:bg-slate-300 transition-colors z-30"
+                      title={isAr ? 'اسحب لتغيير العرض (انقر مرتين لإعادة الضبط)' : 'Drag to resize (double-click to reset)'}
+                    />
+                  </th>
+
+                  {/* Actions */}
+                  <th className="sticky top-0 z-20 bg-slate-50 py-3 px-3 text-center relative group select-none">
+                    <span>{isAr ? 'الإجراءات' : 'Actions'}</span>
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-sm">
@@ -2592,24 +2781,26 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                     <React.Fragment key={client.id}>
                       <tr className={`hover:bg-slate-50/70 transition group ${isSelected ? 'bg-blue-50/40' : ''}`}>
                         {/* Checkbox */}
-                        <td className="py-3.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                        <td className="py-3 px-2 text-center" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
                             checked={isSelected}
                             onChange={() => handleToggleSelectClient(client.id)}
-                            className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer w-4 h-4"
+                            className={`rounded text-blue-600 focus:ring-0 focus:ring-offset-0 border-slate-300 cursor-pointer w-3.5 h-3.5 transition-opacity ${
+                              isSelected ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'
+                            }`}
                           />
                         </td>
 
                         {/* Client Code */}
-                        <td className="py-3.5 px-4 font-mono font-bold text-xs text-blue-700 whitespace-nowrap">
+                        <td className="py-3 px-3 font-mono font-bold text-xs text-blue-700 break-all">
                           {client.id}
                         </td>
 
                         {/* Name & Legal */}
-                        <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-3">
-                            <div className="w-9 h-9 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs">
+                        <td className="py-3 px-3 break-words whitespace-normal leading-snug">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs">
                               {client.logo ? (
                                 <img
                                   src={client.logo}
@@ -2620,12 +2811,12 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                 <IconCmp className="w-4 h-4 text-slate-500" />
                               )}
                             </div>
-                            <div className="flex flex-col min-w-0">
-                              <span className="font-black text-slate-800 text-sm truncate">
+                            <div className="flex flex-col min-w-0 flex-1">
+                              <span className="font-black text-slate-800 text-sm break-words whitespace-normal">
                                 {client.tradeNameAr || client.name}
                               </span>
                               {client.tradeNameEn && (
-                                <span className="text-xs text-slate-400 font-semibold truncate" dir="ltr">
+                                <span className="text-xs text-slate-400 font-semibold break-words whitespace-normal" dir="ltr">
                                   {client.tradeNameEn}
                                 </span>
                               )}
@@ -2640,10 +2831,10 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                         </td>
 
                         {/* Segment Badge */}
-                        <td className="py-3.5 px-4 whitespace-nowrap">
+                        <td className="py-3 px-3 break-words whitespace-normal">
                           {seg ? (
                             <span
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold shadow-sm"
+                              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-xs font-bold shadow-2xs"
                               style={{
                                 backgroundColor: `${seg.color}15`,
                                 color: seg.color,
@@ -2654,10 +2845,10 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                 <img
                                   src={client.logo}
                                   alt=""
-                                  className="w-4 h-4 object-contain rounded-xs shrink-0"
+                                  className="w-3.5 h-3.5 object-contain rounded-xs shrink-0"
                                 />
                               ) : (
-                                <IconCmp className="w-3.5 h-3.5 shrink-0" />
+                                <IconCmp className="w-3 h-3 shrink-0" />
                               )}
                               <span>{seg.nameAr}</span>
                             </span>
@@ -2669,46 +2860,46 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                         </td>
 
                         {/* Pricing Strategy */}
-                        <td className="py-3.5 px-4 whitespace-nowrap">
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200">
+                        <td className="py-3 px-3 break-words whitespace-normal">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200">
                             {PRICING_STRATEGIES.find((s) => s.id === client.pricingStrategy)?.labelAr || client.pricingStrategy || '—'}
                           </span>
                         </td>
 
                         {/* Settlement Strategy */}
-                        <td className="py-3.5 px-4 whitespace-nowrap">
+                        <td className="py-3 px-3 break-words whitespace-normal">
                           {client.settlementMode === 'credit' ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200">
-                              <CreditCard className="w-3.5 h-3.5" />
-                              <span>{isAr ? 'دفع آجل (عقود)' : 'Credit (Contracts)'}</span>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                              <CreditCard className="w-3 h-3" />
+                              <span>{isAr ? 'آجل' : 'Credit'}</span>
                             </span>
                           ) : client.settlementMode === 'rolling_credit' ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                              <RefreshCw className="w-3.5 h-3.5" />
-                              <span>{isAr ? 'سداد مع الشحنة التالية' : 'Rolling Credit'}</span>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                              <RefreshCw className="w-3 h-3" />
+                              <span>{isAr ? 'فاتورة دايرة' : 'Rolling invoice'}</span>
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              <Zap className="w-3.5 h-3.5" />
-                              <span>{isAr ? 'نقدي عند الاستلام (COD)' : 'Cash On Delivery'}</span>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <Zap className="w-3 h-3" />
+                              <span>{isAr ? 'نقدي' : 'Cash'}</span>
                             </span>
                           )}
                         </td>
 
                         {/* Branches Quick Badge */}
-                        <td className="py-3.5 px-4 whitespace-nowrap">
+                        <td className="py-3 px-3 whitespace-nowrap">
                           <button
                             onClick={() => setExpandedClientId(isExpanded ? null : client.id)}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition cursor-pointer"
                           >
-                            <MapPin className="w-3.5 h-3.5 text-blue-600" />
+                            <MapPin className="w-3 h-3 text-blue-600" />
                             <span>{(client.branches || []).length} {isAr ? 'فرع' : 'branch(es)'}</span>
                             {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                           </button>
                         </td>
 
                         {/* Latest Activity (Only Updated on Delivery) */}
-                        <td className="py-3.5 px-4 whitespace-nowrap">
+                        <td className="py-3 px-3 break-words whitespace-normal">
                           {client.latestActivityOn ? (
                             <div className="flex items-center gap-1.5 text-xs text-slate-700 font-bold">
                               <Clock className="w-3.5 h-3.5 text-blue-500" />
@@ -2716,7 +2907,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                             </div>
                           ) : (
                             <span className="text-xs text-slate-400 italic">
-                              {isAr ? 'لا يوجد نشاط تسليم مسجل بعد' : 'No delivery recorded yet'}
+                              {isAr ? 'لا يوجد' : 'No records'}
                             </span>
                           )}
                         </td>
@@ -3079,6 +3270,22 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
 
           <div className="h-5 w-px bg-slate-700 hidden sm:block" />
 
+          {/* Bulk Delete Button */}
+          {permissions?.canDeleteClient !== false && (
+            <button
+              type="button"
+              disabled={isApplyingBulkEdit || isDeletingBulk}
+              onClick={() => setShowBulkDeleteModal(true)}
+              className="px-3.5 py-1.5 bg-rose-600/90 hover:bg-rose-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
+              title={isAr ? 'حذف جميع العملاء المحددين نهائياً' : 'Permanently delete all selected clients'}
+            >
+              {isDeletingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              <span>{isAr ? 'حذف المحدد' : 'Delete Selected'}</span>
+            </button>
+          )}
+
+          <div className="h-5 w-px bg-slate-700 hidden sm:block" />
+
           <button
             type="button"
             onClick={() => setSelectedClientIds(new Set())}
@@ -3087,6 +3294,58 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
           >
             <X className="w-4 h-4" />
           </button>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* BULK DELETE CONFIRMATION MODAL                                            */}
+      {/* ========================================================================= */}
+      {showBulkDeleteModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden animate__animated animate__fadeInUp animate__faster p-6">
+            <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-4">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-lg font-black text-slate-800 text-center mb-2">
+              {isAr ? 'تأكيد الحذف الجماعي للعملاء' : 'Confirm Bulk Client Deletion'}
+            </h3>
+
+            <p className="text-xs text-slate-600 text-center mb-4 leading-relaxed">
+              {isAr
+                ? `هل أنت متأكد من رغبتك في حذف (${selectedClientIds.size}) عميل بشكل نهائي؟ سيتم حذف جميع الفروع والملاحظات والبيانات المرتبطة بهم من قاعدة البيانات.`
+                : `Are you sure you want to permanently delete (${selectedClientIds.size}) selected clients? All associated branches, notes, and records will be permanently removed.`}
+            </p>
+
+            <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 text-xs font-semibold mb-6 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <span>
+                {isAr
+                  ? 'هذا الإجراء لا يمكن التراجع عنه. يمكنك تصدير نسخة احتياطية من زر التصدير قبل المتابعة إذا أردت.'
+                  : 'This action cannot be undone. You may export a backup CSV prior to deleting if needed.'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={isDeletingBulk}
+                onClick={() => setShowBulkDeleteModal(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingBulk}
+                onClick={handleBulkDelete}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-md cursor-pointer flex items-center gap-1.5"
+              >
+                {isDeletingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                <span>{isAr ? `تأكيد حذف (${selectedClientIds.size}) عميل` : `Confirm Delete (${selectedClientIds.size})`}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -3229,7 +3488,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                     <span className="font-bold text-slate-800">
                       {detailViewClient.latestActivityOn
                         ? new Date(detailViewClient.latestActivityOn).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')
-                        : (isAr ? 'لا يوجد تسليم مسجل بعد' : 'None recorded')}
+                        : (isAr ? 'لا يوجد' : 'No records')}
                     </span>
                   </div>
 
