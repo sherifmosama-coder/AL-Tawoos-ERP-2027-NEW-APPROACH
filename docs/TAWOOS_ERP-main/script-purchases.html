@@ -1,0 +1,1878 @@
+<script>
+  
+/**
+ * PURCHASES MODULE - MODERN UI V6.0
+ * Theme: Petroleum (Dark Blue/Grey) + Rich Interactive Modal
+ */
+
+let purchasesState = {
+    warehouses: [],
+    materialsGrouped: [],
+    units: [],
+    operations: [],
+    allTransactions: [],
+    nextReceiptId: '', 
+    nextReturnId: '',
+    nextCostId: '',
+    nextSampleId: ''
+};
+
+// --- HELPER: LOADER COMPONENT ---
+function getPurchasesLoader(text = 'جاري تحميل البيانات...') {
+    return `
+    <div class="wh-loader-container">
+        <div class="wh-anim-box">
+            <i class="fas fa-forklift wh-forklift"></i>
+            <i class="fas fa-box-open wh-box"></i>
+        </div>
+        <h6 style="color:var(--p-primary); margin-bottom:30px; font-weight:700;">${text}</h6>
+        
+        <div class="skeleton-card">
+            <div class="sk-box sk-icon"></div>
+            <div><div class="sk-box sk-line-long"></div><div class="sk-box sk-line-short"></div></div>
+            <div class="sk-box sk-amount"></div>
+            <div class="sk-box sk-amount" style="width:30px; height:30px;"></div>
+            <div class="sk-footer"></div>
+        </div>
+        <div class="skeleton-card" style="opacity:0.7">
+            <div class="sk-box sk-icon"></div>
+            <div><div class="sk-box sk-line-long"></div><div class="sk-box sk-line-short"></div></div>
+            <div class="sk-box sk-amount"></div>
+            <div class="sk-box sk-amount" style="width:30px; height:30px;"></div>
+            <div class="sk-footer"></div>
+        </div>
+        <div class="skeleton-card" style="opacity:0.4">
+            <div class="sk-box sk-icon"></div>
+            <div><div class="sk-box sk-line-long"></div><div class="sk-box sk-line-short"></div></div>
+            <div class="sk-box sk-amount"></div>
+            <div class="sk-box sk-amount" style="width:30px; height:30px;"></div>
+            <div class="sk-footer"></div>
+        </div>
+    </div>`;
+}
+
+// --- MODULE INITIALIZATION ---
+function initPurchasesModule() {
+    const container = document.getElementById('purchasesTabContent');
+    if (!container) return;
+
+    // --- 1. CSS STYLES ---
+    if (!document.getElementById('purchases-styles')) {
+        const style = document.createElement('style');
+        style.id = 'purchases-styles';
+        style.innerHTML = `
+            :root {
+                --p-dark: #1e293b;
+                --p-primary: #334155;
+                --p-accent: #2563eb;
+                --p-light: #f1f5f9;
+                --p-border: #cbd5e1;
+                --p-success: #10b981;
+                --p-danger: #ef4444;
+            }
+            .purchases-container { direction: rtl; font-family: 'Tajawal', sans-serif; padding: 25px; background: var(--p-light); min-height: 90vh; animation: fadeUp 0.3s ease-out; }
+            @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+            /* Tabs */
+            .purch-tabs-wrapper { background: white; padding: 8px 12px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); display: inline-flex; gap: 8px; margin-bottom: 20px; }
+            .purch-tab-btn { border: none; background: transparent; padding: 8px 20px; border-radius: 8px; font-weight: 600; color: var(--p-primary); transition: 0.2s; }
+            .purch-tab-btn.active { background: var(--p-dark); color: white; box-shadow: 0 4px 6px rgba(30, 41, 59, 0.3); }
+
+            /* Buttons */
+            .btn-action { border: none; padding: 10px 20px; border-radius: 8px; font-weight: 700; cursor: pointer; transition: 0.2s; display: inline-flex; align-items: center; gap: 8px; }
+            .btn-create { background: var(--p-accent); color: white; }
+            .btn-create:hover { background: #1d4ed8; transform: translateY(-1px); }
+
+            /* Modal Styling */
+            .modal { direction: rtl; }
+            .modal-content { border-radius: 16px; border: none; box-shadow: 0 20px 40px rgba(0,0,0,0.2); text-align: right; overflow: hidden; }
+            
+            /* Modal Header */
+            .modal-header-custom { background: var(--p-dark); padding: 15px 25px; color: white; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
+            .modal-title-box { display: flex; align-items: center; gap: 12px; }
+            .modal-title-custom { font-size: 1.2rem; font-weight: 700; }
+            
+            /* ID Chip */
+            .id-chip { background: rgba(255,255,255,0.15); padding: 5px 12px; border-radius: 20px; font-size: 0.9rem; font-family: monospace; letter-spacing: 1px; border: 1px solid rgba(255,255,255,0.3); display: flex; align-items: center; gap: 8px; }
+            .id-chip i { font-size: 0.8rem; opacity: 0.7; }
+
+            /* Header Fields */
+            .modal-header-fields { background: #f8fafc; padding: 20px 25px; border-bottom: 1px solid var(--p-border); display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+
+            /* Form Elements */
+            .field-group label { display: block; font-size: 0.8rem; font-weight: 700; color: #64748b; margin-bottom: 6px; }
+            .form-control-custom { width: 100%; padding: 10px 12px; border: 1px solid var(--p-border); border-radius: 8px; font-size: 0.95rem; background: white; transition: 0.2s; }
+            .form-control-custom:focus { border-color: var(--p-accent); outline: none; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+            .form-control-custom[readonly], .form-control-custom:disabled { background: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
+
+            /* Items Table Area */
+            .items-area { background: white; padding: 0 25px; min-height: 250px; }
+
+            /* Item Card */
+            .item-card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 15px; margin-bottom: 15px; position: relative; box-shadow: 0 2px 4px rgba(0,0,0,0.02); transition: all 0.2s; border-right: 4px solid var(--p-accent); }
+            .item-card:hover { box-shadow: 0 8px 15px rgba(0,0,0,0.05); transform: translateY(-1px); border-color: var(--p-dark); }
+            .card-remove-btn { position: absolute; top: 10px; left: 10px; width: 28px; height: 28px; border-radius: 50%; background: #fee2e2; color: #ef4444; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; z-index: 2; }
+            .card-remove-btn:hover { background: #ef4444; color: white; transform: rotate(90deg); }
+            
+            .card-grid-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; align-items: end; margin-bottom: 12px; }
+            .card-label { font-size: 0.75rem; font-weight: 700; color: #64748b; margin-bottom: 5px; display: block; white-space: nowrap; }
+            .card-input-group { display: flex; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+            .card-input-group input { border: none; padding: 8px; font-size: 0.9rem; width: 100%; outline: none; }
+            .card-input-group span { background: #f1f5f9; padding: 0 10px; font-size: 0.8rem; font-weight: 600; color: #64748b; border-right: 1px solid #e2e8f0; display: flex; align-items: center; }
+
+            /* Tax Documents Group */
+            .tax-docs-container { margin: 20px 25px; background: #fff; border: 1px solid var(--p-border); border-radius: 12px; overflow: hidden; }
+            .tax-docs-header { background: #f1f5f9; padding: 10px 15px; font-weight: 700; color: var(--p-dark); display: flex; align-items: center; gap: 10px; font-size: 0.9rem; border-bottom: 1px solid var(--p-border); }
+            .tax-docs-body { padding: 15px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; align-items: end; }
+            
+            /* Custom Checkbox Big */
+            .check-card { display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--p-border); border-radius: 8px; cursor: pointer; transition: 0.2s; user-select: none; }
+            .check-card:hover { background: #f8fafc; }
+            .check-card.checked { background: #eff6ff; border-color: var(--p-accent); color: var(--p-accent); }
+            .check-card input { transform: scale(1.2); accent-color: var(--p-accent); }
+
+            /* Footer */
+            .modal-footer-custom { border-top: 1px solid #e2e8f0; padding: 15px 25px; display: flex; justify-content: flex-end; gap: 10px; background: #fff; }
+
+            /* --- CUSTOM PURCHASES POPUP --- */
+            #purch-custom-popup-overlay {
+                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(5px);
+                z-index: 10000; display: none; justify-content: center; align-items: center;
+                opacity: 0; transition: opacity 0.3s ease;
+            }
+            #purch-custom-popup-overlay.active { opacity: 1; }
+
+            .purch-popup-content {
+                background: white; width: 90%; max-width: 550px;
+                border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+                transform: scale(0.95) translateY(10px); transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+                overflow: hidden; border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column;
+            }
+            #purch-custom-popup-overlay.active .purch-popup-content { transform: scale(1) translateY(0); }
+
+            .purch-popup-header {
+                background: var(--p-dark); padding: 16px 20px;
+                display: flex; justify-content: space-between; align-items: center;
+                color: white; border-bottom: 1px solid rgba(255,255,255,0.1);
+            }
+            .purch-popup-title { font-weight: 700; font-size: 1.05rem; display: flex; align-items: center; gap: 10px; }
+            .purch-popup-close {
+                background: rgba(255,255,255,0.1); border: none; color: white;
+                width: 30px; height: 30px; border-radius: 50%; cursor: pointer;
+                display: flex; align-items: center; justify-content: center; transition: 0.2s;
+            }
+            .purch-popup-close:hover { background: #ef4444; transform: rotate(90deg); }
+
+            /* --- FLOATING POPOVER (Replaces Modal Popup) --- */
+            .floating-popover {
+                position: fixed; 
+                background: white;
+                border: 1px solid #cbd5e1;
+                box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+                border-radius: 12px;
+                z-index: 1050; /* Above Bootstrap Modals */
+                width: 800px; /* Widened significantly for Data Tables */
+                max-width: 96vw;
+                max-height: 85vh;
+                display: none;
+                flex-direction: column;
+                animation: fadeScale 0.15s ease-out;
+            }
+            @keyframes fadeScale { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+            
+            .fp-header { 
+                background: var(--p-dark); color: white; 
+                padding: 12px 15px; 
+                display: flex; justify-content: space-between; align-items: center; 
+                border-radius: 11px 11px 0 0;
+                cursor: grab; /* Indicating it could be draggable, though we use fixed pos */
+            }
+            .fp-title { font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 8px; }
+            .fp-close { background: transparent; border: none; color: rgba(255,255,255,0.7); cursor: pointer; transition: 0.2s; }
+            .fp-close:hover { color: white; transform: scale(1.1); }
+            
+            .fp-body { 
+                padding: 15px; 
+                overflow-y: auto; 
+                color: var(--p-primary); 
+                font-size: 0.9rem;
+            }
+        
+            /* --- NEW: EXPLORER & RICH CARDS --- */
+            .explorer-bar { background: white; border-radius: 12px; padding: 15px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid var(--p-border); display: none; animation: slideDown 0.3s ease-out; }
+            @keyframes slideDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+            
+            /* Added padding-bottom for footer space */
+            .rich-card { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 15px 15px 35px 15px; margin-bottom: 12px; display: grid; grid-template-columns: 80px 1fr auto 50px; gap: 15px; align-items: center; transition: 0.2s; position: relative; overflow: hidden; }
+            
+            .rc-footer {
+                position: absolute; bottom: 0; left: 0; right: 0;
+                background: #f8fafc; border-top: 1px solid #e2e8f0;
+                padding: 2px 15px; /* Minimal vertical padding */
+                font-size: 0.65rem; /* Smaller initial font */
+                color: #94a3b8; font-family: monospace;
+                display: flex; justify-content: space-between; align-items: center;
+                cursor: pointer; transition: all 0.2s ease; opacity: 0.6;
+                height: 20px; /* Fixed small height */
+            }
+            .rc-footer:hover { 
+                opacity: 1; 
+                background: #eff6ff; 
+                color: var(--p-dark); 
+                font-size: 0.75rem; /* Grows on hover */
+                height: 24px; /* Expands slightly */
+            }
+            .rich-card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); border-color: var(--p-accent); }
+            
+            .rc-icon-box { width: 75px; height: 60px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; flex-shrink: 0; cursor: pointer; transition: 0.2s; }
+            .rc-icon-box:hover { filter: brightness(1.1); }
+            .rc-box-icon { font-size: 1.4rem; margin-bottom: 2px; }
+            .rc-box-id { font-size: 0.7rem; font-weight: 700; font-family: monospace; letter-spacing: 0.5px; opacity: 0.95; white-space: nowrap; }
+            .rc-receipt { background: linear-gradient(135deg, #10b981, #059669); }
+            .rc-return { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+            
+            .rc-main { display: flex; flex-direction: column; gap: 6px; }
+            .rc-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+            .rc-id { font-family: monospace; font-weight: 700; background: #f1f5f9; padding: 2px 8px; border-radius: 6px; font-size: 0.85rem; color: var(--p-dark); border: 1px solid #cbd5e1; cursor: pointer; }
+            .rc-title { font-weight: 700; font-size: 1rem; color: var(--p-dark); }
+            
+            .rc-chips-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+            .rc-chip { font-size: 0.75rem; padding: 4px 10px; border-radius: 20px; background: #f8fafc; border: 1px solid #e2e8f0; color: #64748b; display: flex; align-items: center; gap: 6px; cursor: pointer; transition: 0.2s; }
+            .rc-chip:hover { background: var(--p-accent); color: white; border-color: var(--p-accent); }
+            
+            .rc-amount-box { text-align: left; }
+            .rc-amount { font-weight: 800; font-size: 1.1rem; color: var(--p-dark); }
+            .rc-vat-badge { font-size: 0.75rem; background: #dbeafe; color: #1e40af; padding: 3px 8px; border-radius: 6px; display: inline-block; margin-top: 4px; cursor: pointer; transition: 0.2s; border: 1px solid transparent; }
+            .rc-vat-badge:hover { background: #2563eb; color: white; transform: translateY(-1px); }
+            .rc-vat-badge.missing { background: #fee2e2; color: #ef4444; border-color: #fca5a5; }
+            .rc-vat-badge.missing:hover { background: #ef4444; color: white; }
+
+            /* --- SEGMENTED CONTROL (Types) --- */
+            .p-type-group { display: flex; gap: 8px; background: #f1f5f9; padding: 5px; border-radius: 10px; width: 100%; }
+            .p-type-btn { flex: 1; border: none; background: transparent; padding: 8px; border-radius: 8px; font-weight: 700; color: #64748b; font-size: 0.9rem; transition: 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px; }
+            .p-type-btn:hover { background: rgba(255,255,255,0.5); }
+            
+            /* Active States */
+            .p-type-btn.active[data-type="استلام"] { background: #10b981; color: white; box-shadow: 0 2px 4px rgba(16, 185, 129, 0.3); }
+            .p-type-btn.active[data-type="ارتجاع"] { background: #ef4444; color: white; box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3); }
+            .p-type-btn.active[data-type="تعديل تكلفة"] { background: #f59e0b; color: white; box-shadow: 0 2px 4px rgba(245, 158, 11, 0.3); }
+            .p-type-btn.active[data-type="عينة"] { background: #0ea5e9; color: white; box-shadow: 0 2px 4px rgba(14, 165, 233, 0.3); }
+
+            /* --- CONFIRMATION SCREEN --- */
+            .p-confirm-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; z-index: 10; padding: 0; display: flex; flex-direction: column; opacity: 0; pointer-events: none; transition: 0.3s; transform: translateX(20px); }
+            .p-confirm-screen.active { opacity: 1; pointer-events: auto; transform: translateX(0); }
+            
+            .confirm-header { background: #f8fafc; padding: 20px; border-bottom: 1px solid #e2e8f0; text-align: center; }
+            .confirm-body { flex: 1; overflow-y: auto; padding: 25px; }
+            .confirm-footer { padding: 20px; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; background: #f8fafc; }
+
+            .timer-bar-bg { width: 100%; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-top: 15px; }
+            .timer-bar-fill { height: 100%; background: var(--p-accent); width: 100%; transition: width 1s linear; }
+
+            /* --- SUCCESS PULSE --- */
+            .success-pulse {
+                width: 80px; height: 80px; background: #dcfce7; color: #16a34a;
+                border-radius: 50%; display: flex; align-items: center; justify-content: center;
+                font-size: 2.5rem; margin: 0 auto 20px;
+                animation: pulse-green 2s infinite;
+            }
+            @keyframes pulse-green {
+                0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.4); }
+                70% { box-shadow: 0 0 0 20px rgba(22, 163, 74, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+            }
+
+            /* --- WAREHOUSE LOADER & SKELETON --- */
+            .wh-loader-container { text-align: center; padding: 40px 20px; animation: fadeUp 0.5s ease-out; }
+            
+            /* The Forklift Animation */
+            .wh-anim-box { position: relative; width: 80px; height: 60px; margin: 0 auto 20px; }
+            /* Green Forklift */
+            .wh-forklift { font-size: 3rem; color: #10b981; position: absolute; bottom: 0; right: 0; z-index: 2; transform: scaleX(-1); /* Face left to catch box */ }
+            /* Blue Box */
+            .wh-box { font-size: 1.6rem; color: #3b82f6; position: absolute; bottom: 2px; left: -10px; animation: box-lift 2s infinite ease-in-out; z-index: 3; }
+            
+            @keyframes box-lift {
+                0% { transform: translateX(0) translateY(0); opacity: 0; }
+                20% { opacity: 1; }
+                40% { transform: translateX(30px) translateY(0); } /* Move to forks */
+                60% { transform: translateX(30px) translateY(-15px); } /* Lift */
+                80% { transform: translateX(30px) translateY(-15px); opacity: 1; }
+                100% { transform: translateX(30px) translateY(-15px); opacity: 0; }
+            }
+
+            /* The Skeleton Cards (Shimmer) */
+            .skeleton-card {
+                background: white; border: 1px solid #f1f5f9; border-radius: 10px;
+                padding: 15px 15px 35px 15px; margin-bottom: 12px;
+                display: grid; grid-template-columns: 80px 1fr auto 50px; gap: 15px;
+                align-items: center; position: relative; overflow: hidden;
+            }
+            .sk-box { background: #f1f5f9; border-radius: 6px; position: relative; overflow: hidden; }
+            .sk-box::after {
+                content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+                transform: translateX(-100%);
+                animation: sk-shimmer 1.5s infinite;
+            }
+            @keyframes sk-shimmer { 100% { transform: translateX(100%); } }
+
+            .sk-icon { width: 75px; height: 60px; }
+            .sk-line-long { height: 12px; width: 60%; margin-bottom: 8px; }
+            .sk-line-short { height: 12px; width: 30%; }
+            .sk-amount { height: 20px; width: 80px; }
+            .sk-footer { position: absolute; bottom: 0; left: 0; width: 100%; height: 20px; background: #f8fafc; border-top: 1px solid #f1f5f9; }
+            
+            .rc-attach-box { display: flex; flex-direction: column; gap: 4px; align-items: center; border-right: 1px dashed #e2e8f0; padding-right: 8px; margin-right: -5px; }
+            /* Washed out = half opacity, keeping color */
+            .rc-attach-btn { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.75rem; transition: all 0.2s; text-decoration: none; opacity: 0.5; }
+            .rc-attach-btn:hover { transform: scale(1.1); opacity: 1; }
+            .at-inv { background: #76B591; } .at-inv:hover { background: #2C9959; }
+            .at-wht { background: #EFD044; } .at-wht:hover { background: #EFC744; }
+            .at-rec { background: #3b82f6; } .at-rec:hover { background: #2563eb; }
+
+            /* Filter Inputs */
+            .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
+
+            .animation-slide-up { animation: slideUpFade 0.4s ease-out; }
+            @keyframes slideUpFade { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // --- 2. LAYOUT ---
+    container.innerHTML = `
+        <div class="purchases-container">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <div class="purch-tabs-wrapper">
+                    <button class="purch-tab-btn active" onclick="showPurchTab('inout', this)"><i class="fas fa-boxes"></i> المخزن</button>
+                    <button class="purch-tab-btn" onclick="showPurchTab('po', this)"><i class="fas fa-file-contract"></i> التوريد</button>
+                    <button class="purch-tab-btn" onclick="showPurchTab('payments', this)"><i class="fas fa-wallet"></i> المدفوعات</button>
+                </div>
+            </div>
+
+            <div id="tab-inout" class="tab-content-panel">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h4 style="font-weight:700; color:var(--p-dark);"><i class="fas fa-history"></i> سجل الحركات</h4>
+                    <div class="d-flex gap-2">
+                        <button class="btn-action" style="background:white; border:1px solid var(--p-border); color:var(--p-primary);" onclick="toggleExplorer()">
+                            <i class="fas fa-filter"></i> فلتر وبحث
+                        </button>
+                        <button class="btn-action btn-create" onclick="openPurchaseModal()">
+                            <i class="fas fa-plus"></i> حركة جديدة
+                        </button>
+                    </div>
+                </div>
+
+                <div id="p-explorer" class="explorer-bar">
+                    <ul class="nav nav-tabs" style="border-bottom:1px solid #e2e8f0; margin-bottom:15px; padding-right:0;">
+                        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-filter">تصفية (Filter)</a></li>
+                        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-search">بحث (Search)</a></li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="tab-filter">
+                            <div class="filter-grid">
+                                <div><label>من تاريخ</label><input type="date" id="ex-date-from" class="form-control-custom" onchange="runExplorer()"></div>
+                                <div><label>إلى تاريخ</label><input type="date" id="ex-date-to" class="form-control-custom" onchange="runExplorer()"></div>
+                                <div>
+                                    <label>المورد</label>
+                                    <select id="ex-supplier" class="form-control-custom" onchange="runExplorer()">
+                                        <option value="">الكل</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label>النوع</label>
+                                    <select id="ex-op" class="form-control-custom" onchange="runExplorer()">
+                                        <option value="">الكل</option>
+                                        <option value="استلام">استلام</option>
+                                        <option value="ارتجاع">ارتجاع</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="tab-pane fade" id="tab-search">
+                            <input type="text" id="ex-search-text" class="form-control-custom" placeholder="بحث شامل (رقم الحركة، الصنف، الملاحظات، الفاتورة...)" onkeyup="runExplorer()">
+                        </div>
+                    </div>
+                </div>
+
+                <div id="p-history-container">
+                    ${getPurchasesLoader('جاري الاتصال بالمخزن...')}
+                </div>
+            </div>
+            
+            <div id="tab-po" class="tab-content-panel" style="display:none; text-align:center; padding:50px;"><h3 class="text-muted">قريباً...</h3></div>
+            <div id="tab-payments" class="tab-content-panel" style="display:none; text-align:center; padding:50px;"><h3 class="text-muted">قريباً...</h3></div>
+        </div>
+
+        <div class="modal fade" id="transactionModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-xl modal-fullscreen-lg-down">
+                <div class="modal-content">
+                    
+                    <div class="modal-header-custom">
+                        <div class="modal-title-box">
+                            <i class="fas fa-dolly fa-lg"></i>
+                            <div class="modal-title-custom">تسجيل حركة مخزنية</div>
+                        </div>
+                        <div class="d-flex align-items-center gap-3">
+                            <div class="id-chip" id="next-id-chip">
+                                <i class="fas fa-hashtag"></i> <span id="next-id-text">...</span>
+                            </div>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                    </div>
+
+                    <form id="purchaseForm">
+                        <div id="p-confirm-overlay" class="p-confirm-screen">
+                            <div class="confirm-header">
+                                <h4 style="color:var(--p-dark); font-weight:800;">مراجعة نهائية للحركة</h4>
+                                <div class="text-muted small">سيتم الحفظ تلقائياً بعد انتهاء العد التنازلي</div>
+                                <div class="timer-bar-bg"><div id="p-timer-fill" class="timer-bar-fill"></div></div>
+                            </div>
+                            <div class="confirm-body" id="p-confirm-content"></div>
+                            <div class="confirm-footer">
+                                <button type="button" class="btn btn-light text-muted" onclick="cancelConfirm()">
+                                    <i class="fas fa-arrow-right"></i> تراجع وتعديل
+                                </button>
+                                <button type="button" class="btn btn-primary btn-lg px-5" onclick="executeSave()">
+                                    <i class="fas fa-check-circle"></i> تأكيد وحفظ
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="modal-header-fields">
+                            <div class="field-group" style="grid-column: span 2;">
+                                <label>نوع العملية</label>
+                                <div class="p-type-group">
+                                    <button type="button" class="p-type-btn active" data-type="استلام" onclick="setPurchType(this)">
+                                        <i class="fas fa-download"></i> استلام
+                                    </button>
+                                    <button type="button" class="p-type-btn" data-type="ارتجاع" onclick="setPurchType(this)">
+                                        <i class="fas fa-undo-alt"></i> ارتجاع
+                                    </button>
+                                    <button type="button" class="p-type-btn" data-type="تعديل تكلفة" onclick="setPurchType(this)">
+                                        <i class="fas fa-calculator"></i> تكلفة
+                                    </button>
+                                    <button type="button" class="p-type-btn" data-type="عينة" onclick="setPurchType(this)">
+                                        <i class="fas fa-gift"></i> عينة
+                                    </button>
+                                </div>
+                                <input type="hidden" id="p-operation" value="استلام">
+                            </div>
+                            <div class="field-group">
+                                <label>التاريخ</label>
+                                <input type="date" id="p-date" class="form-control-custom" readonly>
+                            </div>
+                            <div class="field-group">
+                                <label style="color:var(--p-accent);">المورد</label>
+                                <select id="p-supplier-global" class="form-control-custom" onchange="onGlobalSupplierChange()" required>
+                                    <option value="">اختر المورد أولاً...</option>
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label>رقم مرجعي / PO</label>
+                                <input type="text" id="p-po" class="form-control-custom" placeholder="رقم أمر التوريد">
+                            </div>
+                        </div>
+
+                        <div class="items-area">
+                            <div class="items-table-container" style="background: #f8fafc; border: 1px solid var(--p-border); border-radius:12px; padding: 20px; min-height: 200px; margin-top:20px;">
+                                <div id="p-items-list"></div>
+                                
+                                <div class="d-flex justify-content-between align-items-center mt-4 pt-3" style="border-top: 1px dashed #cbd5e1;">
+                                    <button type="button" class="btn-action" style="background:white; border:1px solid var(--p-border); color:var(--p-dark);" onclick="addPurchaseRow()">
+                                        <i class="fas fa-plus-circle text-success"></i> إضافة صنف جديد
+                                    </button>
+                                    
+                                    <div class="d-flex align-items-center gap-3">
+                                        <div style="text-align:left;">
+                                            <label style="font-size:0.75rem; font-weight:700; color:#64748b; display:block;">نولون / نقل</label>
+                                            <input type="number" id="p-shipping-fee" class="form-control-custom" value="0" min="0" placeholder="0.00" style="width:120px; font-weight:bold; color:var(--p-accent);">
+                                        </div>
+                                        
+                                        <div style="font-weight:800; font-size:1.2rem; color:var(--p-dark); background:white; padding:10px 20px; border-radius:8px; border:1px solid var(--p-border);">
+                                            الإجمالي: <span id="p-grand-total" style="color:var(--p-accent);">0.00</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="tax-docs-container" id="tax-group-container">
+                            <div class="tax-docs-header">
+                                <i class="fas fa-file-invoice-dollar"></i> بيانات الفاتورة الضريبية
+                            </div>
+                            <div class="tax-docs-body">
+                                <div>
+                                    <label class="check-card" id="lbl-vat-check">
+                                        <input type="checkbox" id="p-global-vat" onchange="toggleTaxFields()"> 
+                                        <span>تطبيق ضريبة ق.م (14%)</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="field-group">
+                                    <label>رقم الفاتورة الضريبية</label>
+                                    <input type="text" id="p-inv-num" class="form-control-custom" placeholder="اختياري" disabled oninput="toggleInvoiceDate()">
+                                </div>
+                                <div class="field-group">
+                                    <label>تاريخ الفاتورة</label>
+                                    <input type="date" id="p-inv-date" class="form-control-custom" disabled>
+                                </div>
+
+                                <div>
+                                    <label class="check-card" id="lbl-wht-check">
+                                        <input type="checkbox" id="p-global-wht" onchange="toggleWhtFields()" disabled> 
+                                        <span>خصم ض.أ.ت (1%)</span>
+                                    </label>
+                                </div>
+                                <div class="field-group">
+                                    <label>رقم إشعار الخصم</label>
+                                    <input type="text" id="p-wht-num" class="form-control-custom" placeholder="تلقائي" readonly disabled style="background:#f1f5f9; font-weight:bold; letter-spacing:1px;">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="modal-footer-custom">
+                            <button type="button" class="btn btn-light" data-bs-dismiss="modal">إلغاء</button>
+                            <button type="button" id="btn-save-purchase" class="btn-action btn-create" onclick="savePurchase()">
+                                <i class="fas fa-save"></i> حفظ الحركة
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <datalist id="list-units"></datalist>
+
+        <div id="p-floating-popover" class="floating-popover">
+            <div class="fp-header">
+                <div class="fp-title" id="fp-title-text"></div>
+                <button class="fp-close" onclick="p_hidePopover()"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="fp-body" id="fp-body-content"></div>
+        </div>
+    `;
+
+    // --- NEW: Refresh History when Modal Closes ---
+    const modalEl = document.getElementById('transactionModal');
+    if(modalEl) {
+        modalEl.addEventListener('hidden.bs.modal', function () {
+            // Only reload if NOT resetting (prevents double call & null errors)
+            if (!window.isResettingPurchaseModal) {
+                loadPurchasesData(); 
+            }
+        });
+    }
+
+    loadPurchasesData();
+}
+
+// --- LOGIC ---
+
+function openPurchaseModal() {
+    // 0. AUTO-REPAIR: If form is missing (e.g. after Success Screen), rebuild module first
+    if (!document.getElementById('p-date')) {
+        initPurchasesModule();
+        setTimeout(openPurchaseModal, 100);
+        return;
+    }
+
+    // 1. Guard: Block Viewers
+    if (window.currentPurchaseRole !== 'admin' && window.currentPurchaseRole !== 'editor') {
+        alert('⛔ ليس لديك صلاحية لإضافة حركات (عرض فقط)');
+        return;
+    }
+
+    // 2. Reset Form
+    document.getElementById('purchaseForm').reset();
+    document.getElementById('p-items-list').innerHTML = ''; // Clear old items
+    
+    // 3. Reset Date
+    const d = document.getElementById('p-date');
+    d.valueAsDate = new Date();
+
+    if (window.currentPurchaseRole === 'admin') {
+        d.removeAttribute('readonly');
+        d.style.backgroundColor = '#ffffff';
+    } else {
+        d.setAttribute('readonly', true);
+        d.style.backgroundColor = ''; 
+    }
+    
+    // 4. Reset Transaction Type to Default (Receipt)
+    const receiptBtn = document.querySelector('.p-type-btn[data-type="استلام"]');
+    if(receiptBtn) {
+        setPurchType(receiptBtn); // This handles Theme, Chips, and Tax UI reset
+    } else {
+        // Fallback if buttons missing
+        updateTransactionChip();
+        toggleTaxGroup();
+    }
+
+    // 5. Open Modal
+    const el = document.getElementById('transactionModal');
+    let modal = bootstrap.Modal.getInstance(el);
+    if (!modal) modal = new bootstrap.Modal(el);
+    modal.show();
+}
+
+function showPurchTab(id, btn) {
+    document.querySelectorAll('.tab-content-panel').forEach(e => e.style.display='none');
+    document.getElementById('tab-'+id).style.display='block';
+    document.querySelectorAll('.purch-tab-btn').forEach(e => e.classList.remove('active'));
+    if(btn) btn.classList.add('active');
+}
+
+function toggleExplorer() {
+    const el = document.getElementById('p-explorer');
+    el.style.display = (el.style.display === 'none' || el.style.display === '') ? 'block' : 'none';
+}
+
+function runExplorer() {
+    const from = document.getElementById('ex-date-from').value;
+    const to = document.getElementById('ex-date-to').value;
+    const sup = document.getElementById('ex-supplier').value;
+    const op = document.getElementById('ex-op').value;
+    const search = document.getElementById('ex-search-text').value.toLowerCase();
+
+    let filtered = purchasesState.allTransactions.filter(r => {
+        let pass = true;
+        if(from && r.date < from) pass = false;
+        if(to && r.date > to) pass = false;
+        if(sup && r.supplier !== sup) pass = false;
+        if(op && r.op !== op) pass = false;
+        
+        if(search) {
+            const str = `${r.id} ${r.item} ${r.specific} ${r.invNum} ${r.po} ${r.note}`.toLowerCase();
+            if(!str.includes(search)) pass = false;
+        }
+        return pass;
+    });
+
+    renderRichCards(filtered);
+}
+
+function loadPurchasesData() {
+    // 1. Show Loader Immediately (Using Helper)
+    const container = document.getElementById('p-history-container');
+    
+    // GUARD: If container missing (tab hidden/unloaded), abort
+    if (!container) return;
+    
+    container.innerHTML = getPurchasesLoader('جاري تحديث البيانات...');
+
+    const currentUserEmail = localStorage.getItem('userEmail') || '';
+
+    google.script.run.withSuccessHandler(res => {
+        if(res.success) {
+            purchasesState = { ...purchasesState, ...res, allTransactions: res.history };
+            window.currentPurchaseRole = res.userRole; 
+            
+            // 1. Setup Global Supplier List (For Modal & Explorer)
+            const allSuppliers = new Set();
+            res.materialsGrouped.forEach(group => {
+                group.variations.forEach(v => {
+                    if(v.supplier) allSuppliers.add(v.supplier);
+                });
+            });
+
+            // Target Elements
+            const supSel = document.getElementById('p-supplier-global'); // Modal (Might be null in Success View)
+            const exSup = document.getElementById('ex-supplier');       // Explorer Filter
+
+            // Reset
+            if (supSel) supSel.innerHTML = '<option value="">اختر المورد...</option>';
+            if (exSup) exSup.innerHTML = '<option value="">الكل</option>';
+
+            // Populate
+            Array.from(allSuppliers).sort().forEach(s => {
+                // For Modal
+                if (supSel) {
+                    const opt = document.createElement('option');
+                    opt.value = s; opt.innerText = s;
+                    supSel.appendChild(opt);
+                }
+
+                // For Explorer Filter
+                if (exSup) {
+                    const optEx = document.createElement('option');
+                    optEx.value = s; optEx.innerText = s;
+                    exSup.appendChild(optEx);
+                }
+            });
+
+            // 2. Setup Unit Datalist
+            const dl = document.getElementById('list-units');
+            if (dl) {
+                dl.innerHTML = '';
+                res.units.forEach(u => {
+                    const opt = document.createElement('option');
+                    opt.value = u;
+                    dl.appendChild(opt);
+                });
+            }
+
+            // 3. Date & Ops
+            const d = document.getElementById('p-date');
+            if (d) {
+                d.valueAsDate = new Date();
+                
+                // Unlock Date Only for Admin
+                if(res.userRole === 'admin') {
+                    d.removeAttribute('readonly');
+                    d.style.backgroundColor = '#ffffff';
+                }
+            }
+
+            if (document.getElementById('p-operation')) {
+                populateSelect('p-operation', res.operations, 'استلام');
+            }
+            
+            // 4. Render New Rich Cards
+            renderRichCards(res.history);
+
+            // 5. Init Theme (Only if buttons exist)
+            const activeBtn = document.querySelector('.p-type-btn.active');
+            if (activeBtn) {
+                setPurchType(activeBtn);
+            }
+        }
+    }).getPurchasesInitialData(currentUserEmail);
+}
+
+// --- FLOATING POPOVER LOGIC ---
+function p_showPopover(e, title, htmlContent) {
+    // 1. Stop propagation to prevent immediate closing
+    if(e) e.stopPropagation();
+
+    const pop = document.getElementById('p-floating-popover');
+    const titleEl = document.getElementById('fp-title-text');
+    const bodyEl = document.getElementById('fp-body-content');
+    
+    if(!pop) return;
+
+    // 2. Set Content
+    titleEl.innerHTML = title;
+    bodyEl.innerHTML = htmlContent;
+    
+    // 3. Show first to calculate dimensions
+    pop.style.display = 'flex';
+    
+    // 4. Calculate Position (Smart Positioning)
+    const clickX = e ? e.clientX : window.innerWidth / 2;
+    const clickY = e ? e.clientY : window.innerHeight / 2;
+    
+    const screenW = window.innerWidth;
+    const screenH = window.innerHeight;
+    const popW = pop.offsetWidth;
+    const popH = pop.offsetHeight;
+    
+    // Default: To the bottom-right of cursor
+    let left = clickX + 12; 
+    let top = clickY + 12;
+    
+    // Flip Horizontal: If overflows right, move to left of cursor
+    if (left + popW > screenW - 20) {
+        left = clickX - popW - 12;
+    }
+    
+    // Flip Vertical: If overflows bottom, move above cursor
+    if (top + popH > screenH - 20) {
+        top = clickY - popH - 12;
+    }
+    
+    // Hard Boundaries (Top/Left)
+    if(left < 10) left = 10;
+    if(top < 10) top = 10;
+    
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+
+    // 5. Add Outside Click Listener (Delayed)
+    setTimeout(() => {
+        document.addEventListener('click', p_closePopoverOutside);
+        document.addEventListener('keydown', p_handleEsc);
+    }, 50);
+}
+
+function p_hidePopover() {
+    const pop = document.getElementById('p-floating-popover');
+    if(pop) pop.style.display = 'none';
+    document.removeEventListener('click', p_closePopoverOutside);
+    document.removeEventListener('keydown', p_handleEsc);
+}
+
+function p_closePopoverOutside(e) {
+    const pop = document.getElementById('p-floating-popover');
+    if (pop && !pop.contains(e.target)) {
+        p_hidePopover();
+    }
+}
+
+function p_handleEsc(e) {
+    if(e.key === 'Escape') p_hidePopover();
+}
+
+function populateSelect(id, list, def) {
+    const el = document.getElementById(id);
+    if (!el) return; // Guard clause
+    el.innerHTML = '<option value="">اختر...</option>';
+    list.forEach(i => {
+        const opt = document.createElement('option');
+        opt.value = i; opt.innerText = i;
+        if(i===def) opt.selected=true;
+        el.appendChild(opt);
+    });
+}
+
+// --- NEW LOGIC FUNCTIONS ---
+
+// 1. Type Setter & Theming
+function setPurchType(btn) {
+    // UI Active State
+    document.querySelectorAll('.p-type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    
+    // Set Value
+    const type = btn.dataset.type;
+    document.getElementById('p-operation').value = type;
+    
+    // Apply Theme
+    const header = document.querySelector('.modal-header-custom');
+    const addBtn = document.querySelector('.btn-action[onclick="addPurchaseRow()"]');
+    
+    let color = '#1e293b'; // Default Dark
+    let accent = '#10b981'; // Default Green
+    
+    if(type === 'استلام') { color = '#1e293b'; accent = '#10b981'; } // Dark / Green
+    else if(type === 'ارتجاع') { color = '#7f1d1d'; accent = '#ef4444'; } // Dark Red / Red
+    else if(type === 'تعديل تكلفة') { color = '#78350f'; accent = '#f59e0b'; } // Dark Orange / Orange
+    else if(type === 'عينة') { color = '#0c4a6e'; accent = '#0ea5e9'; } // Dark Blue / Blue
+    
+    if(header) header.style.background = color;
+    if(addBtn) {
+        addBtn.style.borderColor = accent;
+        addBtn.style.color = color;
+        addBtn.querySelector('i').style.color = accent;
+    }
+
+    updateTransactionChip();
+}
+
+// 2. Chip Update 
+function updateTransactionChip() { 
+const op = document.getElementById('p-operation').value; 
+const chip = document.getElementById('next-id-text');
+
+let nextId = '...';
+let color = 'rgba(255,255,255,0.3)';
+
+if (!op || op === 'استلام') {
+    nextId = purchasesState.nextReceiptId;
+} else if (op === 'ارتجاع') {
+    nextId = purchasesState.nextReturnId;
+    color = '#fca5a5'; // Reddish
+} else if (op === 'تعديل تكلفة') {
+    nextId = purchasesState.nextCostId;
+    color = '#fde047'; // Yellowish
+} else if (op === 'عينة') {
+    nextId = purchasesState.nextSampleId;
+    color = '#93c5fd'; // Blueish
+}
+
+chip.innerText = nextId || '...';
+chip.parentElement.style.borderColor = color;
+
+toggleTaxGroup(); 
+}
+
+// 2. Master Switch (Op Type)
+function toggleTaxGroup() {
+    const op = document.getElementById('p-operation').value;
+    const isReceipt = (op === 'استلام');
+    
+    const vatCheck = document.getElementById('p-global-vat');
+    const container = document.getElementById('tax-group-container');
+    
+    if (isReceipt) {
+        container.style.opacity = '1';
+        container.style.pointerEvents = 'auto';
+        vatCheck.disabled = false;
+    } else {
+        container.style.opacity = '0.6';
+        container.style.pointerEvents = 'none';
+        vatCheck.checked = false;
+        vatCheck.disabled = true;
+        toggleTaxFields(); // Reset children
+    }
+}
+
+// 3. Tax Ignitor (VAT Check)
+function toggleTaxFields() {
+    const isVat = document.getElementById('p-global-vat').checked;
+    const lblVat = document.getElementById('lbl-vat-check');
+    
+    // Style toggle
+    isVat ? lblVat.classList.add('checked') : lblVat.classList.remove('checked');
+
+    // Dependent Fields
+    const invNum = document.getElementById('p-inv-num');
+    const whtCheck = document.getElementById('p-global-wht');
+    
+    invNum.disabled = !isVat;
+    whtCheck.disabled = !isVat;
+    
+    if (!isVat) {
+        invNum.value = '';
+        whtCheck.checked = false;
+        toggleInvoiceDate();
+        toggleWhtFields();
+    }
+    
+    // Trigger Recalc of Items
+    document.querySelectorAll('.item-card').forEach(c => calcRow(c.querySelector('.p-qty-major')));
+}
+
+// 4. Invoice Date Logic
+function toggleInvoiceDate() {
+    const invNum = document.getElementById('p-inv-num').value;
+    const invDate = document.getElementById('p-inv-date');
+    
+    if (invNum && invNum.trim() !== '') {
+        invDate.disabled = false;
+        invDate.required = true;
+        // Sync default if empty
+        if (!invDate.value) {
+            invDate.value = document.getElementById('p-date').value;
+        }
+    } else {
+    invDate.disabled = true;
+    invDate.required = false;
+    invDate.value = '';
+}
+// Chain: Update WHT based on Invoice Number
+toggleWhtFields();
+}
+
+// 5. WHT Logic
+function toggleWhtFields() {
+const isWht = document.getElementById('p-global-wht').checked; 
+const lblWht = document.getElementById('lbl-wht-check'); 
+const whtNum = document.getElementById('p-wht-num'); 
+const invNum = document.getElementById('p-inv-num').value;
+
+isWht ? lblWht.classList.add('checked') : lblWht.classList.remove('checked');
+
+// Rule: Active ONLY if WHT Checked AND Invoice Number Filled
+const isActive = isWht && (invNum && invNum.trim() !== '');
+whtNum.disabled = !isActive;
+
+if (isActive) {
+    // Auto-Fill: "T-" + Transaction ID
+    const op = document.getElementById('p-operation').value;
+    let baseId = purchasesState.nextReceiptId; // Default
+
+    if (op === 'ارتجاع') baseId = purchasesState.nextReturnId;
+    else if (op === 'تعديل تكلفة') baseId = purchasesState.nextCostId;
+    else if (op === 'عينة') baseId = purchasesState.nextSampleId;
+
+    whtNum.value = `T-${baseId}`;
+} else {
+    whtNum.value = '';
+}
+
+// Trigger Recalc
+document.querySelectorAll('.item-card').forEach(c => calcRow(c.querySelector('.p-qty-major')));
+}
+
+function renderRichCards(data) {
+    const container = document.getElementById('p-history-container');
+    if (!container) return; // Guard clause to prevent crash
+
+    if(!data || data.length === 0) {
+        container.innerHTML = '<div class="text-center p-5 text-muted"><i class="fas fa-box-open fa-3x mb-3"></i><br>لا توجد حركات تطابق البحث</div>';
+        return;
+    }
+
+    // 1. Group by ID to show Unique Transactions
+    const grouped = {};
+    data.forEach(r => {
+        if(!grouped[r.id]) {
+            grouped[r.id] = { ...r, grandTotal: 0, itemsCount: 0 };
+        }
+        grouped[r.id].grandTotal += (parseFloat(r.total) || 0);
+        grouped[r.id].itemsCount += 1;
+    });
+
+    let html = '';
+    // Sort IDs by Date Descending (Recent First), then by ID Descending
+    const uniqueIds = Object.keys(grouped).sort((a, b) => {
+        const dateA = new Date(grouped[a].date);
+        const dateB = new Date(grouped[b].date);
+        return dateB - dateA || String(b).localeCompare(String(a));
+    }).slice(0, 50); // Limit to 50 Cards
+
+    uniqueIds.forEach(id => {
+        const r = grouped[id];
+        const isReceipt = (r.op === 'استلام');
+        const icon = isReceipt ? 'fa-arrow-down' : 'fa-undo';
+        const bgClass = isReceipt ? 'rc-receipt' : 'rc-return';
+        const dateStr = new Date(r.date).toLocaleDateString('en-GB');
+        
+        // --- CHIPS ---
+        // 1. Item Chips (One per Unique Item)
+        const txRows = purchasesState.allTransactions.filter(x => x.id == id);
+        const uniqueItems = [...new Set(txRows.map(x => x.item))];
+
+        let itemChips = '';
+        uniqueItems.forEach(itm => {
+             const safeItem = itm.replace(/'/g, "\\'");
+             
+             // Calculate Total Qty for this Basic Item in this Transaction
+             const itemTotalQty = txRows
+                .filter(row => row.item === itm)
+                .reduce((sum, row) => sum + (parseFloat(row.qty) || 0), 0);
+
+             itemChips += `
+                <div class="rc-chip" title="عرض تفاصيل ${itm}" onclick="showPurchDetails(event, '${r.id}', '${safeItem}')" style="font-weight:bold; color:var(--p-dark);">
+                    <i class="fas fa-box-open"></i> ${itm} <span class="ms-1 text-muted" style="font-family:monospace; font-size:0.85em;">[${itemTotalQty}]</span>
+                </div>`;
+        });
+
+        // Date Chip (Prepared for Header)
+        const dateChip = `
+            <div class="rc-chip" title="التاريخ" style="border:none; background:transparent; padding:0 5px; color:#64748b;">
+                <i class="fas fa-calendar-alt"></i> ${dateStr}
+            </div>`;
+
+        let chips = itemChips;
+
+        // Docs Chip (REMOVED - Moved to Badge)
+        
+        // PO Chip
+        if(r.po) {
+            chips += `<div class="rc-chip" title="أمر توريد"><i class="fas fa-hashtag"></i> ${r.po}</div>`;
+        }
+
+        // Notes Chip (Header)
+        let noteChip = '';
+        const hasNotes = txRows.some(x => x.note && x.note.trim() !== '');
+        if(hasNotes) {
+            noteChip = `
+                <div class="rc-chip" title="عرض الملاحظات" onclick="showPurchNotes(event,'${r.id}')" style="background:#fff7ed; color:#ea580c; border:none; padding:0 6px;">
+                    <i class="fas fa-sticky-note"></i>
+                </div>`;
+        }
+        
+        // Audit Chip (REMOVED - Moved to Footer)
+
+        // Header: Supplier Name + Supplier Chip
+        const supplierChip = `
+            <div class="rc-chip" title="ملف المورد" onclick="showPurchSupplier(event,'${r.supplier}')" style="border-color:var(--p-dark); color:var(--p-dark);">
+                <i class="fas fa-user-tag"></i>
+            </div>`;
+
+        // Warehouse Chips Logic
+        const whColors = {
+            'رئيسي': '#10b981', // Green
+            'تشغيل': '#8b5cf6', // Purple
+            'فرعي - ارضي 1': '#60a5fa', // Light Blue
+            'فرعي - ارضي 2': '#3b82f6', // Med Blue
+            'فرعي - علوي': '#1e40af', // Dark Blue
+            'تحت حساب المرتجعات': '#ef4444' // Red
+        };
+        const uniqueWhs = [...new Set(txRows.map(x => x.warehouse).filter(Boolean))];
+        
+        let whChips = '';
+        uniqueWhs.forEach(wh => {
+            const color = whColors[wh] || '#64748b'; // Default Grey
+            // Calculate Total Units for this Warehouse in this Transaction
+            const totalUnits = txRows.filter(x => x.warehouse === wh).reduce((sum, x) => sum + (parseFloat(x.qty)||0), 0);
+            
+            whChips += `
+                <div class="rc-chip" title="محتوى المخزن: ${wh}" onclick="showPurchWarehouse(event,'${r.id}', '${wh}')" style="border:none; background:${color}; color:white; font-size:0.7rem;">
+                    <i class="fas fa-warehouse"></i> ${wh}
+                </div>`;
+        });
+
+        html += `
+            <div class="rich-card">
+                <div class="rc-icon-box ${bgClass}" onclick="showPurchDetails(event,'${r.id}')">
+                    <i class="fas ${icon} rc-box-icon"></i>
+                    <span class="rc-box-id">${r.id}</span>
+                </div>
+                <div class="rc-main">
+                    <div class="rc-header">
+                        ${supplierChip}
+                        <span class="rc-title">${r.supplier}</span>
+                        ${dateChip}
+                        ${whChips}
+                        ${noteChip}
+                    </div>
+                    <div class="rc-chips-row">${chips}</div>
+                </div>
+                <div class="rc-amount-box">
+                    <div class="rc-amount">${r.grandTotal.toLocaleString(undefined, {minimumFractionDigits:2})}</div>
+                    ${(() => {
+                        // Badge Logic: Show Invoice Number if exists, else 'Missing' if VAT exists
+                        if (r.invNum) {
+                            return `<span class="rc-vat-badge" onclick="showPurchInvoice(event,'${r.invNum}', '${r.invDate}', '${r.whtNum}', '${r.linkInv || ''}', '${r.linkWht || ''}')" title="بيانات الفاتورة"><i class="fas fa-file-invoice me-1"></i> ${r.invNum}</span>`;
+                        } else if (r.vatVal > 0) {
+                            return `<span class="rc-vat-badge missing" onclick="alert('تنبيه: فاتورة ضريبية مفقودة لهذا الاستلام!')" title="فاتورة مفقودة"><i class="fas fa-exclamation-circle me-1"></i> Missing</span>`;
+                        }
+                        return '';
+                    })()}
+                </div>
+                
+                <div class="rc-attach-box">
+                    ${[...new Set(txRows.map(x => x.linkInv).filter(Boolean))].map(url => 
+                        `<a href="${url}" target="_blank" class="rc-attach-btn at-inv" title="فاتورة المورد"><i class="fas fa-file-invoice-dollar"></i></a>`
+                    ).join('')}
+                    
+                    ${[...new Set(txRows.map(x => x.linkWht).filter(Boolean))].map(url => 
+                        `<a href="${url}" target="_blank" class="rc-attach-btn at-wht" title="إشعار الخصم"><i class="fas fa-file-contract"></i></a>`
+                    ).join('')}
+                    
+                    ${[...new Set(txRows.map(x => x.linkRec).filter(Boolean))].map(url => 
+                        `<a href="${url}" target="_blank" class="rc-attach-btn at-rec" title="مستند المخزن"><i class="fas fa-box-open"></i></a>`
+                    ).join('')}
+                </div>
+
+                <div class="rc-footer" onclick="showPurchAudit(event,'${r.id}', '${r.user}', '${r.ts}')">
+                    <div><i class="fas fa-user-circle me-1"></i> ${r.user || 'Unknown'}</div>
+                    <div>${r.ts ? r.ts.replace('T', ' ').slice(0, 16) : '-'} <i class="fas fa-history ms-1"></i></div>
+                </div>
+            </div>
+        `;
+    });
+    container.innerHTML = html;
+}
+
+// --- POPUP ACTION HANDLERS ---
+
+function showPurchNotes(e, id) {
+    const rows = purchasesState.allTransactions.filter(x => x.id == id && x.note && x.note.trim() !== '');
+    if(rows.length === 0) return;
+
+    let html = '<div class="list-group list-group-flush">';
+    rows.forEach(r => {
+        html += `
+            <div class="list-group-item px-0 py-3">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div>
+                        <div style="font-weight:bold; color:var(--p-dark);">${r.item}</div>
+                        <small class="text-muted">${r.specific} <span class="badge bg-light text-dark border ms-1">${r.qty} وحدة</span></small>
+                    </div>
+                </div>
+                <div style="background:#fff7ed; padding:12px; border-radius:8px; color:#9a3412; font-style:italic; border-right:4px solid #f97316; font-size:0.95rem;">
+                    <i class="fas fa-quote-right opacity-50 me-2"></i> ${r.note}
+                </div>
+            </div>
+        `;
+    });
+    html += '</div>';
+
+    p_showPopover(e, `#${id} ملاحظات الحركة`, html);
+}
+
+function showPurchWarehouse(e, id, whName) {
+    const rows = purchasesState.allTransactions.filter(x => x.id == id && x.warehouse === whName);
+    if(rows.length === 0) return;
+
+    let rowsHtml = '';
+    rows.forEach((r, idx) => {
+        rowsHtml += `
+            <tr>
+                <td>${idx+1}</td>
+                <td><div style="font-weight:bold;">${r.item}</div><small class="text-muted">${r.specific}</small></td>
+                <td class="text-center fw-bold" style="font-size:1.1rem; color:var(--p-accent);">${r.qty}</td>
+            </tr>
+        `;
+    });
+
+    const html = `
+        <div style="background:#f8fafc; padding:15px; border-radius:8px; margin-bottom:15px; border-left:4px solid var(--p-accent);">
+            <div class="text-muted small">المخزن المحدد</div>
+            <div style="font-weight:800; font-size:1.1rem; color:var(--p-dark);">${whName}</div>
+        </div>
+        <table class="table table-sm table-bordered align-middle">
+            <thead class="table-light">
+                <tr><th width="10%">#</th><th>الصنف</th><th width="20%" class="text-center">الكمية المستلمة</th></tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+        </table>
+    `;
+    p_showPopover(e, `#${id} جرد المخزن`, html);
+}
+
+function showPurchDetails(e, id, itemFilter = null) {
+    // Filter all raw rows for this ID
+    let rows = purchasesState.allTransactions.filter(x => x.id == id);
+    if(rows.length === 0) return;
+
+    const head = rows[0]; // Keep reference to header info
+
+    // Apply Item Filter if clicked from specific chip
+    if(itemFilter) {
+        rows = rows.filter(x => x.item === itemFilter);
+    }
+
+    const total = rows.reduce((sum, x) => sum + (parseFloat(x.total)||0), 0);
+
+    let rowsHtml = '';
+    rows.forEach((r, idx) => {
+        const vatDisplay = (r.vatVal > 0) 
+            ? `<span class="badge bg-primary bg-opacity-10 text-primary" style="font-size:0.7rem;">+14%</span> <small>(${parseFloat(r.vatVal).toFixed(2)})</small>` 
+            : '<span class="text-muted">-</span>';
+
+        rowsHtml += `
+            <tr>
+                <td>${idx+1}</td>
+                <td><span class="badge bg-secondary bg-opacity-10 text-dark">${r.warehouse || '-'}</span></td>
+                <td><div style="font-weight:bold;">${r.item}</div><small class="text-muted">${r.specific}</small></td>
+                <td class="text-center fw-bold">${r.qty}</td>
+                <td>${parseFloat(r.price).toLocaleString()}</td>
+                <td>${vatDisplay}</td>
+                <td class="fw-bold text-end">${parseFloat(r.total).toLocaleString()}</td>
+            </tr>
+        `;
+    });
+
+    const html = `
+        <div class="d-flex justify-content-between mb-3" style="background:#f8fafc; padding:15px; border-radius:8px;">
+            <div><small class="text-muted">المورد</small><br><strong>${head.supplier}</strong></div>
+            <div><small class="text-muted">التاريخ</small><br><strong>${new Date(head.date).toLocaleDateString('en-GB')}</strong></div>
+            <div><small class="text-muted">العملية</small><br><strong>${head.op}</strong></div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th width="5%">#</th>
+                        <th width="15%">المخزن</th>
+                        <th>الصنف</th>
+                        <th width="10%" class="text-center">الكمية</th>
+                        <th width="12%">السعر</th>
+                        <th width="15%">ضريبة</th>
+                        <th width="15%" class="text-end">الإجمالي</th>
+                    </tr>
+                </thead>
+                <tbody>${rowsHtml}</tbody>
+                <tfoot>
+                <tr class="table-active"><td colspan="4" class="text-end fw-bold">الإجمالي الكلي</td><td class="fw-bold">${total.toLocaleString()}</td><td></td></tr>
+            </tfoot>
+        </table>
+    `;
+    
+    const popupTitle = itemFilter ? `#${id} - ${itemFilter}` : `#${id} تفاصيل الحركة`;
+    p_showPopover(e, popupTitle, html);
+}
+
+function showPurchSupplier(e, name) {
+    const rows = purchasesState.allTransactions.filter(x => x.supplier === name);
+    const totalSpend = rows.reduce((sum, x) => sum + (parseFloat(x.total)||0), 0);
+    const lastDate = rows.length > 0 ? new Date(rows[0].date).toLocaleDateString('en-GB') : '-';
+
+    const html = `
+        <div style="text-align:center; padding:20px;">
+            <div style="width:60px; height:60px; background:#e0f2fe; color:#0369a1; border-radius:50%; display:flex; align-items:center; justify-content:center; margin:0 auto 15px; font-size:1.5rem;">
+                <i class="fas fa-building"></i>
+            </div>
+            <h4 style="color:var(--p-dark); margin-bottom:5px;">${name}</h4>
+            <p class="text-muted">ملف المورد</p>
+            
+            <div class="row mt-4" style="text-align:center;">
+                <div class="col-6">
+                    <div style="background:#f8fafc; padding:15px; border-radius:10px;">
+                        <div style="font-size:0.8rem; color:#64748b;">إجمالي التعاملات</div>
+                        <div style="font-size:1.2rem; font-weight:800; color:var(--p-accent);">${totalSpend.toLocaleString()}</div>
+                    </div>
+                </div>
+                <div class="col-6">
+                    <div style="background:#f8fafc; padding:15px; border-radius:10px;">
+                        <div style="font-size:0.8rem; color:#64748b;">عدد الحركات</div>
+                        <div style="font-size:1.2rem; font-weight:800; color:var(--p-dark);">${new Set(rows.map(r=>r.id)).size}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-3 text-muted" style="font-size:0.85rem;">
+                آخر تعامل: ${lastDate}
+            </div>
+        </div>
+    `;
+    p_showPopover(e, 'ملف المورد', html);
+}
+
+function showPurchInvoice(e, num, date, wht, linkInv, linkWht) {
+    let buttons = '';
+    
+    // Invoice Button (Blue)
+    if(linkInv && linkInv !== 'undefined' && linkInv !== '') {
+        buttons += `
+            <a href="${linkInv}" target="_blank" class="btn btn-primary flex-grow-1" style="font-weight:700;">
+                <i class="fas fa-file-invoice-dollar me-2"></i> صورة الفاتورة
+            </a>
+        `;
+    }
+
+    // WHT Button (Red)
+    if(linkWht && linkWht !== 'undefined' && linkWht !== '') {
+        buttons += `
+            <a href="${linkWht}" target="_blank" class="btn btn-danger flex-grow-1" style="font-weight:700;">
+                <i class="fas fa-file-contract me-2"></i> إشعار الخصم
+            </a>
+        `;
+    }
+
+    const footer = buttons ? `<div class="mt-3 d-flex gap-2">${buttons}</div>` : '';
+
+    const html = `
+        <div class="list-group">
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-file-invoice me-2 text-muted"></i> رقم الفاتورة</span>
+                <span class="fw-bold" style="font-family:monospace; font-size:1.1rem;">${num}</span>
+            </div>
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-calendar-day me-2 text-muted"></i> تاريخ الفاتورة</span>
+                <span class="fw-bold">${date ? new Date(date).toLocaleDateString('en-GB') : '-'}</span>
+            </div>
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-cut me-2 text-muted"></i> رقم إشعار الخصم (WHT)</span>
+                <span class="fw-bold text-danger">${wht || 'لا يوجد'}</span>
+            </div>
+        </div>
+        ${footer}
+    `;
+    p_showPopover(e, 'بيانات الفاتورة الضريبية', html);
+}
+
+function showPurchAudit(e, id, user, ts) {
+    // 1. Show Basic Info immediately
+    let html = `
+        <div style="padding:10px; text-align:center; background:#f8fafc; border-radius:8px; margin-bottom:15px;">
+            <div style="font-size:2rem; color:#cbd5e1; margin-bottom:5px;"><i class="fas fa-user-circle"></i></div>
+            <h6 style="color:var(--p-dark); margin-bottom:2px;">${user}</h6>
+            <div class="text-muted small" style="direction:ltr; font-family:monospace;">${ts.replace('T', ' ').slice(0, 19)}</div>
+        </div>
+        
+        <h6 style="border-bottom:2px solid var(--p-border); padding-bottom:8px; margin-bottom:15px; color:var(--p-dark);">
+            <i class="fas fa-history"></i> سجل التعديلات (Cell History)
+        </h6>
+        
+        <div id="audit-log-container" class="text-center py-4">
+            <i class="fas fa-circle-notch fa-spin text-muted"></i> جاري فحص الخلايا...
+        </div>
+    `;
+    p_showPopover(e, `#${id} بيانات التسجيل`, html);
+
+    // 2. Fetch Notes from Backend
+    google.script.run.withSuccessHandler(logs => {
+        const container = document.getElementById('audit-log-container');
+        if(!container) return;
+
+        if(!logs || logs.length === 0) {
+            container.innerHTML = '<span class="text-muted fst-italic">No edit history found (No notes on cells)</span>';
+            return;
+        }
+
+        let logHtml = '<div class="list-group list-group-flush text-start">';
+        logs.forEach(l => {
+            logHtml += `
+                <div class="list-group-item px-0">
+                    <div class="d-flex justify-content-between">
+                        <strong>${l.item}</strong>
+                        <span class="badge bg-light text-dark border">${l.field}</span>
+                    </div>
+                    <div style="font-size:0.85rem; color:#64748b; margin-top:4px; background:#fff7ed; padding:8px; border-radius:6px; border-right:3px solid #f97316;">
+                        ${l.content}
+                    </div>
+                </div>`;
+        });
+        logHtml += '</div>';
+        container.innerHTML = logHtml;
+
+    }).getTransactionEditHistory(id);
+}
+
+function onGlobalSupplierChange() {
+    const container = document.getElementById('p-items-list');
+    if(container.children.length > 0) {
+        if(confirm('تغيير المورد سيقوم بمسح الأصناف الحالية. هل أنت متأكد؟')) {
+            container.innerHTML = '';
+            addPurchaseRow();
+        }
+    } else {
+        addPurchaseRow();
+    }
+}
+
+function addPurchaseRow() {
+    const supplier = document.getElementById('p-supplier-global').value;
+    if(!supplier) { alert('يرجى اختيار المورد أولاً من أعلى القائمة'); return; }
+
+    // Filter Basic Items
+    let basicOpts = '<option value="">اختر...</option>';
+    purchasesState.materialsGrouped.forEach((group, idx) => {
+        const hasSupplier = group.variations.some(v => v.supplier === supplier);
+        if(hasSupplier) basicOpts += `<option value="${idx}">${group.name}</option>`;
+    });
+
+    // Warehouse Options
+    let whOpts = '';
+    purchasesState.warehouses.forEach(w => whOpts += `<option value="${w.id}">${w.name}</option>`);
+
+    const container = document.getElementById('p-items-list');
+    const div = document.createElement('div');
+    div.className = 'item-card';
+    div.innerHTML = `
+        <button type="button" class="card-remove-btn" onclick="removeRow(this)"><i class="fas fa-times"></i></button>
+        
+        <div class="card-grid-row">
+            <div>
+                <label class="card-label">المخزن</label>
+                <select class="form-control-custom p-warehouse-row" style="padding:8px;">${whOpts}</select>
+            </div>
+            <div>
+                <label class="card-label">الصنف الأساسي</label>
+                <select class="form-control-custom p-basic" onchange="onBasicChange(this)" style="padding:8px;">${basicOpts}</select>
+            </div>
+            <div style="grid-column: span 2;">
+                <label class="card-label">النوع المحدد</label>
+                <select class="form-control-custom p-specific" disabled onchange="onSpecificChange(this)" style="padding:8px; background:#f8fafc;"></select>
+            </div>
+        </div>
+
+        <div class="card-grid-row" style="background: #f8fafc; padding: 10px; border-radius: 8px; border: 1px dashed #e2e8f0;">
+            <div>
+                <label class="card-label">الكمية الكبرى</label>
+                <div class="card-input-group">
+                    <input type="number" class="p-qty-major" value="" min="0" onchange="calcRow(this)" placeholder="0">
+                    <input type="text" class="p-unit-major" list="list-units" placeholder="وحدة" style="width:50px; text-align:center; border-left:1px solid #e2e8f0;">
+                </div>
+            </div>
+            <div>
+                <label class="card-label">سعة العبوة</label> 
+                <div class="card-input-group">
+                    <input type="number" class="p-pack-qty" value="1" min="0" onchange="calcRow(this)" placeholder="1"> 
+                    <input type="text" class="p-unit-minor" list="list-units" placeholder="وحدة" style="width:50px; text-align:center; border-left:1px solid #e2e8f0;">
+                </div>
+            </div>
+            <div>
+                <label class="card-label">إجمالي الوحدات</label>
+                <input type="text" class="form-control-custom p-qty-total" readonly style="background:#e2e8f0; font-weight:700; text-align:center;" value="0">
+            </div>
+            <div>
+                <label class="card-label">سعر الوحدة</label>
+                <input type="number" class="form-control-custom p-price" placeholder="0.00" onchange="calcRow(this)">
+            </div>
+            <div>
+                <label class="card-label">الإجمالي</label>
+                <input type="text" class="form-control-custom p-line-total" readonly style="background:#1e293b; color:white; font-weight:700; text-align:center;">
+            </div>
+        </div>
+
+        <input type="text" class="form-control-custom p-item-note" placeholder="ملاحظات على هذا الصنف..." style="margin-top:8px; font-size:0.85rem; border:1px dashed #cbd5e1;">
+        <input type="hidden" class="p-rate-vat" value="0.14">
+        <input type="hidden" class="p-rate-wht" value="0.01">
+    `;
+    container.appendChild(div);
+}
+
+function onBasicChange(el) {
+    const card = el.closest('.item-card');
+    const groupIdx = el.value;
+    const supplier = document.getElementById('p-supplier-global').value;
+    const specSel = card.querySelector('.p-specific');
+    
+    specSel.innerHTML = '<option value="">اختر...</option>';
+    specSel.disabled = true;
+
+    if(groupIdx !== "") {
+        const group = purchasesState.materialsGrouped[groupIdx];
+        const vars = group.variations.filter(v => v.supplier === supplier);
+        vars.forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v.id; 
+            // Flatten for Display: Replace newlines with separator
+            opt.innerText = v.specificName.replace(/\n/g, ' | ');
+            // Store Raw Name: For saving later
+            opt.dataset.rawname = v.specificName;
+            
+            opt.dataset.pack = v.pack;
+            opt.dataset.sunit = v.smallUnit;
+            opt.dataset.lunit = v.largeUnit;
+            opt.dataset.sign = v.specialSign; 
+            opt.dataset.vat = v.vatRate;
+            opt.dataset.wht = v.whtRate;
+            specSel.appendChild(opt);
+        });
+        specSel.disabled = false;
+
+        // AUTOMATION: If only 1 item exists, auto-select it
+        if (vars.length === 1) {
+            specSel.selectedIndex = 1; // Index 0 is "Choose...", Index 1 is the item
+            onSpecificChange(specSel); // Trigger population of units/prices
+        }
+    }
+}
+
+function onSpecificChange(el) {
+    const card = el.closest('.item-card');
+    const opt = el.selectedOptions[0];
+    if(!opt || !opt.value) return;
+
+    card.querySelector('.p-unit-major').value = opt.dataset.lunit || '';
+    card.querySelector('.p-unit-minor').value = opt.dataset.sunit || '';
+    card.querySelector('.p-pack-qty').value = opt.dataset.pack || 1;
+    
+    // Set Rates for Calculation
+    card.querySelector('.p-rate-vat').value = opt.dataset.vat;
+    card.querySelector('.p-rate-wht').value = opt.dataset.wht;
+
+    calcRow(el);
+}
+
+function calcRow(el) {
+    const card = el.closest('.item-card');
+    if(!card) return;
+
+    const qMajor = parseFloat(card.querySelector('.p-qty-major').value) || 0;
+    const price = parseFloat(card.querySelector('.p-price').value) || 0;
+    const packSize = parseFloat(card.querySelector('.p-pack-qty').value) || 1;
+
+    const totalQty = qMajor * packSize;
+    card.querySelector('.p-qty-total').value = totalQty;
+
+    const preTax = totalQty * price;
+
+    // Check Global Flags
+    const isGlobalVat = document.getElementById('p-global-vat').checked;
+    const isGlobalWht = document.getElementById('p-global-wht').checked;
+
+    // Use Item Rates only if Global Flag is checked
+    const vatRate = isGlobalVat ? parseFloat(card.querySelector('.p-rate-vat').value) : 0;
+    const whtRate = isGlobalWht ? parseFloat(card.querySelector('.p-rate-wht').value) : 0;
+
+    const final = preTax + (preTax * vatRate) - (preTax * whtRate);
+    card.querySelector('.p-line-total').value = final.toFixed(2);
+    
+    updateGrandTotal();
+}
+
+function updateGrandTotal() {
+    let sum = 0;
+    document.querySelectorAll('.p-line-total').forEach(i => sum += parseFloat(i.value)||0);
+    document.getElementById('p-grand-total').innerText = sum.toLocaleString(undefined, {minimumFractionDigits:2});
+}
+
+function removeRow(btn) {
+    btn.closest('.item-card').remove();
+    updateGrandTotal();
+}
+
+let confirmTimer = null;
+
+function savePurchase() {
+    // 1. Validate Form
+    const supplier = document.getElementById('p-supplier-global').value;
+    const items = document.querySelectorAll('.item-card');
+    
+    if (!supplier) { alert('يرجى اختيار المورد'); return; }
+    if (items.length === 0) { alert('يرجى إضافة صنف واحد على الأقل'); return; }
+    
+    // 2. Build Summary Data
+    const op = document.getElementById('p-operation').value;
+    const date = document.getElementById('p-date').value;
+    const total = document.getElementById('p-grand-total').innerText;
+    const ship = document.getElementById('p-shipping-fee').value;
+    
+    // --- DEFINITIONS ---
+    const isVat = document.getElementById('p-global-vat').checked;
+    const isGlobalWht = document.getElementById('p-global-wht').checked;
+    
+    let tableRows = '';
+    items.forEach((card, i) => {
+        const name = card.querySelector('.p-basic').selectedOptions[0]?.text || '-';
+        const spec = card.querySelector('.p-specific').selectedOptions[0]?.text || '-';
+        const wh = card.querySelector('.p-warehouse-row').selectedOptions[0]?.text || '-'; // GET WAREHOUSE
+        const qty = card.querySelector('.p-qty-total').value;
+        const price = card.querySelector('.p-price').value;
+        const line = card.querySelector('.p-line-total').value;
+        const note = card.querySelector('.p-item-note').value;
+        
+        tableRows += `
+            <tr>
+                <td>${i+1}</td>
+                <td><strong>${name}</strong><br><small class="text-muted">${spec}</small></td>
+                <td class="text-center"><span class="badge bg-light text-dark border">${wh}</span></td>
+                <td class="text-center">${qty}</td>
+                <td class="text-center">${price}</td>
+                <td class="text-end fw-bold">${line}</td>
+            </tr>
+            ${note ? `<tr><td colspan="6" class="bg-light text-muted small fst-italic px-4"><i class="fas fa-quote-right me-1"></i> ${note}</td></tr>` : ''}
+        `;
+    });
+
+    const summaryHtml = `
+        <div class="row mb-4">
+            <div class="col-6">
+                <div class="p-3 bg-light rounded border">
+                    <small class="text-muted d-block">المورد</small>
+                    <strong class="text-dark h5">${supplier}</strong>
+                </div>
+            </div>
+            <div class="col-3">
+                <div class="p-3 bg-light rounded border">
+                    <small class="text-muted d-block">النوع</small>
+                    <strong>${op}</strong>
+                </div>
+            </div>
+            <div class="col-3">
+                <div class="p-3 bg-light rounded border">
+                    <small class="text-muted d-block">التاريخ</small>
+                    <strong>${date}</strong>
+                </div>
+            </div>
+        </div>
+        
+        <div class="table-responsive">
+            <table class="table table-bordered table-sm align-middle mb-4">
+                <thead class="table-light"><tr><th>#</th><th>الصنف</th><th>المخزن</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr></thead>
+                <tbody>${tableRows}</tbody>
+            </table>
+        </div>
+        
+        <div class="d-flex justify-content-end gap-4 align-items-center flex-wrap">
+            ${ship > 0 ? `<div class="text-muted">نولون: <strong>${ship}</strong></div>` : ''}
+            ${isVat ? `<div class="text-primary"><i class="fas fa-check"></i> ضريبة (14%)</div>` : ''}
+            ${isGlobalWht ? `<div class="text-danger"><i class="fas fa-cut"></i> خصم (1%)</div>` : ''}
+            <div class="bg-dark text-white px-4 py-2 rounded h4 mb-0">
+                الإجمالي: ${total}
+            </div>
+        </div>
+    `;
+
+    // 3. Show Screen & Start Timer
+    document.getElementById('p-confirm-content').innerHTML = summaryHtml;
+    document.getElementById('p-confirm-overlay').classList.add('active');
+    
+    startConfirmTimer();
+}
+
+function startConfirmTimer() {
+    const fill = document.getElementById('p-timer-fill');
+    fill.style.transition = 'none';
+    fill.style.width = '100%';
+    
+    // Force reflow
+    void fill.offsetWidth;
+    
+    fill.style.transition = 'width 30s linear';
+    fill.style.width = '0%';
+    
+    if(confirmTimer) clearTimeout(confirmTimer);
+    confirmTimer = setTimeout(() => {
+        executeSave(); // Auto-Save
+    }, 30000);
+}
+
+function cancelConfirm() {
+    if(confirmTimer) clearTimeout(confirmTimer);
+    document.getElementById('p-confirm-overlay').classList.remove('active');
+}
+
+function executeSave() {
+    if(confirmTimer) clearTimeout(confirmTimer);
+    
+    // Original Save Logic
+    const btn = document.getElementById('btn-save-purchase'); // Only for reference if needed
+    // ... (Use the logic from previous savePurchase, extracting data again to be safe)
+    
+    const isGlobalVat = document.getElementById('p-global-vat').checked;
+    const isGlobalWht = document.getElementById('p-global-wht').checked;
+
+    const payload = {
+        userEmail: localStorage.getItem('userEmail'), 
+        date: document.getElementById('p-date').value,
+        operation: document.getElementById('p-operation').value,
+        supplier: document.getElementById('p-supplier-global').value,
+        transportationFee: document.getElementById('p-shipping-fee').value,
+        poNumber: document.getElementById('p-po').value,
+        invoiceNumber: document.getElementById('p-inv-num').value,
+        invoiceDate: document.getElementById('p-inv-date').value,
+        whtNoteNumber: document.getElementById('p-wht-num').value,
+        items: []
+    };
+
+    const cards = document.querySelectorAll('.item-card');
+    cards.forEach(card => {
+        const spec = card.querySelector('.p-specific');
+        if(spec.value) {
+            const basic = card.querySelector('.p-basic');
+            const group = purchasesState.materialsGrouped[basic.value];
+            const wh = card.querySelector('.p-warehouse-row');
+            const qMaj = card.querySelector('.p-qty-major').value;
+            const packVal = card.querySelector('.p-pack-qty').value;
+            const price = card.querySelector('.p-price').value;
+            
+            const pack = parseFloat(packVal) || 1;
+            const totQty = parseFloat(qMaj) * pack;
+            const preTax = totQty * parseFloat(price);
+            const vatRate = isGlobalVat ? parseFloat(card.querySelector('.p-rate-vat').value) : 0;
+            const whtRate = isGlobalWht ? parseFloat(card.querySelector('.p-rate-wht').value) : 0;
+            const itemNote = card.querySelector('.p-item-note').value;
+
+            payload.items.push({
+                note: itemNote, 
+                refId: spec.value,
+                basicName: group.name,
+                // Use Raw Name if available (preserves newlines), otherwise fallback to text
+                specificName: spec.selectedOptions[0].dataset.rawname || spec.selectedOptions[0].text,
+                specialSign: spec.selectedOptions[0].dataset.sign,
+                warehouseId: wh.value,
+                warehouseName: wh.selectedOptions[0].text,
+                qtyMajor: qMaj,
+                unitMajor: card.querySelector('.p-unit-major').value,
+                qtyMinor: packVal,
+                unitMinor: card.querySelector('.p-unit-minor').value,
+                totalQty: totQty,
+                price: price,
+                isTax: isGlobalVat, 
+                isDisc1: isGlobalWht,
+                preTaxTotal: preTax,
+                taxValue: preTax * vatRate,
+                discountValue: preTax * whtRate,
+                lineTotal: parseFloat(card.querySelector('.p-line-total').value)
+            });
+        }
+    });
+
+    // Show Loading Overlay on Confirmation Screen
+    const confirmBody = document.getElementById('p-confirm-content');
+    confirmBody.innerHTML = '<div class="text-center py-5"><i class="fas fa-circle-notch fa-spin fa-3x text-primary mb-3"></i><h3>جاري الحفظ...</h3></div>';
+
+    google.script.run.withSuccessHandler(res => {
+        if(res.success) {
+            // 1. Store HTML Globals
+            window.currentPrintData = res.printHtml;
+            window.currentWhtHtml = res.whtHtml || null;
+            
+            // 2. Hide Confirmation Overlay
+            document.getElementById('p-confirm-overlay').classList.remove('active');
+
+            // 3. Build Print Buttons (Dynamic)
+            let printButtonsHtml = `
+                <button type="button" class="btn btn-primary btn-lg shadow-sm" onclick="printReceiptDirectly()" style="font-weight:700; min-width:200px;">
+                    <i class="fas fa-print me-2"></i> طباعة المستند
+                </button>
+            `;
+
+            // If WHT Note exists, show two buttons side-by-side
+            if (window.currentWhtHtml) {
+                printButtonsHtml = `
+                    <button type="button" class="btn btn-primary shadow-sm" onclick="printReceiptDirectly()" style="font-weight:700; min-width:160px;">
+                        <i class="fas fa-print me-2"></i> إذن المخزن
+                    </button>
+                    <button type="button" class="btn btn-danger shadow-sm" onclick="printWhtDirectly()" style="font-weight:700; min-width:160px;">
+                        <i class="fas fa-file-contract me-2"></i> إشعار الخصم
+                    </button>
+                `;
+            }
+
+            // 4. Inject Success Screen into Modal Body
+            const formContainer = document.getElementById('purchaseForm');
+            formContainer.innerHTML = `
+                <div class="text-center py-5 animation-fade-in" style="background:#f0fdf4; border-radius:16px;">
+                    <div class="success-pulse">
+                        <i class="fas fa-check"></i>
+                    </div>
+                    <h2 style="color:#166534; font-weight:800; margin-bottom:10px;">تم حفظ الحركة بنجاح</h2>
+                    <p class="text-muted mb-4">رقم الحركة: <span style="font-family:monospace; font-weight:bold; font-size:1.2rem; color:#1e293b; background:white; padding:2px 10px; border-radius:4px; border:1px solid #cbd5e1;">${res.transactionId}</span></p>
+                    
+                    <div class="d-flex justify-content-center gap-3 flex-wrap">
+                        ${printButtonsHtml}
+                    </div>
+                    
+                    <hr class="my-5" style="opacity:0.1">
+                    
+                    <div class="d-flex justify-content-center gap-2">
+                        <button type="button" class="btn btn-outline-secondary" onclick="resetPurchaseModal()">
+                            <i class="fas fa-plus me-1"></i> حركة جديدة
+                        </button>
+                        <button type="button" class="btn btn-light text-muted" data-bs-dismiss="modal" onclick="loadPurchasesData()">
+                            إغلاق
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            // 5. Refresh Background Data
+            loadPurchasesData();
+
+        } else {
+            alert('❌ خطأ: ' + res.message);
+            cancelConfirm();
+        }
+    }).savePurchaseTransaction(payload);
+}
+
+// Helper: Direct Print (No PDF Viewer)
+function printReceiptDirectly() {
+    if (!window.currentPrintData) {
+        alert("لا توجد بيانات للطباعة");
+        return;
+    }
+    
+    // Use the global variable directly (No decoding needed as it wasn't passed inline)
+    const html = window.currentPrintData;
+    const win = window.open('', '', 'height=600,width=800');
+    
+    win.document.write(html);
+    win.document.close(); 
+    win.focus(); 
+
+    setTimeout(() => {
+        win.print();
+        win.close();
+    }, 500);
+}
+
+function printWhtDirectly() {
+    if (!window.currentWhtHtml) return;
+    const win = window.open('', '', 'height=600,width=800');
+    win.document.write(window.currentWhtHtml);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); win.close(); }, 500);
+}
+
+// Helper to Reset Modal after Success
+function resetPurchaseModal() {
+    // Flag to block hidden.bs.modal listener
+    window.isResettingPurchaseModal = true;
+
+    const el = document.getElementById('transactionModal');
+    const modal = bootstrap.Modal.getInstance(el);
+    if(modal) modal.hide();
+    
+    // Wait for hide animation
+    setTimeout(() => {
+        // 1. Re-Initialize to restore original HTML structure
+        initPurchasesModule(); 
+        
+        // Release Flag
+        window.isResettingPurchaseModal = false;
+
+        // 2. Wait for DOM update then Open
+        setTimeout(() => {
+            if(document.getElementById('p-date')) {
+                openPurchaseModal();
+            } else {
+                setTimeout(() => openPurchaseModal(), 200);
+            }
+        }, 200);
+    }, 400);
+}
+</script>

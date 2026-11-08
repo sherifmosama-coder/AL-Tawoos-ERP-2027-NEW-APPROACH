@@ -1223,17 +1223,6 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'المبيعات والتوزيع',
     categoryEn: 'Sales & Distribution'
   },
-  customers: {
-    id: 'customers',
-    moduleKey: 'sales',
-    order: 3,
-    labelAr: 'سجل العملاء',
-    labelEn: 'Customers Master',
-    iconName: 'Users',
-    color: '#2563eb',
-    categoryAr: 'المبيعات والتوزيع',
-    categoryEn: 'Sales & Distribution'
-  },
   admin_panel: {
     id: 'admin_panel',
     moduleKey: 'settings',

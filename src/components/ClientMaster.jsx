@@ -31,6 +31,7 @@ import {
   EyeOff,
   PlusCircle,
   CreditCard,
+  Coins,
   Calendar,
   AlertCircle,
   AlertTriangle,

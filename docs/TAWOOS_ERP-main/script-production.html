@@ -1,0 +1,1578 @@
+<script>
+/**
+ * PRODUCTION MODULE FRONTEND (v3.0 - Folder Tabs Design)
+ */
+
+// Global State
+let productionState = {
+    products: [],
+    constraints: [],
+    priorities: [],
+    currentRecipes: []
+};
+
+// --- 1. INITIALIZATION ---
+
+function initProductionModule() {
+    const container = document.getElementById('productionTabContent');
+    if (!container) return;
+
+    injectProductionStyles();
+    container.innerHTML = getProductionHTMLStructure();
+    
+    // Initialize Event Listeners
+    setupProductionEventListeners();
+    
+    // Load Data for the default active tab (Planning)
+    loadProductionData();
+}
+
+// --- 2. MODERN STYLES ---
+
+function injectProductionStyles() {
+    if (document.getElementById('production-styles')) return;
+    
+    const style = document.createElement('style');
+    style.id = 'production-styles';
+    style.innerHTML = `
+        :root {
+            --prod-primary: #2563eb;       /* Modern Blue */
+            --prod-secondary: #475569;     /* Slate Grey */
+            --prod-bg: #f1f5f9;            /* Lighter Background */
+            --prod-neutral: #ADD1FF;       
+            --prod-surface: #ffffff;
+            --prod-border: #cbd5e1;        /* Slightly darker for visibility */
+            --prod-success: #10b981;
+            --prod-warning: #f59e0b;
+            --prod-danger: #ef4444;
+            --prod-shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --prod-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        .plan-production-container { 
+            padding: 30px; 
+            font-family: 'Tajawal', sans-serif; 
+            direction: rtl; 
+            background-color: var(--prod-bg);
+            min-height: 85vh;
+        }
+
+        /* --- FOLDER TABS NAVIGATION --- */
+        .production-sub-nav {
+            display: flex;
+            gap: 6px;
+            padding: 0 10px;
+            border-bottom: 2px solid var(--prod-border); /* The Base Line */
+            position: relative;
+            z-index: 10;
+        }
+        
+        .prod-sub-tab {
+            background: #e2e8f0; /* Inactive Bg */
+            border: 2px solid transparent;
+            border-bottom: none;
+            padding: 12px 24px;
+            font-family: 'Tajawal', sans-serif;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #64748b;
+            border-radius: 12px 12px 0 0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+            bottom: -2px; /* Sit exactly on the line */
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 0;
+            opacity: 0.8;
+        }
+        
+        .prod-sub-tab:hover {
+            background: #cbd5e1;
+            color: #334155;
+            opacity: 1;
+        }
+        
+        /* THE ACTIVE TAB MAGIC */
+        .prod-sub-tab.active {
+            background: var(--prod-surface);
+            color: var(--prod-primary);
+            border-color: var(--prod-border);
+            border-bottom-color: var(--prod-surface); /* Hide the line under it */
+            z-index: 15; /* Above the container border */
+            opacity: 1;
+            box-shadow: 0 -4px 10px -2px rgba(0,0,0,0.05);
+        }
+        
+        .prod-sub-tab i { font-size: 1.1em; }
+
+        /* --- CONTENT CONTAINER WRAPPER --- */
+        .prod-content-wrapper {
+            background: var(--prod-surface);
+            border: 2px solid var(--prod-border);
+            border-top: none; /* The nav bar handles the top border */
+            border-radius: 0 0 16px 16px; /* Rounded bottom only */
+            padding: 30px;
+            box-shadow: var(--prod-shadow-md);
+            min-height: 500px;
+            position: relative;
+            z-index: 5;
+        }
+
+        /* --- SUB-TAB CONTENT --- */
+        .prod-sub-content {
+            display: none;
+            animation: fadeIn 0.4s ease;
+        }
+        .prod-sub-content.active {
+            display: block;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+
+        /* --- 1. The "Add New" Card (Refined) --- */
+        .plan-add-card {
+            background: #f8fafc;
+            border-radius: 12px;
+            border: 1px dashed #94a3b8;
+            overflow: hidden;
+            margin-bottom: 25px;
+            transition: all 0.3s ease;
+        }
+        
+        .plan-add-header {
+            padding: 15px 20px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .plan-add-header h5 { 
+            margin: 0; font-weight: 700; color: #334155; 
+            display: flex; align-items: center; gap: 10px; font-size: 1rem;
+        }
+        .plan-add-header .icon-box {
+            width: 28px; height: 28px;
+            background: #dbeafe; color: var(--prod-primary);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+        }
+
+        .plan-add-body {
+            max-height: 0; opacity: 0; overflow: hidden;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            background: #fff; border-top: 1px solid transparent;
+        }
+        .plan-add-body.open {
+            max-height: 1200px; opacity: 1; padding: 25px;
+            border-top-color: #e2e8f0;
+        }
+
+        /* --- Modern Inputs --- */
+        .modern-form-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px;
+        }
+        .input-group-modern label { display: block; margin-bottom: 8px; font-size: 0.85rem; font-weight: 600; color: #64748b; }
+        .input-wrapper { position: relative; }
+        .input-wrapper i { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; pointer-events: none; }
+        .modern-input {
+            width: 100%; padding: 10px 40px 10px 12px; border: 2px solid #e2e8f0; border-radius: 10px;
+            font-size: 0.95rem; color: #334155; transition: all 0.2s; background: #f8fafc;
+        }
+        .modern-input:focus { outline: none; border-color: var(--prod-primary); background: #fff; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+        
+        /* --- Buttons --- */
+        .btn-modern { padding: 10px 24px; border-radius: 10px; font-weight: 600; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; transition: transform 0.1s; }
+        .btn-primary-modern { background: var(--prod-primary); color: white; box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.3); }
+        .btn-primary-modern:hover { background: #1d4ed8; transform: translateY(-1px); }
+
+        /* --- 2. Filter Bar --- */
+        .filter-glass {
+            background: #fff; border: 1px solid #e2e8f0;
+            border-radius: 10px; padding: 10px 15px;
+            display: flex; gap: 15px; align-items: center; margin-bottom: 25px;
+        }
+
+        /* --- 3. The List (Row Cards) --- */
+        .plan-list-container { display: flex; flex-direction: column; gap: 12px; }
+
+        .plan-card {
+            background: #fff; border-radius: 10px; border: 1px solid #e2e8f0;
+            display: grid; grid-template-columns: 70px 1fr auto; 
+            /* Removed overflow: hidden so popovers can escape the card boundaries */
+            transition: all 0.2s; position: relative; z-index: 1;
+        }
+        .plan-card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); border-color: #cbd5e1; z-index: 50; /* Elevate card so tooltip overlaps subsequent cards */ }
+
+        /* Left Strip (Priority Color) */
+        .plan-card::before { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 4px; background: #cbd5e1; border-top-right-radius: 10px; border-bottom-right-radius: 10px; }
+        .priority-high::before { background: var(--prod-danger); }
+        .priority-med::before { background: var(--prod-warning); }
+        .priority-low::before { background: var(--prod-neutral); }
+
+        /* ID Section */
+        .card-id-section { background: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; border-left: 1px solid #e2e8f0; }
+        .card-id-val { font-weight: 800; font-size: 0.8rem; color: #475569; }
+        .card-id-label { font-size: 0.6rem; color: #94a3b8; text-transform: uppercase; }
+
+        /* Main Info */
+        .card-info-section { padding: 12px 18px; display: flex; flex-direction: column; justify-content: center; }
+        .card-product-title { font-size: 1.05rem; font-weight: 700; color: #1e293b; margin-bottom: 4px; cursor: pointer; display: inline-block; }
+        .card-product-title:hover { color: var(--prod-primary); }
+        .card-meta-row { display: flex; gap: 15px; font-size: 0.8rem; color: #64748b; }
+        
+        /* Tags */
+        .card-tags-section { padding: 12px 18px; display: flex; align-items: center; gap: 8px; }
+        .modern-chip { padding: 4px 10px; border-radius: 15px; font-size: 0.75rem; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+        .chip-blue { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+        .chip-amber { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+
+        /* Popover */
+        .glass-popover {
+            position: absolute; background: rgba(30, 41, 59, 0.95); backdrop-filter: blur(5px);
+            color: white; padding: 15px; border-radius: 8px; z-index: 100; width: 260px;
+            display: none; opacity: 0; transform: translateY(10px); transition: all 0.2s; pointer-events: none;
+        }
+        .glass-popover.visible { display: block; opacity: 1; transform: translateY(0); }
+        .pop-header { font-size: 0.8rem; text-transform: uppercase; color: #94a3b8; border-bottom: 1px solid #475569; padding-bottom: 5px; margin-bottom: 5px; }
+        .pop-list { margin: 0; padding-right: 15px; font-size: 0.85rem; }
+
+        /* Empty State */
+        .empty-state { text-align: center; padding: 40px; color: #94a3b8; }
+        .empty-state i { font-size: 2.5rem; margin-bottom: 15px; opacity: 0.4; }
+
+        /* Ultra Modern Modals */
+        .ultra-modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(8px); z-index: 9999; display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: opacity 0.3s ease; direction: rtl; font-family: 'Tajawal', sans-serif;}
+        .ultra-modal-backdrop.active { opacity: 1; pointer-events: auto; }
+        .ultra-modal { background: #ffffff; border-radius: 20px; width: 650px; max-width: 95%; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); transform: translateY(20px) scale(0.95); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; flex-direction: column; border: 1px solid rgba(255,255,255,0.2); }
+        .ultra-modal-backdrop.active .ultra-modal { transform: translateY(0) scale(1); }
+        .ultra-modal-header { padding: 20px 25px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; background: linear-gradient(to right, #f8fafc, #ffffff); border-radius: 20px 20px 0 0; }
+        .ultra-modal-title { font-size: 1.15rem; font-weight: 800; color: #1e293b; margin: 0; display: flex; align-items: center; gap: 10px; }
+        .ultra-modal-close { background: #f1f5f9; border: none; width: 34px; height: 34px; border-radius: 50%; color: #64748b; cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center; font-size: 1.1rem;}
+        .ultra-modal-close:hover { background: #ef4444; color: white; transform: rotate(90deg) scale(1.1); box-shadow: 0 4px 10px rgba(239, 68, 68, 0.3);}
+        .ultra-modal-body { padding: 25px; flex-grow: 1; overflow-y: auto; background: #fafafa;}
+        .ultra-modal-footer { padding: 15px 25px; border-top: 1px solid #f1f5f9; background: #f8fafc; border-radius: 0 0 20px 20px; display: flex; justify-content: flex-end; gap: 10px; }
+
+        /* Audit Timeline */
+        .audit-timeline { position: relative; padding-right: 20px; border-right: 2px dashed #cbd5e1; margin-right: 10px; margin-top: 10px;}
+        .audit-item { position: relative; margin-bottom: 25px; animation: fadeIn 0.4s ease forwards; opacity: 0; transform: translateX(-10px);}
+        .audit-item:nth-child(1) { animation-delay: 0.1s; } .audit-item:nth-child(2) { animation-delay: 0.2s; } .audit-item:nth-child(3) { animation-delay: 0.3s; }
+        .audit-item::before { content: ''; position: absolute; right: -28px; top: 5px; width: 14px; height: 14px; background: var(--prod-primary); border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 2px #bfdbfe; }
+        .audit-time { font-size: 0.8rem; color: #64748b; font-weight: 700; margin-bottom: 6px; display: inline-block; background: #f1f5f9; padding: 2px 8px; border-radius: 12px;}
+        .audit-text { font-size: 0.95rem; color: #334155; background: #ffffff; padding: 12px 18px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 4px rgba(0,0,0,0.02); line-height: 1.5; font-family: 'Tajawal', sans-serif;}
+        .audit-col-badge { display: inline-block; font-size: 0.75rem; background: #e0e7ff; color: #4338ca; padding: 2px 6px; border-radius: 6px; margin-left: 5px; font-weight: bold;}
+
+        /* Modern Card Actions & Status */
+        .prod-top-btn { width: 34px; height: 34px; border-radius: 10px; border: 1px solid #e2e8f0; background: #ffffff; color: #64748b; cursor: pointer; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; justify-content: center; font-size: 0.9rem; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .prod-top-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 12px -2px rgba(0,0,0,0.08); }
+        .prod-top-btn-edit:hover { background: #eff6ff; color: #2563eb; border-color: #bfdbfe; }
+        .prod-top-btn-history:hover { background: #fffbeb; color: #d97706; border-color: #fde68a; }
+
+        .card-actions { display: flex; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px dashed #e2e8f0; }
+        .btn-action-glass { flex: 1; padding: 8px; border: none; border-radius: 8px; font-size: 0.85rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; background: #f1f5f9; color: #475569; }
+        .btn-action-glass:hover { background: #e2e8f0; color: #0f172a; transform: translateY(-2px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+        .btn-action-primary { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); color: #2563eb; border: 1px solid #bfdbfe; }
+        .btn-action-primary:hover { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #fff; border-color: transparent; box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.3); }
+        .btn-action-success { background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); color: #16a34a; border: 1px solid #bbf7d0; }
+        .btn-action-success:hover { background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); color: #fff; border-color: transparent; box-shadow: 0 10px 15px -3px rgba(34, 197, 94, 0.3); }
+        
+        .status-badge { position: absolute; top: 15px; left: 15px; padding: 5px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 800; display: flex; align-items: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .status-pending { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+        .status-ready { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; animation: pulseStatus 2s infinite; }
+        .status-pending .status-dot { background: #f59e0b; }
+        .status-ready .status-dot { background: #10b981; }
+        @keyframes pulseStatus { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+        
+        /* Assignment Materials List */
+        .assign-mat-item { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);}
+        .assign-mat-header { display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: bold; color: #1e293b; border-bottom: 1px dashed #cbd5e1; padding-bottom: 8px;}
+    `;
+    document.head.appendChild(style);
+}
+
+// --- 3. HTML STRUCTURE ---
+
+function getProductionHTMLStructure() {
+    return `
+        <div class="plan-production-container">
+            
+            <div class="production-sub-nav">
+                <button class="prod-sub-tab active" id="prod-subtab-btn-planning" onclick="switchProductionSubTab('planning')">
+                    <i class="fas fa-calendar-alt"></i> خطة الانتاج
+                </button>
+                
+                <button class="prod-sub-tab" id="prod-subtab-btn-today" onclick="switchProductionSubTab('today')">
+                    <i class="fas fa-industry"></i> انتاج اليوم
+                </button>
+                
+                <button class="prod-sub-tab" id="prod-subtab-btn-recipes" onclick="switchProductionSubTab('recipes')">
+                    <i class="fas fa-scroll"></i> الوصفات
+                </button>
+            </div>
+
+            <div class="prod-content-wrapper">
+                
+                <div id="prod-subtab-content-planning" class="prod-sub-content active">
+
+                    <div class="plan-add-card" id="plan-add-card">
+                        <div class="plan-add-header" onclick="togglePlanAddCard()">
+                            <h5><div class="icon-box"><i class="fas fa-plus"></i></div> تسجيل خطة جديدة</h5>
+                            <i class="fas fa-chevron-down text-muted" id="plan-add-chevron" style="transition: transform 0.3s"></i>
+                        </div>
+                        <div class="plan-add-body" id="plan-add-body">
+                            <form id="plan-production-form" onsubmit="event.preventDefault(); submitProductionPlan();">
+                                <h6 style="color: var(--prod-primary); margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 5px;">بيانات التشغيل الأساسية</h6>
+                                <div class="modern-form-grid">
+                                    <div class="input-group-modern">
+                                        <label>تاريخ التشغيل</label>
+                                        <div class="input-wrapper">
+                                            <i class="far fa-calendar-alt"></i>
+                                            <input type="date" class="modern-input" id="plan-input-date" required onchange="resetRecipeSelection()">
+                                        </div>
+                                    </div>
+                                    <div class="input-group-modern">
+                                        <label>المنتج المطلوب</label>
+                                        <div class="input-wrapper">
+                                            <i class="fas fa-box-open"></i>
+                                            <select class="modern-input" id="plan-input-product" required onchange="handleProductChange()">
+                                                <option value="">جاري التحميل...</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="input-group-modern">
+                                        <label>الوصفة المعتمدة</label>
+                                        <div class="input-wrapper">
+                                            <i class="fas fa-scroll"></i>
+                                            <select class="modern-input" id="plan-input-recipe" disabled>
+                                                <option value="">بانتظار المنتج...</option>
+                                            </select>
+                                        </div>
+                                        <input type="hidden" id="plan-selected-recipe-materials">
+                                    </div>
+                                </div>
+                                
+                                <h6 style="color: var(--prod-primary); margin-top: 25px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 5px;">تفاصيل الكميات والأولوية</h6>
+                                <div class="modern-form-grid">
+                                    <div class="input-group-modern">
+                                        <label>الكمية</label>
+                                        <div class="input-wrapper">
+                                            <i class="fas fa-hashtag"></i>
+                                            <input type="number" class="modern-input" id="plan-input-qty" required placeholder="0">
+                                        </div>
+                                    </div>
+                                    <div class="input-group-modern">
+                                        <label>محددات الكمية</label>
+                                        <div class="input-wrapper">
+                                            <i class="fas fa-balance-scale"></i>
+                                            <select class="modern-input" id="plan-input-constraint"></select>
+                                        </div>
+                                    </div>
+                                    <div class="input-group-modern">
+                                        <label>حالة الأولوية</label>
+                                        <div class="input-wrapper">
+                                            <i class="fas fa-exclamation-circle"></i>
+                                            <select class="modern-input" id="plan-input-priority"></select>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="input-group-modern" style="margin-top: 20px;">
+                                    <label>ملاحظات إضافية</label>
+                                    <div class="input-wrapper">
+                                        <i class="far fa-sticky-note"></i>
+                                        <input type="text" class="modern-input" id="plan-input-notes" placeholder="تعليمات خاصة لفريق الإنتاج...">
+                                    </div>
+                                </div>
+                                
+                                <div style="display: flex; justify-content: flex-end; margin-top: 25px; padding-top: 15px; border-top: 1px solid #f1f5f9;">
+                                    <button type="submit" class="btn-modern btn-primary-modern" id="plan-submit-btn">
+                                        <i class="fas fa-save"></i> حفظ وإدراج للخطة
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="filter-glass">
+                        <i class="fas fa-filter" style="color: var(--prod-primary);"></i>
+                        <div class="input-wrapper">
+                            <input type="date" class="modern-input" style="padding-top:6px; padding-bottom:6px;" id="plan-filter-date" onchange="filterProductionPlans()">
+                        </div>
+                        <div class="input-wrapper" style="flex-grow: 1;">
+                            <i class="fas fa-search" style="right: 15px; font-size: 0.8rem;"></i>
+                            <input type="text" class="modern-input" placeholder="بحث سريع..." style="padding-top:6px; padding-bottom:6px;" id="plan-filter-search" onkeyup="filterProductionPlans()">
+                        </div>
+                        <button class="btn-modern" style="background: white; border: 1px solid #e2e8f0; color: #64748b;" onclick="loadProductionData()">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
+                    </div>
+
+                    <div id="plan-production-list-container" class="plan-list-container">
+                        <div class="empty-state">
+                            <i class="fas fa-spinner fa-spin text-primary"></i>
+                            <p>جاري استدعاء البيانات...</p>
+                        </div>
+                    </div>
+                </div> <div id="prod-subtab-content-today" class="prod-sub-content">
+                    <div class="empty-state">
+                        <i class="fas fa-hard-hat text-warning" style="opacity: 0.8;"></i>
+                        <h5 style="color: #475569; margin-top: 15px;">انتاج اليوم</h5>
+                        <p>هذه الوحدة قيد التطوير حالياً</p>
+                    </div>
+                </div>
+
+                <div id="prod-subtab-content-recipes" class="prod-sub-content">
+                    <div class="empty-state">
+                        <i class="fas fa-scroll text-success" style="opacity: 0.8;"></i>
+                        <h5 style="color: #475569; margin-top: 15px;">دليل الوصفات</h5>
+                        <p>هذه الوحدة قيد التطوير حالياً</p>
+                    </div>
+                </div>
+            </div> 
+            
+            <div id="modal-edit-plan" class="ultra-modal-backdrop">
+                <div class="ultra-modal">
+                    <div class="ultra-modal-header">
+                        <h4 class="ultra-modal-title"><div class="icon-box" style="width:30px;height:30px;font-size:0.9rem;"><i class="fas fa-edit"></i></div> تعديل بيانات الخطة</h4>
+                        <button class="ultra-modal-close" onclick="closeProdModal('modal-edit-plan')"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="ultra-modal-body">
+                        <form id="form-edit-plan" onsubmit="event.preventDefault(); submitPlanEdit();">
+                            <input type="hidden" id="edit-plan-id">
+                            <div class="modern-form-grid">
+                                <div class="input-group-modern">
+                                    <label>تاريخ التشغيل</label>
+                                    <input type="date" class="modern-input" id="edit-plan-date" required onchange="handleEditProductChange()">
+                                </div>
+                                <div class="input-group-modern">
+                                    <label>المنتج المطلوب</label>
+                                    <select class="modern-input" id="edit-plan-product" required onchange="handleEditProductChange()"></select>
+                                </div>
+                                <div class="input-group-modern">
+                                    <label>الوصفة المعتمدة</label>
+                                    <select class="modern-input" id="edit-plan-recipe" disabled onchange="handleEditRecipeChange()"></select>
+                                    <input type="hidden" id="edit-plan-selected-recipe-materials">
+                                </div>
+                                <div class="input-group-modern">
+                                    <label>الكمية</label>
+                                    <input type="number" class="modern-input" id="edit-plan-qty" required>
+                                </div>
+                                <div class="input-group-modern">
+                                    <label>محددات الكمية</label>
+                                    <select class="modern-input" id="edit-plan-constraint"></select>
+                                </div>
+                                <div class="input-group-modern">
+                                    <label>الأولوية</label>
+                                    <select class="modern-input" id="edit-plan-priority"></select>
+                                </div>
+                            </div>
+                            <div class="input-group-modern" style="margin-top: 15px;">
+                                <label>ملاحظات</label>
+                                <input type="text" class="modern-input" id="edit-plan-notes">
+                            </div>
+                            <p style="font-size:0.8rem; color:#ef4444; margin-top:10px; display:none;" id="edit-recipe-warning"><i class="fas fa-exclamation-triangle"></i> تغيير المنتج أو الوصفة سيؤدي إلى إعادة تعيين الخامات المخصصة لهذه الخطة.</p>
+                        </form>
+                    </div>
+                    <div class="ultra-modal-footer">
+                        <button class="btn-modern btn-action-glass" onclick="closeProdModal('modal-edit-plan')">إلغاء</button>
+                        <button class="btn-modern btn-primary-modern" onclick="submitPlanEdit()" id="btn-submit-edit"><i class="fas fa-save"></i> حفظ التعديلات</button>
+                    </div>
+                </div>
+            </div>
+
+            <style>
+                .mat-category-row { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 25px; margin-bottom: 25px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); }
+                .mat-category-title { font-size: 1.1rem; font-weight: 800; color: #1e293b; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; border-bottom: 2px dashed #f1f5f9; padding-bottom: 12px; }
+                .var-cards-container { display: flex; gap: 18px; flex-wrap: wrap; padding-bottom: 15px; }
+                .var-card { flex: 1; min-width: 220px; max-width: 280px; border: 2px solid #e2e8f0; border-radius: 14px; padding: 20px 15px; cursor: pointer; position: relative; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); background: #f8fafc; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; z-index: 1; }
+                .var-card:hover { border-color: #cbd5e1; transform: translateY(-3px); box-shadow: 0 8px 15px -3px rgba(0,0,0,0.08); }
+                .var-card.selected { border-color: #2563eb; background: #eff6ff; box-shadow: 0 10px 20px -5px rgba(37, 99, 235, 0.2); }
+                .var-card-title { font-weight: 800; font-size: 0.95rem; color: #334155; line-height: 1.5; padding-left: 35px; }
+                .var-card-stat { font-size: 0.85rem; color: #64748b; display: flex; justify-content: space-between; align-items: center; background: #ffffff; padding: 8px 12px; border-radius: 8px; border: 1px solid #f1f5f9; }
+                .var-card-stat strong { color: #0f172a; font-size: 1rem; }
+                .wh-info-btn { position: absolute; top: 15px; left: 15px; background: #ffffff; color: #475569; border: 1px solid #cbd5e1; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; cursor: pointer; transition: 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+                .wh-info-btn:hover { background: #e2e8f0; color: #0f172a; transform: scale(1.1); }
+                .wh-popover { position: absolute; top: -10px; left: 55px; background: rgba(15, 23, 42, 0.98); backdrop-filter: blur(8px); color: white; padding: 18px; border-radius: 12px; width: max-content; min-width: 200px; z-index: 9999; display: none; box-shadow: 0 15px 30px -5px rgba(0,0,0,0.5); border: 1px solid #334155; }
+                .wh-popover::after { content: ''; position: absolute; top: 20px; left: -8px; border-width: 8px 8px 8px 0; border-style: solid; border-color: transparent rgba(15, 23, 42, 0.98) transparent transparent; }
+            </style>
+            <div id="modal-assign-mats" class="ultra-modal-backdrop">
+                <div class="ultra-modal" style="width: 850px; max-width: 95%;">
+                    <div class="ultra-modal-header" style="flex-direction: column; align-items: stretch; padding: 25px; background: #ffffff; border-bottom: 1px solid #e2e8f0; position: sticky; top: 0; z-index: 50; border-radius: 20px 20px 0 0;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h4 class="ultra-modal-title"><div class="icon-box" style="width:36px;height:36px;font-size:1.1rem;background:#dcfce7;color:#16a34a;"><i class="fas fa-tasks"></i></div> تخصيص واعتماد الخامات</h4>
+                            <button class="ultra-modal-close" onclick="closeProdModal('modal-assign-mats')"><i class="fas fa-times"></i></button>
+                        </div>
+                        <div id="assign-mats-sticky-info" style="display: flex; gap: 20px; background: #f8fafc; padding: 20px; border-radius: 14px; border: 1px solid #e2e8f0;">
+                            </div>
+                    </div>
+                    <div class="ultra-modal-body" id="assign-mats-body" style="background: #f1f5f9; padding: 30px;">
+                        </div>
+                    <div class="ultra-modal-footer" style="padding: 20px 25px; background: #ffffff; border-top: 1px solid #e2e8f0;">
+                        <button class="btn-modern btn-action-glass" onclick="closeProdModal('modal-assign-mats')">إلغاء</button>
+                        <button class="btn-modern btn-action-success" onclick="submitMaterialAssignment()" id="btn-submit-assign" style="color:#fff; padding: 12px 35px; font-size: 1rem;"><i class="fas fa-check-double"></i> حفظ خامات التشغيل (WH_02)</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="modal-assign-alert" class="ultra-modal-backdrop" style="z-index: 10005;">
+                <div class="ultra-modal" style="width: 500px; max-width: 90%;">
+                    <div class="ultra-modal-header" style="background: #fef2f2; border-bottom: 1px solid #fee2e2;">
+                        <h4 class="ultra-modal-title" style="color: #b91c1c;"><i class="fas fa-exclamation-triangle"></i> تنبيه هام</h4>
+                        <button class="ultra-modal-close" onclick="closeProdModal('modal-assign-alert')" style="background: #fee2e2; color: #b91c1c;"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="ultra-modal-body" style="padding: 25px; font-size: 1rem; color: #334155; line-height: 1.6;" id="assign-alert-message">
+                        </div>
+                    <div class="ultra-modal-footer" style="background: #fef2f2; border-top: none;">
+                        <button class="btn-modern btn-action-glass" onclick="closeProdModal('modal-assign-alert')" style="background: #ffffff; color: #475569; border: 1px solid #cbd5e1;">حسناً، فهمت</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="modal-plan-history" class="ultra-modal-backdrop">
+                <div class="ultra-modal">
+                    <div class="ultra-modal-header">
+                        <h4 class="ultra-modal-title"><i class="fas fa-history" style="color:#d97706; font-size: 1.2rem;"></i> سجل التعديلات</h4>
+                        <button class="ultra-modal-close" onclick="closeProdModal('modal-plan-history')"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="ultra-modal-body">
+                        <div class="audit-timeline" id="plan-history-timeline">
+                            </div>
+                    </div>
+                </div>
+            </div>
+
+        </div> 
+    `;
+}
+
+// --- 4. LOGIC & INTERACTION ---
+
+function switchProductionSubTab(tabName) {
+    // 1. Update Tabs UI
+    document.querySelectorAll('.prod-sub-tab').forEach(btn => btn.classList.remove('active'));
+    const activeBtn = document.getElementById('prod-subtab-btn-' + tabName);
+    if(activeBtn) activeBtn.classList.add('active');
+
+    // 2. Update Content UI
+    document.querySelectorAll('.prod-sub-content').forEach(div => div.classList.remove('active'));
+    const activeContent = document.getElementById('prod-subtab-content-' + tabName);
+    if(activeContent) activeContent.classList.add('active');
+
+    // 3. Logic Refresh
+    if (tabName === 'planning') {
+        loadProductionData(); // Refresh list only when needed
+    }
+}
+
+function togglePlanAddCard() {
+    const body = document.getElementById('plan-add-body');
+    const chev = document.getElementById('plan-add-chevron');
+    body.classList.toggle('open');
+    chev.style.transform = body.classList.contains('open') ? 'rotate(180deg)' : 'rotate(0deg)';
+}
+
+function loadProductionData() {
+    const container = document.getElementById('plan-production-list-container');
+    if (!container) return;
+    
+    // Skeleton Loader (re-using empty state style for now)
+    container.innerHTML = `
+        <div class="empty-state">
+            <i class="fas fa-circle-notch fa-spin" style="color: var(--prod-primary)"></i>
+            <p>جاري تحديث البيانات...</p>
+        </div>
+    `;
+    
+    google.script.run
+        .withSuccessHandler(response => {
+            if (response.success) {
+                productionState.products = response.products;
+                productionState.constraints = response.lists.constraints;
+                productionState.priorities = response.lists.priorities;
+                
+                populateDropdown('plan-input-product', productionState.products);
+                populateDropdown('plan-input-constraint', productionState.constraints);
+                populateDropdown('plan-input-priority', productionState.priorities);
+
+                renderProductionPlans(response.plans);
+            } else {
+                showError('plan-production-list-container', response.message);
+            }
+        })
+        .withFailureHandler(err => showError('plan-production-list-container', err))
+        .getProductionInitialData();
+}
+
+function renderProductionPlans(plans) {
+    const container = document.getElementById('plan-production-list-container');
+    container.innerHTML = '';
+
+    if (!plans || plans.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-clipboard-list"></i>
+                <p>لا توجد خطط إنتاج مسجلة لهذا التاريخ</p>
+            </div>
+        `;
+        return;
+    }
+
+    // Save plans globally for modal access
+    productionState.currentPlans = plans;
+
+    plans.forEach(plan => {
+        // Priority Class
+        let prioClass = '';
+        if (plan.priority.includes('مستعجل')) prioClass = 'priority-high';
+        else if (plan.priority.includes('مهم')) prioClass = 'priority-med';
+        else prioClass = 'priority-low';
+
+        // Material List & Check Completeness
+        let matList = '';
+        let isComplete = true;
+
+        if (plan.materials && plan.materials.length > 0) {
+            plan.materials.forEach(m => {
+                // Show the assigned specific name in green inside the popover if it exists
+                const varText = (m.variation && m.variation.trim() !== '') ? `<span style="color:#10b981; font-size:0.75rem; margin-right:5px;">(${m.variation})</span>` : '';
+                matList += `<li>${m.name} ${varText}</li>`;
+                
+                // Since we now save the readable Arabic name, we simply check if the cell is empty
+                if (!m.variation || m.variation.trim() === '') {
+                    isComplete = false;
+                }
+            });
+        } else {
+            matList = '<li>لا توجد خامات محددة</li>';
+            isComplete = false;
+        }
+
+        const statusHtml = isComplete 
+            ? `<div class="status-badge status-ready" style="position: relative; top: auto; left: auto; right: auto; margin-bottom: 12px; width: 100%; justify-content: center;"><span class="status-dot"></span> جاهزة للتشغيل</div>`
+            : `<div class="status-badge status-pending" style="position: relative; top: auto; left: auto; right: auto; margin-bottom: 12px; width: 100%; justify-content: center;"><span class="status-dot"></span> بانتظار الخامات</div>`;
+
+        const card = document.createElement('div');
+        card.className = `plan-card ${prioClass}`;
+        card.innerHTML = `
+            <div class="card-id-section">
+                <span class="card-id-val">${plan.id}</span>
+                <span class="card-id-label">ID</span>
+            </div>
+            
+            <div class="card-info-section">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div style="position: relative;">
+                        <div class="card-product-title" onmouseenter="showprodPopover('${plan.id}-pop')" onmouseleave="hideprodPopover('${plan.id}-pop')">
+                            ${plan.product}
+                        </div>
+                        <div id="${plan.id}-pop" class="glass-popover">
+                            <div class="pop-header">
+                                <i class="fas fa-flask"></i> ${plan.recipeId || 'N/A'}
+                            </div>
+                            <ul class="pop-list">${matList}</ul>
+                            ${plan.notes ? `<div style="margin-top:8px;font-style:italic;color:#cbd5e1;border-top:1px solid #475569;padding-top:4px;">${plan.notes}</div>` : ''}
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="prod-top-btn prod-top-btn-history" onclick="openProdHistoryModal('${plan.id}')" title="سجل التعديلات"><i class="fas fa-history"></i></button>
+                        <button class="prod-top-btn prod-top-btn-edit" onclick="openProdEditModal('${plan.id}')" title="تعديل الخطة"><i class="fas fa-edit"></i></button>
+                    </div>
+                </div>
+                
+                <div class="card-meta-row" style="margin-top: 5px;">
+                    <span class="meta-item"><i class="far fa-calendar"></i> ${plan.date}</span>
+                    <span class="meta-item"><i class="fas fa-tag"></i> ${plan.constraint}</span>
+                </div>
+
+                ${!isComplete ? `
+                <div class="card-actions" style="border-top: none; padding-top: 15px; margin-top: 15px;">
+                    <button class="btn-action-glass btn-action-primary" style="width: fit-content; font-size: 0.85rem; padding: 6px 16px;" onclick="openProdAssignModal('${plan.id}')">
+                        <i class="fas fa-clipboard-list"></i> استكمال وتخصيص الخامات
+                    </button>
+                </div>
+                ` : `
+                <div class="card-actions" style="border-top: none; padding-top: 15px; margin-top: 15px;">
+                    <button class="btn-action-glass btn-action-success" style="width: fit-content; font-size: 0.85rem; padding: 6px 16px; background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0;" onclick="openProdAssignModal('${plan.id}')">
+                        <i class="fas fa-edit"></i> تعديل الخامات المخصصة
+                    </button>
+                </div>
+                `}
+            </div>
+
+            <div class="card-tags-section" style="flex-direction: column; align-items: center; justify-content: center; background: #f8fafc; border-right: 1px solid #e2e8f0; min-width: 140px;">
+                ${statusHtml}
+                <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
+                    <span class="modern-chip chip-blue" title="الكمية" style="justify-content: center;">
+                        <i class="fas fa-cubes"></i> ${plan.quantity}
+                    </span>
+                    <span class="modern-chip chip-amber" title="الأولوية" style="justify-content: center;">
+                        ${plan.priority}
+                    </span>
+                </div>
+            </div>
+        `;
+        container.appendChild(card);
+    });
+}
+
+// --- Popover Logic ---
+function showprodPopover(id) {
+    const pop = document.getElementById(id);
+    if(pop) pop.classList.add('visible');
+}
+function hideprodPopover(id) {
+    const pop = document.getElementById(id);
+    if(pop) pop.classList.remove('visible');
+}
+
+// --- 5. HELPERS ---
+
+function populateDropdown(id, items) {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    
+    const placeholder = sel.options.length > 0 ? sel.options[0] : null;
+    sel.innerHTML = '';
+    
+    if (placeholder) {
+        sel.appendChild(placeholder);
+    } else {
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = "";
+        defaultOpt.text = "اختر...";
+        sel.appendChild(defaultOpt);
+    }
+    
+    if (items && Array.isArray(items)) {
+        items.forEach(item => {
+            const opt = document.createElement('option');
+            opt.value = item;
+            opt.text = item;
+            sel.appendChild(opt);
+        });
+    }
+}
+
+function resetRecipeSelection() {
+    const sel = document.getElementById('plan-input-recipe');
+    sel.innerHTML = '<option value="">بانتظار المنتج...</option>';
+    sel.disabled = true;
+    document.getElementById('plan-selected-recipe-materials').value = '';
+}
+
+function handleProductChange() {
+    const product = document.getElementById('plan-input-product').value;
+    const date = document.getElementById('plan-input-date').value;
+    const recipeSelect = document.getElementById('plan-input-recipe');
+
+    if (!product || !date) {
+        resetRecipeSelection();
+        return;
+    }
+
+    recipeSelect.innerHTML = '<option>جاري البحث...</option>';
+    recipeSelect.disabled = true;
+
+    google.script.run
+        .withSuccessHandler(res => {
+            recipeSelect.innerHTML = '';
+            
+            if (res.success && res.recipes.length > 0) {
+                productionState.currentRecipes = res.recipes;
+
+                if (res.recipes.length === 1) {
+                    const r = res.recipes[0];
+                    const opt = document.createElement('option');
+                    opt.value = r.id;
+                    opt.text = `تلقائي (${r.id})`;
+                    opt.selected = true;
+                    recipeSelect.appendChild(opt);
+                    recipeSelect.disabled = false;
+                    document.getElementById('plan-selected-recipe-materials').value = JSON.stringify(r.materials);
+                } else {
+                    const def = document.createElement('option');
+                    def.text = 'اختر وصفة...';
+                    recipeSelect.appendChild(def);
+
+                    res.recipes.forEach(r => {
+                        const opt = document.createElement('option');
+                        opt.value = r.id;
+                        opt.text = `وصفة (${r.id})`;
+                        recipeSelect.appendChild(opt);
+                    });
+                    recipeSelect.disabled = false;
+                    
+                    recipeSelect.onchange = function() {
+                        const selectedId = this.value;
+                        const target = productionState.currentRecipes.find(x => x.id == selectedId);
+                        if(target) {
+                            document.getElementById('plan-selected-recipe-materials').value = JSON.stringify(target.materials);
+                        }
+                    };
+                }
+            } else {
+                recipeSelect.innerHTML = '<option value="">لا توجد وصفة متاحة</option>';
+            }
+        })
+        .searchRecipes(product, date);
+}
+
+function submitProductionPlan() {
+    const btn = document.getElementById('plan-submit-btn');
+    const originalContent = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري الحفظ...';
+    btn.disabled = true;
+
+    const matJson = document.getElementById('plan-selected-recipe-materials').value;
+    const materials = matJson ? JSON.parse(matJson) : [];
+
+    const formData = {
+        date: document.getElementById('plan-input-date').value,
+        product: document.getElementById('plan-input-product').value,
+        quantity: document.getElementById('plan-input-qty').value,
+        constraint: document.getElementById('plan-input-constraint').value,
+        priority: document.getElementById('plan-input-priority').value,
+        notes: document.getElementById('plan-input-notes').value,
+        recipeId: document.getElementById('plan-input-recipe').value,
+        materials: materials
+    };
+
+    google.script.run
+        .withSuccessHandler(res => {
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+            if (res.success) {
+                showToast('تم حفظ الخطة بنجاح ID: ' + res.newId, 'success');
+                document.getElementById('plan-production-form').reset();
+                togglePlanAddCard(); 
+                loadProductionData(); 
+            } else {
+                alert('خطأ: ' + res.message);
+            }
+        })
+        .saveProductionPlan(formData);
+}
+
+function setupProductionEventListeners() {
+    // 1. Set Default Date
+    const dateInput = document.getElementById('plan-input-date');
+    if (dateInput) {
+        const today = new Date();
+        const year = today.getFullYear();
+        const month = String(today.getMonth() + 1).padStart(2, '0');
+        const day = String(today.getDate()).padStart(2, '0');
+        dateInput.value = `${year}-${month}-${day}`;
+    }
+}
+
+function filterProductionPlans() {
+    const searchText = document.getElementById('plan-filter-search').value.toLowerCase();
+    const filterDate = document.getElementById('plan-filter-date').value;
+    
+    const cards = document.querySelectorAll('.plan-card');
+    
+    cards.forEach(card => {
+        const productName = card.querySelector('.card-product-title').textContent.toLowerCase();
+        const dateText = card.querySelector('.card-meta-row').textContent; 
+        
+        let matchesSearch = true;
+        let matchesDate = true;
+        
+        if (searchText && !productName.includes(searchText)) {
+            matchesSearch = false;
+        }
+        if (filterDate && !dateText.includes(filterDate)) {
+            matchesDate = false;
+        }
+        
+        card.style.display = (matchesSearch && matchesDate) ? 'grid' : 'none';
+    });
+}
+
+function showError(id, msg) {
+    const container = document.getElementById(id);
+    if(container) {
+        container.innerHTML = `
+            <div style="background:#fee2e2; color:#b91c1c; padding:20px; border-radius:12px; text-align:center;">
+                <i class="fas fa-exclamation-circle fa-2x"></i><br>
+                ${msg}
+            </div>`;
+    }
+}
+
+// Function to handle global toast needed if not defined elsewhere for this module scope
+if (typeof showToast !== 'function') {
+    function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.className = 'custom-toast';
+    toast.style.background = type === 'success' ? '#dcfce7' : '#fff';
+    toast.innerHTML = `<i class="fas ${type === 'success' ? 'fa-check' : 'fa-info-circle'}"></i> ${message}`;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
+}
+}
+
+// ==========================================
+// ULTRA MODERN MODALS & LOGIC
+// ==========================================
+
+function closeProdModal(modalId) {
+    document.getElementById(modalId).classList.remove('active');
+}
+
+// 1. EDIT PLAN LOGIC
+function openProdEditModal(planId) {
+    const plan = productionState.currentPlans.find(p => String(p.id) === String(planId));
+    if (!plan) return;
+
+    document.getElementById('edit-plan-id').value = plan.id;
+    document.getElementById('edit-plan-date').value = plan.date;
+    document.getElementById('edit-plan-qty').value = plan.quantity;
+    document.getElementById('edit-plan-notes').value = plan.notes || '';
+    document.getElementById('edit-recipe-warning').style.display = 'none';
+    
+    populateDropdown('edit-plan-product', productionState.products);
+    document.getElementById('edit-plan-product').value = plan.product;
+
+    populateDropdown('edit-plan-constraint', productionState.constraints);
+    populateDropdown('edit-plan-priority', productionState.priorities);
+    
+    document.getElementById('edit-plan-constraint').value = plan.constraint;
+    document.getElementById('edit-plan-priority').value = plan.priority;
+
+    const recipeSelect = document.getElementById('edit-plan-recipe');
+    recipeSelect.innerHTML = '<option>جاري التحميل...</option>';
+    recipeSelect.disabled = true;
+
+    google.script.run
+        .withSuccessHandler(res => {
+            recipeSelect.innerHTML = '';
+            if (res.success && res.recipes.length > 0) {
+                productionState.editCurrentRecipes = res.recipes;
+                res.recipes.forEach(r => {
+                    const opt = document.createElement('option');
+                    opt.value = r.id;
+                    opt.text = `وصفة (${r.id})`;
+                    if (r.id === plan.recipeId) opt.selected = true;
+                    recipeSelect.appendChild(opt);
+                });
+                recipeSelect.disabled = false;
+                
+                // Store original materials mapped to recipe
+                document.getElementById('edit-plan-selected-recipe-materials').value = JSON.stringify(plan.materials);
+                productionState.originalEditRecipeId = plan.recipeId;
+            } else {
+                recipeSelect.innerHTML = '<option value="">لا توجد وصفة متاحة</option>';
+            }
+        })
+        .searchRecipes(plan.product, plan.date);
+
+    document.getElementById('modal-edit-plan').classList.add('active');
+}
+
+function handleEditProductChange() {
+    const product = document.getElementById('edit-plan-product').value;
+    const date = document.getElementById('edit-plan-date').value;
+    const recipeSelect = document.getElementById('edit-plan-recipe');
+    
+    document.getElementById('edit-recipe-warning').style.display = 'block';
+
+    if (!product || !date) {
+        recipeSelect.innerHTML = '<option value="">بانتظار المنتج...</option>';
+        recipeSelect.disabled = true;
+        document.getElementById('edit-plan-selected-recipe-materials').value = '';
+        return;
+    }
+
+    recipeSelect.innerHTML = '<option>جاري البحث...</option>';
+    recipeSelect.disabled = true;
+
+    google.script.run
+        .withSuccessHandler(res => {
+            recipeSelect.innerHTML = '';
+            if (res.success && res.recipes.length > 0) {
+                productionState.editCurrentRecipes = res.recipes;
+                if (res.recipes.length === 1) {
+                    const r = res.recipes[0];
+                    const opt = document.createElement('option');
+                    opt.value = r.id;
+                    opt.text = `تلقائي (${r.id})`;
+                    opt.selected = true;
+                    recipeSelect.appendChild(opt);
+                    recipeSelect.disabled = false;
+                    document.getElementById('edit-plan-selected-recipe-materials').value = JSON.stringify(r.materials);
+                } else {
+                    const def = document.createElement('option');
+                    def.text = 'اختر وصفة...';
+                    recipeSelect.appendChild(def);
+                    res.recipes.forEach(r => {
+                        const opt = document.createElement('option');
+                        opt.value = r.id;
+                        opt.text = `وصفة (${r.id})`;
+                        recipeSelect.appendChild(opt);
+                    });
+                    recipeSelect.disabled = false;
+                }
+            } else {
+                recipeSelect.innerHTML = '<option value="">لا توجد وصفة متاحة</option>';
+                document.getElementById('edit-plan-selected-recipe-materials').value = '';
+            }
+        })
+        .searchRecipes(product, date);
+}
+
+function handleEditRecipeChange() {
+    document.getElementById('edit-recipe-warning').style.display = 'block';
+    const selectedId = document.getElementById('edit-plan-recipe').value;
+    const target = productionState.editCurrentRecipes.find(x => x.id == selectedId);
+    if(target) {
+        document.getElementById('edit-plan-selected-recipe-materials').value = JSON.stringify(target.materials);
+    } else {
+        document.getElementById('edit-plan-selected-recipe-materials').value = '';
+    }
+}
+
+function submitPlanEdit() {
+    const btn = document.getElementById('btn-submit-edit');
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري الحفظ...';
+    btn.disabled = true;
+
+    const planId = document.getElementById('edit-plan-id').value;
+    const matJson = document.getElementById('edit-plan-selected-recipe-materials').value;
+    const materials = matJson ? JSON.parse(matJson) : [];
+
+    const updates = {
+        date: document.getElementById('edit-plan-date').value,
+        product: document.getElementById('edit-plan-product').value,
+        recipeId: document.getElementById('edit-plan-recipe').value,
+        materials: materials,
+        quantity: document.getElementById('edit-plan-qty').value,
+        constraint: document.getElementById('edit-plan-constraint').value,
+        priority: document.getElementById('edit-plan-priority').value,
+        notes: document.getElementById('edit-plan-notes').value
+    };
+
+    google.script.run
+        .withSuccessHandler(res => {
+            btn.innerHTML = '<i class="fas fa-save"></i> حفظ التعديلات';
+            btn.disabled = false;
+            if (res.success) {
+                showToast('تم تحديث البيانات بنجاح', 'success');
+                closeProdModal('modal-edit-plan');
+                loadProductionData(); // Refresh UI
+            } else {
+                alert('خطأ: ' + res.message);
+            }
+        })
+        .updateProductionPlanBasic(planId, updates);
+}
+
+// Global Click Listener to close popovers
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.wh-info-btn') && !e.target.closest('.wh-popover')) {
+        document.querySelectorAll('.wh-popover').forEach(p => p.style.display = 'none');
+        // Reset the z-index of all cards when clicking outside
+        document.querySelectorAll('.var-card').forEach(c => c.style.zIndex = '1'); 
+    }
+});
+
+function toggleProdWhPopover(e, id) {
+    if (e && typeof e.stopPropagation === 'function') {
+        e.stopPropagation();
+    }
+    
+    // First, push all cards back to the default layer
+    document.querySelectorAll('.var-card').forEach(c => c.style.zIndex = '1');
+    
+    const pop = document.getElementById(`popover-${id}`);
+    document.querySelectorAll('.wh-popover').forEach(p => { if(p !== pop) p.style.display = 'none'; });
+    
+    if (pop.style.display === 'block') {
+        pop.style.display = 'none';
+    } else {
+        pop.style.display = 'block';
+        // Pull THIS specific card to the absolute front so its popover overlaps everything below it
+        const parentCard = document.getElementById(`card-${id}`);
+        if (parentCard) parentCard.style.zIndex = '999';
+    }
+}
+function selectVariation(matIdx, refId, uniqueId) {
+    document.querySelectorAll(`.var-card[data-matidx="${matIdx}"]`).forEach(el => el.classList.remove('selected'));
+    document.getElementById(`card-${uniqueId}`).classList.add('selected');
+    document.getElementById(`radio-${uniqueId}`).checked = true;
+}
+
+// 2. ASSIGN MATERIALS LOGIC
+function openProdAssignModal(planId) {
+    // Reset staged transfers state for the new session
+    productionState.stagedTransfers = {};
+
+    const plan = productionState.currentPlans.find(p => String(p.id) === String(planId));
+    if (!plan) return;
+    
+    productionState.activeAssignPlanId = planId;
+    const body = document.getElementById('assign-mats-body');
+    body.innerHTML = '<div style="text-align:center; padding: 50px;"><i class="fas fa-circle-notch fa-spin fa-3x text-primary" style="margin-bottom:20px;"></i><br><h5>جاري تحليل الخامات وربط الأرصدة...</h5></div>';
+    document.getElementById('modal-assign-mats').classList.add('active');
+
+    // Fetch Recipe requirements first, then Inventory Structure
+    google.script.run
+        .withSuccessHandler(recipeRes => {
+            google.script.run
+                .withSuccessHandler(resString => {
+                    const res = JSON.parse(resString);
+                    if (res.success) {
+                        renderAssignMaterialsForm(plan, res.materialsGrouped, recipeRes.reqs || {});
+                    } else {
+                        body.innerHTML = `<div class="empty-state text-danger">خطأ في جلب بيانات المخازن: ${res.message}</div>`;
+                    }
+                })
+                .getMaterialsInitialData();
+        })
+        .getRecipeRequirements(plan.recipeId);
+}
+
+function renderAssignMaterialsForm(plan, groups, reqs) {
+    // 1. Populate Sticky Header Info
+    const headerInfo = document.getElementById('assign-mats-sticky-info');
+    headerInfo.innerHTML = `
+        <div style="flex: 1.5;">
+            <div style="font-size:0.8rem; color:#64748b; margin-bottom: 4px;">المنتج المخطط</div>
+            <div style="font-weight:800; color:#0f172a; font-size:1.15rem;">${plan.product}</div>
+        </div>
+        <div style="flex: 1; border-right: 1px solid #cbd5e1; padding-right: 20px;">
+            <div style="font-size:0.8rem; color:#64748b; margin-bottom: 4px;">الكمية المستهدفة</div>
+            <div style="font-weight:800; color:#2563eb; font-size:1.15rem;"><i class="fas fa-cubes"></i> ${plan.quantity}</div>
+        </div>
+        <div style="flex: 1; border-right: 1px solid #cbd5e1; padding-right: 20px;">
+            <div style="font-size:0.8rem; color:#64748b; margin-bottom: 4px;">حالة الأولوية</div>
+            <div style="font-weight:800; color:#d97706; font-size:1.15rem;"><i class="fas fa-flag"></i> ${plan.priority}</div>
+        </div>
+    `;
+
+    const body = document.getElementById('assign-mats-body');
+    let html = '';
+
+    // 2. Generate Horizontal Rows for each required generic material
+    plan.materials.forEach((mat, idx) => {
+        const group = groups.find(g => g.name === mat.name);
+        const qtyPerUnit = reqs[mat.name] || 0;
+        const totalRequired = (parseFloat(plan.quantity) * parseFloat(qtyPerUnit)).toFixed(2);
+
+        html += `
+            <div class="mat-category-row">
+                <div class="mat-category-title">
+                    <i class="fas fa-box-open" style="color:var(--prod-primary);"></i> ${mat.name}
+                    <span style="font-size:0.9rem; color:#64748b; font-weight:normal; margin-right:auto; background:#f1f5f9; padding:4px 12px; border-radius:20px;">الكمية الكلية المطلوبة للتشغيل: <strong style="color:#0f172a;">${totalRequired}</strong></span>
+                </div>
+        `;
+
+        if (!group || !group.variations || group.variations.length === 0) {
+            html += `<div style="padding: 15px; color: #94a3b8; font-size: 0.95rem; text-align:center;"><i class="fas fa-info-circle"></i> لا توجد أصناف محددة مسجلة لهذا الخام. يمكنك المتابعة.</div></div>`;
+            return; 
+        }
+
+        const isSingle = group.variations.length === 1;
+        html += `<div class="var-cards-container">`;
+
+        // 3. Generate Toggle Cards
+        group.variations.forEach(v => {
+            const uniqueId = `${plan.id}-${idx}-${v.id}`;
+            // Check if this material was previously assigned using the hidden system data
+            const isPreviouslyAssigned = mat.systemData && String(mat.systemData.refId) === String(v.id);
+            const isSelected = isSingle || isPreviouslyAssigned;
+
+            html += `
+                <div class="var-card ${isSelected ? 'selected' : ''}" data-matidx="${idx}" id="card-${uniqueId}" onclick="selectVariation('${idx}', '${v.id}', '${uniqueId}')">
+                    <input type="radio" name="mat-${idx}" value="${v.id}" id="radio-${uniqueId}" style="display:none;" ${isSelected ? 'checked' : ''}>
+                    
+                    <button class="wh-info-btn" onclick="toggleProdWhPopover(event, '${uniqueId}')" title="توزيع المخازن">
+                        <i class="fas fa-warehouse"></i>
+                    </button>
+                    
+                    <div class="wh-popover" id="popover-${uniqueId}">
+                        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:10px; border-bottom:1px solid #475569; padding-bottom:5px;">توزيع الأرصدة المتوفرة</div>
+                        <div id="popover-content-${uniqueId}"><i class="fas fa-circle-notch fa-spin"></i> جاري التحميل...</div>
+                    </div>
+
+                    <div class="var-card-title">${v.label}</div>
+                    
+                    <div class="var-card-stat" id="stock-${uniqueId}">
+                        <span>الرصيد الكلي:</span>
+                        <strong><i class="fas fa-circle-notch fa-spin text-primary"></i></strong>
+                    </div>
+                </div>
+            `;
+            
+            // Fire async fetch for stock (delay slightly to prevent overwhelming the server)
+            setTimeout(() => fetchVariationStock(v.id, uniqueId, parseFloat(totalRequired)), 50 * idx);
+        });
+
+        html += `</div></div>`;
+    });
+
+    body.innerHTML = html;
+}
+
+function fetchVariationStock(refId, uniqueId, totalRequired) {
+    google.script.run
+        .withSuccessHandler(res => {
+            try {
+                let totalWh02 = 0;
+                let grandTotal = 0;
+                let distHtml = '';
+                
+                const card = document.getElementById(`card-${uniqueId}`);
+                if (card) {
+                    card.dataset.req = totalRequired;
+                }
+                
+                if (res && res.success) {
+                    totalWh02 = res.totalWh02 || 0;
+                    if (card) card.dataset.wh02 = totalWh02;
+                    
+                    if (res.whMap && Object.keys(res.whMap).length > 0) {
+                        for (const [whArabicName, qty] of Object.entries(res.whMap)) {
+                            grandTotal += parseFloat(qty);
+                            const originalWhId = res.whIdMap[whArabicName]; 
+                            
+                            // Do not show transfer input for the destination itself (WH_02)
+                            if (originalWhId === 'WH_02') {
+                                distHtml += `<div style="display:flex; justify-content:space-between; gap:30px; margin-bottom:12px; font-size:0.95rem; color:#10b981;"><span>${whArabicName}:</span> <strong>${qty}</strong></div>`;
+                            } else {
+                                distHtml += `
+                                <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px; font-size:0.95rem; border-bottom:1px solid #334155; padding-bottom:10px;">
+                                    <div style="display:flex; justify-content:space-between;">
+                                        <span>${whArabicName}:</span> <strong>${qty}</strong>
+                                    </div>
+                                    <div style="display:flex; gap:6px; align-items:center;">
+                                        <i class="fas fa-exchange-alt" style="color:#94a3b8; font-size:0.8rem;"></i>
+                                        <input type="number" min="0" max="${qty}" placeholder="الكمية..." class="modern-input" id="trans-inp-${uniqueId}-${originalWhId}" style="padding:4px 8px; font-size:0.85rem; background:#1e293b; color:#fff; border:1px solid #475569; width:100px;" oninput="resetTransferState('${uniqueId}', '${originalWhId}')">
+                                        <button type="button" id="trans-btn-${uniqueId}-${originalWhId}" onclick="confirmTransfer('${uniqueId}', '${refId}', '${originalWhId}', ${qty})" style="background:#3b82f6; color:#fff; border:none; border-radius:6px; width:32px; height:32px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:0.2s;" title="تأكيد الكمية">
+                                            <i class="fas fa-check"></i>
+                                        </button>
+                                    </div>
+                                </div>`;
+                            }
+                        }
+                    } else {
+                        distHtml = '<div style="color:#fca5a5; font-size:0.85rem;">لا يوجد رصيد مسجل في أي مخزن</div>';
+                    }
+                } else {
+                    distHtml = `<div style="color:#fca5a5; font-size:0.85rem;">خطأ: ${res ? res.message : 'غير معروف'}</div>`;
+                }
+
+                // Set Popover content
+                const popContent = document.getElementById(`popover-content-${uniqueId}`);
+                if (popContent) popContent.innerHTML = distHtml;
+
+                // Set initial stock display on card
+                const stockDiv = document.getElementById(`stock-${uniqueId}`);
+                if (stockDiv) {
+                    stockDiv.innerHTML = `<span>الرصيد الكلي:</span> <strong style="font-size: 1.1rem; color: #0f172a;">${grandTotal} <span id="warn-${uniqueId}"></span></strong>`;
+                }
+
+                // Evaluate warnings based on required vs WH_02 stock
+                evaluateCardWarning(uniqueId);
+
+            } catch(e) { console.error('Error rendering stock:', e); }
+        })
+        .getProductionMaterialStock(refId); 
+}
+
+function resetTransferState(uniqueId, sourceWhId) {
+    // 1. Revert visual feedback to default
+    const inp = document.getElementById(`trans-inp-${uniqueId}-${sourceWhId}`);
+    const btn = document.getElementById(`trans-btn-${uniqueId}-${sourceWhId}`);
+    if (inp) inp.style.borderColor = '#475569';
+    if (btn) {
+        btn.style.background = '#3b82f6';
+        btn.innerHTML = '<i class="fas fa-check"></i>';
+    }
+
+    // 2. Remove the unconfirmed value from the state so it is completely ignored
+    if (productionState.stagedTransfers[uniqueId] && productionState.stagedTransfers[uniqueId][sourceWhId]) {
+        productionState.stagedTransfers[uniqueId][sourceWhId].qty = 0;
+    }
+    
+    evaluateCardWarning(uniqueId);
+}
+
+function confirmTransfer(uniqueId, refId, sourceWhId, maxQty) {
+    const inp = document.getElementById(`trans-inp-${uniqueId}-${sourceWhId}`);
+    if (!inp) return;
+    
+    let val = parseFloat(inp.value);
+    if (isNaN(val) || val <= 0) val = 0;
+    if (val > maxQty) { val = maxQty; inp.value = maxQty; } // Enforce max visually
+    
+    if (!productionState.stagedTransfers[uniqueId]) {
+        productionState.stagedTransfers[uniqueId] = {};
+    }
+    
+    // 1. Lock in the confirmed value to the state
+    productionState.stagedTransfers[uniqueId][sourceWhId] = {
+        refId: refId,
+        qty: val
+    };
+    
+    // 2. Visual success feedback on input & button
+    if (val > 0) {
+        inp.style.borderColor = '#10b981'; 
+        const btn = document.getElementById(`trans-btn-${uniqueId}-${sourceWhId}`);
+        if (btn) {
+            btn.style.background = '#10b981';
+            btn.innerHTML = '<i class="fas fa-check-double"></i>';
+        }
+    }
+    
+    evaluateCardWarning(uniqueId);
+}
+
+function evaluateCardWarning(uniqueId) {
+    const card = document.getElementById(`card-${uniqueId}`);
+    if (!card) return;
+    
+    const wh02 = parseFloat(card.dataset.wh02 || 0);
+    const req = parseFloat(card.dataset.req || 0);
+    
+    let transferSum = 0;
+    const staged = productionState.stagedTransfers[uniqueId] || {};
+    for(let wh in staged) {
+        transferSum += parseFloat(staged[wh].qty || 0);
+    }
+    
+    const effectiveStock = wh02 + transferSum;
+    const warnSpan = document.getElementById(`warn-${uniqueId}`);
+    
+    if (warnSpan) {
+        if (effectiveStock < req) {
+            warnSpan.innerHTML = `<i class="fas fa-exclamation-triangle" style="color:#ef4444; margin-right:5px;" title="عجز في التشغيل! متاح: ${effectiveStock} من أصل ${req}"></i>`;
+        } else {
+            warnSpan.innerHTML = `<i class="fas fa-check-circle" style="color:#10b981; margin-right:5px;" title="رصيد التشغيل جاهز ومكفي"></i>`;
+        }
+    }
+}
+
+function submitMaterialAssignment() {
+    const btn = document.getElementById('btn-submit-assign');
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري التحقق...';
+    btn.disabled = true;
+
+    const planId = productionState.activeAssignPlanId;
+    const plan = productionState.currentPlans.find(p => String(p.id) === String(planId));
+    if (!plan) return;
+
+    const assignments = [];
+    const finalTransfers = [];
+    let hasError = false;
+    let errorMessages = [];
+
+    // Evaluate all materials sequentially
+    plan.materials.forEach((mat, idx) => {
+        
+        // IGNORE MATERIALS WITH NO SPECIFIC VARIATIONS REGISTERED
+        const anyRadioExists = document.querySelector(`input[name="mat-${idx}"]`);
+        if (!anyRadioExists) return;
+
+        const selectedRadio = document.querySelector(`input[name="mat-${idx}"]:checked`);
+        if (selectedRadio) {
+            const uniqueId = selectedRadio.id.replace('radio-', '');
+            const refId = selectedRadio.value;
+            
+            // Extract the Arabic name safely using getElementById to bypass dot/space bugs
+            const cardEl = document.getElementById(`card-${uniqueId}`);
+            const titleEl = cardEl ? cardEl.querySelector('.var-card-title') : null;
+            const specificName = titleEl ? titleEl.textContent.trim() : refId;
+            
+            // Validate Stock Fulfillment and Capture Rich Data for WH_02
+            let wh02 = 0;
+            const specificTransfers = [];
+            
+            if (cardEl) {
+                wh02 = parseFloat(cardEl.dataset.wh02 || 0);
+                const req = parseFloat(cardEl.dataset.req || 0);
+                
+                let transferSum = 0;
+                
+                // If using the confirmation button logic, read from the DOM inputs
+                // Using an attribute selector [class~="..."] prevents the browser from crashing on dots
+                const inputs = document.querySelectorAll(`[class~="transfer-input-${uniqueId}"]`);
+                if (inputs.length > 0) {
+                    inputs.forEach(inp => {
+                        const tQty = parseFloat(inp.getAttribute('data-confirmed')) || 0;
+                        if (tQty > 0) {
+                            transferSum += tQty;
+                            specificTransfers.push({
+                                whName: inp.getAttribute('data-whname'),
+                                qty: tQty
+                            });
+                            finalTransfers.push({
+                                refId: inp.getAttribute('data-refid') || refId,
+                                sourceWhId: inp.getAttribute('data-sourcewh'),
+                                qty: tQty
+                            });
+                        }
+                    });
+                } else {
+                    // Fallback to state if DOM inputs aren't matching (for basic version)
+                    const staged = productionState.stagedTransfers[uniqueId] || {};
+                    for (let wh in staged) {
+                        const tQty = parseFloat(staged[wh].qty || 0);
+                        if (tQty > 0) {
+                            transferSum += tQty;
+                            specificTransfers.push({
+                                whName: staged[wh].whArabicName || wh,
+                                qty: tQty
+                            });
+                            finalTransfers.push({
+                                refId: staged[wh].refId,
+                                sourceWhId: wh,
+                                qty: tQty
+                            });
+                        }
+                    }
+                }
+                
+                if (wh02 + transferSum < req) {
+                    hasError = true;
+                    errorMessages.push(`<strong>${mat.name}:</strong> متاح بالتشغيل (${wh02}) + نقل (${transferSum}) / المطلوب (${req})`);
+                }
+            }
+
+            // Save the rich data object
+            assignments.push({
+                name: mat.name,
+                assignedData: { 
+                    refId: refId, 
+                    whId: 'WH_02',
+                    specificName: specificName,
+                    initialWh02: wh02,
+                    transfers: specificTransfers
+                }
+            });
+            
+        } else {
+            hasError = true;
+            errorMessages.push(`<strong>${mat.name}:</strong> لم يتم اختيار الصنف الدقيق.`);
+        }
+    });
+
+    if (hasError) {
+        // Populate and Show Custom Alert Modal
+        const alertMsgDiv = document.getElementById('assign-alert-message');
+        if(alertMsgDiv) {
+            alertMsgDiv.innerHTML = '<p style="margin-bottom:15px; font-weight:bold; color:#b91c1c;">لا يمكن الاعتماد لوجود نواقص في الخامات التالية:</p>' + 
+                                    '<ul style="list-style-type:none; padding:0; margin:0; color:#ef4444;">' + 
+                                    errorMessages.map(m => `<li style="margin-bottom:8px; background:#fef2f2; padding:8px 12px; border-radius:6px; border:1px solid #fee2e2;">${m}</li>`).join('') + 
+                                    '</ul>' + 
+                                    '<p style="margin-top:15px; font-size:0.9rem; color:#64748b;"><i class="fas fa-info-circle"></i> يمكنك معالجة العجز عن طريق نقل أرصدة من المخازن الأخرى (عبر النقر على أيقونة المخزن داخل الصنف).</p>';
+        }
+        document.getElementById('modal-assign-alert').classList.add('active');
+
+        btn.innerHTML = '<i class="fas fa-check-double"></i> حفظ خامات التشغيل (WH_02)';
+        btn.disabled = false;
+        return;
+    }
+
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري النقل والحفظ...';
+
+    google.script.run
+        .withSuccessHandler(res => {
+            btn.innerHTML = '<i class="fas fa-check-double"></i> حفظ خامات التشغيل (WH_02)';
+            btn.disabled = false;
+            if (res.success) {
+                showToast('تم تخصيص الخامات واعتماد خطة الإنتاج بنجاح', 'success');
+                closeProdModal('modal-assign-mats');
+                loadProductionData();
+            } else {
+                alert('خطأ أثناء النقل والحفظ: ' + res.message);
+            }
+        })
+        .executeProductionTransfersAndAssign(planId, assignments, finalTransfers);
+}
+
+// 3. AUDIT HISTORY LOGIC
+function openProdHistoryModal(planId) {
+    const timeline = document.getElementById('plan-history-timeline');
+    timeline.innerHTML = '<div style="text-align:center; padding: 20px;"><i class="fas fa-spinner fa-spin text-warning"></i> جاري استدعاء السجل...</div>';
+    document.getElementById('modal-plan-history').classList.add('active');
+
+    google.script.run
+        .withSuccessHandler(res => {
+            timeline.innerHTML = '';
+            if (res.success && res.history.length > 0) {
+                
+                // 1. Collect all logs into a flat array
+                const allLogs = [];
+                res.history.forEach(colData => {
+                    const lines = colData.log.split('\n');
+                    lines.forEach(line => {
+                        if (line.trim()) {
+                            // Extract timestamp [YYYY-MM-DD HH:mm:ss] and the rest of the text
+                            const match = line.match(/^\[(.*?)\]\s(.*)/);
+                            if (match) {
+                                allLogs.push({
+                                    time: match[1],
+                                    column: colData.column,
+                                    text: match[2]
+                                });
+                            }
+                        }
+                    });
+                });
+
+                if (allLogs.length === 0) {
+                    timeline.innerHTML = '<div class="empty-state">لا توجد تعديلات مسجلة بعد.</div>';
+                    return;
+                }
+
+                // 2. Sort by time descending (newest on top)
+                allLogs.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+                // 3. Group by exact timestamp
+                const groupedLogs = {};
+                allLogs.forEach(log => {
+                    if (!groupedLogs[log.time]) {
+                        groupedLogs[log.time] = [];
+                    }
+                    groupedLogs[log.time].push(log);
+                });
+
+                // 4. Render the grouped timeline
+                let html = '';
+                for (const [time, logs] of Object.entries(groupedLogs)) {
+                    let innerHtml = '';
+                    logs.forEach((log, index) => {
+                        // Add a border bottom unless it's the last item in the group
+                        const borderStyle = index !== logs.length - 1 ? 'border-bottom: 1px dashed #cbd5e1; margin-bottom: 8px; padding-bottom: 8px;' : '';
+                        innerHtml += `
+                            <div style="${borderStyle} display: flex; align-items: flex-start; gap: 8px;">
+                                <span class="audit-col-badge" style="white-space: nowrap;">${log.column}</span>
+                                <span style="color:#475569; font-size:0.9rem; line-height: 1.4;">${log.text}</span>
+                            </div>
+                        `;
+                    });
+
+                    html += `
+                        <div class="audit-item">
+                            <span class="audit-time"><i class="far fa-clock"></i> ${time}</span>
+                            <div class="audit-text">
+                                ${innerHtml}
+                            </div>
+                        </div>
+                    `;
+                }
+                timeline.innerHTML = html;
+
+            } else {
+                timeline.innerHTML = '<div class="empty-state">لا توجد تعديلات مسجلة بعد.</div>';
+            }
+        })
+        .getPlanEditHistory(planId);
+}
+
+
+</script>

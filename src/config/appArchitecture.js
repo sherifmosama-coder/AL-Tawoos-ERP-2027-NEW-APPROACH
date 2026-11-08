@@ -907,26 +907,6 @@ export const APP_ARCHITECTURE = {
             paymentTerms: { labelAr: "شروط وتسهيلات السداد", labelEn: "Payment Terms", type: "string", sample: "30 days rolling" },
             status: { labelAr: "حالة العقد", labelEn: "Contract Status", type: "enum", options: ["active", "expired", "terminated"], sample: "active" }
           }
-        },
-        customers: {
-          id: "customers",
-          collection: "clients",
-          labelAr: "سجل العملاء المعتمدين",
-          labelEn: "Customers Master Directory",
-          icon: "Users",
-          actions: [
-            { key: "canCreate", labelAr: "تسجيل عميل جديد", labelEn: "Create Customer" },
-            { key: "canEdit", labelAr: "تعديل بيانات العميل", labelEn: "Edit Customer" },
-            { key: "canDelete", labelAr: "حذف أو تجميد عميل", labelEn: "Delete Customer" },
-          ],
-          fields: {
-            code: { labelAr: "كود العميل", labelEn: "Client Code", type: "string", required: true, sample: "CLI-001" },
-            nameAr: { labelAr: "اسم العميل (عربي)", labelEn: "Client Name (Ar)", type: "string", required: true, sample: "شركة الأمل للتجارة" },
-            nameEn: { labelAr: "اسم العميل (إنجليزي)", labelEn: "Client Name (En)", type: "string", sample: "Al-Amal Trading" },
-            segmentId: { labelAr: "قطاع العميل", labelEn: "Segment ID", type: "string", sample: "wholesale" },
-            pricingStrategy: { labelAr: "استراتيجية التسعير الافتراضية", labelEn: "Pricing Strategy", type: "string", sample: "wholesalers" },
-            settlementMode: { labelAr: "طريقة السداد", labelEn: "Settlement Mode", type: "string", sample: "credit" }
-          }
         }
       }
     }
@@ -988,7 +968,6 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       sales: true,
       price_lists: true,
       client_contracts: true,
-      customers: true,
       admin_panel: true
     },
     actions: {
@@ -1095,7 +1074,6 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       sales: true,
       price_lists: true,
       client_contracts: true,
-      customers: true,
       admin_panel: false
     },
     actions: {

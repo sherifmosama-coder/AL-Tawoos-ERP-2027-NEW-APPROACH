@@ -168,11 +168,11 @@ export default function LandingPage({
       titleEn: 'Sales & Distribution',
       icon: TrendingUp,
       color: 'amber',
+      status: 'active',
       permissionModuleKey: 'sales',
       tabs: [
         { id: 'price_lists', moduleKey: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign },
         { id: 'client_contracts', moduleKey: 'client_contracts', labelAr: 'عقود وخصومات العملاء', labelEn: 'Client Contracts', icon: Handshake },
-        { id: 'customers', moduleKey: 'customers', labelAr: 'سجل العملاء', labelEn: 'Customers Master', icon: Users },
       ]
     },
     {

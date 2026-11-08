@@ -374,13 +374,6 @@ export default function TopNavbar({
           labelEn: 'Client Contracts',
           icon: Handshake,
         },
-        {
-          id: 'customers',
-          moduleKey: 'customers',
-          labelAr: 'سجل العملاء',
-          labelEn: 'Customers Master',
-          icon: Users,
-        },
       ]
     },
     {

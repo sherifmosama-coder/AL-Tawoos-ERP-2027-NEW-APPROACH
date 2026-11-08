@@ -173,13 +173,8 @@ export function resolveModuleAndTab(targetModule, targetTab) {
     mod = 'sales';
     tab = 'client_contracts';
   } else if (tab === 'clients' || tab === 'client_master' || tab === 'customers') {
-    if (targetModule === 'sales') {
-      mod = 'sales';
-      tab = 'customers';
-    } else {
-      mod = 'master_data';
-      tab = 'clients';
-    }
+    mod = 'master_data';
+    tab = 'clients';
   } else if (tab === 'client_segments' || tab === 'segments' || tab === 'customer_segments') {
     mod = 'master_data';
     tab = 'client_segments';
@@ -191,7 +186,7 @@ export function resolveModuleAndTab(targetModule, targetTab) {
     const productionTabs = ['work_orders', 'liquid_tanks', 'liquid_storage', 'faulty_fg', 'fg_inward', 'production_reports'];
     const masterTabs = ['items', 'suppliers', 'clients', 'client_segments', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'safes', 'banks', 'vehicles', 'production_workers', 'users', 'system_config'];
     const financeTabs = ['cash_safes', 'cash_safes_hub', 'custodies_advances', 'dues_tracking', 'banks', 'accounts', 'party_statements', 'financial_statements'];
-    const salesTabs = ['price_lists', 'client_contracts', 'contracts', 'customers', 'sales_orders'];
+    const salesTabs = ['price_lists', 'client_contracts', 'contracts'];
 
     if (purchasesTabs.includes(tab)) {
       mod = 'purchases';

@@ -551,7 +551,6 @@ export default function App() {
     sales: [
       { id: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign, moduleKey: 'price_lists' },
       { id: 'client_contracts', labelAr: 'عقود وخصومات العملاء', labelEn: 'Client Contracts', icon: Handshake, moduleKey: 'client_contracts' },
-      { id: 'customers', labelAr: 'سجل العملاء', labelEn: 'Customers Master', icon: Users, moduleKey: 'customers' },
     ],
     hr: [
       { id: 'employees', labelAr: 'سجل العاملين', labelEn: 'Employees Directory', icon: Users, moduleKey: 'employees' },
