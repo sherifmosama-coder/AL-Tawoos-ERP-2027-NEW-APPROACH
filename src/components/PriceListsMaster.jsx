@@ -62,6 +62,62 @@ import {
   computePeriodStatus
 } from '../utils/pricingEngine';
 
+/**
+ * Resolves sequential serial (1001, 1002, ...) for any price list period.
+ * Format: 100# WHERE # STARTS AT 1 (1001, 1002, 1003, etc.)
+ */
+export const resolvePeriodSerial = (period, allPriceLists = []) => {
+  if (!period) return '1001';
+  if (period.serial && !isNaN(Number(period.serial))) {
+    return String(period.serial);
+  }
+
+  // If period.id is already 100# (e.g. '1001', '1002') or 'PL-100#'
+  const directMatch = String(period.id || '').match(/^(?:PL-)?(100\d+|\d{4,5})$/i);
+  if (directMatch) {
+    const n = parseInt(directMatch[1], 10);
+    if (n >= 1001 && n < 90000) return String(n);
+  }
+
+  // Chronological mapping for legacy periods without serial (oldest = 1001, second = 1002, etc.)
+  const sorted = [...allPriceLists].sort((a, b) => {
+    const timeA = a.createdAt?.toMillis
+      ? a.createdAt.toMillis()
+      : a.createdAt?.seconds
+      ? a.createdAt.seconds * 1000
+      : (a.startDate ? new Date(a.startDate).getTime() : 0);
+    const timeB = b.createdAt?.toMillis
+      ? b.createdAt.toMillis()
+      : b.createdAt?.seconds
+      ? b.createdAt.seconds * 1000
+      : (b.startDate ? new Date(b.startDate).getTime() : 0);
+    if (timeA !== timeB) return timeA - timeB;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+
+  const idx = sorted.findIndex((p) => p.id === period.id);
+  if (idx !== -1) {
+    return String(1001 + idx);
+  }
+
+  return '1001';
+};
+
+/**
+ * Computes next available serial starting at 1001 (100# where # starts at 1)
+ */
+export const generateNextPeriodSerial = (allPriceLists = []) => {
+  const existingSerials = (allPriceLists || []).map((pl) => {
+    const s = resolvePeriodSerial(pl, allPriceLists);
+    const num = parseInt(s, 10);
+    return isNaN(num) ? 0 : num;
+  });
+
+  const maxSerial = existingSerials.length > 0 ? Math.max(...existingSerials) : 1000;
+  const nextNum = Math.max(maxSerial + 1, 1001);
+  return String(nextNum);
+};
+
 export default function PriceListsMaster({ currentUser = {}, permissions = null }) {
   const { t, i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
@@ -115,6 +171,24 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
     });
     return () => unsub();
   }, []);
+
+  // Backfill sequential serial (1001, 1002...) for legacy price list records missing 'serial'
+  useEffect(() => {
+    if (priceLists.length === 0) return;
+    const missing = priceLists.filter((pl) => !pl.serial);
+    if (missing.length === 0) return;
+
+    try {
+      const batch = writeBatch(db);
+      missing.forEach((pl) => {
+        const s = resolvePeriodSerial(pl, priceLists);
+        batch.update(doc(db, 'price_lists', pl.id), { serial: s });
+      });
+      batch.commit().catch((err) => console.warn('Serial backfill warning:', err));
+    } catch (e) {
+      console.warn('Serial backfill error:', e);
+    }
+  }, [priceLists]);
 
   // 2. Subscribe to Pricing Strategies
   useEffect(() => {
@@ -321,11 +395,14 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const code = (pl.id || '').toLowerCase();
+        const serial = resolvePeriodSerial(pl, priceLists).toLowerCase();
         const clientName = (pl.clientName || '').toLowerCase();
         const stratName = (pl.strategyNameAr || '').toLowerCase();
         const notes = (pl.notes || '').toLowerCase();
         if (
           !code.includes(q) &&
+          !serial.includes(q) &&
+          !(`#${serial}`).includes(q) &&
           !clientName.includes(q) &&
           !stratName.includes(q) &&
           !notes.includes(q)
@@ -377,14 +454,18 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
   };
 
   const handleDuplicatePeriod = (period) => {
-    // Clone items and metadata with new ID, fresh dates, and initial duplicate audit record
+    // Clone items and metadata with new sequential serial, fresh dates, and initial duplicate audit record
+    const nextSerial = generateNextPeriodSerial(priceLists);
+    const originSerial = resolvePeriodSerial(period, priceLists);
     const cloned = {
       ...period,
-      id: '', // Will generate new code
+      id: nextSerial,
+      serial: nextSerial,
       startDate: formatDateKey(new Date()),
       endDate: null,
       notes: `${period.notes ? period.notes + ' - ' : ''}${isAr ? 'نسخة مكررة' : 'Duplicate copy'}`,
       duplicatedFromId: period.id,
+      duplicatedFromSerial: originSerial,
       auditTrail: [
         {
           id: `audit_${Date.now()}_duplicate`,
@@ -394,8 +475,8 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
           actionLabelEn: 'Duplicate Copy Created',
           performedBy: currentUserName,
           performedById: currentUserId,
-          summaryAr: `تم إنشاء هذه المسودة كنسخة مكررة من الفترة الأصلية (${period.id}) مع استنساخ كافة الأسعار`,
-          summaryEn: `Draft created by duplicating period (${period.id}) cloning all finished good prices`,
+          summaryAr: `تم إنشاء هذه المسودة كنسخة مكررة من الفترة الأصلية (#${originSerial}) مع استنساخ كافة الأسعار`,
+          summaryEn: `Draft created by duplicating period (#${originSerial}) cloning all finished good prices`,
           status: 'draft',
           changes: { metadata: [], priceChanges: [] }
         }
@@ -769,7 +850,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
             <table className="w-full text-start border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider whitespace-nowrap">
-                  <th className="py-3 px-4 text-start">{isAr ? 'كود الفترة والاستراتيجية' : 'Code & Strategy'}</th>
+                  <th className="py-3 px-4 text-start">{isAr ? 'الاستراتيجية وكود الفترة' : 'Strategy & Period Code'}</th>
                   <th className="py-3 px-4 text-start">{isAr ? 'نطاق التطبيق (العميل / الفروع)' : 'Scope & Target'}</th>
                   <th className="py-3 px-4 text-start">{isAr ? 'نوع الفترة' : 'Type'}</th>
                   <th className="py-3 px-4 text-start">{isAr ? 'صلاحية الفترة' : 'Validity'}</th>
@@ -784,33 +865,48 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
                   const status = computePeriodStatus(period, todayStr);
                   const isSpecial = period.isSpecialPricing || period.strategyId === 'special_pricing';
                   const pricedCount = Object.keys(period.items || {}).length;
+                  const periodSerial = resolvePeriodSerial(period, priceLists);
 
                   return (
                     <tr key={period.id} className="hover:bg-slate-50/70 transition">
-                      {/* Code & Strategy */}
+                      {/* Strategy & Period Serial */}
                       <td className="py-3.5 px-4">
-                        <div className="flex flex-col gap-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono font-bold text-xs text-blue-700">
-                              {period.id}
-                            </span>
-                            {period.auditTrail?.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => setAuditModalPeriod(period)}
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded cursor-pointer transition"
-                                title={isAr ? `عرض سجل التدقيق (${period.auditTrail.length} تعديلات)` : `View Audit Trail (${period.auditTrail.length} revisions)`}
-                              >
-                                <History className="w-3 h-3 text-indigo-600" />
-                                <span>{period.auditTrail.length}</span>
-                              </button>
-                            )}
-                          </div>
+                        <div className="flex flex-col gap-1.5 items-start">
+                          {/* Strategy Badge (Prominent - Top) */}
                           <PricingStrategyBadge
                             strategyId={period.strategyId}
                             strategies={strategies}
                             isAr={isAr}
                           />
+
+                          {/* Subtle Serial & Audit Counter (Low Prominence - Bottom) */}
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="font-mono text-[11px] text-slate-400 font-medium tracking-tight select-all"
+                              title={
+                                isAr
+                                  ? `كود الفترة: #${periodSerial}${period.id && period.id !== periodSerial ? ` (${period.id})` : ''}`
+                                  : `Period Code: #${periodSerial}${period.id && period.id !== periodSerial ? ` (${period.id})` : ''}`
+                              }
+                            >
+                              #{periodSerial}
+                            </span>
+                            {period.auditTrail?.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setAuditModalPeriod(period)}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded cursor-pointer transition shadow-2xs"
+                                title={
+                                  isAr
+                                    ? `عرض سجل التدقيق (${period.auditTrail.length} تعديلات)`
+                                    : `View Audit Trail (${period.auditTrail.length} revisions)`
+                                }
+                              >
+                                <History className="w-2.5 h-2.5 text-indigo-600" />
+                                <span>{period.auditTrail.length}</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </td>
 
@@ -1132,8 +1228,8 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
             </h4>
             <p className="text-xs text-slate-500">
               {isAr
-                ? `هل أنت متأكد من حذف قائمة الأسعار (${deleteConfirmPeriod.id})؟`
-                : `Are you sure you want to delete price period (${deleteConfirmPeriod.id})?`}
+                ? `هل أنت متأكد من حذف قائمة الأسعار (#${resolvePeriodSerial(deleteConfirmPeriod, priceLists)})؟`
+                : `Are you sure you want to delete price period (#${resolvePeriodSerial(deleteConfirmPeriod, priceLists)})?`}
             </p>
             <div className="flex items-center justify-center gap-2 pt-2">
               <button
@@ -1177,8 +1273,12 @@ function PriceListEditorModal({
   currentUserId = 'usr_unknown',
   onOpenAuditTrail = null
 }) {
+  const periodSerial = editingPeriod?.serial || resolvePeriodSerial(editingPeriod, allPriceLists);
+  const nextSerial = generateNextPeriodSerial(allPriceLists);
+
   const [formData, setFormData] = useState({
-    id: editingPeriod?.id || `PL-${Date.now().toString().slice(-6)}`,
+    id: editingPeriod?.id || nextSerial,
+    serial: editingPeriod ? periodSerial : nextSerial,
     strategyId: editingPeriod?.strategyId || (strategies[0]?.id || 'wholesalers'),
     type: editingPeriod?.type || 'official', // 'official' | 'promotional'
     status: editingPeriod?.status || 'active', // 'active' | 'draft'
@@ -1621,8 +1721,10 @@ function PriceListEditorModal({
         autoClosedId = overlappingPeriod.id;
       }
 
+      const serialToSave = formData.serial || resolvePeriodSerial(formData, allPriceLists);
       const payload = {
         id: formData.id,
+        serial: serialToSave,
         strategyId: formData.strategyId,
         strategyNameAr: selectedStrategy?.nameAr || formData.strategyId,
         type: formData.type,
@@ -1862,7 +1964,7 @@ function PriceListEditorModal({
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 font-bold">
-                  {formData.id}
+                  #{formData.serial || formData.id}
                 </span>
                 <h3 className="text-base font-black">
                   {editingPeriod

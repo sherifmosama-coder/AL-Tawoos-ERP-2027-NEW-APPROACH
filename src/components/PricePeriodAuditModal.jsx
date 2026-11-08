@@ -188,7 +188,7 @@ export default function PricePeriodAuditModal({
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-mono text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-bold">
-                  {period.id}
+                  #{period.serial || period.id}
                 </span>
                 <span className="text-xs px-2 py-0.5 rounded bg-white/10 text-slate-200 font-bold">
                   {strategyName}
