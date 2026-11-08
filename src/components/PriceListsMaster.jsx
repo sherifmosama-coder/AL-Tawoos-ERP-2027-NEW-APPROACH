@@ -43,10 +43,16 @@ import {
   Check,
   RotateCcw,
   Boxes,
-  HelpCircle
+  HelpCircle,
+  History,
+  User,
+  ArrowUpRight,
+  ArrowDownRight,
+  Eye
 } from 'lucide-react';
 import PricingStrategiesModal, { PricingStrategyBadge } from './PricingStrategiesModal';
 import SearchableSelect from './SearchableSelect';
+import PricePeriodAuditModal from './PricePeriodAuditModal';
 import {
   DEFAULT_PRICING_STRATEGIES,
   isProductPrivateLabel,
@@ -59,6 +65,15 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
   const { t, i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
 
+  const currentUserName =
+    currentUser?.name ||
+    currentUser?.nameAr ||
+    currentUser?.displayName ||
+    currentUser?.username ||
+    currentUser?.email ||
+    (isAr ? 'مستخدم معتمد' : 'Authorized User');
+  const currentUserId = currentUser?.id || currentUser?.uid || 'usr_unknown';
+
   // Subscriptions & Data State
   const [priceLists, setPriceLists] = useState([]);
   const [strategies, setStrategies] = useState(DEFAULT_PRICING_STRATEGIES);
@@ -69,6 +84,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
 
   // Filters State
   const [searchQuery, setSearchQuery] = useState('');
+  const [clientFilter, setClientFilter] = useState('all');
   const [strategyFilter, setStrategyFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -80,6 +96,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
   const [activeActionsMenuId, setActiveActionsMenuId] = useState(null);
   const [actionsMenuAnchor, setActionsMenuAnchor] = useState(null);
   const [deleteConfirmPeriod, setDeleteConfirmPeriod] = useState(null);
+  const [auditModalPeriod, setAuditModalPeriod] = useState(null);
 
   const activePeriodForMenu = useMemo(() => {
     if (!activeActionsMenuId) return null;
@@ -167,11 +184,106 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
     };
   }, [activeActionsMenuId]);
 
+  // Set of client IDs who currently have an active Special Pricing period
+  const activeSpecialClientIds = useMemo(() => {
+    const todayStr = formatDateKey(new Date());
+    const ids = new Set();
+    (priceLists || []).forEach((pl) => {
+      if (
+        (pl.isSpecialPricing || pl.strategyId === 'special_pricing') &&
+        pl.clientId &&
+        isPeriodActiveForDate(pl, todayStr)
+      ) {
+        ids.add(pl.clientId);
+      }
+    });
+    return ids;
+  }, [priceLists]);
+
+  // Options for Client Filter (SearchableSelect in the filter bar)
+  // Prioritized: (1) Profile strategy = special_pricing -> (2) Active special pricing -> (3) Other strategies
+  const filterClientOptions = useMemo(() => {
+    const tier1 = [];
+    const tier2 = [];
+    const tier3 = [];
+
+    (clients || []).forEach((c) => {
+      const codeStr = c.code ? `[${c.code}] ` : '';
+      const name = isAr
+        ? (c.tradeNameAr || c.legalNameAr || c.tradeNameEn || c.name || '')
+        : (c.tradeNameEn || c.tradeNameAr || c.legalNameEn || c.name || '');
+      const fullLabel = `${codeStr}${name}`.trim();
+      const opt = {
+        value: c.id,
+        label: fullLabel,
+        sublabel: isAr
+          ? (c.pricingStrategy === 'special_pricing' ? 'ملف العميل: أسعار خاصة' : `استراتيجية: ${c.pricingStrategy || 'افتراضي'}`)
+          : `Strategy: ${c.pricingStrategy || 'default'}`
+      };
+
+      if (c.pricingStrategy === 'special_pricing') {
+        tier1.push(opt);
+      } else if (activeSpecialClientIds.has(c.id)) {
+        tier2.push(opt);
+      } else {
+        tier3.push(opt);
+      }
+    });
+
+    tier1.sort((a, b) => a.label.localeCompare(b.label, isAr ? 'ar' : 'en'));
+    tier2.sort((a, b) => a.label.localeCompare(b.label, isAr ? 'ar' : 'en'));
+    tier3.sort((a, b) => a.label.localeCompare(b.label, isAr ? 'ar' : 'en'));
+
+    const options = [
+      {
+        value: 'all',
+        label: isAr ? 'جميع العملاء (كافة النطاقات)' : 'All Clients / Scopes',
+        sublabel: isAr ? 'عرض كافة القوائم العامة والخاصة' : 'Show all general and special price lists'
+      }
+    ];
+
+    if (tier1.length > 0) {
+      options.push({
+        value: '__tier1_header__',
+        label: isAr ? '⭐ عملاء ملفهم الأساسي أسعار خاصة' : '⭐ Profile: Special Pricing',
+        disabled: true
+      });
+      options.push(...tier1);
+    }
+    if (tier2.length > 0) {
+      options.push({
+        value: '__tier2_header__',
+        label: isAr ? '⚡ عملاء لديهم أسعار خاصة سارية حالياً' : '⚡ Active Special Pricing Contracts',
+        disabled: true
+      });
+      options.push(...tier2);
+    }
+    if (tier3.length > 0) {
+      options.push({
+        value: '__tier3_header__',
+        label: isAr ? 'عملاء باستراتيجيات تسعير أخرى' : 'Other Client Strategies',
+        disabled: true
+      });
+      options.push(...tier3);
+    }
+
+    return options;
+  }, [clients, activeSpecialClientIds, isAr]);
+
   // Derived Filtered Periods
   const filteredPeriods = useMemo(() => {
     const todayStr = formatDateKey(new Date());
+    const selectedClientObj = clientFilter !== 'all' ? clients.find((c) => c.id === clientFilter) : null;
 
     return priceLists.filter((pl) => {
+      // Client filter (SearchableSelect)
+      if (clientFilter !== 'all') {
+        const matchesTargetClient = pl.clientId === clientFilter || pl.clientIds?.includes?.(clientFilter);
+        const matchesClientStrategy = !pl.clientId && selectedClientObj?.pricingStrategy && (pl.strategyId === selectedClientObj.pricingStrategy);
+        if (!matchesTargetClient && !matchesClientStrategy) {
+          return false;
+        }
+      }
       // Strategy filter
       if (strategyFilter !== 'all' && pl.strategyId !== strategyFilter) {
         return false;
@@ -203,7 +315,7 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
       }
       return true;
     });
-  }, [priceLists, strategyFilter, typeFilter, statusFilter, searchQuery]);
+  }, [priceLists, clientFilter, clients, strategyFilter, typeFilter, statusFilter, searchQuery]);
 
   // KPIs
   const kpis = useMemo(() => {
@@ -245,13 +357,29 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
   };
 
   const handleDuplicatePeriod = (period) => {
-    // Clone items and metadata with new ID and fresh dates
+    // Clone items and metadata with new ID, fresh dates, and initial duplicate audit record
     const cloned = {
       ...period,
       id: '', // Will generate new code
       startDate: formatDateKey(new Date()),
       endDate: null,
-      notes: `${period.notes ? period.notes + ' - ' : ''}${isAr ? 'نسخة مكررة' : 'Duplicate copy'}`
+      notes: `${period.notes ? period.notes + ' - ' : ''}${isAr ? 'نسخة مكررة' : 'Duplicate copy'}`,
+      duplicatedFromId: period.id,
+      auditTrail: [
+        {
+          id: `audit_${Date.now()}_duplicate`,
+          timestamp: new Date().toISOString(),
+          action: 'duplicate',
+          actionLabelAr: 'إنشاء نسخة مكررة',
+          actionLabelEn: 'Duplicate Copy Created',
+          performedBy: currentUserName,
+          performedById: currentUserId,
+          summaryAr: `تم إنشاء هذه المسودة كنسخة مكررة من الفترة الأصلية (${period.id}) مع استنساخ كافة الأسعار`,
+          summaryEn: `Draft created by duplicating period (${period.id}) cloning all finished good prices`,
+          status: 'draft',
+          changes: { metadata: [], priceChanges: [] }
+        }
+      ]
     };
     setEditingPeriod(cloned);
     setIsEditorModalOpen(true);
@@ -264,11 +392,34 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
       yesterday.setDate(yesterday.getDate() - 1);
       const closeDateStr = formatDateKey(yesterday);
 
+      const closeAudit = {
+        id: `audit_${Date.now()}_close`,
+        timestamp: new Date().toISOString(),
+        action: 'close_now',
+        actionLabelAr: 'إغلاق فوري للفترة',
+        actionLabelEn: 'Close Period Now',
+        performedBy: currentUserName,
+        performedById: currentUserId,
+        summaryAr: `تم إنهاء وإغلاق صلاحية الفترة فوراً بتاريخ (${closeDateStr})`,
+        summaryEn: `Closed period immediately with validity ending on (${closeDateStr})`,
+        status: 'expired',
+        changes: {
+          metadata: [
+            { field: 'status', labelAr: 'الحالة', labelEn: 'Status', oldValue: period.status || 'active', newValue: 'expired' },
+            { field: 'endDate', labelAr: 'تاريخ الانتهاء', labelEn: 'End Date', oldValue: period.endDate || null, newValue: closeDateStr }
+          ],
+          priceChanges: []
+        }
+      };
+
       await setDoc(
         doc(db, 'price_lists', period.id),
         {
           endDate: closeDateStr,
           status: 'expired',
+          auditTrail: [...(period.auditTrail || []), closeAudit],
+          updatedBy: currentUserName,
+          updatedById: currentUserId,
           updatedAt: serverTimestamp()
         },
         { merge: true }
@@ -313,16 +464,63 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
       if (activeOverlapping) {
         const prevDateObj = new Date(effectiveStartDate);
         prevDateObj.setDate(prevDateObj.getDate() - 1);
+        const autoCloseDate = formatDateKey(prevDateObj);
+
+        const autoCloseAudit = {
+          id: `audit_${Date.now()}_autoclose`,
+          timestamp: new Date().toISOString(),
+          action: 'auto_closed',
+          actionLabelAr: 'إغلاق تلقائي للتداخل',
+          actionLabelEn: 'Auto Closed by Overlap',
+          performedBy: currentUserName,
+          performedById: currentUserId,
+          summaryAr: `تم إغلاق الفترة تلقائياً بتاريخ (${autoCloseDate}) نظراً لاعتماد فترة أحدث (${period.id})`,
+          summaryEn: `Auto-closed on (${autoCloseDate}) due to activation of overlapping period (${period.id})`,
+          status: 'expired',
+          changes: {
+            metadata: [
+              { field: 'endDate', labelAr: 'تاريخ الانتهاء', labelEn: 'End Date', oldValue: activeOverlapping.endDate || null, newValue: autoCloseDate }
+            ],
+            priceChanges: []
+          }
+        };
+
         batch.update(doc(db, 'price_lists', activeOverlapping.id), {
-          endDate: formatDateKey(prevDateObj),
+          endDate: autoCloseDate,
+          auditTrail: [...(activeOverlapping.auditTrail || []), autoCloseAudit],
+          updatedBy: currentUserName,
+          updatedById: currentUserId,
           updatedAt: serverTimestamp()
         });
       }
+
+      const activateAudit = {
+        id: `audit_${Date.now()}_activate`,
+        timestamp: new Date().toISOString(),
+        action: 'activate_draft',
+        actionLabelAr: 'اعتماد وتفعيل المسودة',
+        actionLabelEn: 'Activate Draft',
+        performedBy: currentUserName,
+        performedById: currentUserId,
+        summaryAr: `تم اعتماد وتفعيل المسودة كفترة سارية${isPassed ? ` مع تحديث تاريخ البداية تلقائياً من (${period.startDate}) إلى (${effectiveStartDate})` : ''}`,
+        summaryEn: `Activated draft to active status${isPassed ? ` with start date auto-updated from (${period.startDate}) to (${effectiveStartDate})` : ''}`,
+        status: 'active',
+        changes: {
+          metadata: [
+            { field: 'status', labelAr: 'الحالة', labelEn: 'Status', oldValue: 'draft', newValue: 'active' },
+            ...(isPassed ? [{ field: 'startDate', labelAr: 'تاريخ البداية', labelEn: 'Start Date', oldValue: period.startDate, newValue: effectiveStartDate }] : [])
+          ],
+          priceChanges: []
+        }
+      };
 
       batch.update(doc(db, 'price_lists', period.id), {
         status: 'active',
         startDate: effectiveStartDate,
         autoClosedPeriodId: activeOverlapping ? activeOverlapping.id : null,
+        auditTrail: [...(period.auditTrail || []), activateAudit],
+        updatedBy: currentUserName,
+        updatedById: currentUserId,
         updatedAt: serverTimestamp()
       });
 
@@ -451,6 +649,22 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
 
         {/* Filters Row */}
         <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100 text-xs">
+          {/* Client Filter (SearchableSelect) */}
+          <div className="flex items-center gap-1.5 w-64 sm:w-72">
+            <span className="text-slate-400 font-bold shrink-0">{isAr ? 'العميل:' : 'Client:'}</span>
+            <div className="flex-1">
+              <SearchableSelect
+                value={clientFilter}
+                onChange={(val) => setClientFilter(val || 'all')}
+                options={filterClientOptions}
+                placeholder={isAr ? 'جميع العملاء (كافة النطاقات)' : 'All Clients / Scopes'}
+                isAr={isAr}
+                className="w-full text-xs font-bold"
+                emptyText={isAr ? 'لا يوجد عميل مطابق' : 'No matching client'}
+              />
+            </div>
+          </div>
+
           {/* Strategy Filter */}
           <div className="flex items-center gap-1.5">
             <span className="text-slate-400 font-bold">{isAr ? 'الاستراتيجية:' : 'Strategy:'}</span>
@@ -498,10 +712,11 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
             </select>
           </div>
 
-          {(strategyFilter !== 'all' || typeFilter !== 'all' || statusFilter !== 'all' || searchQuery) && (
+          {(clientFilter !== 'all' || strategyFilter !== 'all' || typeFilter !== 'all' || statusFilter !== 'all' || searchQuery) && (
             <button
               type="button"
               onClick={() => {
+                setClientFilter('all');
                 setStrategyFilter('all');
                 setTypeFilter('all');
                 setStatusFilter('all');
@@ -555,9 +770,22 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
                       {/* Code & Strategy */}
                       <td className="py-3.5 px-4">
                         <div className="flex flex-col gap-1">
-                          <span className="font-mono font-bold text-xs text-blue-700">
-                            {period.id}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-xs text-blue-700">
+                              {period.id}
+                            </span>
+                            {period.auditTrail?.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setAuditModalPeriod(period)}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded cursor-pointer transition"
+                                title={isAr ? `عرض سجل التدقيق (${period.auditTrail.length} تعديلات)` : `View Audit Trail (${period.auditTrail.length} revisions)`}
+                              >
+                                <History className="w-3 h-3 text-indigo-600" />
+                                <span>{period.auditTrail.length}</span>
+                              </button>
+                            )}
+                          </div>
                           <PricingStrategyBadge
                             strategyId={period.strategyId}
                             strategies={strategies}
@@ -584,9 +812,16 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
                             </span>
                           </div>
                         ) : (
-                          <span className="font-semibold text-slate-600">
-                            {isAr ? 'كتالوج عام (جميع عملاء الاستراتيجية)' : 'General Strategy Catalog'}
-                          </span>
+                          <div className="flex flex-col gap-0.5">
+                            <span className="font-semibold text-slate-600">
+                              {isAr ? 'كتالوج عام (جميع عملاء الاستراتيجية)' : 'General Strategy Catalog'}
+                            </span>
+                            {clientFilter !== 'all' && (
+                              <span className="text-[10px] text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 w-fit">
+                                {isAr ? 'ينطبق على العميل عبر استراتيجيته الأساسية' : 'Applies to client via profile strategy'}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </td>
 
@@ -771,6 +1006,25 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
                 <span>{isAr ? 'تكرار كفترة جديدة' : 'Duplicate Period'}</span>
               </button>
 
+              {/* Audit Trail History */}
+              <button
+                type="button"
+                onClick={() => {
+                  setAuditModalPeriod(period);
+                  setActiveActionsMenuId(null);
+                  setActionsMenuAnchor(null);
+                }}
+                className="w-full px-3 py-2 text-start hover:bg-indigo-50 text-indigo-800 flex items-center gap-2 cursor-pointer font-bold"
+              >
+                <History className="w-3.5 h-3.5 text-indigo-600" />
+                <span>{isAr ? 'سجل التدقيق والتعديلات' : 'Audit Trail History'}</span>
+                {period.auditTrail?.length > 0 && (
+                  <span className="ms-auto text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-700">
+                    {period.auditTrail.length}
+                  </span>
+                )}
+              </button>
+
               {status === 'active' && (
                 <button
                   type="button"
@@ -816,13 +1070,32 @@ export default function PriceListsMaster({ currentUser = {}, permissions = null 
       {isEditorModalOpen && (
         <PriceListEditorModal
           isOpen={isEditorModalOpen}
-          onClose={() => setIsEditorModalOpen(false)}
+          onClose={() => {
+            setIsEditorModalOpen(false);
+            setEditingPeriod(null);
+          }}
           editingPeriod={editingPeriod}
           strategies={strategies}
           products={products}
           productCategories={productCategories}
           clients={clients}
           allPriceLists={priceLists}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+          onOpenAuditTrail={(p) => setAuditModalPeriod(p)}
+        />
+      )}
+
+      {/* Price Period Audit Modal */}
+      {auditModalPeriod && (
+        <PricePeriodAuditModal
+          isOpen={Boolean(auditModalPeriod)}
+          onClose={() => setAuditModalPeriod(null)}
+          period={auditModalPeriod}
+          strategies={strategies}
+          products={products}
+          clients={clients}
           isAr={isAr}
         />
       )}
@@ -879,7 +1152,10 @@ function PriceListEditorModal({
   productCategories = [],
   clients,
   allPriceLists,
-  isAr
+  isAr,
+  currentUserName = 'مستخدم معتمد',
+  currentUserId = 'usr_unknown',
+  onOpenAuditTrail = null
 }) {
   const [formData, setFormData] = useState({
     id: editingPeriod?.id || `PL-${Date.now().toString().slice(-6)}`,
@@ -1269,6 +1545,9 @@ function PriceListEditorModal({
       const batch = writeBatch(db);
       const periodRef = doc(db, 'price_lists', formData.id);
 
+      // Check if updating an existing record in Firestore
+      const isExistingDoc = Boolean(editingPeriod?.id && allPriceLists.some((pl) => pl.id === editingPeriod.id));
+
       // Auto-close overlapping active period ONLY when activating (targetStatus === 'active')
       let autoClosedId = null;
       if (targetStatus === 'active' && overlappingPeriod) {
@@ -1277,8 +1556,30 @@ function PriceListEditorModal({
         const dayBeforeStart = formatDateKey(startDateObj);
 
         const oldRef = doc(db, 'price_lists', overlappingPeriod.id);
+        const autoCloseAudit = {
+          id: `audit_${Date.now()}_autoclose`,
+          timestamp: new Date().toISOString(),
+          action: 'auto_closed',
+          actionLabelAr: 'إغلاق تلقائي للتداخل',
+          actionLabelEn: 'Auto Closed by Overlap',
+          performedBy: currentUserName,
+          performedById: currentUserId,
+          summaryAr: `تم إغلاق الفترة تلقائياً بتاريخ (${dayBeforeStart}) نظراً لاعتماد فترة أحدث (${formData.id})`,
+          summaryEn: `Auto-closed on (${dayBeforeStart}) due to activation of overlapping period (${formData.id})`,
+          status: 'expired',
+          changes: {
+            metadata: [
+              { field: 'endDate', labelAr: 'تاريخ الانتهاء', labelEn: 'End Date', oldValue: overlappingPeriod.endDate || null, newValue: dayBeforeStart }
+            ],
+            priceChanges: []
+          }
+        };
+
         batch.update(oldRef, {
           endDate: dayBeforeStart,
+          auditTrail: [...(overlappingPeriod.auditTrail || []), autoCloseAudit],
+          updatedBy: currentUserName,
+          updatedById: currentUserId,
           updatedAt: serverTimestamp()
         });
         autoClosedId = overlappingPeriod.id;
@@ -1306,8 +1607,199 @@ function PriceListEditorModal({
         updatedAt: serverTimestamp()
       };
 
-      if (!editingPeriod) {
+      if (!isExistingDoc) {
+        // Creation or saving a duplicate copy as new
+        payload.createdBy = editingPeriod?.createdBy || currentUserName;
+        payload.createdById = editingPeriod?.createdById || currentUserId;
         payload.createdAt = serverTimestamp();
+        payload.updatedBy = currentUserName;
+        payload.updatedById = currentUserId;
+
+        const initialPricedItems = Object.entries(formData.items || {})
+          .filter(([_, price]) => price !== '' && price !== undefined && price !== null && Number(price) > 0)
+          .map(([pId, price]) => {
+            const prod = products.find((p) => p.id === pId);
+            return {
+              productId: pId,
+              productCode: prod?.code || pId,
+              productNameAr: prod?.nameAr || prod?.name || pId,
+              productNameEn: prod?.nameEn || prod?.name || pId,
+              oldPrice: null,
+              newPrice: Number(price),
+              diff: Number(price),
+              percentDiff: null
+            };
+          });
+
+        const isDuplicate = Boolean(editingPeriod?.duplicatedFromId);
+        const createAuditEntry = {
+          id: `audit_${Date.now()}_create`,
+          timestamp: new Date().toISOString(),
+          action: isDuplicate ? 'duplicate_created' : 'create',
+          actionLabelAr: isDuplicate ? 'حفظ نسخة مكررة' : 'إنشاء فترة جديدة',
+          actionLabelEn: isDuplicate ? 'Saved Duplicate Period' : 'Created New Period',
+          performedBy: currentUserName,
+          performedById: currentUserId,
+          summaryAr: isDuplicate
+            ? `تم حفظ الفترة كنسخة مكررة من (${editingPeriod.duplicatedFromId}) بحالة [${targetStatus === 'draft' ? 'مسودة' : 'سارية'}] مع تسعير (${initialPricedItems.length}) صنف`
+            : `تم إنشاء قائمة أسعار جديدة بحالة [${targetStatus === 'draft' ? 'مسودة' : 'سارية'}] مع تسعير (${initialPricedItems.length}) صنف`,
+          summaryEn: isDuplicate
+            ? `Saved duplicate period from (${editingPeriod.duplicatedFromId}) with status [${targetStatus}] and (${initialPricedItems.length}) priced finished goods`
+            : `Created new price list with status [${targetStatus}] and (${initialPricedItems.length}) priced finished goods`,
+          status: targetStatus,
+          changes: {
+            metadata: [
+              { field: 'strategy', labelAr: 'الاستراتيجية', labelEn: 'Strategy', oldValue: null, newValue: selectedStrategy?.nameAr || formData.strategyId },
+              { field: 'type', labelAr: 'نوع الفترة', labelEn: 'Type', oldValue: null, newValue: formData.type === 'official' ? (isAr ? 'رسمي' : 'Official') : (isAr ? 'عرض ترويجي' : 'Promotional') },
+              { field: 'status', labelAr: 'الحالة', labelEn: 'Status', oldValue: null, newValue: targetStatus === 'draft' ? (isAr ? 'مسودة' : 'Draft') : (isAr ? 'سارية' : 'Active') },
+              { field: 'startDate', labelAr: 'تاريخ البداية', labelEn: 'Start Date', oldValue: null, newValue: effectiveStartDate },
+              { field: 'endDate', labelAr: 'تاريخ الانتهاء', labelEn: 'End Date', oldValue: null, newValue: formData.endDate || (isAr ? 'مستمر / غير محدد' : 'Indefinite') },
+              ...(isSpecialPricing ? [{ field: 'client', labelAr: 'العميل المستهدف', labelEn: 'Target Client', oldValue: null, newValue: selectedClient?.tradeNameAr || selectedClient?.name || formData.clientId }] : []),
+              ...(formData.notes ? [{ field: 'notes', labelAr: 'الملاحظات', labelEn: 'Notes', oldValue: null, newValue: formData.notes }] : [])
+            ],
+            priceChanges: initialPricedItems
+          }
+        };
+
+        payload.auditTrail = editingPeriod?.auditTrail?.length
+          ? [...editingPeriod.auditTrail, createAuditEntry]
+          : [createAuditEntry];
+      } else {
+        // Editing existing period in Firestore
+        payload.createdBy = editingPeriod.createdBy || currentUserName;
+        payload.createdById = editingPeriod.createdById || currentUserId;
+        payload.updatedBy = currentUserName;
+        payload.updatedById = currentUserId;
+
+        const metadataChanges = [];
+        if (editingPeriod.strategyId !== formData.strategyId) {
+          const oldStratName = strategies.find((s) => s.id === editingPeriod.strategyId)?.nameAr || editingPeriod.strategyId;
+          const newStratName = selectedStrategy?.nameAr || formData.strategyId;
+          metadataChanges.push({ field: 'strategy', labelAr: 'الاستراتيجية', labelEn: 'Strategy', oldValue: oldStratName, newValue: newStratName });
+        }
+        if (editingPeriod.type !== formData.type) {
+          metadataChanges.push({
+            field: 'type',
+            labelAr: 'نوع الفترة',
+            labelEn: 'Type',
+            oldValue: editingPeriod.type === 'official' ? (isAr ? 'رسمي' : 'Official') : (isAr ? 'عرض ترويجي' : 'Promotional'),
+            newValue: formData.type === 'official' ? (isAr ? 'رسمي' : 'Official') : (isAr ? 'عرض ترويجي' : 'Promotional')
+          });
+        }
+        if (editingPeriod.status !== targetStatus) {
+          metadataChanges.push({
+            field: 'status',
+            labelAr: 'الحالة',
+            labelEn: 'Status',
+            oldValue: editingPeriod.status === 'draft' ? (isAr ? 'مسودة' : 'Draft') : (isAr ? 'سارية' : 'Active'),
+            newValue: targetStatus === 'draft' ? (isAr ? 'مسودة' : 'Draft') : (isAr ? 'سارية' : 'Active')
+          });
+        }
+        if (editingPeriod.startDate !== effectiveStartDate) {
+          metadataChanges.push({
+            field: 'startDate',
+            labelAr: 'تاريخ البداية',
+            labelEn: 'Start Date',
+            oldValue: editingPeriod.startDate,
+            newValue: effectiveStartDate
+          });
+        }
+        if ((editingPeriod.endDate || '') !== (formData.endDate || '')) {
+          metadataChanges.push({
+            field: 'endDate',
+            labelAr: 'تاريخ الانتهاء',
+            labelEn: 'End Date',
+            oldValue: editingPeriod.endDate || (isAr ? 'مستمر / غير محدد' : 'Indefinite'),
+            newValue: formData.endDate || (isAr ? 'مستمر / غير محدد' : 'Indefinite')
+          });
+        }
+        if ((editingPeriod.clientId || '') !== (formData.clientId || '')) {
+          const oldClient = clients.find((c) => c.id === editingPeriod.clientId)?.tradeNameAr || editingPeriod.clientId || (isAr ? 'عام' : 'None');
+          const newClient = selectedClient?.tradeNameAr || formData.clientId || (isAr ? 'عام' : 'None');
+          metadataChanges.push({
+            field: 'client',
+            labelAr: 'العميل المستهدف',
+            labelEn: 'Target Client',
+            oldValue: oldClient,
+            newValue: newClient
+          });
+        }
+        if (Boolean(editingPeriod.allBranches) !== Boolean(formData.allBranches) || (editingPeriod.branchId || '') !== (formData.branchId || '')) {
+          const oldBranch = editingPeriod.allBranches ? (isAr ? 'كافة الفروع' : 'All Branches') : (editingPeriod.branchName || editingPeriod.branchId);
+          const newBranch = formData.allBranches ? (isAr ? 'كافة الفروع' : 'All Branches') : (selectedClient?.branches?.find((b) => b.id === formData.branchId)?.nameAr || formData.branchId);
+          metadataChanges.push({
+            field: 'branch',
+            labelAr: 'الفروع المستهدفة',
+            labelEn: 'Target Branches',
+            oldValue: oldBranch,
+            newValue: newBranch
+          });
+        }
+        if ((editingPeriod.notes || '').trim() !== (formData.notes || '').trim()) {
+          metadataChanges.push({
+            field: 'notes',
+            labelAr: 'الملاحظات',
+            labelEn: 'Notes',
+            oldValue: editingPeriod.notes || '',
+            newValue: formData.notes || ''
+          });
+        }
+
+        // Price changes
+        const priceChanges = [];
+        const allItemKeys = new Set([
+          ...Object.keys(editingPeriod.items || {}),
+          ...Object.keys(formData.items || {})
+        ]);
+
+        allItemKeys.forEach((pId) => {
+          const oldVal = editingPeriod.items?.[pId];
+          const newVal = formData.items?.[pId];
+          const numOld = (oldVal !== undefined && oldVal !== null && oldVal !== '') ? Number(oldVal) : null;
+          const numNew = (newVal !== undefined && newVal !== null && newVal !== '') ? Number(newVal) : null;
+
+          if (numOld !== numNew) {
+            const prod = products.find((p) => p.id === pId);
+            const diffVal = (numNew ?? 0) - (numOld ?? 0);
+            let pctStr = null;
+            if (numOld && numNew !== null) {
+              const pct = ((numNew - numOld) / numOld) * 100;
+              pctStr = `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
+            }
+            priceChanges.push({
+              productId: pId,
+              productCode: prod?.code || pId,
+              productNameAr: prod?.nameAr || prod?.name || pId,
+              productNameEn: prod?.nameEn || prod?.name || pId,
+              oldPrice: numOld,
+              newPrice: numNew,
+              diff: Number(diffVal.toFixed(2)),
+              percentDiff: pctStr
+            });
+          }
+        });
+
+        if (metadataChanges.length > 0 || priceChanges.length > 0) {
+          const editAudit = {
+            id: `audit_${Date.now()}_edit`,
+            timestamp: new Date().toISOString(),
+            action: 'edit',
+            actionLabelAr: 'تعديل الأسعار والبيانات',
+            actionLabelEn: 'Edited Prices & Details',
+            performedBy: currentUserName,
+            performedById: currentUserId,
+            summaryAr: `تم تحديث الفترة: تعديل أسعار (${priceChanges.length}) صنف وتحديث (${metadataChanges.length}) حقول بيانات`,
+            summaryEn: `Updated period: modified prices for (${priceChanges.length}) products and (${metadataChanges.length}) metadata fields`,
+            status: targetStatus,
+            changes: {
+              metadata: metadataChanges,
+              priceChanges
+            }
+          };
+          payload.auditTrail = [...(editingPeriod.auditTrail || []), editAudit];
+        } else {
+          payload.auditTrail = editingPeriod.auditTrail || [];
+        }
       }
 
       batch.set(periodRef, payload, { merge: true });
@@ -1348,13 +1840,32 @@ function PriceListEditorModal({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 hover:text-white transition cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {editingPeriod?.id && onOpenAuditTrail && (
+              <button
+                type="button"
+                onClick={() => onOpenAuditTrail(editingPeriod)}
+                className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border border-white/20"
+                title={isAr ? 'عرض سجل تدقيق وتعديلات هذه الفترة' : 'View period audit trail'}
+              >
+                <History className="w-3.5 h-3.5 text-indigo-300" />
+                <span>{isAr ? 'سجل التدقيق' : 'Audit Trail'}</span>
+                {editingPeriod.auditTrail?.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-indigo-500/40 text-[10px]">
+                    {editingPeriod.auditTrail.length}
+                  </span>
+                )}
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 hover:text-white transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Modal Form & Matrix Body */}
