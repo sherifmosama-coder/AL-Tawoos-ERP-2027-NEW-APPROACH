@@ -57,6 +57,7 @@ export default function SearchableSelect({
       const iconColor = opt.iconColor || null;
       const iconBg = opt.iconBg || null;
       const iconTitle = opt.iconTitle || '';
+      const rawIcon = Boolean(opt.rawIcon);
       const searchStr = `${val} ${lbl} ${sub} ${iconTitle} ${opt.specs || ''} ${group}`.toLowerCase();
       return {
         value: val,
@@ -66,6 +67,7 @@ export default function SearchableSelect({
         iconColor,
         iconBg,
         iconTitle,
+        rawIcon,
         searchStr,
         group,
         isLinked: Boolean(opt.isLinked),
@@ -220,6 +222,9 @@ export default function SearchableSelect({
               {(() => {
                 const iconEl = renderOptionIcon(selectedOption.icon, 'w-3.5 h-3.5 shrink-0');
                 if (!iconEl) return null;
+                if (selectedOption.rawIcon) {
+                  return <span className="shrink-0 flex items-center justify-center">{iconEl}</span>;
+                }
                 return (
                   <span
                     className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 shadow-2xs"
@@ -356,6 +361,9 @@ export default function SearchableSelect({
                           {(() => {
                             const iconEl = renderOptionIcon(opt.icon, 'w-3.5 h-3.5 shrink-0');
                             if (!iconEl) return null;
+                            if (opt.rawIcon) {
+                              return <span className="shrink-0 flex items-center justify-center">{iconEl}</span>;
+                            }
                             return (
                               <span
                                 className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 shadow-2xs"
