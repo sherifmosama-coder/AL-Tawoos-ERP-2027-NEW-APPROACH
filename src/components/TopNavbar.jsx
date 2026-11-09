@@ -358,8 +358,15 @@ export default function TopNavbar({
       labelAr: 'المبيعات والتوزيع',
       labelEn: 'Sales & Distribution',
       icon: TrendingUp,
-      defaultTab: 'price_lists',
+      defaultTab: 'sales_orders',
       tabs: [
+        {
+          id: 'sales_orders',
+          moduleKey: 'sales_orders',
+          labelAr: 'أوامر البيع والتوريد',
+          labelEn: 'Sales Orders',
+          icon: ShoppingCart,
+        },
         {
           id: 'price_lists',
           moduleKey: 'price_lists',

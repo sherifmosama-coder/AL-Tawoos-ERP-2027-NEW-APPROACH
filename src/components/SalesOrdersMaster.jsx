@@ -52,7 +52,8 @@ import {
   RefreshCw,
   ExternalLink,
   ShieldAlert,
-  Info
+  Info,
+  Phone
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
@@ -1496,6 +1497,99 @@ function SalesOrderEditorModal({
     return selectedClient?.pricingStrategy || 'wholesalers';
   }, [selectedClient]);
 
+  // Client Operational Profile (Schedule, Weekly Holidays, Address, Phones, Region & Conflicts)
+  const clientOperationalProfile = useMemo(() => {
+    if (!selectedClient) return null;
+
+    const br = clientBranches.find((b) => (b.id || 'br_main') === formData.branchId) || clientBranches[0] || null;
+
+    // 1. Region & Address
+    const region = br?.region || selectedClient.region || (isAr ? 'غير محدد' : 'Not specified');
+    const address = br?.address || selectedClient.address || (isAr ? 'غير محدد' : 'Not specified');
+
+    // 2. Contact & Phones
+    const contactPerson = br?.contactPerson || selectedClient.contactPerson || (isAr ? 'المسؤول التجاري' : 'Commercial Contact');
+    let phoneList = [];
+    if (br?.phone) phoneList.push(br.phone);
+    if (br?.mobile) phoneList.push(br.mobile);
+    if (Array.isArray(br?.phones)) phoneList.push(...br.phones.filter(Boolean));
+    if (phoneList.length === 0) {
+      if (Array.isArray(selectedClient.phones)) phoneList.push(...selectedClient.phones.filter(Boolean));
+      if (selectedClient.phone) phoneList.push(selectedClient.phone);
+      if (selectedClient.mobile) phoneList.push(selectedClient.mobile);
+    }
+    phoneList = Array.from(new Set(phoneList.map((p) => String(p).trim()))).filter(Boolean);
+    const phonesDisplay = phoneList.length > 0 ? phoneList.join(' — ') : (isAr ? 'لا توجد أرقام مسجلة' : 'No phone recorded');
+
+    // 3. Operational Schedule / Working Hours
+    const useCustom = Boolean(br?.useCustomSchedule);
+    const hoursFrom = useCustom && br?.workingHoursFrom ? br.workingHoursFrom : (selectedClient.workingHoursFrom || '08:00');
+    const hoursTo = useCustom && br?.workingHoursTo ? br.workingHoursTo : (selectedClient.workingHoursTo || '16:00');
+    const scheduleDisplay = `${hoursFrom} — ${hoursTo}`;
+
+    // 4. Weekly Holidays
+    const rawHolidays = (useCustom && Array.isArray(br?.weeklyHolidays) && br.weeklyHolidays.length > 0)
+      ? br.weeklyHolidays
+      : (Array.isArray(selectedClient.weeklyHolidays) && selectedClient.weeklyHolidays.length > 0
+        ? selectedClient.weeklyHolidays
+        : ['friday']);
+
+    const DAY_MAP_AR = {
+      friday: 'الجمعة',
+      saturday: 'السبت',
+      sunday: 'الأحد',
+      monday: 'الإثنين',
+      tuesday: 'الثلاثاء',
+      wednesday: 'الأربعاء',
+      thursday: 'الخميس'
+    };
+
+    const DAY_MAP_EN = {
+      friday: 'Friday',
+      saturday: 'Saturday',
+      sunday: 'Sunday',
+      monday: 'Monday',
+      tuesday: 'Tuesday',
+      wednesday: 'Wednesday',
+      thursday: 'Thursday'
+    };
+
+    const holidays = rawHolidays.map((d) => ({
+      key: d,
+      name: isAr ? (DAY_MAP_AR[d] || d) : (DAY_MAP_EN[d] || d)
+    }));
+
+    // 5. Holiday Conflict Detection with order dates
+    const checkDateConflict = (dateStr) => {
+      if (!dateStr) return null;
+      try {
+        const d = new Date(dateStr + 'T00:00:00');
+        const dayIdx = d.getDay();
+        const dayKeys = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        const currentDayKey = dayKeys[dayIdx];
+        if (rawHolidays.includes(currentDayKey)) {
+          return isAr ? DAY_MAP_AR[currentDayKey] : DAY_MAP_EN[currentDayKey];
+        }
+      } catch (_) {}
+      return null;
+    };
+
+    const invoiceHolidayConflict = checkDateConflict(formData.invoiceDate);
+    const loadingHolidayConflict = checkDateConflict(formData.loadingDate);
+
+    return {
+      branchName: br ? (isAr ? (br.nameAr || br.nameEn || br.id) : (br.nameEn || br.nameAr || br.id)) : (isAr ? 'الفرع الرئيسي' : 'Main Branch'),
+      region,
+      address,
+      contactPerson,
+      phonesDisplay,
+      scheduleDisplay,
+      holidays,
+      invoiceHolidayConflict,
+      loadingHolidayConflict
+    };
+  }, [selectedClient, clientBranches, formData.branchId, formData.invoiceDate, formData.loadingDate, isAr]);
+
   // Client options for SearchableSelect:
   // FLATTENED LIST SORTED ASCENDINGLY (no priorities or groups, matching user feedback)
   const clientSelectOptions = useMemo(() => {
@@ -1559,8 +1653,8 @@ function SalesOrderEditorModal({
     const mainBranch = branches.find((b) => b.isMain) || branches[0] || null;
     const branchId = mainBranch ? (mainBranch.id || 'br_main') : '';
     const branchName = mainBranch ? (mainBranch.nameAr || mainBranch.nameEn || (isAr ? 'الفرع الرئيسي' : 'Main Branch')) : '';
-    const region = mainBranch?.region || '';
-    const deliveryAddress = mainBranch?.address || '';
+    const region = mainBranch?.region || cl.region || '';
+    const deliveryAddress = mainBranch?.address || cl.address || '';
 
     setFormData((prev) => {
       // Re-resolve prices for existing line items with the new client/branch
@@ -1608,8 +1702,8 @@ function SalesOrderEditorModal({
   const handleBranchChange = (newBranchId) => {
     const br = clientBranches.find((b) => (b.id || 'br_main') === newBranchId);
     const branchName = br ? (br.nameAr || br.nameEn || newBranchId) : '';
-    const region = br?.region || '';
-    const deliveryAddress = br?.address || '';
+    const region = br?.region || selectedClient?.region || '';
+    const deliveryAddress = br?.address || selectedClient?.address || '';
 
     setFormData((prev) => {
       const updatedLines = prev.lines.map((line) => {
@@ -1720,7 +1814,8 @@ function SalesOrderEditorModal({
   };
 
   // Available products for adding to line items:
-  // Restricted by category filter and private label allowed client
+  // Restricted by category filter and private label allowed client.
+  // Client-linked private label products are prioritized at the top with a large purple filled circle dot.
   const availableProductOptions = useMemo(() => {
     const available = products.filter((p) => {
       // 1. Private label restriction check
@@ -1735,19 +1830,60 @@ function SalesOrderEditorModal({
       return true;
     });
 
+    const isClientPrivateLabel = (p) => {
+      if (!isProductPrivateLabel(p)) return false;
+      if (!formData.clientId && !formData.clientName) return false;
+      const assignedIds = Array.isArray(p.privateLabelClientIds) ? p.privateLabelClientIds.filter(Boolean) : [];
+      if (assignedIds.length > 0) {
+        return assignedIds.some((id) => String(id).trim() === String(formData.clientId).trim());
+      }
+      if (p.clientName && formData.clientName) {
+        const normProd = String(p.clientName).trim().toLowerCase();
+        const normTarget = String(formData.clientName).trim().toLowerCase();
+        return normProd.includes(normTarget) || normTarget.includes(normProd);
+      }
+      return false;
+    };
+
+    // Sort: client-linked private label items first, then others, then alphabetical
+    const sorted = [...available].sort((a, b) => {
+      const aClientPl = isClientPrivateLabel(a);
+      const bClientPl = isClientPrivateLabel(b);
+      if (aClientPl && !bClientPl) return -1;
+      if (!aClientPl && bClientPl) return 1;
+      const aName = isAr ? (a.nameAr || a.nameEn || '') : (a.nameEn || a.nameAr || '');
+      const bName = isAr ? (b.nameAr || b.nameEn || '') : (b.nameEn || b.nameAr || '');
+      return aName.localeCompare(bName, isAr ? 'ar' : 'en');
+    });
+
+    const PurpleDot = () => (
+      <span className="w-2.5 h-2.5 rounded-full bg-purple-600 inline-block shrink-0 shadow-2xs ring-2 ring-purple-200" />
+    );
+
     return [
       {
         value: '',
         label: isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —',
         sublabel: ''
       },
-      ...available.map((p) => {
+      ...sorted.map((p) => {
         const isPl = isProductPrivateLabel(p);
+        const isClientPl = isClientPrivateLabel(p);
+        const prodName = isAr ? p.nameAr : (p.nameEn || p.nameAr);
+
         return {
           value: p.id,
-          label: isAr ? p.nameAr : (p.nameEn || p.nameAr),
-          sublabel: `${p.id} ${isPl ? (isAr ? '[علامة خاصة]' : '[Private Label]') : ''}`,
-          isPrivateLabel: isPl
+          label: `${isClientPl ? '🟣 ' : ''}${prodName}`,
+          sublabel: `${p.id}${isPl ? (isAr ? ' [علامة خاصة]' : ' [Private Label]') : ''}`,
+          icon: isClientPl ? PurpleDot : null,
+          iconBg: isClientPl ? '#f3e8ff' : null,
+          iconColor: isClientPl ? '#9333ea' : null,
+          badgeText: isClientPl ? (isAr ? 'علامة خاصة للعميل' : 'Client Private Label') : '',
+          group: isClientPl
+            ? (isAr ? 'أصناف العلامة الخاصة المعتمدة للعميل' : 'Client Approved Private Label Products')
+            : (isAr ? 'باقي المنتجات والأصناف المتاحة' : 'Available Products'),
+          isPrivateLabel: isPl,
+          isClientPrivateLabel: isClientPl
         };
       })
     ];
@@ -2216,23 +2352,33 @@ function SalesOrderEditorModal({
               {/* Branch Selection */}
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  {isAr ? 'الفرع المستهدف' : 'Target Branch'}
+                  {isAr ? 'الفرع المستهدف والمنطقة' : 'Target Branch & Region'}
                 </label>
                 <select
                   value={formData.branchId}
                   onChange={(e) => handleBranchChange(e.target.value)}
                   disabled={!formData.clientId}
-                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer disabled:bg-slate-100"
+                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer disabled:bg-slate-100 truncate"
                 >
                   {clientBranches.length === 0 ? (
-                    <option value="">{isAr ? 'الفرع الرئيسي' : 'Main Branch'}</option>
+                    <option value="">
+                      {selectedClient?.region ? `[${selectedClient.region}] ` : ''}
+                      {isAr ? 'الفرع الرئيسي' : 'Main Branch'}
+                      {selectedClient?.address ? ` — ${selectedClient.address}` : ''}
+                    </option>
                   ) : (
-                    clientBranches.map((b) => (
-                      <option key={b.id || 'br_main'} value={b.id || 'br_main'}>
-                        {isAr ? (b.nameAr || b.nameEn || b.id) : (b.nameEn || b.nameAr || b.id)}
-                        {b.isMain ? (isAr ? ' (رئيسي)' : ' (Main)') : ''}
-                      </option>
-                    ))
+                    clientBranches.map((b) => {
+                      const bName = isAr ? (b.nameAr || b.nameEn || b.id) : (b.nameEn || b.nameAr || b.id);
+                      const bRegion = b.region || selectedClient?.region || '';
+                      const bAddress = b.address || selectedClient?.address || '';
+                      const mainTag = b.isMain ? (isAr ? ' (رئيسي)' : ' (Main)') : '';
+                      const label = `${bRegion ? `[${bRegion}] ` : ''}${bName}${mainTag}${bAddress ? ` — ${bAddress}` : ''}`;
+                      return (
+                        <option key={b.id || 'br_main'} value={b.id || 'br_main'}>
+                          {label}
+                        </option>
+                      );
+                    })
                   )}
                 </select>
               </div>
@@ -2303,7 +2449,7 @@ function SalesOrderEditorModal({
               </div>
 
               {/* Order Type */}
-              <div>
+              <div className="lg:col-span-2">
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">
                   {isAr ? 'نوع الطلب' : 'Order Type'}
                 </label>
@@ -2320,24 +2466,170 @@ function SalesOrderEditorModal({
                 </select>
               </div>
 
-              {/* Tax / VAT Mode */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  {isAr ? 'المعاملة الضريبية' : 'Tax / VAT Mode'}
+              {/* Tax / VAT Mode - Color-Coded Toggle Chips */}
+              <div className="lg:col-span-4 pt-1">
+                <label className="block text-[11px] font-bold text-slate-700 mb-1.5 flex items-center justify-between">
+                  <span>{isAr ? 'المعاملة الضريبية (اختر المعاملة للتطبيق المباشر):' : 'Tax / VAT Mode (Click to toggle):'}</span>
+                  {formData.vatMode === 'none' ? (
+                    <span className="text-[10px] text-slate-600 font-bold bg-slate-200/70 px-2 py-0.5 rounded border border-slate-300">
+                      {isAr ? 'إذن تسليم غير خاضع للضريبة' : 'Unofficial Delivery Note'}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-emerald-800 font-bold bg-emerald-100/80 px-2 py-0.5 rounded border border-emerald-300">
+                      {isAr ? 'فاتورة ضريبية رسمية (14% VAT)' : 'Official Tax Invoice (14% VAT)'}
+                    </span>
+                  )}
                 </label>
-                <select
-                  value={formData.vatMode}
-                  onChange={(e) => handleVatModeChange(e.target.value)}
-                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
-                >
-                  {VAT_MODES.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {isAr ? v.labelAr : v.labelEn}
-                    </option>
-                  ))}
-                </select>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                  {VAT_MODES.map((v) => {
+                    const isSelected = formData.vatMode === v.id;
+                    let activeClasses = '';
+                    let inactiveClasses = '';
+
+                    if (v.id === 'none') {
+                      activeClasses = 'bg-slate-800 text-white border-slate-900 shadow-sm ring-2 ring-slate-400/30';
+                      inactiveClasses = 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-slate-300';
+                    } else if (v.id === 'exclusive') {
+                      activeClasses = 'bg-emerald-600 text-white border-emerald-700 shadow-sm ring-2 ring-emerald-400/30';
+                      inactiveClasses = 'bg-white text-emerald-800 border-emerald-200 hover:bg-emerald-50 hover:border-emerald-300';
+                    } else if (v.id === 'exclusive_wht') {
+                      activeClasses = 'bg-teal-600 text-white border-teal-700 shadow-sm ring-2 ring-teal-400/30';
+                      inactiveClasses = 'bg-white text-teal-800 border-teal-200 hover:bg-teal-50 hover:border-teal-300';
+                    } else if (v.id === 'inclusive') {
+                      activeClasses = 'bg-blue-600 text-white border-blue-700 shadow-sm ring-2 ring-blue-400/30';
+                      inactiveClasses = 'bg-white text-blue-800 border-blue-200 hover:bg-blue-50 hover:border-blue-300';
+                    } else if (v.id === 'inclusive_wht') {
+                      activeClasses = 'bg-indigo-600 text-white border-indigo-700 shadow-sm ring-2 ring-indigo-400/30';
+                      inactiveClasses = 'bg-white text-indigo-800 border-indigo-200 hover:bg-indigo-50 hover:border-indigo-300';
+                    }
+
+                    return (
+                      <button
+                        key={v.id}
+                        type="button"
+                        onClick={() => handleVatModeChange(v.id)}
+                        className={`p-2.5 rounded-xl border text-start transition cursor-pointer flex flex-col justify-between gap-1 ${
+                          isSelected ? activeClasses : inactiveClasses
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1 w-full">
+                          <span className="font-extrabold text-xs truncate">
+                            {isAr ? v.labelAr.split('(')[0].trim() : v.labelEn.split('(')[0].trim()}
+                          </span>
+                          {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
+                        </div>
+                        <span className={`text-[10px] font-medium leading-tight ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
+                          {isAr ? v.labelAr : v.labelEn}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
+
+            {/* Client & Branch Operational Profile & Schedule Card */}
+            {clientOperationalProfile && (
+              <div className="mt-3 p-3.5 bg-gradient-to-r from-slate-50 to-indigo-50/30 border border-slate-200/90 rounded-xl space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Building2 className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <span className="font-extrabold text-slate-800 text-xs">
+                      {isAr ? 'الملف التشغيلي للفرع والعميل:' : 'Operational Profile:'}
+                    </span>
+                    <span className="font-bold text-indigo-900 bg-indigo-50 border border-indigo-200/60 px-2 py-0.5 rounded-md text-[11px]">
+                      {formData.clientName} — {clientOperationalProfile.branchName}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-medium">
+                    <span>{isAr ? 'جهة الاتصال:' : 'Contact:'}</span>
+                    <span className="font-bold text-slate-800">{clientOperationalProfile.contactPerson}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-[11px]">
+                  {/* 1. Region & Address */}
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200/70 space-y-1">
+                    <div className="text-slate-500 font-bold flex items-center gap-1 text-[10px]">
+                      <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                      <span>{isAr ? 'المنطقة والعنوان' : 'Region & Address'}</span>
+                    </div>
+                    <div className="font-bold text-slate-800 truncate" title={clientOperationalProfile.region}>
+                      [{clientOperationalProfile.region}]
+                    </div>
+                    <div className="text-slate-600 truncate text-[10px]" title={clientOperationalProfile.address}>
+                      {clientOperationalProfile.address}
+                    </div>
+                  </div>
+
+                  {/* 2. Phones */}
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200/70 space-y-1">
+                    <div className="text-slate-500 font-bold flex items-center gap-1 text-[10px]">
+                      <Phone className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                      <span>{isAr ? 'أرقام الهواتف' : 'Phone Numbers'}</span>
+                    </div>
+                    <div className="font-bold text-slate-800 truncate font-mono text-[11px]" title={clientOperationalProfile.phonesDisplay}>
+                      {clientOperationalProfile.phonesDisplay}
+                    </div>
+                    <div className="text-slate-400 text-[10px]">
+                      {isAr ? 'للتنسيق مع سائق التحميل' : 'For driver coordination'}
+                    </div>
+                  </div>
+
+                  {/* 3. Working Hours */}
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200/70 space-y-1">
+                    <div className="text-slate-500 font-bold flex items-center gap-1 text-[10px]">
+                      <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span>{isAr ? 'مواعيد العمل التشغيلية' : 'Operating Schedule'}</span>
+                    </div>
+                    <div className="font-bold text-slate-800 font-mono text-xs">
+                      {clientOperationalProfile.scheduleDisplay}
+                    </div>
+                    <div className="text-slate-400 text-[10px]">
+                      {isAr ? 'ساعات استلام البضائع' : 'Receiving window'}
+                    </div>
+                  </div>
+
+                  {/* 4. Weekly Holidays */}
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200/70 space-y-1">
+                    <div className="text-slate-500 font-bold flex items-center gap-1 text-[10px]">
+                      <Calendar className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                      <span>{isAr ? 'العطلات الأسبوعية' : 'Weekly Holidays'}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {clientOperationalProfile.holidays.length === 0 ? (
+                        <span className="text-slate-400">{isAr ? 'يعمل طوال الأسبوع' : 'Open all week'}</span>
+                      ) : (
+                        clientOperationalProfile.holidays.map((h) => (
+                          <span key={h.key} className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                            {h.name}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Holiday Conflict Warning */}
+                {(clientOperationalProfile.invoiceHolidayConflict || clientOperationalProfile.loadingHolidayConflict) && (
+                  <div className="p-2.5 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 flex items-center gap-2 text-[11px] font-bold">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      {isAr
+                        ? `⚠️ تنبيه تشغيلي: تاريخ ${
+                            clientOperationalProfile.invoiceHolidayConflict
+                              ? `التسليم (${formData.invoiceDate}) يوافق يوم عطلة للعميل (${clientOperationalProfile.invoiceHolidayConflict})`
+                              : `التحميل (${formData.loadingDate}) يوافق يوم عطلة للعميل (${clientOperationalProfile.loadingHolidayConflict})`
+                          }. يرجى مراجعة التنسيق مع العميل قبل التأكيد.`
+                        : `⚠️ Operational Alert: Selected date falls on client holiday (${
+                            clientOperationalProfile.invoiceHolidayConflict || clientOperationalProfile.loadingHolidayConflict
+                          }). Please coordinate before confirmation.`}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Section 2: PO Numbers & Multi-File Attachments */}
@@ -2661,47 +2953,67 @@ function SalesOrderEditorModal({
               </div>
             )}
 
-            {/* Financial Totals Breakdown Strip */}
-            <div className="p-3.5 bg-slate-900 text-white rounded-2xl grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs font-mono">
-              <div>
-                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'إجمالي الكراتين:' : 'Total Cartons:'}</span>
-                <span className="text-sm font-bold text-white">
-                  {orderCalculations.totalCartons} ({orderCalculations.totalQty} + {orderCalculations.totalBonus})
+            {/* Financial Totals Breakdown Strip (Theme Consistent Light Mode) */}
+            <div className="p-4 bg-white border border-slate-200/90 shadow-xs rounded-2xl grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs font-mono">
+              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100 flex flex-col justify-between">
+                <span className="text-slate-500 block text-[10px] font-sans font-semibold">
+                  {isAr ? 'إجمالي الكراتين:' : 'Total Cartons:'}
+                </span>
+                <span className="text-sm font-black text-slate-900">
+                  {orderCalculations.totalCartons}{' '}
+                  <span className="text-xs font-normal text-slate-500">
+                    ({orderCalculations.totalQty} + {orderCalculations.totalBonus})
+                  </span>
                 </span>
               </div>
 
-              <div>
-                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'إجمالي الوزن:' : 'Total Weight:'}</span>
-                <span className="text-sm font-bold text-white">
-                  {orderCalculations.totalWeightKg.toFixed(1)} kg
+              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100 flex flex-col justify-between">
+                <span className="text-slate-500 block text-[10px] font-sans font-semibold">
+                  {isAr ? 'إجمالي الوزن:' : 'Total Weight:'}
+                </span>
+                <span className="text-sm font-black text-slate-900">
+                  {orderCalculations.totalWeightKg.toFixed(1)}{' '}
+                  <span className="text-xs font-normal text-slate-500">kg</span>
                 </span>
               </div>
 
-              <div>
-                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'صافي قبل الضريبة:' : 'Net Pre-Tax:'}</span>
-                <span className="text-sm font-bold text-white">
-                  {orderCalculations.netPreTaxSubtotal.toFixed(2)}
+              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100 flex flex-col justify-between">
+                <span className="text-slate-500 block text-[10px] font-sans font-semibold">
+                  {isAr ? 'صافي قبل الضريبة:' : 'Net Pre-Tax:'}
+                </span>
+                <span className="text-sm font-black text-slate-900">
+                  {orderCalculations.netPreTaxSubtotal.toFixed(2)}{' '}
+                  <span className="text-[10px] font-normal text-slate-500">ج.م</span>
                 </span>
               </div>
 
-              <div>
-                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'ضريبة القيمة المضافة:' : 'Total VAT (+14%):'}</span>
-                <span className="text-sm font-bold text-emerald-400">
-                  +{orderCalculations.totalVat.toFixed(2)}
+              <div className="p-2.5 bg-emerald-50/60 rounded-xl border border-emerald-100 flex flex-col justify-between">
+                <span className="text-emerald-800 block text-[10px] font-sans font-semibold">
+                  {isAr ? 'ضريبة القيمة المضافة:' : 'Total VAT (+14%):'}
+                </span>
+                <span className="text-sm font-black text-emerald-700">
+                  +{orderCalculations.totalVat.toFixed(2)}{' '}
+                  <span className="text-[10px] font-normal text-emerald-600">ج.م</span>
                 </span>
               </div>
 
-              <div>
-                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'خصم من المنبع (1%):' : 'WHT (-1%):'}</span>
-                <span className="text-sm font-bold text-amber-400">
-                  {orderCalculations.whtAmount > 0 ? `-${orderCalculations.whtAmount.toFixed(2)}` : '0.00'}
+              <div className="p-2.5 bg-amber-50/60 rounded-xl border border-amber-100 flex flex-col justify-between">
+                <span className="text-amber-800 block text-[10px] font-sans font-semibold">
+                  {isAr ? 'خصم من المنبع (1%):' : 'WHT (-1%):'}
+                </span>
+                <span className="text-sm font-black text-amber-700">
+                  {orderCalculations.whtAmount > 0 ? `-${orderCalculations.whtAmount.toFixed(2)}` : '0.00'}{' '}
+                  <span className="text-[10px] font-normal text-amber-600">ج.م</span>
                 </span>
               </div>
 
-              <div className="bg-white/10 p-2 rounded-xl text-end">
-                <span className="text-emerald-400 block text-[10px] font-sans font-bold">{isAr ? 'الإجمالي النهائي:' : 'Grand Total:'}</span>
-                <span className="text-base font-black text-emerald-300">
-                  {orderCalculations.grandTotal.toFixed(2)} EGP
+              <div className="bg-emerald-600 text-white p-2.5 rounded-xl text-end shadow-xs flex flex-col justify-between">
+                <span className="text-emerald-100 block text-[10px] font-sans font-bold">
+                  {isAr ? 'الإجمالي النهائي:' : 'Grand Total:'}
+                </span>
+                <span className="text-base font-black text-white">
+                  {orderCalculations.grandTotal.toFixed(2)}{' '}
+                  <span className="text-xs font-normal text-emerald-200">EGP</span>
                 </span>
               </div>
             </div>
