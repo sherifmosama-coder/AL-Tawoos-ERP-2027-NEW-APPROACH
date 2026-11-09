@@ -1201,10 +1201,21 @@ export const DEFAULT_TABS_CONFIG = {
   // ==========================================
   // SALES & COMMERCIAL MODULE (3 TABS)
   // ==========================================
+  sales_orders: {
+    id: 'sales_orders',
+    moduleKey: 'sales',
+    order: 1,
+    labelAr: 'أوامر البيع والتوريد',
+    labelEn: 'Sales Orders',
+    iconName: 'ShoppingCart',
+    color: '#059669',
+    categoryAr: 'المبيعات والتوزيع',
+    categoryEn: 'Sales & Distribution'
+  },
   price_lists: {
     id: 'price_lists',
     moduleKey: 'sales',
-    order: 1,
+    order: 2,
     labelAr: 'قوائم الأسعار',
     labelEn: 'Price Lists',
     iconName: 'BadgeDollarSign',
@@ -1215,7 +1226,7 @@ export const DEFAULT_TABS_CONFIG = {
   client_contracts: {
     id: 'client_contracts',
     moduleKey: 'sales',
-    order: 2,
+    order: 3,
     labelAr: 'عقود وخصومات العملاء',
     labelEn: 'Client Contracts',
     iconName: 'Handshake',

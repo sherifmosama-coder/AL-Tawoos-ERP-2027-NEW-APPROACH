@@ -42,6 +42,7 @@ import {
   ArrowUpDown
 } from 'lucide-react';
 import PeacockLoader from './PeacockLoader';
+import SearchableSelect from './SearchableSelect';
 
 // Lightweight Client-Side Image Compression Helper (<80KB Web-Ready Payloads)
 const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.7) => {
@@ -116,6 +117,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
   // Cloud State
   const [categories, setCategories] = useState(DEFAULT_PRODUCT_LINES);
   const [products, setProducts] = useState([]);
+  const [clientsList, setClientsList] = useState([]);
   const [warehousesList, setWarehousesList] = useState([]);
   const [goodsReceiptsList, setGoodsReceiptsList] = useState([]);
   const [transfersList, setTransfersList] = useState([]);
@@ -164,6 +166,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
     productionLine: 'white_o',
     brandOwnership: 'own_brand',
     clientName: '',
+    privateLabelClientIds: ['', ''],
     smallUnit: 'زجاجة',
     largeUnitName: 'كرتونة',
     packagingRatio: 12,
@@ -250,14 +253,44 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
       setTransfersList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
+    const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
+      const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+      list.sort((a, b) => (a.tradeNameAr || a.name || '').localeCompare(b.tradeNameAr || b.name || '', 'ar'));
+      setClientsList(list);
+    });
+
     return () => {
       unsubProducts();
       unsubCategories();
       unsubWh();
       unsubGrns();
       unsubTransfers();
+      unsubClients();
     };
   }, []);
+
+  // Flattened ascending options for Private Label Client Selectors (Main Clients)
+  const privateLabelClientOptions = useMemo(() => {
+    const list = (clientsList || []).map((c) => {
+      const name = isAr
+        ? (c.tradeNameAr || c.legalName || c.tradeNameEn || c.name || c.id)
+        : (c.tradeNameEn || c.tradeNameAr || c.legalName || c.name || c.id);
+      return {
+        value: c.id,
+        label: name,
+        sublabel: c.id
+      };
+    });
+    list.sort((a, b) => a.label.localeCompare(b.label, isAr ? 'ar' : 'en'));
+    return [
+      {
+        value: '',
+        label: isAr ? '— بدون عميل محدد —' : '— No Client Assigned —',
+        sublabel: ''
+      },
+      ...list
+    ];
+  }, [clientsList, isAr]);
 
   // Compute Live Physical Stock Balance per Product
   const liveStockMap = useMemo(() => {
@@ -431,6 +464,9 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
 
   const handleOpenEdit = (product) => {
     const defaultWh = warehousesList[0]?.id || warehousesList[0]?.code || '';
+    const existingPlIds = Array.isArray(product.privateLabelClientIds)
+      ? [product.privateLabelClientIds[0] || '', product.privateLabelClientIds[1] || '']
+      : ['', ''];
     setEditingProductCode(product.code);
     setFormData({
       code: product.code || '',
@@ -441,6 +477,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
       productionLine: product.productionLine || categories[0]?.key || 'white_o',
       brandOwnership: product.brandOwnership || 'own_brand',
       clientName: product.clientName || '',
+      privateLabelClientIds: existingPlIds,
       smallUnit: product.smallUnit || 'زجاجة',
       largeUnitName: product.largeUnitName || 'كرتونة',
       packagingRatio: Number(product.packagingRatio) || 12,
@@ -583,10 +620,30 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
       return;
     }
 
-    if (formData.brandOwnership === 'private_label' && !formData.clientName.trim()) {
-      alert(isAr ? 'يرجى إدخال اسم العميل صاحب العلامة الخاصة.' : 'Please enter client name for private label.');
+    const selectedPlClientIds = Array.from(
+      new Set((formData.privateLabelClientIds || []).map((id) => String(id || '').trim()).filter(Boolean))
+    ).slice(0, 2);
+
+    if (
+      formData.brandOwnership === 'private_label' &&
+      selectedPlClientIds.length === 0 &&
+      !formData.clientName.trim()
+    ) {
+      alert(isAr ? 'يرجى اختيار عميل واحد على الأقل للعلامة الخاصة.' : 'Please select at least one client for private label.');
       return;
     }
+
+    const selectedPlClientNames = selectedPlClientIds
+      .map((cid) => {
+        const cl = clientsList.find((c) => c.id === cid);
+        return cl ? (cl.tradeNameAr || cl.name || cl.tradeNameEn || cid) : cid;
+      })
+      .filter(Boolean);
+
+    const resolvedPlClientDisplay =
+      selectedPlClientNames.length > 0
+        ? selectedPlClientNames.join(' ، ')
+        : formData.clientName.trim();
 
     const targetCode = formData.code.trim().toUpperCase();
     const currentStock = liveStockMap[targetCode] || 0;
@@ -625,7 +682,8 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
         productType: formData.productType,
         productionLine: formData.productionLine,
         brandOwnership: formData.brandOwnership,
-        clientName: formData.brandOwnership === 'private_label' ? formData.clientName.trim() : '',
+        clientName: formData.brandOwnership === 'private_label' ? resolvedPlClientDisplay : '',
+        privateLabelClientIds: formData.brandOwnership === 'private_label' ? selectedPlClientIds : [],
         smallUnit: formData.smallUnit.trim(),
         largeUnitName: formData.largeUnitName.trim(),
         packagingRatio: Number(formData.packagingRatio) || 1,
@@ -1520,18 +1578,75 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
                 </div>
 
                 {formData.brandOwnership === 'private_label' && (
-                  <div className="pt-2 border-t border-slate-200">
-                    <label className="block font-bold text-indigo-950 mb-1">
-                      {isAr ? 'اسم العميل صاحب العلامة الخاصة (Client Name) *' : 'Client Name *'}
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder={isAr ? 'مثال: شركة كارفور مصر للتجارة' : 'e.g. Carrefour Egypt'}
-                      value={formData.clientName}
-                      onChange={(e) => setFormData({ ...formData, clientName: e.target.value })}
-                      className="w-full p-2 border border-indigo-300 rounded-xl bg-white font-semibold text-slate-900"
-                    />
+                  <div className="pt-2 border-t border-slate-200 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <label className="block font-bold text-indigo-950">
+                        {isAr
+                          ? 'العملاء المعتمدون لتوريد هذا الصنف (بحد أقصى عميلين رئيسيين) *'
+                          : 'Assigned Main Clients for Private Label (Max 2 Clients) *'}
+                      </label>
+                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                        {isAr ? 'عملاء رئيسيون فقط (وليس فروع)' : 'Main Clients Only'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          {isAr ? 'العميل الرئيسي الأول (إلزامي) *' : 'Primary Client (Required) *'}
+                        </label>
+                        <SearchableSelect
+                          options={privateLabelClientOptions}
+                          value={formData.privateLabelClientIds?.[0] || ''}
+                          onChange={(val) => {
+                            const second = formData.privateLabelClientIds?.[1] || '';
+                            const cl1 = clientsList.find((c) => c.id === val);
+                            const cl2 = clientsList.find((c) => c.id === second);
+                            const names = [
+                              cl1 ? (cl1.tradeNameAr || cl1.name || cl1.tradeNameEn) : '',
+                              cl2 && second !== val ? (cl2.tradeNameAr || cl2.name || cl2.tradeNameEn) : ''
+                            ].filter(Boolean);
+                            setFormData({
+                              ...formData,
+                              privateLabelClientIds: [val, second === val ? '' : second],
+                              clientName: names.join(' ، ')
+                            });
+                          }}
+                          placeholder={isAr ? 'اختر العميل الأول...' : 'Select Primary Client...'}
+                          searchPlaceholder={isAr ? 'ابحث باسم العميل...' : 'Search client...'}
+                          isAr={isAr}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          {isAr ? 'العميل الرئيسي الثاني (اختياري)' : 'Secondary Client (Optional)'}
+                        </label>
+                        <SearchableSelect
+                          options={privateLabelClientOptions.filter(
+                            (opt) => !opt.value || opt.value !== formData.privateLabelClientIds?.[0]
+                          )}
+                          value={formData.privateLabelClientIds?.[1] || ''}
+                          onChange={(val) => {
+                            const first = formData.privateLabelClientIds?.[0] || '';
+                            const cl1 = clientsList.find((c) => c.id === first);
+                            const cl2 = clientsList.find((c) => c.id === val);
+                            const names = [
+                              cl1 ? (cl1.tradeNameAr || cl1.name || cl1.tradeNameEn) : '',
+                              cl2 ? (cl2.tradeNameAr || cl2.name || cl2.tradeNameEn) : ''
+                            ].filter(Boolean);
+                            setFormData({
+                              ...formData,
+                              privateLabelClientIds: [first, val],
+                              clientName: names.join(' ، ')
+                            });
+                          }}
+                          placeholder={isAr ? 'اختر العميل الثاني (إن وجد)...' : 'Select Secondary Client (Optional)...'}
+                          searchPlaceholder={isAr ? 'ابحث باسم العميل...' : 'Search client...'}
+                          isAr={isAr}
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

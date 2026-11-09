@@ -1,0 +1,2825 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
+import { db } from '../firebase';
+import {
+  collection,
+  onSnapshot,
+  doc,
+  setDoc,
+  deleteDoc,
+  serverTimestamp,
+  writeBatch
+} from 'firebase/firestore';
+import {
+  ShoppingCart,
+  Plus,
+  Search,
+  Filter,
+  Calendar,
+  Clock,
+  Layers,
+  Sparkles,
+  Zap,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  MoreVertical,
+  Edit3,
+  Trash2,
+  X,
+  Building2,
+  MapPin,
+  FileSpreadsheet,
+  FileText,
+  Download,
+  Upload,
+  ArrowRight,
+  Boxes,
+  History,
+  User,
+  Truck,
+  Receipt,
+  FileCheck,
+  Paperclip,
+  Eye,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Tag,
+  Scale,
+  Percent,
+  RefreshCw,
+  ExternalLink,
+  ShieldAlert,
+  Info
+} from 'lucide-react';
+import SearchableSelect from './SearchableSelect';
+import SalesOrderAuditModal from './SalesOrderAuditModal';
+import PeacockLoader from './PeacockLoader';
+import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster';
+import {
+  DEFAULT_PRICING_STRATEGIES,
+  formatDateKey,
+  isProductPrivateLabel,
+  isProductAllowedForClient,
+  detectProductPrice,
+  detectPromotionalDiscount
+} from '../utils/pricingEngine';
+
+// Lightweight image compressor for PO attachments (<80KB)
+const compressImage = (file, maxWidth = 900, maxHeight = 900, quality = 0.7) => {
+  return new Promise((resolve, reject) => {
+    if (file.type === 'application/pdf') {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(file);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = (err) => reject(err);
+      img.src = event.target.result;
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+};
+
+/**
+ * 9 Order Types Dictionary (Legacy Matching)
+ */
+export const ORDER_TYPES = [
+  { id: 'supply', labelAr: 'توريد', labelEn: 'Supply', isDefault: true },
+  { id: 'return_deduct', labelAr: 'ارتجاع و خصم القيمة', labelEn: 'Return & Deduct Value' },
+  { id: 'return_no_deduct', labelAr: 'ارتجاع بدون خصم', labelEn: 'Return without Deduction' },
+  { id: 'replacement_old', labelAr: 'بدل مرتجع قديم', labelEn: 'Replacement for Old Return' },
+  { id: 'exchange', labelAr: 'تبديل', labelEn: 'Exchange' },
+  { id: 'collection', labelAr: 'تحصيل', labelEn: 'Collection Only' },
+  { id: 'admin', labelAr: 'اداري', labelEn: 'Administrative' },
+  { id: 'invoice_only_with_tax', labelAr: 'فاتورة فقط مع تحصيل الضريبة', labelEn: 'Invoice Only (With VAT Collection)' },
+  { id: 'invoice_only_no_tax', labelAr: 'فاتورة فقط بدون تحصيل', labelEn: 'Invoice Only (Without Collection)' },
+];
+
+/**
+ * 4 Confirmation Statuses Dictionary
+ */
+export const CONFIRMATION_STATUSES = [
+  { id: 'confirmed', labelAr: 'مؤكد', labelEn: 'Confirmed', color: 'emerald', isDefault: true },
+  { id: 'not_confirmed', labelAr: 'غير مؤكد', labelEn: 'Not Confirmed', color: 'amber' },
+  { id: 'revised', labelAr: 'معدل', labelEn: 'Revised', color: 'blue' },
+  { id: 'canceled', labelAr: 'ملغي', labelEn: 'Canceled', color: 'rose' },
+];
+
+/**
+ * 5 Fulfillment Statuses Dictionary
+ */
+export const FULFILLMENT_STATUSES = [
+  { id: 'not_yet', labelAr: 'قيد الانتظار', labelEn: 'Pending', color: 'slate', isDefault: true },
+  { id: 'prepare', labelAr: 'جاري التجهيز', labelEn: 'Preparing', color: 'amber' },
+  { id: 'shipped', labelAr: 'تم الشحن', labelEn: 'Shipped', color: 'blue' },
+  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered', color: 'emerald' },
+  { id: 'paid', labelAr: 'مدفوع', labelEn: 'Paid', color: 'purple' },
+];
+
+/**
+ * 5 Tax / VAT Modes Dictionary (Legacy Matching)
+ */
+export const VAT_MODES = [
+  { id: 'none', labelAr: 'بدون ضريبة (إذن تسليم)', labelEn: 'None (Delivery Note)', isDefault: true, vatPct: 0, hasWht: false, isInclusive: false },
+  { id: 'exclusive', labelAr: 'ضريبي (غير شامل الضريبة +14%)', labelEn: 'Tax Excluded (+14% VAT)', vatPct: 14, hasWht: false, isInclusive: false },
+  { id: 'exclusive_wht', labelAr: 'ضريبة وخصم 1% (+14% ضريبة - 1% خصم)', labelEn: 'Tax Excl. (+14% VAT - 1% WHT)', vatPct: 14, hasWht: true, isInclusive: false },
+  { id: 'inclusive', labelAr: 'سعر شامل الضريبة (السعر الحالي شامل 14%)', labelEn: 'Tax Included (Base = Price / 1.14)', vatPct: 14, hasWht: false, isInclusive: true },
+  { id: 'inclusive_wht', labelAr: 'سعر شامل وخصم 1% (شامل 14% - 1% خصم)', labelEn: 'Tax Incl. (+14% VAT - 1% WHT)', vatPct: 14, hasWht: true, isInclusive: true },
+];
+
+/**
+ * Helper to resolve sequential 4-digit serial (e.g. 0001, 0002) starting at 0001
+ */
+export const resolveOrderSerial = (order, allOrders = []) => {
+  if (!order) return '0001';
+  if (order.serial) {
+    const s = String(order.serial).trim();
+    if (/^\d+$/.test(s)) return s.padStart(4, '0');
+    return s;
+  }
+  const match = String(order.id || '').match(/^(?:SO-)?(\d+)$/i);
+  if (match) {
+    return match[1].padStart(4, '0');
+  }
+  return '0001';
+};
+
+/**
+ * Helper to generate next sequential 4-digit serial starting at 0001
+ */
+export const generateNextOrderSerial = (allOrders = []) => {
+  let max = 0;
+  (allOrders || []).forEach((o) => {
+    const s = resolveOrderSerial(o, allOrders);
+    const n = parseInt(s, 10);
+    if (!isNaN(n) && n > max && n < 999999) {
+      max = n;
+    }
+  });
+  return String(max + 1).padStart(4, '0');
+};
+
+export default function SalesOrdersMaster({ currentUser = {}, permissions = null }) {
+  const { i18n } = useTranslation();
+  const isAr = i18n.language === 'ar';
+  const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
+  const currentUserName = currentUser?.nameAr || currentUser?.name || 'مستخدم معتمد';
+  const currentUserId = currentUser?.id || 'usr_unknown';
+
+  // Cloud State
+  const [orders, setOrders] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [productCategories, setProductCategories] = useState([]);
+  const [priceLists, setPriceLists] = useState([]);
+  const [strategies, setStrategies] = useState(DEFAULT_PRICING_STRATEGIES);
+  const [loading, setLoading] = useState(true);
+
+  // Filters & Search
+  const [searchTerm, setSearchTerm] = useState('');
+  const [clientFilter, setClientFilter] = useState('all');
+  const [orderTypeFilter, setOrderTypeFilter] = useState('all');
+  const [confirmationFilter, setConfirmationFilter] = useState('all');
+  const [fulfillmentFilter, setFulfillmentFilter] = useState('all');
+  const [vatModeFilter, setVatModeFilter] = useState('all');
+  const [dateFilterType, setDateFilterType] = useState('invoiceDate'); // 'invoiceDate' | 'loadingDate'
+  const [startDateFilter, setStartDateFilter] = useState('');
+  const [endDateFilter, setEndDateFilter] = useState('');
+  const [groupBy, setGroupBy] = useState('none'); // 'none' | 'fulfillmentStatus' | 'confirmationStatus' | 'client' | 'region' | 'vatMode' | 'orderType'
+
+  // Expandable Rows State
+  const [expandedOrderIds, setExpandedOrderIds] = useState(new Set());
+
+  // Modal States
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [editingOrder, setEditingOrder] = useState(null);
+  const [auditModalOrder, setAuditModalOrder] = useState(null);
+  const [deleteConfirmOrder, setDeleteConfirmOrder] = useState(null);
+  const [lightboxImage, setLightboxImage] = useState(null);
+
+  // 3-Dots Action Menu Anchor
+  const [activeActionsMenuOrderId, setActiveActionsMenuOrderId] = useState(null);
+  const [actionsMenuAnchor, setActionsMenuAnchor] = useState(null);
+
+  const activeOrderForMenu = useMemo(() => {
+    if (!activeActionsMenuOrderId) return null;
+    return orders.find((o) => o.id === activeActionsMenuOrderId) || null;
+  }, [activeActionsMenuOrderId, orders]);
+
+  // 1. Subscribe to Sales Orders
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'sales_orders'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      // Sort newest invoice date first, then serial descending
+      loaded.sort((a, b) => {
+        const dateComp = String(b.invoiceDate || '').localeCompare(String(a.invoiceDate || ''));
+        if (dateComp !== 0) return dateComp;
+        return (Number(b.serial) || 0) - (Number(a.serial) || 0);
+      });
+      setOrders(loaded);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // 2. Subscribe to Clients
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'clients'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      loaded.sort((a, b) => (a.tradeNameAr || a.name || '').localeCompare(b.tradeNameAr || b.name || '', 'ar'));
+      setClients(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // 3. Subscribe to Finished Products
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'finished_products'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      loaded.sort((a, b) => (a.nameAr || '').localeCompare(b.nameAr || '', 'ar'));
+      setProducts(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // 4. Subscribe to Finished Product Categories
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'finished_product_categories'), (snapshot) => {
+      if (!snapshot.empty) {
+        const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        loaded.sort((a, b) => (Number(a.sortOrder) || 99) - (Number(b.sortOrder) || 99));
+        setProductCategories(loaded);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // 5. Subscribe to Price Lists
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'price_lists'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setPriceLists(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // 6. Subscribe to Pricing Strategies
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'pricing_strategies'), (snapshot) => {
+      if (!snapshot.empty) {
+        const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setStrategies(loaded);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Close 3-dots actions menu on outside click or scroll
+  useEffect(() => {
+    if (!activeActionsMenuOrderId) return;
+    const handleClick = (e) => {
+      if (!e.target.closest('[data-order-menu]')) {
+        setActiveActionsMenuOrderId(null);
+        setActionsMenuAnchor(null);
+      }
+    };
+    const handleScrollOrResize = () => {
+      setActiveActionsMenuOrderId(null);
+      setActionsMenuAnchor(null);
+    };
+    document.addEventListener('click', handleClick);
+    window.addEventListener('scroll', handleScrollOrResize, true);
+    window.addEventListener('resize', handleScrollOrResize);
+    return () => {
+      document.removeEventListener('click', handleClick);
+      window.removeEventListener('scroll', handleScrollOrResize, true);
+      window.removeEventListener('resize', handleScrollOrResize);
+    };
+  }, [activeActionsMenuOrderId]);
+
+  // Clients options for SearchableSelect:
+  // FLATTENED LIST SORTED ASCENDINGLY (no priorities or groups, as explicitly requested by user)
+  const clientFilterOptions = useMemo(() => {
+    const list = (clients || []).map((c) => {
+      const name = isAr
+        ? (c.tradeNameAr || c.legalName || c.tradeNameEn || c.name || c.id)
+        : (c.tradeNameEn || c.tradeNameAr || c.legalName || c.name || c.id);
+      const clientStratId = c.pricingStrategy || 'wholesalers';
+      const strat =
+        strategies.find((s) => s.id === clientStratId) ||
+        DEFAULT_PRICING_STRATEGIES.find((s) => s.id === clientStratId) || {
+          color: '#64748b',
+          icon: 'Tag'
+        };
+      const StratIcon = SEGMENT_ICON_MAP[strat.icon] || Tag;
+
+      return {
+        value: c.id,
+        label: name,
+        sublabel: c.code && c.code !== name ? c.code : c.id,
+        icon: StratIcon,
+        iconColor: strat.color || '#2563eb',
+        iconTitle: isAr ? strat.nameAr : strat.nameEn,
+        nameForSort: name
+      };
+    });
+
+    list.sort((a, b) => a.nameForSort.localeCompare(b.nameForSort, isAr ? 'ar' : 'en'));
+
+    return [
+      {
+        value: 'all',
+        label: isAr ? 'جميع العملاء' : 'All Clients',
+        sublabel: ''
+      },
+      ...list
+    ];
+  }, [clients, strategies, isAr]);
+
+  // Toggle expandable row
+  const toggleRowExpand = (orderId) => {
+    setExpandedOrderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(orderId)) {
+        next.delete(orderId);
+      } else {
+        next.add(orderId);
+      }
+      return next;
+    });
+  };
+
+  // Filtered orders list
+  const filteredOrders = useMemo(() => {
+    return orders.filter((order) => {
+      // 1. Search term
+      if (searchTerm.trim()) {
+        const q = searchTerm.toLowerCase().trim();
+        const orderSerial = resolveOrderSerial(order, orders);
+        const matchesSerial = orderSerial.includes(q) || `#${orderSerial}`.includes(q);
+        const matchesClient = (order.clientName || '').toLowerCase().includes(q) || (order.clientId || '').toLowerCase().includes(q);
+        const matchesBranch = (order.branchName || '').toLowerCase().includes(q) || (order.region || '').toLowerCase().includes(q);
+        const matchesPo = (order.poTawoos || '').toLowerCase().includes(q) || (order.poPrivateLabel || '').toLowerCase().includes(q);
+        const matchesComments = (order.internalComments || '').toLowerCase().includes(q) || (order.externalComments || '').toLowerCase().includes(q);
+        const matchesLines = (order.lines || []).some(
+          (l) => (l.productCode || '').toLowerCase().includes(q) || (l.productNameAr || '').toLowerCase().includes(q) || (l.productNameEn || '').toLowerCase().includes(q)
+        );
+
+        if (!matchesSerial && !matchesClient && !matchesBranch && !matchesPo && !matchesComments && !matchesLines) {
+          return false;
+        }
+      }
+
+      // 2. Client filter
+      if (clientFilter !== 'all' && order.clientId !== clientFilter) {
+        return false;
+      }
+
+      // 3. Order Type filter
+      if (orderTypeFilter !== 'all' && order.orderType !== orderTypeFilter) {
+        return false;
+      }
+
+      // 4. Confirmation Status filter
+      if (confirmationFilter !== 'all' && order.confirmationStatus !== confirmationFilter) {
+        return false;
+      }
+
+      // 5. Fulfillment Status filter
+      if (fulfillmentFilter !== 'all' && order.fulfillmentStatus !== fulfillmentFilter) {
+        return false;
+      }
+
+      // 6. Tax Mode filter
+      if (vatModeFilter !== 'all' && order.vatMode !== vatModeFilter) {
+        return false;
+      }
+
+      // 7. Date range filter
+      const targetDate = dateFilterType === 'loadingDate' ? order.loadingDate : order.invoiceDate;
+      if (startDateFilter && (!targetDate || targetDate < startDateFilter)) {
+        return false;
+      }
+      if (endDateFilter && (!targetDate || targetDate > endDateFilter)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [
+    orders,
+    searchTerm,
+    clientFilter,
+    orderTypeFilter,
+    confirmationFilter,
+    fulfillmentFilter,
+    vatModeFilter,
+    dateFilterType,
+    startDateFilter,
+    endDateFilter
+  ]);
+
+  // Grouped filtered orders if groupBy is selected
+  const groupedOrders = useMemo(() => {
+    if (groupBy === 'none') {
+      return [{ groupKey: 'all', groupLabel: '', items: filteredOrders }];
+    }
+
+    const groupsMap = {};
+
+    filteredOrders.forEach((o) => {
+      let key = 'other';
+      let label = isAr ? 'أخرى' : 'Other';
+
+      if (groupBy === 'fulfillmentStatus') {
+        key = o.fulfillmentStatus || 'not_yet';
+        const item = FULFILLMENT_STATUSES.find((s) => s.id === key);
+        label = item ? (isAr ? item.labelAr : item.labelEn) : key;
+      } else if (groupBy === 'confirmationStatus') {
+        key = o.confirmationStatus || 'confirmed';
+        const item = CONFIRMATION_STATUSES.find((s) => s.id === key);
+        label = item ? (isAr ? item.labelAr : item.labelEn) : key;
+      } else if (groupBy === 'client') {
+        key = o.clientId || 'unknown';
+        label = o.clientName || o.clientId || (isAr ? 'عميل غير محدد' : 'Unknown Client');
+      } else if (groupBy === 'region') {
+        key = o.region || 'unassigned';
+        label = o.region || (isAr ? 'منطقة غير محددة' : 'Unassigned Region');
+      } else if (groupBy === 'vatMode') {
+        key = o.vatMode || 'none';
+        const item = VAT_MODES.find((v) => v.id === key);
+        label = item ? (isAr ? item.labelAr : item.labelEn) : key;
+      } else if (groupBy === 'orderType') {
+        key = o.orderType || 'supply';
+        const item = ORDER_TYPES.find((t) => t.id === key);
+        label = item ? (isAr ? item.labelAr : item.labelEn) : key;
+      }
+
+      if (!groupsMap[key]) {
+        groupsMap[key] = { groupKey: key, groupLabel: label, items: [] };
+      }
+      groupsMap[key].items.push(o);
+    });
+
+    return Object.values(groupsMap);
+  }, [filteredOrders, groupBy, isAr]);
+
+  // KPI Summary Metrics
+  const summaryMetrics = useMemo(() => {
+    let totalCartons = 0;
+    let totalWeightKg = 0;
+    let totalValue = 0;
+    let pendingFulfillment = 0;
+    let confirmedCount = 0;
+
+    filteredOrders.forEach((o) => {
+      totalCartons += Number(o.totalCartons || o.totalQty || 0);
+      totalWeightKg += Number(o.totalWeightKg || 0);
+      totalValue += Number(o.grandTotal || 0);
+      if (o.fulfillmentStatus === 'not_yet' || o.fulfillmentStatus === 'prepare') {
+        pendingFulfillment++;
+      }
+      if (o.confirmationStatus === 'confirmed') {
+        confirmedCount++;
+      }
+    });
+
+    return {
+      totalOrders: filteredOrders.length,
+      totalCartons,
+      totalWeightTons: (totalWeightKg / 1000).toFixed(2),
+      totalValue,
+      pendingFulfillment,
+      confirmedCount
+    };
+  }, [filteredOrders]);
+
+  // Delete Order Handler
+  const handleDeleteOrder = async (orderId) => {
+    try {
+      await deleteDoc(doc(db, 'sales_orders', orderId));
+      setDeleteConfirmOrder(null);
+      setActiveActionsMenuOrderId(null);
+    } catch (err) {
+      console.error('Error deleting sales order:', err);
+      alert(isAr ? 'حدث خطأ أثناء حذف أمر البيع.' : 'Error deleting sales order.');
+    }
+  };
+
+  // CSV Export Handler
+  const handleExportCsv = () => {
+    const headers = [
+      isAr ? 'مسلسل' : 'Serial',
+      isAr ? 'تاريخ الفاتورة' : 'Invoice Date',
+      isAr ? 'تاريخ التحميل' : 'Loading Date',
+      isAr ? 'كود العميل' : 'Client Code',
+      isAr ? 'اسم العميل' : 'Client Name',
+      isAr ? 'الفرع' : 'Branch',
+      isAr ? 'المنطقة' : 'Region',
+      isAr ? 'نوع الطلب' : 'Order Type',
+      isAr ? 'المعاملة الضريبية' : 'Tax Mode',
+      isAr ? 'حالة التأكيد' : 'Confirmation',
+      isAr ? 'حالة التنفيذ' : 'Fulfillment',
+      isAr ? 'أمر شراء طاووس' : 'PO Tawoos',
+      isAr ? 'أمر شراء علامة خاصة' : 'PO Private Label',
+      isAr ? 'إجمالي الكراتين' : 'Total Cartons',
+      isAr ? 'إجمالي الوزن (كجم)' : 'Total Weight (kg)',
+      isAr ? 'صافي قبل الضريبة' : 'Net Pre-Tax',
+      isAr ? 'الضريبة' : 'VAT',
+      isAr ? 'الخصم والتحصيل' : 'WHT',
+      isAr ? 'الإجمالي النهائي' : 'Grand Total'
+    ];
+
+    const rows = filteredOrders.map((o) => {
+      const serial = resolveOrderSerial(o, orders);
+      return [
+        `"#${serial}"`,
+        `"${o.invoiceDate || ''}"`,
+        `"${o.loadingDate || ''}"`,
+        `"${o.clientId || ''}"`,
+        `"${o.clientName || ''}"`,
+        `"${o.branchName || ''}"`,
+        `"${o.region || ''}"`,
+        `"${o.orderType || ''}"`,
+        `"${o.vatMode || ''}"`,
+        `"${o.confirmationStatus || ''}"`,
+        `"${o.fulfillmentStatus || ''}"`,
+        `"${o.poTawoos || ''}"`,
+        `"${o.poPrivateLabel || ''}"`,
+        o.totalCartons || 0,
+        o.totalWeightKg || 0,
+        o.netPreTaxSubtotal || 0,
+        o.totalVat || 0,
+        o.whtAmount || 0,
+        o.grandTotal || 0
+      ];
+    });
+
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sales_orders_${formatDateKey(new Date())}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-5 select-none font-sans">
+      {/* KPI Summary Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {/* 1. Total Orders */}
+        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between">
+          <div>
+            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
+              {isAr ? 'إجمالي أوامر البيع' : 'Total Orders'}
+            </span>
+            <span className="text-xl font-black text-slate-800 font-mono">
+              {summaryMetrics.totalOrders}
+            </span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+            <ShoppingCart className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* 2. Pending Fulfillment */}
+        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between">
+          <div>
+            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
+              {isAr ? 'قيد التحميل والتجهيز' : 'Pending Loading'}
+            </span>
+            <span className="text-xl font-black text-amber-600 font-mono">
+              {summaryMetrics.pendingFulfillment}
+            </span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+            <Truck className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* 3. Confirmed Orders */}
+        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between">
+          <div>
+            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
+              {isAr ? 'أوامر مؤكدة' : 'Confirmed Orders'}
+            </span>
+            <span className="text-xl font-black text-blue-600 font-mono">
+              {summaryMetrics.confirmedCount}
+            </span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+            <CheckCircle2 className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* 4. Total Cartons & Weight */}
+        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between">
+          <div>
+            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
+              {isAr ? 'إجمالي الكراتين / الشحن' : 'Total Cartons / Tons'}
+            </span>
+            <div className="flex items-baseline gap-1.5 font-mono">
+              <span className="text-xl font-black text-slate-800">
+                {summaryMetrics.totalCartons.toLocaleString()}
+              </span>
+              <span className="text-xs text-slate-400 font-semibold">
+                ({summaryMetrics.totalWeightTons} t)
+              </span>
+            </div>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+            <Boxes className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* 5. Total Value (EGP) */}
+        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between col-span-2 sm:col-span-1">
+          <div>
+            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
+              {isAr ? 'إجمالي القيمة المالية' : 'Total Revenue'}
+            </span>
+            <span className="text-xl font-black text-emerald-700 font-mono truncate block">
+              {summaryMetrics.totalValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} EGP
+            </span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+            <Receipt className="w-5 h-5" />
+          </div>
+        </div>
+      </div>
+
+      {/* Main Filter & Action Toolbar */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {/* Search Input */}
+          <div className="relative flex-1 min-w-[240px]">
+            <Search className="w-4 h-4 text-slate-400 absolute start-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder={isAr ? 'بحث بالمسلسل (#0001)، العميل، الفرع، أمر الشراء PO، الملاحظات...' : 'Search by serial (#0001), client, branch, PO #, notes...'}
+              className="w-full ps-10 pe-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:bg-white transition"
+            />
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition cursor-pointer"
+              title={isAr ? 'تصدير إلى ملف CSV' : 'Export to CSV'}
+            >
+              <Download className="w-3.5 h-3.5 text-slate-500" />
+              <span>{isAr ? 'تصدير CSV' : 'Export'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEditingOrder(null);
+                setIsEditorOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs hover:shadow transition cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{isAr ? 'أمر بيع جديد' : 'New Sales Order'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Dropdown Filters Row */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 pt-2 border-t border-slate-100 text-xs">
+          {/* 1. Client SearchableSelect */}
+          <div className="lg:col-span-2">
+            <SearchableSelect
+              options={clientFilterOptions}
+              value={clientFilter}
+              onChange={setClientFilter}
+              placeholder={isAr ? 'جميع العملاء' : 'All Clients'}
+              searchPlaceholder={isAr ? 'ابحث باسم العميل...' : 'Search client...'}
+              isAr={isAr}
+            />
+          </div>
+
+          {/* 2. Order Type Filter */}
+          <div>
+            <select
+              value={orderTypeFilter}
+              onChange={(e) => setOrderTypeFilter(e.target.value)}
+              className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="all">{isAr ? 'جميع أنواع الطلبات' : 'All Types'}</option>
+              {ORDER_TYPES.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {isAr ? t.labelAr : t.labelEn}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 3. Confirmation Status Filter */}
+          <div>
+            <select
+              value={confirmationFilter}
+              onChange={(e) => setConfirmationFilter(e.target.value)}
+              className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="all">{isAr ? 'جميع حالات التأكيد' : 'All Confirmations'}</option>
+              {CONFIRMATION_STATUSES.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {isAr ? s.labelAr : s.labelEn}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 4. Fulfillment Status Filter */}
+          <div>
+            <select
+              value={fulfillmentFilter}
+              onChange={(e) => setFulfillmentFilter(e.target.value)}
+              className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="all">{isAr ? 'جميع حالات التنفيذ' : 'All Fulfillments'}</option>
+              {FULFILLMENT_STATUSES.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {isAr ? f.labelAr : f.labelEn}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 5. Tax Mode Filter */}
+          <div>
+            <select
+              value={vatModeFilter}
+              onChange={(e) => setVatModeFilter(e.target.value)}
+              className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="all">{isAr ? 'المعاملة الضريبية' : 'All Tax Modes'}</option>
+              {VAT_MODES.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {isAr ? v.labelAr : v.labelEn}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 6. Group By */}
+          <div>
+            <select
+              value={groupBy}
+              onChange={(e) => setGroupBy(e.target.value)}
+              className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="none">{isAr ? 'تجميع: بدون تجميع' : 'Group: None'}</option>
+              <option value="fulfillmentStatus">{isAr ? 'تجميع: حالة التنفيذ' : 'Group: Fulfillment'}</option>
+              <option value="confirmationStatus">{isAr ? 'تجميع: حالة التأكيد' : 'Group: Confirmation'}</option>
+              <option value="client">{isAr ? 'تجميع: العميل' : 'Group: Client'}</option>
+              <option value="region">{isAr ? 'تجميع: المنطقة' : 'Group: Region'}</option>
+              <option value="vatMode">{isAr ? 'تجميع: المعاملة الضريبية' : 'Group: Tax Mode'}</option>
+              <option value="orderType">{isAr ? 'تجميع: نوع الطلب' : 'Group: Order Type'}</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Date Range Sub-Bar */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-xs">
+          <span className="font-bold text-slate-500 flex items-center gap-1">
+            <Calendar className="w-3.5 h-3.5 text-slate-400" />
+            <span>{isAr ? 'الفترة:' : 'Date Filter:'}</span>
+          </span>
+
+          <select
+            value={dateFilterType}
+            onChange={(e) => setDateFilterType(e.target.value)}
+            className="py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-700 focus:outline-none cursor-pointer text-[11px]"
+          >
+            <option value="invoiceDate">{isAr ? 'تاريخ الفاتورة / التسليم' : 'Invoice Date'}</option>
+            <option value="loadingDate">{isAr ? 'تاريخ التحميل' : 'Loading Date'}</option>
+          </select>
+
+          <div className="flex items-center gap-1">
+            <input
+              type="date"
+              value={startDateFilter}
+              onChange={(e) => setStartDateFilter(e.target.value)}
+              className="py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-mono text-[11px] text-slate-700 focus:outline-none"
+            />
+            <span className="text-slate-400 font-semibold">{isAr ? 'إلى' : 'to'}</span>
+            <input
+              type="date"
+              value={endDateFilter}
+              onChange={(e) => setEndDateFilter(e.target.value)}
+              className="py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-mono text-[11px] text-slate-700 focus:outline-none"
+            />
+          </div>
+
+          {(startDateFilter || endDateFilter) && (
+            <button
+              type="button"
+              onClick={() => {
+                setStartDateFilter('');
+                setEndDateFilter('');
+              }}
+              className="text-[11px] font-bold text-rose-600 hover:underline cursor-pointer"
+            >
+              {isAr ? 'إعادة ضبط التواريخ' : 'Clear Dates'}
+            </button>
+          )}
+
+          <div className="ms-auto text-slate-400 font-mono text-[11px]">
+            {isAr
+              ? `عرض ${filteredOrders.length} من أصل ${orders.length} أمر بيع`
+              : `Showing ${filteredOrders.length} of ${orders.length} orders`}
+          </div>
+        </div>
+      </div>
+
+      {/* Orders Table Container */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        {loading ? (
+          <div className="p-16 text-center">
+            <PeacockLoader size="xl" text={isAr ? 'جاري تحميل أوامر البيع...' : 'Loading sales orders...'} />
+          </div>
+        ) : filteredOrders.length === 0 ? (
+          <div className="p-16 text-center text-slate-400 space-y-2">
+            <ShoppingCart className="w-10 h-10 text-slate-300 mx-auto" />
+            <p className="text-sm font-bold text-slate-600">
+              {isAr ? 'لا توجد أوامر بيع مطابقة للفلاتر المحددة' : 'No sales orders match the active filters'}
+            </p>
+            <p className="text-xs text-slate-400">
+              {isAr ? 'جرّب تعديل معايير البحث أو أنشئ أمر بيع جديد' : 'Try adjusting your search criteria or create a new order'}
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-start border-collapse">
+              <thead>
+                <tr className="bg-slate-50/90 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                  <th className="py-3 px-3 text-center w-8"></th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'النوع ومسلسل الطلب' : 'Type & Serial'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'العميل والفرع والمنطقة' : 'Client & Branch'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'تواريخ الطلب' : 'Dates'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'المعاملة والمستندات' : 'Tax & Documents'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'الحالة' : 'Status'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'الكمية والوزن' : 'Quantity / Weight'}</th>
+                  <th className="py-3 px-3 text-end">{isAr ? 'الإجمالي (EGP)' : 'Grand Total'}</th>
+                  <th className="py-3 px-3 text-center w-12">{isAr ? 'إجراءات' : 'Actions'}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {groupedOrders.map((group) => (
+                  <React.Fragment key={group.groupKey}>
+                    {/* Optional Group Header Row */}
+                    {groupBy !== 'none' && (
+                      <tr className="bg-slate-100/80 border-t border-b border-slate-200">
+                        <td colSpan={9} className="py-2 px-4 font-black text-slate-800 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span>{group.groupLabel}</span>
+                            <span className="text-[10px] text-slate-400 font-mono font-bold">
+                              ({group.items.length} {isAr ? 'أوامر' : 'orders'})
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+
+                    {group.items.map((order) => {
+                      const isExpanded = expandedOrderIds.has(order.id);
+                      const orderSerial = resolveOrderSerial(order, orders);
+                      const orderTypeObj = ORDER_TYPES.find((t) => t.id === order.orderType) || ORDER_TYPES[0];
+                      const confStatusObj = CONFIRMATION_STATUSES.find((s) => s.id === order.confirmationStatus) || CONFIRMATION_STATUSES[0];
+                      const fulfStatusObj = FULFILLMENT_STATUSES.find((s) => s.id === order.fulfillmentStatus) || FULFILLMENT_STATUSES[0];
+                      const vatModeObj = VAT_MODES.find((v) => v.id === order.vatMode) || VAT_MODES[0];
+
+                      // Product breakdown checks
+                      const hasPrivateLabel = (order.lines || []).some((l) => l.isPrivateLabel);
+                      const hasOwnBrand = (order.lines || []).some((l) => !l.isPrivateLabel);
+                      const isTaxable = order.vatMode && order.vatMode !== 'none';
+
+                      return (
+                        <React.Fragment key={order.id}>
+                          <tr className={`hover:bg-slate-50/80 transition ${isExpanded ? 'bg-slate-50/60' : ''}`}>
+                            {/* Expand Toggle */}
+                            <td className="py-3 px-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => toggleRowExpand(order.id)}
+                                className="p-1 hover:bg-slate-200/60 text-slate-400 hover:text-slate-700 rounded-md transition cursor-pointer"
+                                title={isExpanded ? (isAr ? 'طي التفاصيل' : 'Collapse') : (isAr ? 'عرض التفاصيل' : 'Expand')}
+                              >
+                                {isExpanded ? <ChevronDown className="w-4 h-4 text-emerald-600" /> : <ChevronRight className="w-4 h-4 rtl:rotate-180" />}
+                              </button>
+                            </td>
+
+                            {/* Order Type Badge & Subtle Serial #0001 + Audit Button */}
+                            <td className="py-3 px-3 whitespace-nowrap">
+                              <div className="flex flex-col gap-1 items-start">
+                                {/* Order Type Badge */}
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                  <span>{isAr ? orderTypeObj.labelAr : orderTypeObj.labelEn}</span>
+                                </span>
+
+                                {/* Subtle Serial & Audit History */}
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    className="font-mono text-[11px] text-slate-400 font-semibold tracking-tight select-all"
+                                    title={isAr ? `مسلسل أمر البيع: #${orderSerial}` : `Order Serial: #${orderSerial}`}
+                                  >
+                                    #{orderSerial}
+                                  </span>
+
+                                  {order.auditTrail?.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setAuditModalOrder(order)}
+                                      className="inline-flex items-center gap-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-1 py-0.2 rounded cursor-pointer transition shadow-2xs"
+                                      title={isAr ? `سجل التعديلات (${order.auditTrail.length})` : `Audit trail (${order.auditTrail.length})`}
+                                    >
+                                      <History className="w-2.5 h-2.5 text-indigo-600" />
+                                      <span>{order.auditTrail.length}</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Client & Branch & Region */}
+                            <td className="py-3 px-3">
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-bold text-slate-900 flex items-center gap-1.5">
+                                  <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                  <span className="truncate max-w-[200px]">{order.clientName || order.clientId || '—'}</span>
+                                </span>
+                                <div className="flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
+                                  {order.branchName && (
+                                    <span className="font-medium text-slate-600">{order.branchName}</span>
+                                  )}
+                                  {order.region && (
+                                    <span className="inline-flex items-center gap-0.5 text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
+                                      <MapPin className="w-2.5 h-2.5" />
+                                      <span>{order.region}</span>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Dual Dates */}
+                            <td className="py-3 px-3 whitespace-nowrap font-mono text-[11px]">
+                              <div className="flex flex-col gap-0.5">
+                                <div className="flex items-center gap-1 text-slate-700 font-bold">
+                                  <Receipt className="w-3 h-3 text-emerald-600 shrink-0" />
+                                  <span>{order.invoiceDate || '—'}</span>
+                                </div>
+                                <div className="flex items-center gap-1 text-slate-500 font-medium">
+                                  <Truck className="w-3 h-3 text-amber-500 shrink-0" />
+                                  <span>{order.loadingDate || order.invoiceDate || '—'}</span>
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Tax Mode & Document Classification Badge */}
+                            <td className="py-3 px-3 whitespace-nowrap">
+                              <div className="flex flex-col gap-1 items-start">
+                                {/* Tax Mode Pill */}
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                  !isTaxable
+                                    ? 'bg-slate-100 text-slate-700 border border-slate-200'
+                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                }`}>
+                                  <span>{isAr ? vatModeObj.labelAr : vatModeObj.labelEn}</span>
+                                </span>
+
+                                {/* Document Type Indicator */}
+                                {!isTaxable ? (
+                                  <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
+                                    <FileText className="w-2.5 h-2.5 text-slate-400" />
+                                    <span>{isAr ? 'إذن تسليم' : 'Delivery Note'}</span>
+                                  </span>
+                                ) : hasPrivateLabel && hasOwnBrand ? (
+                                  <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200 flex items-center gap-1">
+                                    <Receipt className="w-2.5 h-2.5 text-purple-600" />
+                                    <span>{isAr ? 'فاتورتين: طاووس + علامة خاصة' : 'Dual Inv: Tawoos + PL'}</span>
+                                  </span>
+                                ) : hasPrivateLabel ? (
+                                  <span className="text-[10px] font-bold text-purple-700 flex items-center gap-1">
+                                    <Receipt className="w-2.5 h-2.5 text-purple-600" />
+                                    <span>{isAr ? 'فاتورة علامة خاصة' : 'PL Tax Invoice'}</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
+                                    <Receipt className="w-2.5 h-2.5 text-emerald-600" />
+                                    <span>{isAr ? 'فاتورة طاووس' : 'Tawoos Tax Invoice'}</span>
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* Statuses (Confirmation & Fulfillment) */}
+                            <td className="py-3 px-3 whitespace-nowrap">
+                              <div className="flex flex-col gap-1 items-start">
+                                {/* Confirmation */}
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  order.confirmationStatus === 'confirmed'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : order.confirmationStatus === 'canceled'
+                                    ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                    : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                }`}>
+                                  <span>{isAr ? confStatusObj.labelAr : confStatusObj.labelEn}</span>
+                                </span>
+
+                                {/* Fulfillment */}
+                                <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
+                                  <Truck className="w-2.5 h-2.5 text-slate-400" />
+                                  <span>{isAr ? fulfStatusObj.labelAr : fulfStatusObj.labelEn}</span>
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* Quantity & Weight */}
+                            <td className="py-3 px-3 whitespace-nowrap font-mono">
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-bold text-slate-800 text-xs">
+                                  {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  {Number(order.totalWeightKg || 0).toLocaleString()} kg
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* Grand Total EGP */}
+                            <td className="py-3 px-3 whitespace-nowrap text-end font-mono">
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-black text-slate-900 text-xs">
+                                  {Number(order.grandTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                                <span className="text-[10px] text-slate-400 font-bold">EGP</span>
+                              </div>
+                            </td>
+
+                            {/* Actions Button (3-dots with Portal Menu) */}
+                            <td className="py-3 px-3 text-center whitespace-nowrap">
+                              <button
+                                type="button"
+                                data-order-menu
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (activeActionsMenuOrderId === order.id) {
+                                    setActiveActionsMenuOrderId(null);
+                                    setActionsMenuAnchor(null);
+                                  } else {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    setActionsMenuAnchor({
+                                      top: rect.bottom + 4,
+                                      left: rect.left,
+                                      right: rect.right
+                                    });
+                                    setActiveActionsMenuOrderId(order.id);
+                                  }
+                                }}
+                                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                                title={isAr ? 'إجراءات الطلب' : 'Order Actions'}
+                              >
+                                <MoreVertical className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+
+                          {/* Expandable Order Details Row */}
+                          {isExpanded && (
+                            <tr className="bg-slate-50/70 border-b border-slate-200">
+                              <td colSpan={9} className="py-3 px-4 sm:ps-12 sm:pe-6">
+                                <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
+                                  {/* Sub-Header info: POs & Notes */}
+                                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs border-b border-slate-100 pb-3">
+                                    {/* PO Numbers */}
+                                    <div className="space-y-1">
+                                      <span className="font-bold text-slate-500 block">{isAr ? 'أرقام أوامر الشراء (POs):' : 'Purchase Orders:'}</span>
+                                      <div className="space-y-0.5 font-mono text-[11px]">
+                                        {order.poTawoos && (
+                                          <div>
+                                            <span className="text-slate-400 me-1">{isAr ? 'طاووس:' : 'Tawoos:'}</span>
+                                            <span className="font-bold text-slate-800">{order.poTawoos}</span>
+                                          </div>
+                                        )}
+                                        {order.poPrivateLabel && (
+                                          <div>
+                                            <span className="text-slate-400 me-1">{isAr ? 'علامة خاصة:' : 'PL:'}</span>
+                                            <span className="font-bold text-purple-700">{order.poPrivateLabel}</span>
+                                          </div>
+                                        )}
+                                        {!order.poTawoos && !order.poPrivateLabel && (
+                                          <span className="text-slate-400 italic">{isAr ? 'لا يوجد أمر شراء مسجل' : 'No PO recorded'}</span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Comments & Sales Rep */}
+                                    <div className="space-y-1">
+                                      <span className="font-bold text-slate-500 block">{isAr ? 'الملاحظات ومندوب المبيعات:' : 'Notes & Rep:'}</span>
+                                      <div className="space-y-0.5 text-[11px]">
+                                        {order.salesRep && (
+                                          <div>
+                                            <span className="text-slate-400 me-1">{isAr ? 'المندوب:' : 'Rep:'}</span>
+                                            <span className="font-bold text-slate-700">{order.salesRep}</span>
+                                          </div>
+                                        )}
+                                        {order.externalComments && (
+                                          <div className="text-slate-700">
+                                            <span className="text-slate-400 me-1">💬</span>
+                                            <span>{order.externalComments}</span>
+                                          </div>
+                                        )}
+                                        {order.internalComments && (
+                                          <div className="text-amber-700">
+                                            <span className="text-slate-400 me-1">🔒</span>
+                                            <span>{order.internalComments}</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Attachments */}
+                                    <div className="space-y-1">
+                                      <span className="font-bold text-slate-500 block flex items-center gap-1">
+                                        <Paperclip className="w-3.5 h-3.5 text-slate-400" />
+                                        <span>{isAr ? `المرفقات (${(order.poAttachments || []).length}):` : `Attachments (${(order.poAttachments || []).length}):`}</span>
+                                      </span>
+                                      {(order.poAttachments || []).length > 0 ? (
+                                        <div className="flex flex-wrap gap-2 pt-1">
+                                          {order.poAttachments.map((att, attIdx) => (
+                                            <div
+                                              key={attIdx}
+                                              onClick={() => {
+                                                if (att.url) setLightboxImage({ url: att.url, title: att.poLabel || att.name });
+                                              }}
+                                              className="inline-flex items-center gap-1 px-2 py-1 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-slate-700 cursor-pointer transition shadow-2xs"
+                                            >
+                                              <Eye className="w-3 h-3 text-indigo-600" />
+                                              <span className="truncate max-w-[120px]">{att.poLabel || att.name}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <span className="text-slate-400 italic text-[11px]">{isAr ? 'لا توجد مرفقات' : 'No attachments'}</span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Line Items Table */}
+                                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                    <table className="w-full text-start border-collapse text-xs">
+                                      <thead>
+                                        <tr className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200 text-[11px]">
+                                          <th className="py-2 px-3 text-start">{isAr ? 'الصنف' : 'Product'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'الكمية' : 'Qty'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'البونص' : 'Bonus'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'سعر الوحدة' : 'Unit Price'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'الخصم/كرتونة' : 'Discount/ctn'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'الضريبة' : 'VAT'}</th>
+                                          <th className="py-2 px-3 text-start">{isAr ? 'الوزن' : 'Weight'}</th>
+                                          <th className="py-2 px-3 text-end">{isAr ? 'الإجمالي (EGP)' : 'Total (EGP)'}</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100 font-mono">
+                                        {(order.lines || []).map((line, lIdx) => (
+                                          <tr key={lIdx} className="hover:bg-slate-50/50">
+                                            <td className="py-2 px-3 font-sans font-bold text-slate-800">
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1 py-0.2 rounded border border-indigo-200">
+                                                  {line.productCode}
+                                                </span>
+                                                <span>{isAr ? line.productNameAr : (line.productNameEn || line.productNameAr)}</span>
+                                                {line.isPrivateLabel && (
+                                                  <span className="text-[9px] font-bold text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
+                                                    {isAr ? 'علامة خاصة' : 'PL'}
+                                                  </span>
+                                                )}
+                                                {line.isPromotional && (
+                                                  <span title={isAr ? 'عرض ترويجي' : 'Promotion'}>
+                                                    <Zap className="w-3 h-3 text-rose-500 fill-rose-500 shrink-0" />
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </td>
+                                            <td className="py-2 px-3 font-bold text-slate-800">{line.qty} {line.largeUnitName || (isAr ? 'كرتونة' : 'ctn')}</td>
+                                            <td className="py-2 px-3 text-emerald-700">{line.bonus > 0 ? `+${line.bonus}` : '—'}</td>
+                                            <td className="py-2 px-3 text-slate-700">{Number(line.detectedUnitPrice || line.unitPrice || 0).toFixed(2)}</td>
+                                            <td className="py-2 px-3 text-rose-600">{Number(line.manualDiscountPerUnit || 0) > 0 ? `-${Number(line.manualDiscountPerUnit).toFixed(2)}` : '—'}</td>
+                                            <td className="py-2 px-3 text-slate-600">{Number(line.lineVat || 0) > 0 ? `${Number(line.lineVat).toFixed(2)} (${line.vatRate || '14%'})` : '0%'}</td>
+                                            <td className="py-2 px-3 text-slate-500">{Number(line.lineWeightKg || 0).toFixed(1)} kg</td>
+                                            <td className="py-2 px-3 text-end font-bold text-slate-900">{Number(line.lineTotal || 0).toFixed(2)}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Floating 3-Dots Portal Action Menu */}
+      {activeActionsMenuOrderId && actionsMenuAnchor && activeOrderForMenu && createPortal(
+        <div
+          data-order-menu
+          style={{
+            position: 'fixed',
+            top: `${actionsMenuAnchor.top}px`,
+            left: isAr ? `${actionsMenuAnchor.left}px` : undefined,
+            right: !isAr ? `${window.innerWidth - actionsMenuAnchor.right}px` : undefined,
+            zIndex: 9999
+          }}
+          className="w-48 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setEditingOrder(activeOrderForMenu);
+              setIsEditorOpen(true);
+              setActiveActionsMenuOrderId(null);
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-100 hover:text-slate-900 rounded-xl transition cursor-pointer font-bold text-start"
+          >
+            <Edit3 className="w-3.5 h-3.5 text-blue-600" />
+            <span>{isAr ? 'تعديل أمر البيع' : 'Edit Order'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setAuditModalOrder(activeOrderForMenu);
+              setActiveActionsMenuOrderId(null);
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-100 hover:text-slate-900 rounded-xl transition cursor-pointer font-bold text-start"
+          >
+            <History className="w-3.5 h-3.5 text-indigo-600" />
+            <span>{isAr ? 'عرض سجل التدقيق' : 'View Audit Trail'}</span>
+          </button>
+
+          <div className="border-t border-slate-100 my-1"></div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setDeleteConfirmOrder(activeOrderForMenu);
+              setActiveActionsMenuOrderId(null);
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer font-bold text-start"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+            <span>{isAr ? 'حذف أمر البيع' : 'Delete Order'}</span>
+          </button>
+        </div>,
+        document.body
+      )}
+
+      {/* Sales Order Editor Modal (Create / Edit) */}
+      {isEditorOpen && (
+        <SalesOrderEditorModal
+          isOpen={isEditorOpen}
+          onClose={() => {
+            setIsEditorOpen(false);
+            setEditingOrder(null);
+          }}
+          editingOrder={editingOrder}
+          clients={clients}
+          products={products}
+          productCategories={productCategories}
+          priceLists={priceLists}
+          strategies={strategies}
+          allOrders={orders}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+          onOpenAuditTrail={(o) => setAuditModalOrder(o)}
+        />
+      )}
+
+      {/* Sales Order Audit Modal */}
+      {auditModalOrder && (
+        <SalesOrderAuditModal
+          isOpen={Boolean(auditModalOrder)}
+          onClose={() => setAuditModalOrder(null)}
+          order={auditModalOrder}
+          isAr={isAr}
+        />
+      )}
+
+      {/* Delete Confirmation Alert Modal */}
+      {deleteConfirmOrder && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 text-center space-y-3">
+            <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <h4 className="font-black text-slate-800 text-sm">
+              {isAr ? 'تأكيد حذف أمر البيع؟' : 'Delete Sales Order?'}
+            </h4>
+            <p className="text-xs text-slate-500">
+              {isAr
+                ? `هل أنت متأكد من حذف أمر البيع (#${resolveOrderSerial(deleteConfirmOrder, orders)})؟`
+                : `Are you sure you want to delete order (#${resolveOrderSerial(deleteConfirmOrder, orders)})?`}
+            </p>
+            <div className="flex items-center justify-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmOrder(null)}
+                className="px-4 py-1.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 cursor-pointer"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteOrder(deleteConfirmOrder.id)}
+                className="px-4 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 cursor-pointer"
+              >
+                {isAr ? 'حذف نهائي' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Lightbox Modal for PO Attachments */}
+      {lightboxImage && (
+        <div
+          onClick={() => setLightboxImage(null)}
+          className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 cursor-pointer"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl max-w-3xl max-h-[90vh] overflow-hidden shadow-2xl border border-slate-200 flex flex-col"
+          >
+            <div className="px-4 py-2.5 bg-slate-900 text-white flex items-center justify-between text-xs font-bold">
+              <span>{lightboxImage.title || (isAr ? 'معاينة المرفق' : 'Attachment Preview')}</span>
+              <button
+                type="button"
+                onClick={() => setLightboxImage(null)}
+                className="p-1 hover:bg-white/20 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 overflow-auto flex-1 flex items-center justify-center bg-slate-100">
+              {lightboxImage.url?.startsWith('data:application/pdf') ? (
+                <iframe src={lightboxImage.url} className="w-full h-[70vh] rounded-lg border border-slate-300" title="PDF Preview" />
+              ) : (
+                <img src={lightboxImage.url} alt="Attachment" className="max-w-full max-h-[75vh] object-contain rounded-lg" />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * =========================================================================
+ * SALES ORDER EDITOR MODAL (Order Header + Products Grid + 8-Tier Auto Pricing)
+ * =========================================================================
+ */
+function SalesOrderEditorModal({
+  isOpen,
+  onClose,
+  editingOrder,
+  clients = [],
+  products = [],
+  productCategories = [],
+  priceLists = [],
+  strategies = [],
+  allOrders = [],
+  isAr = true,
+  currentUserName = 'مستخدم معتمد',
+  currentUserId = 'usr_unknown',
+  onOpenAuditTrail = null
+}) {
+  const nextSerial = generateNextOrderSerial(allOrders);
+  const initialSerial = editingOrder ? resolveOrderSerial(editingOrder, allOrders) : nextSerial;
+
+  const todayStr = formatDateKey(new Date());
+
+  const [formData, setFormData] = useState({
+    id: editingOrder?.id || `SO-${initialSerial}`,
+    serial: initialSerial,
+    clientId: editingOrder?.clientId || '',
+    clientName: editingOrder?.clientName || '',
+    branchId: editingOrder?.branchId || '',
+    branchName: editingOrder?.branchName || '',
+    region: editingOrder?.region || '',
+    deliveryAddress: editingOrder?.deliveryAddress || '',
+    invoiceDate: editingOrder?.invoiceDate || todayStr,
+    loadingDate: editingOrder?.loadingDate || todayStr,
+    isDatesLinked: editingOrder ? Boolean(editingOrder.invoiceDate === editingOrder.loadingDate) : true,
+    orderType: editingOrder?.orderType || 'supply',
+    confirmationStatus: editingOrder?.confirmationStatus || 'confirmed',
+    fulfillmentStatus: editingOrder?.fulfillmentStatus || 'not_yet',
+    vatMode: editingOrder?.vatMode || 'none', // Default Unofficial (Delivery note)
+    poTawoos: editingOrder?.poTawoos || '',
+    poPrivateLabel: editingOrder?.poPrivateLabel || '',
+    salesRep: editingOrder?.salesRep || '',
+    internalComments: editingOrder?.internalComments || '',
+    externalComments: editingOrder?.externalComments || '',
+    poAttachments: editingOrder?.poAttachments ? [...editingOrder.poAttachments] : [],
+    lines: editingOrder?.lines ? JSON.parse(JSON.stringify(editingOrder.lines)) : []
+  });
+
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [selectedProductId, setSelectedProductId] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [acknowledgedPlWarning, setAcknowledgedPlWarning] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // Selected client object
+  const selectedClient = useMemo(() => {
+    return clients.find((c) => c.id === formData.clientId) || null;
+  }, [clients, formData.clientId]);
+
+  // Client Branches list
+  const clientBranches = useMemo(() => {
+    if (!selectedClient || !Array.isArray(selectedClient.branches)) return [];
+    return selectedClient.branches;
+  }, [selectedClient]);
+
+  // Client strategy
+  const clientStrategy = useMemo(() => {
+    return selectedClient?.pricingStrategy || 'wholesalers';
+  }, [selectedClient]);
+
+  // Client options for SearchableSelect:
+  // FLATTENED LIST SORTED ASCENDINGLY (no priorities or groups, matching user feedback)
+  const clientSelectOptions = useMemo(() => {
+    const list = (clients || []).map((c) => {
+      const name = isAr
+        ? (c.tradeNameAr || c.legalName || c.tradeNameEn || c.name || c.id)
+        : (c.tradeNameEn || c.tradeNameAr || c.legalName || c.name || c.id);
+      const clientStratId = c.pricingStrategy || 'wholesalers';
+      const strat =
+        strategies.find((s) => s.id === clientStratId) ||
+        DEFAULT_PRICING_STRATEGIES.find((s) => s.id === clientStratId) || {
+          color: '#64748b',
+          icon: 'Tag'
+        };
+      const StratIcon = SEGMENT_ICON_MAP[strat.icon] || Tag;
+
+      return {
+        value: c.id,
+        label: name,
+        sublabel: c.code && c.code !== name ? c.code : c.id,
+        icon: StratIcon,
+        iconColor: strat.color || '#2563eb',
+        nameForSort: name
+      };
+    });
+
+    list.sort((a, b) => a.nameForSort.localeCompare(b.nameForSort, isAr ? 'ar' : 'en'));
+
+    return [
+      {
+        value: '',
+        label: isAr ? '— اختر العميل —' : '— Select Client —',
+        sublabel: ''
+      },
+      ...list
+    ];
+  }, [clients, strategies, isAr]);
+
+  // Handle client change
+  const handleClientChange = (newClientId) => {
+    const cl = clients.find((c) => c.id === newClientId);
+    if (!cl) {
+      setFormData((prev) => ({
+        ...prev,
+        clientId: '',
+        clientName: '',
+        branchId: '',
+        branchName: '',
+        region: '',
+        deliveryAddress: ''
+      }));
+      return;
+    }
+
+    const clientName = isAr
+      ? (cl.tradeNameAr || cl.legalName || cl.tradeNameEn || cl.name || cl.id)
+      : (cl.tradeNameEn || cl.tradeNameAr || cl.legalName || cl.name || cl.id);
+
+    // Auto-select branch (main branch or first branch)
+    const branches = Array.isArray(cl.branches) ? cl.branches : [];
+    const mainBranch = branches.find((b) => b.isMain) || branches[0] || null;
+    const branchId = mainBranch ? (mainBranch.id || 'br_main') : '';
+    const branchName = mainBranch ? (mainBranch.nameAr || mainBranch.nameEn || (isAr ? 'الفرع الرئيسي' : 'Main Branch')) : '';
+    const region = mainBranch?.region || '';
+    const deliveryAddress = mainBranch?.address || '';
+
+    setFormData((prev) => {
+      // Re-resolve prices for existing line items with the new client/branch
+      const updatedLines = prev.lines.map((line) => {
+        const prod = products.find((p) => p.id === line.productId);
+        const resolved = detectProductPrice({
+          clientId: cl.id,
+          clientName,
+          branchId,
+          branchName,
+          strategy: cl.pricingStrategy || 'wholesalers',
+          invoiceDate: prev.invoiceDate,
+          productId: line.productId,
+          priceLists
+        });
+        const promoInfo = detectPromotionalDiscount({
+          clientId: cl.id,
+          clientName,
+          branchId,
+          branchName,
+          strategy: cl.pricingStrategy || 'wholesalers',
+          invoiceDate: prev.invoiceDate,
+          productId: line.productId,
+          priceLists
+        });
+
+        const detectedUnitPrice = resolved.price || 0;
+        return calculateLineTotals(line, detectedUnitPrice, resolved.isPromotional, promoInfo.discountPct, prev.vatMode);
+      });
+
+      return {
+        ...prev,
+        clientId: cl.id,
+        clientName,
+        branchId,
+        branchName,
+        region,
+        deliveryAddress,
+        lines: updatedLines
+      };
+    });
+  };
+
+  // Handle branch change
+  const handleBranchChange = (newBranchId) => {
+    const br = clientBranches.find((b) => (b.id || 'br_main') === newBranchId);
+    const branchName = br ? (br.nameAr || br.nameEn || newBranchId) : '';
+    const region = br?.region || '';
+    const deliveryAddress = br?.address || '';
+
+    setFormData((prev) => {
+      const updatedLines = prev.lines.map((line) => {
+        const resolved = detectProductPrice({
+          clientId: prev.clientId,
+          clientName: prev.clientName,
+          branchId: newBranchId,
+          branchName,
+          strategy: clientStrategy,
+          invoiceDate: prev.invoiceDate,
+          productId: line.productId,
+          priceLists
+        });
+        const promoInfo = detectPromotionalDiscount({
+          clientId: prev.clientId,
+          clientName: prev.clientName,
+          branchId: newBranchId,
+          branchName,
+          strategy: clientStrategy,
+          invoiceDate: prev.invoiceDate,
+          productId: line.productId,
+          priceLists
+        });
+        return calculateLineTotals(line, resolved.price || 0, resolved.isPromotional, promoInfo.discountPct, prev.vatMode);
+      });
+
+      return {
+        ...prev,
+        branchId: newBranchId,
+        branchName,
+        region,
+        deliveryAddress,
+        lines: updatedLines
+      };
+    });
+  };
+
+  // Handle invoice date change (auto-inherits to loadingDate if linked)
+  const handleInvoiceDateChange = (newDate) => {
+    setFormData((prev) => {
+      const loadingDate = prev.isDatesLinked ? newDate : prev.loadingDate;
+      const updatedLines = prev.lines.map((line) => {
+        const resolved = detectProductPrice({
+          clientId: prev.clientId,
+          clientName: prev.clientName,
+          branchId: prev.branchId,
+          branchName: prev.branchName,
+          strategy: clientStrategy,
+          invoiceDate: newDate,
+          productId: line.productId,
+          priceLists
+        });
+        const promoInfo = detectPromotionalDiscount({
+          clientId: prev.clientId,
+          clientName: prev.clientName,
+          branchId: prev.branchId,
+          branchName: prev.branchName,
+          strategy: clientStrategy,
+          invoiceDate: newDate,
+          productId: line.productId,
+          priceLists
+        });
+        return calculateLineTotals(line, resolved.price || 0, resolved.isPromotional, promoInfo.discountPct, prev.vatMode);
+      });
+
+      return {
+        ...prev,
+        invoiceDate: newDate,
+        loadingDate,
+        lines: updatedLines
+      };
+    });
+  };
+
+  // Helper to calculate a line item's totals
+  const calculateLineTotals = (line, detectedUnitPrice, isPromotional = false, promoDiscountPct = 0, vatMode = 'none') => {
+    const qty = Math.max(0, Number(line.qty) || 0);
+    const bonus = Math.max(0, Number(line.bonus) || 0);
+    const manualDiscount = Math.max(0, Number(line.manualDiscountPerUnit) || 0);
+
+    const isTaxable = vatMode && vatMode !== 'none';
+    const isInclusive = vatMode === 'inclusive' || vatMode === 'inclusive_wht';
+    const hasVat = line.vatRate !== '0%' && line.vatRate !== 0;
+
+    // For inclusive VAT, extract net base unit price before tax (price / 1.14)
+    let effectiveBaseUnitPrice = detectedUnitPrice;
+    if (isInclusive && hasVat) {
+      effectiveBaseUnitPrice = detectedUnitPrice / 1.14;
+    }
+
+    const netBasePriceAfterDiscount = Math.max(0, effectiveBaseUnitPrice - manualDiscount);
+    const lineNet = qty * netBasePriceAfterDiscount;
+    const lineVat = (isTaxable && hasVat) ? lineNet * 0.14 : 0;
+    const lineTotal = lineNet + lineVat;
+    const lineWeightKg = (qty + bonus) * (Number(line.largeUnitWeightKg) || 0);
+
+    return {
+      ...line,
+      detectedUnitPrice,
+      effectiveBaseUnitPrice,
+      isPromotional,
+      promoDiscountPct,
+      lineNet,
+      lineVat,
+      lineTotal,
+      lineWeightKg
+    };
+  };
+
+  // Available products for adding to line items:
+  // Restricted by category filter and private label allowed client
+  const availableProductOptions = useMemo(() => {
+    const available = products.filter((p) => {
+      // 1. Private label restriction check
+      if (!isProductAllowedForClient(p, formData.clientId, formData.clientName)) {
+        return false;
+      }
+      // 2. Category filter
+      if (selectedCategory !== 'all') {
+        const prodCat = p.productionLine || p.categoryId || p.category;
+        if (prodCat !== selectedCategory) return false;
+      }
+      return true;
+    });
+
+    return [
+      {
+        value: '',
+        label: isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —',
+        sublabel: ''
+      },
+      ...available.map((p) => {
+        const isPl = isProductPrivateLabel(p);
+        return {
+          value: p.id,
+          label: isAr ? p.nameAr : (p.nameEn || p.nameAr),
+          sublabel: `${p.id} ${isPl ? (isAr ? '[علامة خاصة]' : '[Private Label]') : ''}`,
+          isPrivateLabel: isPl
+        };
+      })
+    ];
+  }, [products, formData.clientId, formData.clientName, selectedCategory, isAr]);
+
+  // Add Product to Lines Handler
+  const handleAddProduct = (productId) => {
+    if (!productId) return;
+    const prod = products.find((p) => p.id === productId);
+    if (!prod) return;
+
+    // Prevent duplicate row
+    if (formData.lines.some((l) => l.productId === productId)) {
+      alert(isAr ? 'هذا الصنف مضاف بالفعل في قائمة بنود الطلب.' : 'This product is already in the order lines.');
+      setSelectedProductId('');
+      return;
+    }
+
+    const resolved = detectProductPrice({
+      clientId: formData.clientId,
+      clientName: formData.clientName,
+      branchId: formData.branchId,
+      branchName: formData.branchName,
+      strategy: clientStrategy,
+      invoiceDate: formData.invoiceDate,
+      productId,
+      priceLists
+    });
+
+    const promoInfo = detectPromotionalDiscount({
+      clientId: formData.clientId,
+      clientName: formData.clientName,
+      branchId: formData.branchId,
+      branchName: formData.branchName,
+      strategy: clientStrategy,
+      invoiceDate: formData.invoiceDate,
+      productId,
+      priceLists
+    });
+
+    const primaryOpt = (prod.packagingOptions || [])[0] || {};
+    const largeUnitWeightKg = Number(primaryOpt.largeUnitWeightKg || prod.weight || 0);
+    const packagingRatio = Number(primaryOpt.packagingRatio || prod.packagingRatio || 12);
+
+    const newLine = calculateLineTotals(
+      {
+        productId: prod.id,
+        productCode: prod.code || prod.id,
+        productNameAr: prod.nameAr,
+        productNameEn: prod.nameEn || prod.nameAr,
+        isPrivateLabel: isProductPrivateLabel(prod),
+        vatRate: prod.vatRate || '14%',
+        smallUnit: prod.smallUnit || 'زجاجة',
+        largeUnitName: prod.largeUnitName || 'كرتونة',
+        packagingRatio,
+        largeUnitWeightKg,
+        qty: 1,
+        bonus: 0,
+        manualDiscountPerUnit: 0
+      },
+      resolved.price || 0,
+      resolved.isPromotional,
+      promoInfo.discountPct,
+      formData.vatMode
+    );
+
+    setFormData((prev) => ({
+      ...prev,
+      lines: [...prev.lines, newLine]
+    }));
+    setSelectedProductId('');
+  };
+
+  // Line item change (qty, bonus, manualDiscount)
+  const handleLineChange = (index, field, value) => {
+    setFormData((prev) => {
+      const updatedLines = [...prev.lines];
+      const target = { ...updatedLines[index], [field]: value };
+      updatedLines[index] = calculateLineTotals(
+        target,
+        target.detectedUnitPrice,
+        target.isPromotional,
+        target.promoDiscountPct,
+        prev.vatMode
+      );
+      return { ...prev, lines: updatedLines };
+    });
+  };
+
+  // Remove line item
+  const handleRemoveLine = (index) => {
+    setFormData((prev) => ({
+      ...prev,
+      lines: prev.lines.filter((_, idx) => idx !== index)
+    }));
+  };
+
+  // Recalculate all lines when VAT mode changes
+  const handleVatModeChange = (newVatMode) => {
+    setFormData((prev) => {
+      const updatedLines = prev.lines.map((line) =>
+        calculateLineTotals(line, line.detectedUnitPrice, line.isPromotional, line.promoDiscountPct, newVatMode)
+      );
+      return { ...prev, vatMode: newVatMode, lines: updatedLines };
+    });
+  };
+
+  // Upload PO Attachment Handler
+  const handleAttachmentUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    for (const file of files) {
+      try {
+        const compressedDataUrl = await compressImage(file);
+        const newAttachment = {
+          id: `ATT-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          url: compressedDataUrl,
+          poLabel: '',
+          uploadedAt: new Date().toISOString()
+        };
+        setFormData((prev) => ({
+          ...prev,
+          poAttachments: [...prev.poAttachments, newAttachment]
+        }));
+      } catch (err) {
+        console.error('Error compressing attachment:', err);
+        alert(isAr ? `حدث خطأ أثناء تحميل الملف: ${file.name}` : `Failed to upload file: ${file.name}`);
+      }
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // Order Totals Summary Calculation
+  const orderCalculations = useMemo(() => {
+    let totalQty = 0;
+    let totalBonus = 0;
+    let totalWeightKg = 0;
+    let grossSubtotal = 0;
+    let manualDiscountTotal = 0;
+    let netPreTaxSubtotal = 0;
+    let totalVat = 0;
+
+    formData.lines.forEach((l) => {
+      const q = Math.max(0, Number(l.qty) || 0);
+      const b = Math.max(0, Number(l.bonus) || 0);
+      totalQty += q;
+      totalBonus += b;
+      totalWeightKg += Number(l.lineWeightKg || 0);
+      grossSubtotal += q * (Number(l.detectedUnitPrice) || 0);
+      manualDiscountTotal += q * (Number(l.manualDiscountPerUnit) || 0);
+      netPreTaxSubtotal += Number(l.lineNet || 0);
+      totalVat += Number(l.lineVat || 0);
+    });
+
+    const isWhtApplicable = formData.vatMode === 'exclusive_wht' || formData.vatMode === 'inclusive_wht';
+    const whtAmount = isWhtApplicable ? netPreTaxSubtotal * 0.01 : 0;
+    const grandTotal = netPreTaxSubtotal + totalVat - whtAmount;
+    const totalCartons = totalQty + totalBonus;
+
+    return {
+      totalQty,
+      totalBonus,
+      totalCartons,
+      totalWeightKg,
+      grossSubtotal,
+      manualDiscountTotal,
+      netPreTaxSubtotal,
+      totalVat,
+      whtAmount,
+      grandTotal
+    };
+  }, [formData.lines, formData.vatMode]);
+
+  // Private Label Alert & Document Split Detection
+  const hasPrivateLabelLines = useMemo(() => {
+    return formData.lines.some((l) => l.isPrivateLabel);
+  }, [formData.lines]);
+
+  const hasOwnBrandLines = useMemo(() => {
+    return formData.lines.some((l) => !l.isPrivateLabel);
+  }, [formData.lines]);
+
+  const showPrivateLabelTaxAlert = useMemo(() => {
+    return hasPrivateLabelLines && formData.vatMode === 'none' && !acknowledgedPlWarning;
+  }, [hasPrivateLabelLines, formData.vatMode, acknowledgedPlWarning]);
+
+  // Save Order Handler
+  const handleSaveOrder = async (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+
+    if (!formData.clientId) {
+      setErrorMsg(isAr ? 'يرجى اختيار العميل أولاً.' : 'Please select a client.');
+      return;
+    }
+
+    if (formData.lines.length === 0 && !['collection', 'admin'].includes(formData.orderType)) {
+      setErrorMsg(isAr ? 'يرجى إضافة صنف واحد على الأقل في أمر البيع.' : 'Please add at least one line item.');
+      return;
+    }
+
+    // Confirmation if private label is unofficial
+    if (hasPrivateLabelLines && formData.vatMode === 'none' && !acknowledgedPlWarning) {
+      const confirmProceed = window.confirm(
+        isAr
+          ? 'تنبيه: يحتوي الطلب على أصناف علامة خاصة (Private Label) تتطلب عادة فاتورة ضريبية رسمية.\nهل ترغب في المتابعة كأمر غير رسمي (عينات / هدايا)؟'
+          : 'Warning: This order contains Private Label products which typically require a Tax Invoice. Proceed anyway as sample/gift?'
+      );
+      if (!confirmProceed) return;
+    }
+
+    setIsSaving(true);
+    try {
+      const orderRef = doc(db, 'sales_orders', formData.id);
+      const isNew = !editingOrder;
+
+      // Build audit event
+      const now = new Date();
+      let auditEvent;
+
+      if (isNew) {
+        auditEvent = {
+          id: `AUD-${Date.now()}-1`,
+          action: 'create',
+          performedBy: currentUserName,
+          performedById: currentUserId,
+          timestamp: now,
+          summaryAr: `تم إنشاء أمر البيع #${formData.serial} للعميل (${formData.clientName})`,
+          summaryEn: `Created sales order #${formData.serial} for client (${formData.clientName})`,
+          changes: {
+            metadata: [
+              { labelAr: 'العميل', labelEn: 'Client', newValue: formData.clientName },
+              { labelAr: 'الفرع', labelEn: 'Branch', newValue: formData.branchName || 'الرئيسي' },
+              { labelAr: 'تاريخ الفاتورة', labelEn: 'Invoice Date', newValue: formData.invoiceDate },
+              { labelAr: 'تاريخ التحميل', labelEn: 'Loading Date', newValue: formData.loadingDate },
+              { labelAr: 'المعاملة الضريبية', labelEn: 'Tax Mode', newValue: formData.vatMode },
+              { labelAr: 'نوع الطلب', labelEn: 'Order Type', newValue: formData.orderType }
+            ],
+            lineChanges: formData.lines.map((l) => ({
+              productCode: l.productCode,
+              productNameAr: l.productNameAr,
+              productNameEn: l.productNameEn,
+              type: 'added',
+              detailAr: `${l.qty} كرتونة بسعر ${l.detectedUnitPrice} ج.م`,
+              detailEn: `${l.qty} cartons at ${l.detectedUnitPrice} EGP`
+            }))
+          }
+        };
+      } else {
+        // Compute diff for editing
+        const metaDiffs = [];
+        const old = editingOrder;
+
+        if (old.clientName !== formData.clientName) metaDiffs.push({ labelAr: 'العميل', labelEn: 'Client', oldValue: old.clientName, newValue: formData.clientName });
+        if (old.branchName !== formData.branchName) metaDiffs.push({ labelAr: 'الفرع', labelEn: 'Branch', oldValue: old.branchName, newValue: formData.branchName });
+        if (old.invoiceDate !== formData.invoiceDate) metaDiffs.push({ labelAr: 'تاريخ الفاتورة', labelEn: 'Invoice Date', oldValue: old.invoiceDate, newValue: formData.invoiceDate });
+        if (old.loadingDate !== formData.loadingDate) metaDiffs.push({ labelAr: 'تاريخ التحميل', labelEn: 'Loading Date', oldValue: old.loadingDate, newValue: formData.loadingDate });
+        if (old.confirmationStatus !== formData.confirmationStatus) metaDiffs.push({ labelAr: 'حالة التأكيد', labelEn: 'Confirmation', oldValue: old.confirmationStatus, newValue: formData.confirmationStatus });
+        if (old.fulfillmentStatus !== formData.fulfillmentStatus) metaDiffs.push({ labelAr: 'حالة التنفيذ', labelEn: 'Fulfillment', oldValue: old.fulfillmentStatus, newValue: formData.fulfillmentStatus });
+        if (old.vatMode !== formData.vatMode) metaDiffs.push({ labelAr: 'المعاملة الضريبية', labelEn: 'Tax Mode', oldValue: old.vatMode, newValue: formData.vatMode });
+        if (old.orderType !== formData.orderType) metaDiffs.push({ labelAr: 'نوع الطلب', labelEn: 'Order Type', oldValue: old.orderType, newValue: formData.orderType });
+
+        const oldLineMap = {};
+        (old.lines || []).forEach((l) => { oldLineMap[l.productId] = l; });
+        const newLineMap = {};
+        formData.lines.forEach((l) => { newLineMap[l.productId] = l; });
+
+        const lineChanges = [];
+        formData.lines.forEach((l) => {
+          if (!oldLineMap[l.productId]) {
+            lineChanges.push({
+              productCode: l.productCode,
+              productNameAr: l.productNameAr,
+              productNameEn: l.productNameEn,
+              type: 'added',
+              detailAr: `${l.qty} كرتونة بسعر ${l.detectedUnitPrice} ج.م`,
+              detailEn: `${l.qty} cartons at ${l.detectedUnitPrice} EGP`
+            });
+          } else {
+            const oldL = oldLineMap[l.productId];
+            if (oldL.qty !== l.qty || oldL.bonus !== l.bonus || oldL.manualDiscountPerUnit !== l.manualDiscountPerUnit) {
+              lineChanges.push({
+                productCode: l.productCode,
+                productNameAr: l.productNameAr,
+                productNameEn: l.productNameEn,
+                type: 'modified',
+                detailAr: `الكمية: ${oldL.qty} -> ${l.qty} | بونص: ${oldL.bonus} -> ${l.bonus} | خصم: ${oldL.manualDiscountPerUnit} -> ${l.manualDiscountPerUnit}`,
+                detailEn: `Qty: ${oldL.qty} -> ${l.qty} | Bonus: ${oldL.bonus} -> ${l.bonus} | Disc: ${oldL.manualDiscountPerUnit} -> ${l.manualDiscountPerUnit}`
+              });
+            }
+          }
+        });
+
+        (old.lines || []).forEach((l) => {
+          if (!newLineMap[l.productId]) {
+            lineChanges.push({
+              productCode: l.productCode,
+              productNameAr: l.productNameAr,
+              productNameEn: l.productNameEn,
+              type: 'removed',
+              detailAr: `تم حذف الصنف من الطلب`,
+              detailEn: `Removed product from order`
+            });
+          }
+        });
+
+        auditEvent = {
+          id: `AUD-${Date.now()}-${(old.auditTrail || []).length + 1}`,
+          action: 'edit',
+          performedBy: currentUserName,
+          performedById: currentUserId,
+          timestamp: now,
+          summaryAr: `تم تعديل بيانات أمر البيع #${formData.serial}`,
+          summaryEn: `Updated sales order #${formData.serial}`,
+          changes: {
+            metadata: metaDiffs,
+            lineChanges
+          }
+        };
+      }
+
+      const existingAudit = editingOrder?.auditTrail || [];
+      const updatedAuditTrail = [...existingAudit, auditEvent];
+
+      const payload = {
+        ...formData,
+        ...orderCalculations,
+        auditTrail: updatedAuditTrail,
+        updatedAt: serverTimestamp(),
+        updatedBy: currentUserName,
+        updatedById: currentUserId
+      };
+
+      if (isNew) {
+        payload.createdAt = serverTimestamp();
+        payload.createdBy = currentUserName;
+        payload.createdById = currentUserId;
+      }
+
+      await setDoc(orderRef, payload, { merge: true });
+      setIsEditorOpen(false);
+      onClose();
+    } catch (err) {
+      console.error('Error saving sales order:', err);
+      setErrorMsg(isAr ? 'حدث خطأ أثناء حفظ أمر البيع.' : 'Failed to save sales order.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto font-sans">
+      <div className="bg-white rounded-3xl max-w-5xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] my-4 animate-in fade-in zoom-in-95 duration-150">
+        {/* Header */}
+        <div className="px-6 py-4 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center shadow-inner">
+              <ShoppingCart className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold">
+                  #{formData.serial}
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded bg-white/10 text-slate-300 font-bold">
+                  {editingOrder ? (isAr ? 'تعديل أمر بيع' : 'Edit Sales Order') : (isAr ? 'أمر بيع جديد' : 'New Sales Order')}
+                </span>
+              </div>
+              <h3 className="text-base font-black mt-0.5">
+                {isAr ? 'بيانات أمر البيع والتوريد وحساب الأسعار' : 'Sales Order Header & Product Pricing'}
+              </h3>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {editingOrder && onOpenAuditTrail && (
+              <button
+                type="button"
+                onClick={() => onOpenAuditTrail(editingOrder)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold transition text-slate-200 cursor-pointer"
+              >
+                <History className="w-3.5 h-3.5 text-indigo-400" />
+                <span>{isAr ? 'سجل التدقيق' : 'Audit Trail'}</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 hover:bg-white/10 rounded-xl transition text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Private Label Tax Warning Alert Banner */}
+        {showPrivateLabelTaxAlert && (
+          <div className="px-6 py-3 bg-amber-500/10 border-b border-amber-500/20 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2 text-amber-900 font-bold">
+              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                {isAr
+                  ? '⚠️ أصناف العلامة الخاصة تتطلب في الأصل فاتورة ضريبية رسمية. يمكنك التبديل الآن إلى ضريبي أو المتابعة بدون ضريبة (عينات / هدايا).'
+                  : '⚠️ Private Label products require an official tax invoice. Switch to taxable or proceed as delivery note (sample/gift).'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  handleVatModeChange('exclusive');
+                  setAcknowledgedPlWarning(true);
+                }}
+                className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition cursor-pointer shadow-xs"
+              >
+                {isAr ? 'تحويل إلى ضريبي (+14%)' : 'Switch to Taxable'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setAcknowledgedPlWarning(true)}
+                className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'متابعة كـ إذن تسليم / عينات' : 'Proceed as Sample/Gift'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Form Body */}
+        <form onSubmit={handleSaveOrder} className="p-6 overflow-y-auto flex-1 space-y-5 text-xs">
+          {errorMsg && (
+            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl font-bold flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {/* Section 1: Client & Branch & Dates */}
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+            <h4 className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5 border-b border-slate-200 pb-2">
+              <Building2 className="w-4 h-4 text-emerald-600" />
+              <span>{isAr ? '١. بيانات العميل والفرع والتواريخ' : '1. Client, Branch & Order Dates'}</span>
+            </h4>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Client SearchableSelect */}
+              <div className="lg:col-span-2">
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'العميل *' : 'Client *'}
+                </label>
+                <SearchableSelect
+                  options={clientSelectOptions}
+                  value={formData.clientId}
+                  onChange={handleClientChange}
+                  placeholder={isAr ? 'اختر العميل...' : 'Select Client...'}
+                  searchPlaceholder={isAr ? 'ابحث باسم العميل...' : 'Search client...'}
+                  isAr={isAr}
+                />
+              </div>
+
+              {/* Branch Selection */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'الفرع المستهدف' : 'Target Branch'}
+                </label>
+                <select
+                  value={formData.branchId}
+                  onChange={(e) => handleBranchChange(e.target.value)}
+                  disabled={!formData.clientId}
+                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer disabled:bg-slate-100"
+                >
+                  {clientBranches.length === 0 ? (
+                    <option value="">{isAr ? 'الفرع الرئيسي' : 'Main Branch'}</option>
+                  ) : (
+                    clientBranches.map((b) => (
+                      <option key={b.id || 'br_main'} value={b.id || 'br_main'}>
+                        {isAr ? (b.nameAr || b.nameEn || b.id) : (b.nameEn || b.nameAr || b.id)}
+                        {b.isMain ? (isAr ? ' (رئيسي)' : ' (Main)') : ''}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              {/* Region & Delivery Address */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'المنطقة / المحافظة' : 'Region'}
+                </label>
+                <input
+                  type="text"
+                  value={formData.region}
+                  onChange={(e) => setFormData({ ...formData, region: e.target.value })}
+                  placeholder={isAr ? 'مثال: القاهرة / التجمع الخامس' : 'e.g. Cairo'}
+                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-semibold text-slate-800 focus:outline-none"
+                />
+              </div>
+
+              {/* Invoice Date */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'تاريخ الفاتورة / التسليم *' : 'Invoice / Delivery Date *'}
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={formData.invoiceDate}
+                  onChange={(e) => handleInvoiceDateChange(e.target.value)}
+                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-mono font-bold text-slate-800 focus:outline-none"
+                />
+              </div>
+
+              {/* Loading Date + Link toggle */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-bold text-slate-700">
+                    {isAr ? 'تاريخ التحميل *' : 'Loading Date *'}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData((prev) => ({
+                        ...prev,
+                        isDatesLinked: true,
+                        loadingDate: prev.invoiceDate
+                      }));
+                    }}
+                    className="text-[10px] font-bold text-emerald-600 hover:underline cursor-pointer flex items-center gap-0.5"
+                    title={isAr ? 'مطابقة ومزامنة تاريخ التحميل مع تاريخ الفاتورة' : 'Sync with Invoice Date'}
+                  >
+                    <RefreshCw className="w-2.5 h-2.5" />
+                    <span>{isAr ? 'مطابقة الفاتورة' : 'Sync'}</span>
+                  </button>
+                </div>
+                <input
+                  type="date"
+                  required
+                  value={formData.loadingDate}
+                  onChange={(e) => {
+                    setFormData({
+                      ...formData,
+                      loadingDate: e.target.value,
+                      isDatesLinked: Boolean(e.target.value === formData.invoiceDate)
+                    });
+                  }}
+                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-mono font-bold text-slate-800 focus:outline-none"
+                />
+              </div>
+
+              {/* Order Type */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'نوع الطلب' : 'Order Type'}
+                </label>
+                <select
+                  value={formData.orderType}
+                  onChange={(e) => setFormData({ ...formData, orderType: e.target.value })}
+                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
+                >
+                  {ORDER_TYPES.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {isAr ? t.labelAr : t.labelEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Tax / VAT Mode */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'المعاملة الضريبية' : 'Tax / VAT Mode'}
+                </label>
+                <select
+                  value={formData.vatMode}
+                  onChange={(e) => handleVatModeChange(e.target.value)}
+                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
+                >
+                  {VAT_MODES.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {isAr ? v.labelAr : v.labelEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: PO Numbers & Multi-File Attachments */}
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+            <h4 className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5 border-b border-slate-200 pb-2">
+              <Paperclip className="w-4 h-4 text-blue-600" />
+              <span>{isAr ? '٢. أوامر شراء العميل والمرفقات (POs & Attachments)' : '2. Customer PO Numbers & Attachments'}</span>
+            </h4>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'رقم أمر شراء طاووس (PO Tawoos)' : 'PO # Tawoos'}
+                </label>
+                <input
+                  type="text"
+                  value={formData.poTawoos}
+                  onChange={(e) => setFormData({ ...formData, poTawoos: e.target.value })}
+                  placeholder={isAr ? 'مثال: PO-TW-1082' : 'e.g. PO-TW-1082'}
+                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-mono font-semibold text-slate-800 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'رقم أمر شراء العلامة الخاصة (PO Private Label)' : 'PO # Private Label'}
+                </label>
+                <input
+                  type="text"
+                  value={formData.poPrivateLabel}
+                  onChange={(e) => setFormData({ ...formData, poPrivateLabel: e.target.value })}
+                  placeholder={isAr ? 'مثال: PO-PL-4409' : 'e.g. PO-PL-4409'}
+                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-mono font-semibold text-purple-800 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Attachments Uploader */}
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-600">
+                  {isAr ? 'مرفقات أوامر الشراء (صور / PDF):' : 'PO File Attachments (Images / PDF):'}
+                </span>
+                <input
+                  type="file"
+                  multiple
+                  ref={fileInputRef}
+                  onChange={handleAttachmentUpload}
+                  accept="image/*,application/pdf"
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-200/80 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'إرفاق ملفات PO' : 'Upload PO Files'}</span>
+                </button>
+              </div>
+
+              {formData.poAttachments.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                  {formData.poAttachments.map((att, idx) => (
+                    <div
+                      key={att.id || idx}
+                      className="p-2.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between gap-2 shadow-2xs"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <FileText className="w-4 h-4 text-indigo-600 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <input
+                            type="text"
+                            value={att.poLabel || ''}
+                            onChange={(e) => {
+                              const updated = [...formData.poAttachments];
+                              updated[idx].poLabel = e.target.value;
+                              setFormData({ ...formData, poAttachments: updated });
+                            }}
+                            placeholder={att.name || 'PO #'}
+                            className="w-full text-xs font-bold text-slate-800 border-b border-transparent hover:border-slate-300 focus:border-indigo-500 focus:outline-none truncate"
+                          />
+                          <span className="text-[10px] text-slate-400 font-mono block truncate">{att.name}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (att.url) {
+                              const win = window.open();
+                              win.document.write(`<iframe src="${att.url}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
+                            }
+                          }}
+                          className="p-1 text-slate-400 hover:text-slate-700 rounded"
+                          title={isAr ? 'معاينة' : 'Preview'}
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormData({
+                              ...formData,
+                              poAttachments: formData.poAttachments.filter((_, i) => i !== idx)
+                            });
+                          }}
+                          className="p-1 text-slate-400 hover:text-rose-600 rounded"
+                          title={isAr ? 'حذف' : 'Remove'}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Section 3: Product Line Items Grid */}
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+              <h4 className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5">
+                <Boxes className="w-4 h-4 text-emerald-600" />
+                <span>{isAr ? '٣. بنود الأصناف وحساب الأسعار التلقائي (8-Tier Pricing)' : '3. Product Line Items & Pricing'}</span>
+              </h4>
+
+              {/* Document Classification indicator */}
+              <div className="flex items-center gap-2">
+                {formData.vatMode !== 'none' ? (
+                  hasPrivateLabelLines && hasOwnBrandLines ? (
+                    <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-lg border border-purple-200">
+                      {isAr ? 'مستند: فاتورتين (طاووس + علامة خاصة)' : 'Dual Invoices: Tawoos + PL'}
+                    </span>
+                  ) : hasPrivateLabelLines ? (
+                    <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-lg border border-purple-200">
+                      {isAr ? 'مستند: فاتورة ضريبية علامة خاصة' : 'PL Tax Invoice'}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200">
+                      {isAr ? 'مستند: فاتورة ضريبية طاووس' : 'Tawoos Tax Invoice'}
+                    </span>
+                  )
+                ) : (
+                  <span className="text-[11px] font-bold text-slate-600 bg-slate-200/60 px-2 py-0.5 rounded-lg border border-slate-300">
+                    {isAr ? 'مستند: إذن تسليم' : 'Delivery Note'}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Add Product Search & Category Bar */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Category Filter */}
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
+              >
+                <option value="all">{isAr ? 'كافة تصنيفات الأصناف' : 'All Product Categories'}</option>
+                {productCategories.map((cat) => (
+                  <option key={cat.id} value={cat.key || cat.id}>
+                    {isAr ? cat.nameAr : (cat.nameEn || cat.nameAr)}
+                  </option>
+                ))}
+              </select>
+
+              {/* Product Selector */}
+              <div className="flex-1 min-w-[280px]">
+                <SearchableSelect
+                  options={availableProductOptions}
+                  value={selectedProductId}
+                  onChange={handleAddProduct}
+                  placeholder={isAr ? 'ابحث عن صنف لإضافته للطلب...' : 'Select product to add...'}
+                  searchPlaceholder={isAr ? 'ابحث باسم أو كود الصنف...' : 'Search product...'}
+                  isAr={isAr}
+                />
+              </div>
+            </div>
+
+            {/* Line Items Table */}
+            {formData.lines.length === 0 ? (
+              <div className="p-8 text-center text-slate-400 border border-dashed border-slate-300 rounded-xl">
+                {isAr ? 'لم تتم إضافة أي أصناف حتى الآن. اختر صنفاً من القائمة أعلاه.' : 'No products added yet. Select a product above.'}
+              </div>
+            ) : (
+              <div className="border border-slate-200 rounded-xl overflow-x-auto bg-white shadow-2xs">
+                <table className="w-full text-start border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200 text-[11px] whitespace-nowrap">
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الصنف' : 'Product'}</th>
+                      <th className="py-2.5 px-2 text-center w-24">{isAr ? 'الكمية (كرتونة)' : 'Qty (Carton)'}</th>
+                      <th className="py-2.5 px-2 text-center w-20">{isAr ? 'بونص' : 'Bonus'}</th>
+                      <th className="py-2.5 px-2 text-center w-28">{isAr ? 'السعر (مقفل)' : 'Unit Price'}</th>
+                      <th className="py-2.5 px-2 text-center w-24">{isAr ? 'خصم/كرتونة' : 'Disc/Ctn'}</th>
+                      <th className="py-2.5 px-2 text-center w-24">{isAr ? 'الضريبة' : 'VAT'}</th>
+                      <th className="py-2.5 px-2 text-center w-24">{isAr ? 'الوزن (كجم)' : 'Weight (kg)'}</th>
+                      <th className="py-2.5 px-3 text-end w-28">{isAr ? 'الإجمالي (EGP)' : 'Total'}</th>
+                      <th className="py-2.5 px-2 text-center w-10"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {formData.lines.map((line, idx) => {
+                      return (
+                        <tr key={idx} className="hover:bg-slate-50/50">
+                          {/* Product Info + Promo Icon */}
+                          <td className="py-2.5 px-3 font-bold text-slate-800">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-[10px] text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
+                                {line.productCode}
+                              </span>
+                              <span>{isAr ? line.productNameAr : (line.productNameEn || line.productNameAr)}</span>
+                              {line.isPrivateLabel && (
+                                <span className="text-[9px] font-bold text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
+                                  {isAr ? 'علامة خاصة' : 'PL'}
+                                </span>
+                              )}
+                              {/* User Comment: "don't show subtle tag for price tier, a small icon for promotion if available." */}
+                              {line.isPromotional && (
+                                <span
+                                  className="inline-flex items-center gap-0.5 text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200 text-[10px] font-bold"
+                                  title={isAr ? `عرض ترويجي (${line.promoDiscountPct ? `${line.promoDiscountPct.toFixed(1)}%` : ''})` : `Promotional (-${line.promoDiscountPct?.toFixed(1)}%)`}
+                                >
+                                  <Zap className="w-3 h-3 text-rose-500 fill-rose-500" />
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Quantity */}
+                          <td className="py-2 px-2 text-center">
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={line.qty}
+                              onChange={(e) => handleLineChange(idx, 'qty', e.target.value)}
+                              className="w-20 p-1.5 text-center font-mono font-bold text-slate-900 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            />
+                          </td>
+
+                          {/* Bonus Units */}
+                          <td className="py-2 px-2 text-center">
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={line.bonus}
+                              onChange={(e) => handleLineChange(idx, 'bonus', e.target.value)}
+                              placeholder="0"
+                              className="w-16 p-1.5 text-center font-mono font-bold text-emerald-700 bg-emerald-50/50 border border-emerald-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            />
+                          </td>
+
+                          {/* Unit Price (LOCKED) */}
+                          <td className="py-2 px-2 text-center font-mono">
+                            <div className="flex flex-col items-center">
+                              <span className="font-black text-slate-800 text-xs">
+                                {Number(line.detectedUnitPrice || 0).toFixed(2)}
+                              </span>
+                              {formData.vatMode.startsWith('inclusive') && line.vatRate !== '0%' && (
+                                <span className="text-[9px] text-slate-400 font-normal">
+                                  {isAr ? 'قبل الضريبة:' : 'Base:'} {Number(line.effectiveBaseUnitPrice || 0).toFixed(2)}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Manual Discount Per Unit */}
+                          <td className="py-2 px-2 text-center">
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={line.manualDiscountPerUnit}
+                              onChange={(e) => handleLineChange(idx, 'manualDiscountPerUnit', e.target.value)}
+                              placeholder="0.00"
+                              className="w-20 p-1.5 text-center font-mono font-semibold text-rose-600 bg-rose-50/30 border border-rose-200 rounded-lg focus:outline-none"
+                            />
+                          </td>
+
+                          {/* VAT */}
+                          <td className="py-2 px-2 text-center font-mono text-[11px] text-slate-600">
+                            {Number(line.lineVat || 0) > 0 ? (
+                              <span className="text-emerald-700 font-bold">
+                                +{Number(line.lineVat).toFixed(2)}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">0.00</span>
+                            )}
+                          </td>
+
+                          {/* Line Weight */}
+                          <td className="py-2 px-2 text-center font-mono text-slate-500 text-[11px]">
+                            {Number(line.lineWeightKg || 0).toFixed(1)}
+                          </td>
+
+                          {/* Total */}
+                          <td className="py-2 px-3 text-end font-mono font-black text-slate-900 text-xs">
+                            {Number(line.lineTotal || 0).toFixed(2)}
+                          </td>
+
+                          {/* Remove */}
+                          <td className="py-2 px-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveLine(idx)}
+                              className="p-1 text-slate-400 hover:text-rose-600 rounded transition cursor-pointer"
+                              title={isAr ? 'حذف البند' : 'Remove line'}
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Financial Totals Breakdown Strip */}
+            <div className="p-3.5 bg-slate-900 text-white rounded-2xl grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs font-mono">
+              <div>
+                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'إجمالي الكراتين:' : 'Total Cartons:'}</span>
+                <span className="text-sm font-bold text-white">
+                  {orderCalculations.totalCartons} ({orderCalculations.totalQty} + {orderCalculations.totalBonus})
+                </span>
+              </div>
+
+              <div>
+                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'إجمالي الوزن:' : 'Total Weight:'}</span>
+                <span className="text-sm font-bold text-white">
+                  {orderCalculations.totalWeightKg.toFixed(1)} kg
+                </span>
+              </div>
+
+              <div>
+                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'صافي قبل الضريبة:' : 'Net Pre-Tax:'}</span>
+                <span className="text-sm font-bold text-white">
+                  {orderCalculations.netPreTaxSubtotal.toFixed(2)}
+                </span>
+              </div>
+
+              <div>
+                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'ضريبة القيمة المضافة:' : 'Total VAT (+14%):'}</span>
+                <span className="text-sm font-bold text-emerald-400">
+                  +{orderCalculations.totalVat.toFixed(2)}
+                </span>
+              </div>
+
+              <div>
+                <span className="text-slate-400 block text-[10px] font-sans">{isAr ? 'خصم من المنبع (1%):' : 'WHT (-1%):'}</span>
+                <span className="text-sm font-bold text-amber-400">
+                  {orderCalculations.whtAmount > 0 ? `-${orderCalculations.whtAmount.toFixed(2)}` : '0.00'}
+                </span>
+              </div>
+
+              <div className="bg-white/10 p-2 rounded-xl text-end">
+                <span className="text-emerald-400 block text-[10px] font-sans font-bold">{isAr ? 'الإجمالي النهائي:' : 'Grand Total:'}</span>
+                <span className="text-base font-black text-emerald-300">
+                  {orderCalculations.grandTotal.toFixed(2)} EGP
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 4: Order Statuses, Comments & Rep */}
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+            <h4 className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5 border-b border-slate-200 pb-2">
+              <FileCheck className="w-4 h-4 text-indigo-600" />
+              <span>{isAr ? '٤. حالات الطلب والملاحظات والمندوب' : '4. Statuses, Comments & Representative'}</span>
+            </h4>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'حالة التأكيد' : 'Confirmation Status'}
+                </label>
+                <select
+                  value={formData.confirmationStatus}
+                  onChange={(e) => setFormData({ ...formData, confirmationStatus: e.target.value })}
+                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
+                >
+                  {CONFIRMATION_STATUSES.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {isAr ? s.labelAr : s.labelEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'حالة التنفيذ والتحميل' : 'Fulfillment Status'}
+                </label>
+                <select
+                  value={formData.fulfillmentStatus}
+                  onChange={(e) => setFormData({ ...formData, fulfillmentStatus: e.target.value })}
+                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
+                >
+                  {FULFILLMENT_STATUSES.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {isAr ? f.labelAr : f.labelEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isAr ? 'مندوب المبيعات' : 'Sales Representative'}
+                </label>
+                <input
+                  type="text"
+                  value={formData.salesRep}
+                  onChange={(e) => setFormData({ ...formData, salesRep: e.target.value })}
+                  placeholder={isAr ? 'اسم المندوب...' : 'Sales rep name...'}
+                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-semibold text-slate-800 focus:outline-none"
+                />
+              </div>
+
+              <div className="sm:col-span-3 grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center gap-1">
+                    <span>💬</span>
+                    <span>{isAr ? 'ملاحظات خارجية (تظهر على الفاتورة / الإذن)' : 'External Comments (On Invoice)'}</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={formData.externalComments}
+                    onChange={(e) => setFormData({ ...formData, externalComments: e.target.value })}
+                    placeholder={isAr ? 'ملاحظات موجهة للعميل أو السائق...' : 'Notes printed on invoice/delivery note...'}
+                    className="w-full py-1.5 px-3 bg-white border border-slate-300 rounded-xl text-xs font-medium focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center gap-1">
+                    <span>🔒</span>
+                    <span>{isAr ? 'ملاحظات داخلية (خاصة بالإدارة)' : 'Internal Comments (Private)'}</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={formData.internalComments}
+                    onChange={(e) => setFormData({ ...formData, internalComments: e.target.value })}
+                    placeholder={isAr ? 'ملاحظات سرية للإدارة فقط...' : 'Private internal notes...'}
+                    className="w-full py-1.5 px-3 bg-white border border-slate-300 rounded-xl text-xs font-medium focus:outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Modal Footer */}
+          <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+            <span className="font-mono text-xs text-slate-400">
+              Doc ID: {formData.id}
+            </span>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={isSaving}
+                className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs hover:shadow transition cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                <span>{editingOrder ? (isAr ? 'حفظ التعديلات' : 'Save Changes') : (isAr ? 'إنشاء وتأكيد الطلب' : 'Create Order')}</span>
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

@@ -163,7 +163,7 @@ export default function LandingPage({
     },
     {
       id: 'sales',
-      defaultTab: 'price_lists',
+      defaultTab: 'sales_orders',
       titleAr: 'المبيعات والتوزيع',
       titleEn: 'Sales & Distribution',
       icon: TrendingUp,
@@ -171,6 +171,7 @@ export default function LandingPage({
       status: 'active',
       permissionModuleKey: 'sales',
       tabs: [
+        { id: 'sales_orders', moduleKey: 'sales_orders', labelAr: 'أوامر البيع والتوريد', labelEn: 'Sales Orders', icon: ShoppingCart },
         { id: 'price_lists', moduleKey: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign },
         { id: 'client_contracts', moduleKey: 'client_contracts', labelAr: 'عقود وخصومات العملاء', labelEn: 'Client Contracts', icon: Handshake },
       ]

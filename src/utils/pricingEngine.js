@@ -56,6 +56,38 @@ export const isProductPrivateLabel = (product) => {
 };
 
 /**
+ * Checks whether a Private Label product is allowed for a given client.
+ * - Own-brand products are allowed for all clients.
+ * - Private Label products with assigned `privateLabelClientIds` (up to 2 main clients)
+ *   are restricted to those specific clients (with fallback to `clientName` matching for legacy records).
+ * - If no client restriction is set on the product yet, it remains accessible.
+ */
+export const isProductAllowedForClient = (product, clientId = '', clientName = '') => {
+  if (!product) return false;
+  if (!isProductPrivateLabel(product)) return true;
+  if (!clientId && !clientName) return true;
+
+  const assignedIds = Array.isArray(product.privateLabelClientIds)
+    ? product.privateLabelClientIds.filter(Boolean)
+    : [];
+
+  if (assignedIds.length > 0) {
+    return assignedIds.some((id) => String(id).trim() === String(clientId).trim());
+  }
+
+  // Fallback for legacy single string clientName
+  if (product.clientName && clientName) {
+    const normProdClient = String(product.clientName).trim().toLowerCase();
+    const normTarget = String(clientName).trim().toLowerCase();
+    if (normProdClient && normTarget) {
+      return normProdClient.includes(normTarget) || normTarget.includes(normProdClient);
+    }
+  }
+
+  return true;
+};
+
+/**
  * Format a Date object or ISO string to 'YYYY-MM-DD'
  */
 export const formatDateKey = (dateInput) => {

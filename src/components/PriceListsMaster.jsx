@@ -57,6 +57,7 @@ import PricePeriodAuditModal from './PricePeriodAuditModal';
 import {
   DEFAULT_PRICING_STRATEGIES,
   isProductPrivateLabel,
+  isProductAllowedForClient,
   formatDateKey,
   isPeriodActiveForDate,
   computePeriodStatus
@@ -1417,10 +1418,14 @@ function PriceListEditorModal({
       }
     ];
 
-    // Filter available products according to private label rules and category
+    // Filter available products according to private label rules, assigned client, and category
     const available = (products || []).filter((p) => {
       const isPl = isProductPrivateLabel(p);
       if (!isSpecialPricing && isPl) return false;
+      if (isSpecialPricing && isPl && formData.clientId) {
+        const cName = selectedClient?.tradeNameAr || selectedClient?.name || '';
+        if (!isProductAllowedForClient(p, formData.clientId, cName)) return false;
+      }
       if (selectedCategory !== 'all') {
         const prodCat = p.productionLine || p.categoryId || p.category;
         if (prodCat !== selectedCategory) return false;
@@ -1440,7 +1445,7 @@ function PriceListEditorModal({
     });
 
     return opts;
-  }, [products, isSpecialPricing, selectedCategory, categoryMap, isAr]);
+  }, [products, isSpecialPricing, formData.clientId, selectedClient, selectedCategory, categoryMap, isAr]);
 
   const handleCategoryChange = (newCat) => {
     setSelectedCategory(newCat);
@@ -1511,6 +1516,14 @@ function PriceListEditorModal({
         return false;
       }
 
+      // If special pricing & private label, only show if allowed for the selected client
+      if (isSpecialPricing && isPl && formData.clientId) {
+        const cName = selectedClient?.tradeNameAr || selectedClient?.name || '';
+        if (!isProductAllowedForClient(p, formData.clientId, cName)) {
+          return false;
+        }
+      }
+
       // Category filter
       if (selectedCategory !== 'all') {
         const prodCat = p.productionLine || p.categoryId || p.category;
@@ -1526,7 +1539,7 @@ function PriceListEditorModal({
 
       return true;
     });
-  }, [products, isSpecialPricing, selectedCategory, selectedProductId]);
+  }, [products, isSpecialPricing, formData.clientId, selectedClient, selectedCategory, selectedProductId]);
 
   const handlePriceChange = (productId, valStr) => {
     const next = { ...formData.items };

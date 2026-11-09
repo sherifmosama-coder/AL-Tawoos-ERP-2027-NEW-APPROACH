@@ -865,6 +865,33 @@ export const APP_ARCHITECTURE = {
       labelEn: "Sales & Distribution",
       icon: "TrendingUp",
       tabs: {
+        sales_orders: {
+          id: "sales_orders",
+          collection: "sales_orders",
+          labelAr: "أوامر البيع والتوريد",
+          labelEn: "Sales Orders Master",
+          icon: "ShoppingCart",
+          actions: [
+            { key: "canCreate", labelAr: "إنشاء أمر بيع جديد", labelEn: "Create Sales Order" },
+            { key: "canEdit", labelAr: "تعديل أمر بيع", labelEn: "Edit Sales Order" },
+            { key: "canDelete", labelAr: "حذف أو إلغاء أمر بيع", labelEn: "Delete Sales Order" },
+            { key: "canExport", labelAr: "تصدير أوامر البيع (CSV)", labelEn: "Export Sales Orders" },
+          ],
+          fields: {
+            serial: { labelAr: "مسلسل أمر البيع (#0001)", labelEn: "Order Serial", type: "string", required: true, sample: "0001" },
+            clientId: { labelAr: "كود العميل", labelEn: "Client ID", type: "string", required: true, sample: "CLI-101" },
+            branchId: { labelAr: "كود الفرع", labelEn: "Branch ID", type: "string", sample: "br_main" },
+            invoiceDate: { labelAr: "تاريخ الفاتورة / التسليم", labelEn: "Invoice / Delivery Date", type: "date", required: true, sample: "2026-11-09" },
+            loadingDate: { labelAr: "تاريخ التحميل", labelEn: "Loading Date", type: "date", required: true, sample: "2026-11-09" },
+            orderType: { labelAr: "نوع الطلب", labelEn: "Order Type", type: "enum", options: ["supply", "return_deduct", "return_no_deduct", "replacement_old", "exchange", "collection", "admin", "invoice_only_with_tax", "invoice_only_no_tax"], sample: "supply" },
+            confirmationStatus: { labelAr: "حالة التأكيد", labelEn: "Confirmation Status", type: "enum", options: ["confirmed", "not_confirmed", "revised", "canceled"], sample: "confirmed" },
+            fulfillmentStatus: { labelAr: "حالة التنفيذ والتحميل", labelEn: "Fulfillment Status", type: "enum", options: ["not_yet", "prepare", "shipped", "delivered", "paid"], sample: "not_yet" },
+            vatMode: { labelAr: "المعاملة الضريبية", labelEn: "Tax / VAT Mode", type: "enum", options: ["none", "exclusive", "exclusive_wht", "inclusive", "inclusive_wht"], sample: "none" },
+            poTawoos: { labelAr: "أمر شراء طاووس", labelEn: "PO # Tawoos", type: "string", sample: "PO-TW-2026-01" },
+            poPrivateLabel: { labelAr: "أمر شراء العلامة الخاصة", labelEn: "PO # Private Label", type: "string", sample: "PO-PL-4401" },
+            grandTotal: { labelAr: "إجمالي أمر البيع (EGP)", labelEn: "Order Grand Total (EGP)", type: "number", sample: 45000.00 }
+          }
+        },
         price_lists: {
           id: "price_lists",
           collection: "price_lists",
@@ -966,6 +993,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       party_statements: true,
       financial_statements: true,
       sales: true,
+      sales_orders: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: true
@@ -1072,6 +1100,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       party_statements: true,
       financial_statements: true,
       sales: true,
+      sales_orders: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: false
