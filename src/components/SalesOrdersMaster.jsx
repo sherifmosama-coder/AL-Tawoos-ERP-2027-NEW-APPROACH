@@ -207,6 +207,59 @@ const generateNextOrderSerial = (allOrders = []) => {
   return String(max + 1).padStart(4, '0');
 };
 
+/**
+ * Detects if a branch name is an auto-generated / dummy label (e.g. "Branch 1", "Branch 2", "فرع 1", "فرع 2", "br_1")
+ */
+const isGenericBranchLabel = (str) => {
+  if (!str || typeof str !== 'string') return true;
+  const s = str.trim().toLowerCase();
+  if (/^branch[\s_#-]*\d*$/i.test(s)) return true;
+  if (/^فرع[\s_#-]*\d*$/.test(s)) return true;
+  if (/^br[\s_#-]*\w*$/i.test(s)) return true;
+  return false;
+};
+
+/**
+ * Resolves the real human-meaningful branch name, ensuring we never display native generic labels ("Branch 1", "Branch 2", etc.)
+ */
+const resolveBranchDisplayName = (b, isAr = true) => {
+  if (!b) return '';
+  if (typeof b === 'string') {
+    return isGenericBranchLabel(b) ? '' : b;
+  }
+
+  const rawNameAr = (b.nameAr || '').trim();
+  const rawNameEn = (b.nameEn || '').trim();
+  const region = (b.region || '').trim();
+  const address = (b.address || '').trim();
+
+  // 1. Check for a non-generic real name in nameAr and nameEn
+  const hasRealAr = Boolean(rawNameAr && !isGenericBranchLabel(rawNameAr));
+  const hasRealEn = Boolean(rawNameEn && !isGenericBranchLabel(rawNameEn));
+
+  if (isAr) {
+    if (hasRealAr) return rawNameAr;
+    if (hasRealEn) return rawNameEn;
+  } else {
+    // In English mode, if nameEn is generic (like "Branch 2"), fallback to real Arabic name!
+    if (hasRealEn) return rawNameEn;
+    if (hasRealAr) return rawNameAr;
+  }
+
+  // 2. If both names are generic (e.g. "فرع 2" / "Branch 2"), fall back to the Region (e.g. "اكتوبر", "مدينة نصر")
+  if (region) {
+    return region;
+  }
+
+  // 3. Fall back to the first segment of the address if present
+  if (address) {
+    return address.split(/[-–,،]/)[0].trim();
+  }
+
+  // 4. Fallback if absolutely nothing else is available
+  return rawNameAr || rawNameEn || (isAr ? 'الفرع الرئيسي' : 'Main Branch');
+};
+
 export default function SalesOrdersMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
@@ -1719,10 +1772,11 @@ function SalesOrderEditorModal({
     return selectedClient.branches;
   }, [selectedClient]);
 
-  // In Sales Mode: Delivery / Warehouse branches only (Main Branch excluded!)
+  // In Sales Mode: Delivery / Warehouse branches only (Main Branch excluded when multiple branches exist)
   const deliveryBranches = useMemo(() => {
     if (!selectedClient || !Array.isArray(selectedClient.branches)) return [];
-    return selectedClient.branches.filter((b) => !b.isMain && b.id !== 'br_main');
+    const deliv = selectedClient.branches.filter((b) => !b.isMain && b.id !== 'br_main');
+    return deliv.length > 0 ? deliv : selectedClient.branches;
   }, [selectedClient]);
 
   // Allowed Order Types based on modal mode
@@ -1824,7 +1878,7 @@ function SalesOrderEditorModal({
     const loadingHolidayConflict = checkDateConflict(formData.loadingDate);
 
     return {
-      branchName: br ? (isAr ? (br.nameAr || br.nameEn || br.id) : (br.nameEn || br.nameAr || br.id)) : (isAr ? 'الفرع الرئيسي' : 'Main Branch'),
+      branchName: br ? resolveBranchDisplayName(br, isAr) : (isAr ? 'الفرع الرئيسي' : 'Main Branch'),
       region,
       address,
       contactPerson,
@@ -1903,18 +1957,18 @@ function SalesOrderEditorModal({
 
     // Auto-select branch:
     // If admin modal: main administrative branch (br_main)
-    // If sales modal: first delivery branch (excluding main branch)
+    // If sales modal: first delivery branch (excluding main branch when alternatives exist)
     const branches = Array.isArray(cl.branches) ? cl.branches : [];
     let selectedBr = null;
     if (isAdminModal) {
       selectedBr = branches.find((b) => b.isMain) || branches[0] || null;
     } else {
       const deliveryList = branches.filter((b) => !b.isMain && b.id !== 'br_main');
-      selectedBr = deliveryList[0] || null;
+      selectedBr = deliveryList.length > 0 ? deliveryList[0] : (branches[0] || null);
     }
 
     const branchId = selectedBr ? (selectedBr.id || 'br_main') : '';
-    const branchName = selectedBr ? (selectedBr.nameAr || selectedBr.nameEn || (isAr ? 'الفرع الرئيسي' : 'Main Branch')) : '';
+    const branchName = selectedBr ? resolveBranchDisplayName(selectedBr, isAr) : '';
     const region = selectedBr?.region || cl.region || '';
     const deliveryAddress = selectedBr?.address || cl.address || '';
 
@@ -1963,7 +2017,7 @@ function SalesOrderEditorModal({
   // Handle branch change
   const handleBranchChange = (newBranchId) => {
     const br = clientBranches.find((b) => (b.id || 'br_main') === newBranchId);
-    const branchName = br ? (br.nameAr || br.nameEn || newBranchId) : '';
+    const branchName = br ? resolveBranchDisplayName(br, isAr) : '';
     const region = br?.region || selectedClient?.region || '';
     const deliveryAddress = br?.address || selectedClient?.address || '';
 
@@ -2002,6 +2056,26 @@ function SalesOrderEditorModal({
       };
     });
   };
+
+  // Auto-select valid delivery branch if currently empty or invalid
+  useEffect(() => {
+    if (isAdminModal || !selectedClient || deliveryBranches.length === 0) return;
+    const currentValid = deliveryBranches.some((b) => b.id === formData.branchId);
+    if (!currentValid) {
+      const firstBranch = deliveryBranches[0];
+      const newBranchId = firstBranch.id || 'br_main';
+      const bName = resolveBranchDisplayName(firstBranch, isAr);
+      const reg = firstBranch.region || selectedClient.region || '';
+      const addr = firstBranch.address || selectedClient.address || '';
+      setFormData((prev) => ({
+        ...prev,
+        branchId: newBranchId,
+        branchName: bName,
+        region: reg,
+        deliveryAddress: addr
+      }));
+    }
+  }, [selectedClient, deliveryBranches, formData.branchId, isAdminModal, isAr]);
 
   // Handle order type change
   const handleOrderTypeChange = (newType) => {
@@ -2842,7 +2916,7 @@ function SalesOrderEditorModal({
                     ) : (
                       deliveryBranches.map((b) => (
                         <option key={b.id || 'br_deliv'} value={b.id}>
-                          {isAr ? (b.nameAr || b.nameEn || b.id) : (b.nameEn || b.nameAr || b.id)}
+                          {resolveBranchDisplayName(b, isAr)}
                         </option>
                       ))
                     )}
