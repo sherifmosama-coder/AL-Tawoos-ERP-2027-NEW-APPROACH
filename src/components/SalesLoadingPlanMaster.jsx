@@ -1001,14 +1001,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                       }`}
                     >
                       {/* Flex Container with Animated 80/20 Width Transitions */}
-                      <div className="flex flex-col md:flex-row items-stretch transition-all duration-300">
+                      <div className="flex flex-col md:flex-row items-stretch transition-all duration-700 ease-in-out">
                         {/* ========================================================================= */}
                         {/* CASE 1: IS EDITING (Assignment Panel takes 80%, Order Data takes 20%)     */}
                         {/* ========================================================================= */}
                         {isEditing ? (
                           <>
                             {/* Compressed Order Details (20% width) */}
-                            <div className="w-full md:w-[20%] p-3.5 bg-slate-50/90 border-e border-slate-200/80 flex flex-col justify-between space-y-2 shrink-0 text-start select-none">
+                            <div className="w-full md:w-[20%] p-3.5 bg-slate-50/90 border-e border-slate-200/80 flex flex-col justify-between space-y-2 shrink-0 text-start select-none transition-all duration-700 ease-in-out">
                               <div className="space-y-1.5">
                                 <div className="flex items-center justify-between">
                                   <span className="font-mono text-xs font-black text-slate-800">
@@ -1048,173 +1048,155 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               </div>
                             </div>
 
-                            {/* Expanded Assignment Form Panel (80% width) */}
-                            <div className="w-full md:w-[80%] p-4 sm:p-5 bg-white flex flex-col justify-between space-y-3 text-start animate-in fade-in duration-200">
-                              <div className="space-y-3">
-                                {/* Header */}
-                                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                                  <div className="flex items-center gap-2">
-                                    <div className="p-1.5 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200">
-                                      <Truck className="w-4 h-4" />
-                                    </div>
-                                    <div>
-                                      <h4 className="font-extrabold text-xs sm:text-sm text-slate-900">
-                                        {isAr ? 'تسكين وتوزيع الشاحنة' : 'Assign Loading Order & Truck'}
-                                      </h4>
-                                      <span className="text-[10px] text-slate-400">
-                                        {isAr ? `تعديل خطة التحميل للطلب #${orderSerial}` : `Editing dispatch for order #${orderSerial}`}
-                                      </span>
-                                    </div>
-                                  </div>
-
-                                  <button
-                                    type="button"
-                                    onClick={() => setActiveEditingOrderId(null)}
-                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer shadow-xs"
-                                  >
-                                    <Check className="w-3.5 h-3.5" />
-                                    <span>{isAr ? 'تم' : 'Done'}</span>
-                                  </button>
+                            {/* Ultra-Compact Assignment Form Panel (80% width) - Header and Footer removed */}
+                            <div className="w-full md:w-[80%] p-3 sm:p-4 bg-white flex flex-col sm:flex-row items-center justify-between gap-3 text-start transition-all duration-700 ease-out origin-right rtl:origin-left animate-in fade-in slide-in-from-right-16 rtl:slide-in-from-left-16 duration-700">
+                              {/* Fields Grid */}
+                              <div className="w-full flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
+                                {/* 1. Loading Order Number */}
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                    {isAr ? 'رقم التحميل:' : 'LO #:'} *
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    value={eff.loadingOrderNumber}
+                                    onChange={(e) => handleStageChange(order.id, 'loadingOrderNumber', e.target.value)}
+                                    placeholder={isAr ? 'مثال: 1' : 'e.g. 1'}
+                                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+                                  />
                                 </div>
 
-                                {/* Form Fields Grid */}
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
-                                  {/* 1. Loading Order Number */}
-                                  <div>
-                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                      {isAr ? 'رقم أمر التحميل:' : 'Loading Order #:'} *
-                                    </label>
-                                    <input
-                                      type="number"
-                                      min="1"
-                                      value={eff.loadingOrderNumber}
-                                      onChange={(e) => handleStageChange(order.id, 'loadingOrderNumber', e.target.value)}
-                                      placeholder={isAr ? 'مثال: 1' : 'e.g. 1'}
-                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-indigo-500"
-                                    />
-                                  </div>
+                                {/* 2. Loading Date */}
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                    {isAr ? 'تاريخ التحميل:' : 'Date:'} *
+                                  </label>
+                                  <input
+                                    type="date"
+                                    value={eff.loadingDate || targetPlanningDate}
+                                    onChange={(e) => handleStageChange(order.id, 'loadingDate', e.target.value)}
+                                    className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+                                  />
+                                </div>
 
-                                  {/* 2. Loading Date */}
-                                  <div>
-                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                      {isAr ? 'تاريخ التحميل:' : 'Loading Date:'} *
-                                    </label>
-                                    <input
-                                      type="date"
-                                      value={eff.loadingDate || targetPlanningDate}
-                                      onChange={(e) => handleStageChange(order.id, 'loadingDate', e.target.value)}
-                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500"
-                                    />
-                                  </div>
+                                {/* 3. Truck Selector */}
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                    {isAr ? 'السيارة:' : 'Truck:'} *
+                                  </label>
+                                  <select
+                                    value={eff.assignedVehicleId}
+                                    onChange={(e) => handleStageChange(order.id, 'assignedVehicleId', e.target.value)}
+                                    className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                  >
+                                    <option value="">{isAr ? '— اختر السيارة —' : '— Select Truck —'}</option>
+                                    {vehicles.map((v) => (
+                                      <option key={v.id} value={v.id}>
+                                        {v.plateNumber} — {v.vehicleModel}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
 
-                                  {/* 3. Truck Selector */}
-                                  <div className="sm:col-span-2">
-                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                      {isAr ? 'السيارة / الشاحنة:' : 'Vehicle / Truck:'} *
+                                {/* 4. Driver Selector */}
+                                <div>
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <label className="text-[10px] font-bold text-slate-500">
+                                      {isAr ? 'السائق:' : 'Driver:'} *
                                     </label>
-                                    <select
-                                      value={eff.assignedVehicleId}
-                                      onChange={(e) => handleStageChange(order.id, 'assignedVehicleId', e.target.value)}
-                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-                                    >
-                                      <option value="">{isAr ? '— اختر السيارة من الأسطول —' : '— Select Truck —'}</option>
-                                      {vehicles.map((v) => (
-                                        <option key={v.id} value={v.id}>
-                                          {v.plateNumber} — {v.vehicleModel} {v.maxCapacityKg ? `(سعة ${v.maxCapacityKg} كجم)` : ''}
-                                        </option>
-                                      ))}
-                                    </select>
+                                    {eff.assignedVehicleId && (
+                                      <span className={`text-[9px] font-bold px-1 rounded ${
+                                        isDefaultDriver
+                                          ? 'bg-emerald-100 text-emerald-800'
+                                          : eff.assignedDriverId
+                                          ? 'bg-blue-100 text-blue-800'
+                                          : 'bg-rose-100 text-rose-800'
+                                      }`}>
+                                        {isDefaultDriver
+                                          ? (isAr ? '✓ أساسي' : '✓ Default')
+                                          : eff.assignedDriverId
+                                          ? (isAr ? '✓ بديل' : '✓ Override')
+                                          : (isAr ? '! مطلوب' : '! Needed')}
+                                      </span>
+                                    )}
                                   </div>
+                                  <select
+                                    value={eff.assignedDriverId}
+                                    onChange={(e) => handleStageChange(order.id, 'assignedDriverId', e.target.value)}
+                                    className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                  >
+                                    <option value="">{isAr ? '— اختر السائق —' : '— Select Driver —'}</option>
+                                    {employees.map((emp) => (
+                                      <option key={emp.id} value={emp.id}>
+                                        {emp.nameAr || emp.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
 
-                                  {/* 4. Driver Selector */}
-                                  <div className="sm:col-span-2">
-                                    <div className="flex items-center justify-between mb-0.5">
-                                      <label className="text-[10px] font-bold text-slate-500">
-                                        {isAr ? 'السائق المكلف:' : 'Assigned Driver:'} *
-                                      </label>
-                                      {eff.assignedVehicleId && (
-                                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
-                                          isDefaultDriver
-                                            ? 'bg-emerald-100 text-emerald-800'
-                                            : eff.assignedDriverId
-                                            ? 'bg-blue-100 text-blue-800'
-                                            : 'bg-rose-100 text-rose-800'
-                                        }`}>
-                                          {isDefaultDriver
-                                            ? (isAr ? '✓ سائق المركبة الأساسي' : '✓ Default Driver')
-                                            : eff.assignedDriverId
-                                            ? (isAr ? '✓ سائق بديل' : '✓ Override Driver')
-                                            : (isAr ? '! سائق مطلوب' : '! Driver Needed')}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <select
-                                      value={eff.assignedDriverId}
-                                      onChange={(e) => handleStageChange(order.id, 'assignedDriverId', e.target.value)}
-                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-                                    >
-                                      <option value="">{isAr ? '— اختر السائق —' : '— Select Driver —'}</option>
-                                      {employees.map((emp) => (
-                                        <option key={emp.id} value={emp.id}>
-                                          {emp.nameAr || emp.name} {emp.jobTitle ? `(${emp.jobTitle})` : ''}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
-
-                                  {/* 5. Delivery Rep Selector */}
-                                  <div className="sm:col-span-2">
-                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                      {isAr ? 'مندوب التسليم (اختياري):' : 'Delivery Rep (Optional):'}
-                                    </label>
-                                    <select
-                                      value={eff.assignedDeliveryRepId}
-                                      onChange={(e) => handleStageChange(order.id, 'assignedDeliveryRepId', e.target.value)}
-                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-                                    >
-                                      <option value="">{isAr ? '— بدون مندوب تسليم —' : '— No Delivery Rep —'}</option>
-                                      {employees.map((emp) => (
-                                        <option key={emp.id} value={emp.id}>
-                                          {emp.nameAr || emp.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
+                                {/* 5. Delivery Rep Selector */}
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                    {isAr ? 'المندوب:' : 'Rep:'}
+                                  </label>
+                                  <select
+                                    value={eff.assignedDeliveryRepId}
+                                    onChange={(e) => handleStageChange(order.id, 'assignedDeliveryRepId', e.target.value)}
+                                    className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                  >
+                                    <option value="">{isAr ? '— بدون مندوب —' : '— None —'}</option>
+                                    {employees.map((emp) => (
+                                      <option key={emp.id} value={emp.id}>
+                                        {emp.nameAr || emp.name}
+                                      </option>
+                                    ))}
+                                  </select>
                                 </div>
                               </div>
 
-                              {/* Footer Actions */}
-                              <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                                <div>
-                                  {isAssigned && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleClearAssignment(order.id)}
-                                      className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
-                                    >
-                                      <RotateCcw className="w-3 h-3" />
-                                      <span>{isAr ? 'مسح التعيين بالكامل' : 'Clear Assignment'}</span>
-                                    </button>
-                                  )}
-                                </div>
+                              {/* Action Buttons: Expanding Check and X */}
+                              <div className="flex items-center gap-1.5 shrink-0 self-center">
+                                {/* Clear Button if assigned */}
+                                {isAssigned && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleClearAssignment(order.id)}
+                                    className="group/btn inline-flex items-center gap-1 h-8 px-2 rounded-xl bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition-all duration-300 cursor-pointer overflow-hidden"
+                                    title={isAr ? 'مسح التعيين' : 'Clear Assignment'}
+                                  >
+                                    <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                                    <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-[11px] font-bold whitespace-nowrap overflow-hidden">
+                                      {isAr ? 'مسح' : 'Clear'}
+                                    </span>
+                                  </button>
+                                )}
 
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => setActiveEditingOrderId(null)}
-                                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition cursor-pointer"
-                                  >
-                                    {isAr ? 'إغلاق' : 'Close'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setActiveEditingOrderId(null)}
-                                    className="inline-flex items-center gap-1 px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer shadow-xs"
-                                  >
-                                    <Check className="w-3.5 h-3.5" />
-                                    <span>{isAr ? 'حفظ وإغلاق' : 'Save & Close'}</span>
-                                  </button>
-                                </div>
+                                {/* Save / Check Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveEditingOrderId(null)}
+                                  className="group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-all duration-300 shadow-xs cursor-pointer overflow-hidden"
+                                  title={isAr ? 'حفظ' : 'Save'}
+                                >
+                                  <Check className="w-4 h-4 shrink-0" />
+                                  <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
+                                    {isAr ? 'حفظ' : 'Save'}
+                                  </span>
+                                </button>
+
+                                {/* Cancel / X Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveEditingOrderId(null)}
+                                  className="group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition-all duration-300 cursor-pointer overflow-hidden"
+                                  title={isAr ? 'إلغاء' : 'Cancel'}
+                                >
+                                  <X className="w-4 h-4 shrink-0" />
+                                  <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
+                                    {isAr ? 'إلغاء' : 'Cancel'}
+                                  </span>
+                                </button>
                               </div>
                             </div>
                           </>
