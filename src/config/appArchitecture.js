@@ -902,7 +902,8 @@ export const APP_ARCHITECTURE = {
           labelEn: "Loading Plan",
           icon: "Truck",
           actions: [
-            { key: "canManageLoadingPlan", labelAr: "إدارة واعتماد خطة التحميل وتوزيع الشاحنات", labelEn: "Manage Loading Plan" }
+            { key: "canManageLoadingPlan", labelAr: "إدارة واعتماد خطة التحميل وتوزيع الشاحنات", labelEn: "Manage Loading Plan" },
+            { key: "canModifyClosedOrders", labelAr: "تعديل الطلبات المسلمة والمسددة", labelEn: "Modify Delivered/Paid Orders" }
           ],
           fields: {
             loadingOrderNumber: { labelAr: "رقم أمر التحميل", labelEn: "Loading Order #", type: "number", sample: 1 },
@@ -1020,6 +1021,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     },
     actions: {
       canManageLoadingPlan: true,
+      canModifyClosedOrders: true,
       canCreate: true,
       canEdit: true,
       canApprove: true,
@@ -1129,6 +1131,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     },
     actions: {
       canManageLoadingPlan: true,
+      canModifyClosedOrders: false,
       canCreate: true,
       canEdit: true,
       canApprove: true,
