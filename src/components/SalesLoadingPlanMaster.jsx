@@ -33,7 +33,8 @@ import {
   ArrowUpDown,
   Sparkles,
   Layers,
-  Tag
+  Tag,
+  Edit2
 } from 'lucide-react';
 import {
   collection,
@@ -100,20 +101,37 @@ function calculateDismissNumber(dateStr, loNumber) {
   return `${mm}${dd}${nn}`;
 }
 
-// Extract GPS Coordinates or Map URL from client branch
-function resolveLocationUrl(targetBranch, clientObj) {
-  if (targetBranch?.gpsCoordinates && targetBranch.gpsCoordinates.trim() !== '') {
-    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(targetBranch.gpsCoordinates.trim())}`;
+// Resolve accurate GPS location link vs search location link
+function resolveLocationInfo(targetBranch, clientObj) {
+  const hasAccurateGps = Boolean(
+    (targetBranch?.gpsCoordinates && targetBranch.gpsCoordinates.trim() !== '') ||
+    (clientObj?.branches?.[0]?.gpsCoordinates && clientObj.branches[0].gpsCoordinates.trim() !== '')
+  );
+
+  if (hasAccurateGps) {
+    const coords = targetBranch?.gpsCoordinates?.trim() || clientObj?.branches?.[0]?.gpsCoordinates?.trim();
+    return {
+      type: 'accurate',
+      url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(coords)}`
+    };
   }
-  if (targetBranch?.address && targetBranch.address.trim() !== '') {
-    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(targetBranch.address.trim())}`;
+
+  const searchAddress = (
+    targetBranch?.address?.trim() ||
+    clientObj?.branches?.[0]?.address?.trim() ||
+    targetBranch?.name?.trim() ||
+    clientObj?.tradeNameAr?.trim() ||
+    clientObj?.name?.trim() ||
+    ''
+  );
+
+  if (searchAddress) {
+    return {
+      type: 'search',
+      url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(searchAddress)}`
+    };
   }
-  if (clientObj?.branches?.[0]?.gpsCoordinates) {
-    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(clientObj.branches[0].gpsCoordinates.trim())}`;
-  }
-  if (clientObj?.branches?.[0]?.address) {
-    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(clientObj.branches[0].address.trim())}`;
-  }
+
   return null;
 }
 
@@ -146,9 +164,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const [segments, setSegments] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Date Scope: 'today' | 'tomorrow' | 'week' | 'custom'
+  // 1. Target Planning Date (Top Anchor Date)
+  const [targetPlanningDate, setTargetPlanningDate] = useState(() => formatDateKey(new Date()));
+
+  // 2. Date Scope: 'today' | 'tomorrow' | 'week' | 'custom'
   const [dateScope, setDateScope] = useState('today');
   const [customDate, setCustomDate] = useState(() => formatDateKey(new Date()));
+
+  // 3. Single Active Editing Card
+  const [activeEditingOrderId, setActiveEditingOrderId] = useState(null);
 
   // Filters & Controls
   const [searchTerm, setSearchTerm] = useState('');
@@ -275,7 +299,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       assignedDriverName: order.assignedDriverName || '',
       assignedDeliveryRepId: order.assignedDeliveryRepId || '',
       assignedDeliveryRepName: order.assignedDeliveryRepName || '',
-      loadingDate: order.loadingDate || order.invoiceDate || todayStr
+      loadingDate: order.loadingDate || targetPlanningDate || todayStr
     };
   };
 
@@ -283,7 +307,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const handleStageChange = (orderId, field, value) => {
     setStagedAssignments((prev) => {
       const existing = prev[orderId] || getEffectiveAssignment(orders.find((o) => o.id === orderId) || {});
-      const updated = { ...existing, [field]: value };
+      const updated = {
+        ...existing,
+        loadingDate: existing.loadingDate || targetPlanningDate || todayStr,
+        [field]: value
+      };
 
       // Auto-populate driver when vehicle changes
       if (field === 'assignedVehicleId') {
@@ -334,6 +362,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         loadingDate: ''
       }
     }));
+    setActiveEditingOrderId(null);
   };
 
   // Filtered Orders
@@ -370,7 +399,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       // Unscheduled only filter
       if (unscheduledOnly) {
-        if (eff.loadingOrderNumber || eff.assignedVehicleId) return false;
+        if (eff.loadingOrderNumber && eff.assignedVehicleId) return false;
       }
 
       // Fulfillment status filter
@@ -468,11 +497,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return Object.values(groups);
   }, [sortedOrders, groupBy, isAr, stagedAssignments]);
 
-  // Active Trucks / Loading Orders Manifest Analysis (for floating dock & validations)
+  // Active Trucks / Loading Orders Manifest Analysis (COMPOUND ALIGNMENT: loadingDate + loadingOrderNumber)
   const truckManifest = useMemo(() => {
     const loGroups = {};
 
-    // Collect all orders relevant to the current view / staged
     const allRelevantOrders = orders.filter((o) => o.orderType !== 'admin' && o.orderType !== 'collection');
 
     allRelevantOrders.forEach((order) => {
@@ -480,11 +508,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       const loNum = Number(eff.loadingOrderNumber);
       if (!loNum) return;
 
-      if (!loGroups[loNum]) {
-        loGroups[loNum] = {
+      const loDate = eff.loadingDate || targetPlanningDate || todayStr;
+      const compoundKey = `${loDate}_#${loNum}`;
+
+      if (!loGroups[compoundKey]) {
+        loGroups[compoundKey] = {
+          compoundKey,
           loadingOrderNumber: loNum,
-          dismissNumber: calculateDismissNumber(eff.loadingDate, loNum),
-          loadingDate: eff.loadingDate,
+          loadingDate: loDate,
+          dismissNumber: calculateDismissNumber(loDate, loNum),
           vehiclesAssigned: new Set(),
           driversAssigned: new Set(),
           repsAssigned: new Set(),
@@ -500,7 +532,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         };
       }
 
-      const g = loGroups[loNum];
+      const g = loGroups[compoundKey];
       if (eff.assignedVehicleId) g.vehiclesAssigned.add(eff.assignedVehicleId);
       if (eff.assignedDriverId) g.driversAssigned.add(eff.assignedDriverId);
       if (eff.assignedDeliveryRepId) g.repsAssigned.add(eff.assignedDeliveryRepId);
@@ -510,19 +542,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       g.totalWeightKg += Number(order.totalWeightKg || 0);
     });
 
-    // Detect conflicts and calculate capacity gauges
+    // Detect conflicts and calculate capacity gauges per compound key
     const manifestList = Object.values(loGroups).map((g) => {
       const hasVehicleMismatch = g.vehiclesAssigned.size > 1;
       const hasDriverMismatch = g.driversAssigned.size > 1;
       const isMisaligned = hasVehicleMismatch || hasDriverMismatch;
 
-      // Find primary vehicle info
       const vehObj = vehicles.find((v) => v.id === g.primaryVehicleId) || null;
       const minCap = Number(vehObj?.minCapacityKg) || 0;
       const optCap = Number(vehObj?.optimumCapacityKg) || 0;
       const maxCap = Number(vehObj?.maxCapacityKg) || 0;
 
-      let gaugeStatus = 'normal'; // 'under' | 'optimal' | 'heavy' | 'over'
+      let gaugeStatus = 'normal';
       let gaugePct = 0;
 
       if (maxCap > 0) {
@@ -552,17 +583,23 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       };
     });
 
-    manifestList.sort((a, b) => a.loadingOrderNumber - b.loadingOrderNumber);
+    // Sort by date, then by loading order number
+    manifestList.sort((a, b) => {
+      const dateCmp = String(a.loadingDate).localeCompare(String(b.loadingDate));
+      if (dateCmp !== 0) return dateCmp;
+      return a.loadingOrderNumber - b.loadingOrderNumber;
+    });
+
     return manifestList;
-  }, [orders, stagedAssignments, vehicles, employees]);
+  }, [orders, stagedAssignments, vehicles, employees, targetPlanningDate, todayStr]);
 
   // Overall Misalignment Flag
   const totalMisalignments = useMemo(() => {
     return truckManifest.filter((t) => t.isMisaligned).length;
   }, [truckManifest]);
 
-  // 1-Click Alignment Handler: Unifies all orders in an LO # to the chosen vehicle and driver
-  const handleAlignTruckOrders = (loNumber, targetVehicleId, targetDriverId) => {
+  // 1-Click Alignment Handler: Unifies all orders in an LO # on a specific date to the chosen vehicle and driver
+  const handleAlignTruckOrders = (compoundKey, loNumber, targetLoadingDate, targetVehicleId, targetDriverId) => {
     const veh = vehicles.find((v) => v.id === targetVehicleId);
     const emp = employees.find((e) => e.id === targetDriverId);
 
@@ -570,9 +607,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       const updated = { ...prev };
       orders.forEach((order) => {
         const eff = getEffectiveAssignment(order);
-        if (Number(eff.loadingOrderNumber) === loNumber) {
+        const orderDate = eff.loadingDate || targetPlanningDate || todayStr;
+        if (Number(eff.loadingOrderNumber) === loNumber && orderDate === targetLoadingDate) {
           updated[order.id] = {
             ...eff,
+            loadingDate: targetLoadingDate,
             assignedVehicleId: targetVehicleId,
             assignedVehiclePlate: veh ? veh.plateNumber : eff.assignedVehiclePlate,
             assignedDriverId: targetDriverId,
@@ -583,7 +622,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return updated;
     });
 
-    showToast(isAr ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق لأمر تحميل #${loNumber} بنجاح ✓` : `Truck and driver aligned for LO #${loNumber} ✓`);
+    showToast(
+      isAr
+        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق لأمر تحميل #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح ✓`
+        : `Truck and driver aligned for LO #${loNumber} on ${targetLoadingDate} ✓`
+    );
   };
 
   // Discard all staged changes
@@ -592,6 +635,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     if (window.confirm(isAr ? 'هل تريد بالتأكيد إلغاء كافة التعديلات غير المحفوظة في خطة التحميل؟' : 'Discard all unsaved dispatch changes?')) {
       setStagedAssignments({});
       setIsManifestExpanded(false);
+      setActiveEditingOrderId(null);
       showToast(isAr ? 'تم إلغاء التعديلات غير المحفوظة' : 'Unsaved changes discarded', 'info');
     }
   };
@@ -599,7 +643,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // Pre-Save Validations & Open Confirmation Modal
   const handleOpenSaveModal = () => {
     if (totalMisalignments > 0) {
-      alert(isAr ? 'لا يمكن حفظ الخطة! يوجد تعارض في تعيين الشاحنات أو السائقين لنفس أمر التحميل. يرجى الضغط على "مطابقة" لحل التعارض.' : 'Cannot save plan! There are conflicting trucks or drivers for the same Loading Order. Please align them first.');
+      alert(isAr ? 'لا يمكن حفظ الخطة! يوجد تعارض في تعيين الشاحنات أو السائقين لنفس أمر التحميل على نفس التاريخ. يرجى الضغط على "مطابقة" لحل التعارض.' : 'Cannot save plan! There are conflicting trucks or drivers for the same Loading Order and date. Please align them first.');
       return;
     }
 
@@ -641,7 +685,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           assignedDriverName: staged.assignedDriverName || '',
           assignedDeliveryRepId: staged.assignedDeliveryRepId || '',
           assignedDeliveryRepName: staged.assignedDeliveryRepName || '',
-          loadingDate: staged.loadingDate || '',
+          loadingDate: staged.loadingDate || targetPlanningDate || '',
           updatedAt: nowIso,
           updatedBy: currentUserName
         };
@@ -663,10 +707,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           userName: currentUserName,
           action: 'dispatch_plan_update',
           summaryAr: staged.loadingOrderNumber
-            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} — سيارة: ${staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}`
+            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}`
             : 'إلغاء تسكين الشاحنة وأمر التحميل',
           summaryEn: staged.loadingOrderNumber
-            ? `Assigned to LO #${staged.loadingOrderNumber} — Truck: ${staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}`
+            ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}`
             : 'Unassigned from truck'
         };
 
@@ -681,6 +725,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       setStagedAssignments({});
       setIsSaveModalOpen(false);
       setIsManifestExpanded(false);
+      setActiveEditingOrderId(null);
       showToast(isAr ? `تم حفظ واعتماد خطة التحميل بنجاح (${updatedCount} أمر بيع) ✓` : `Loading Plan saved successfully (${updatedCount} orders) ✓`);
     } catch (err) {
       console.error('Error saving loading plan:', err);
@@ -708,71 +753,83 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       {/* TOP FILTER & GROUPING RIBBON */}
       <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-4 sm:p-5 space-y-3.5">
-        {/* Row 1: Date Scope Buttons & Overall Scope Stats */}
+        {/* Row 1: Target Planning Date + Date Scope Buttons & Overall Scope Stats */}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs font-extrabold text-slate-500 me-1 flex items-center gap-1">
-              <Calendar className="w-4 h-4 text-emerald-600" />
-              <span>{isAr ? 'نطاق التشغيل:' : 'Date Scope:'}</span>
-            </span>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Target Planning Date Input (Top Anchor Date) */}
+            <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50/80 border border-amber-200 rounded-2xl shadow-2xs">
+              <span className="text-amber-900 font-extrabold text-xs flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5 text-amber-600" />
+                <span>{isAr ? 'تاريخ التحميل المستهدف:' : 'Target Loading Date:'}</span>
+              </span>
+              <input
+                type="date"
+                value={targetPlanningDate}
+                onChange={(e) => setTargetPlanningDate(e.target.value)}
+                className="py-0.5 px-2 bg-white border border-amber-300 rounded-xl font-mono text-xs font-bold text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+              />
+            </div>
 
-            <button
-              type="button"
-              onClick={() => setDateScope('today')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                dateScope === 'today'
-                  ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-              }`}
-            >
-              {isAr ? 'اليوم' : 'Today'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setDateScope('tomorrow')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                dateScope === 'tomorrow'
-                  ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-              }`}
-            >
-              {isAr ? 'غداً' : 'Tomorrow'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setDateScope('week')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                dateScope === 'week'
-                  ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-              }`}
-            >
-              {isAr ? 'خلال 7 أيام' : 'Next 7 Days'}
-            </button>
-
-            <div className="flex items-center gap-1 ms-1">
+            {/* Scope Shortcuts */}
+            <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setDateScope('custom')}
+                onClick={() => setDateScope('today')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                  dateScope === 'custom'
+                  dateScope === 'today'
                     ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
                     : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                 }`}
               >
-                {isAr ? 'تاريخ محدد' : 'Custom Date'}
+                {isAr ? 'اليوم' : 'Today'}
               </button>
 
-              {dateScope === 'custom' && (
-                <input
-                  type="date"
-                  value={customDate}
-                  onChange={(e) => setCustomDate(e.target.value)}
-                  className="px-2.5 py-1 bg-white border border-emerald-300 rounded-xl text-xs font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                />
-              )}
+              <button
+                type="button"
+                onClick={() => setDateScope('tomorrow')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                  dateScope === 'tomorrow'
+                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                {isAr ? 'غداً' : 'Tomorrow'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDateScope('week')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                  dateScope === 'week'
+                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                {isAr ? 'خلال 7 أيام' : 'Next 7 Days'}
+              </button>
+
+              <div className="flex items-center gap-1 ms-1">
+                <button
+                  type="button"
+                  onClick={() => setDateScope('custom')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                    dateScope === 'custom'
+                      ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  {isAr ? 'تاريخ مخصص' : 'Custom Scope'}
+                </button>
+
+                {dateScope === 'custom' && (
+                  <input
+                    type="date"
+                    value={customDate}
+                    onChange={(e) => setCustomDate(e.target.value)}
+                    className="px-2.5 py-1 bg-white border border-emerald-300 rounded-xl text-xs font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                  />
+                )}
+              </div>
             </div>
           </div>
 
@@ -786,7 +843,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 {filteredOrders.reduce((s, o) => s + (Number(o.totalCartons || o.totalQty) || 0), 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
               </span>
               <span className="text-slate-300">•</span>
-              <span className="text-emerald-700">
+              <span className="text-emerald-700 font-black">
                 {(filteredOrders.reduce((s, o) => s + (Number(o.totalWeightKg) || 0), 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}
               </span>
             </div>
@@ -900,10 +957,13 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               )}
 
               {/* Cards Grid */}
-              <div className="grid grid-cols-1 gap-3.5">
+              <div className="grid grid-cols-1 gap-3">
                 {group.items.map((order) => {
                   const eff = getEffectiveAssignment(order);
                   const isStaged = Boolean(stagedAssignments[order.id]);
+                  const isEditing = activeEditingOrderId === order.id;
+                  const isAssigned = Boolean(eff.loadingOrderNumber && eff.assignedVehicleId);
+
                   const orderSerial = resolveOrderSerial(order, orders);
                   const orderTypeObj = ORDER_TYPES.find((t) => t.id === order.orderType) || ORDER_TYPES[0];
 
@@ -911,7 +971,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   const branchCount = (clientObj?.branches || []).length;
                   const showBranchName = branchCount > 1 && order.branchName;
                   const targetBranch = (clientObj?.branches || []).find((b) => b.id === order.branchId) || clientObj?.branches?.[0] || null;
-                  const locationUrl = resolveLocationUrl(targetBranch, clientObj);
+
+                  // Location detection: accurate GPS vs fallback address/name search
+                  const locInfo = resolveLocationInfo(targetBranch, clientObj);
 
                   // Operational Profile
                   const workingHoursDisplay = targetBranch?.workingHours || clientObj?.workingHours || '';
@@ -930,314 +992,639 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   return (
                     <div
                       key={order.id}
-                      className={`bg-white rounded-3xl border transition shadow-xs overflow-hidden ${
-                        isStaged
+                      className={`bg-white rounded-3xl border transition-all duration-300 shadow-xs overflow-hidden ${
+                        isEditing
+                          ? 'border-indigo-400 ring-2 ring-indigo-500/20 shadow-md'
+                          : isStaged
                           ? 'border-emerald-400 ring-2 ring-emerald-500/20 shadow-md'
                           : 'border-slate-200/90 hover:border-slate-300'
                       }`}
                     >
-                      <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x lg:divide-x-reverse divide-slate-100">
-                        {/* LEFT COLUMN: Delivery & Product Info (7 cols) */}
-                        <div className="p-4 sm:p-5 lg:col-span-7 space-y-3">
-                          {/* Header: Type, Serial, Client, Branch, Region */}
-                          <div className="flex items-start justify-between gap-2 flex-wrap">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              {/* Order Type Badge */}
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                <span>{isAr ? orderTypeObj.labelAr : orderTypeObj.labelEn}</span>
-                              </span>
-
-                              {/* Serial */}
-                              <span className="font-mono text-xs font-black text-slate-800">
-                                #{orderSerial}
-                              </span>
-
-                              {/* Dates */}
-                              <span className="text-[11px] font-mono text-slate-400">
-                                {order.invoiceDate || '—'}
-                              </span>
-                            </div>
-
-                            {/* Cartons & Weight Summary Badge */}
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-slate-900 text-xs font-mono">
-                                {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
-                                {order.totalBonus > 0 ? (
-                                  <span className="text-emerald-600 text-[10px] font-bold ms-1">+{order.totalBonus}</span>
-                                ) : null}
-                              </span>
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                                <Weight className="w-3 h-3 text-slate-500" />
-                                <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Client & Branch & Region & Maps */}
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <span
-                                className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs"
-                                style={{
-                                  backgroundColor: `${segColor}18`,
-                                  color: segColor,
-                                  border: `1px solid ${segColor}35`
-                                }}
-                              >
-                                <SegIcon className="w-3.5 h-3.5 shrink-0" />
-                              </span>
-                              <span className="font-extrabold text-slate-900 text-sm">
-                                {order.clientName || order.clientId || '—'}
-                              </span>
-                              {showBranchName && (
-                                <span className="text-xs font-bold text-slate-500">
-                                  ({order.branchName})
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                              {order.region && (
-                                <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-semibold">
-                                  <MapPin className="w-3 h-3 text-slate-400" />
-                                  <span>{order.region}</span>
-                                </span>
-                              )}
-
-                              {locationUrl ? (
-                                <a
-                                  href={locationUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-[11px] text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md font-bold transition cursor-pointer"
-                                  title={isAr ? 'فتح موقع الفرع على خرائط جوجل' : 'Open Location on Google Maps'}
-                                >
-                                  <Map className="w-3 h-3 text-emerald-600" />
-                                  <span>{isAr ? 'الموقع على الخريطة' : 'Map Link'}</span>
-                                </a>
-                              ) : (
-                                <span className="text-[11px] text-slate-300 flex items-center gap-1">
-                                  <Map className="w-3 h-3" />
-                                  <span>{isAr ? 'بدون موقع مسجل' : 'No Map'}</span>
-                                </span>
-                              )}
-
-                              {workingHoursDisplay && (
-                                <span className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-mono">
-                                  <Clock className="w-3 h-3 text-slate-400" />
-                                  <span>{workingHoursDisplay}</span>
-                                </span>
-                              )}
-
-                              {holidaysList.length > 0 && (
-                                <span
-                                  className="inline-flex items-center gap-1 text-[11px] text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200"
-                                  title={isAr ? 'عطلة أسبوعية' : 'Weekly holiday'}
-                                >
-                                  <Calendar className="w-3 h-3 text-rose-500" />
-                                  <span>
-                                    {isAr ? 'عطلة:' : 'Holiday:'}{' '}
-                                    {holidaysList.map((d) => (isAr ? WEEKDAY_NAMES_AR[d] : WEEKDAY_NAMES_EN[d])).join('، ')}
+                      {/* Flex Container with Animated 80/20 Width Transitions */}
+                      <div className="flex flex-col md:flex-row items-stretch transition-all duration-300">
+                        {/* ========================================================================= */}
+                        {/* CASE 1: IS EDITING (Assignment Panel takes 80%, Order Data takes 20%)     */}
+                        {/* ========================================================================= */}
+                        {isEditing ? (
+                          <>
+                            {/* Compressed Order Details (20% width) */}
+                            <div className="w-full md:w-[20%] p-3.5 bg-slate-50/90 border-e border-slate-200/80 flex flex-col justify-between space-y-2 shrink-0 text-start select-none">
+                              <div className="space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-mono text-xs font-black text-slate-800">
+                                    #{orderSerial}
                                   </span>
-                                </span>
-                              )}
-                            </div>
-                          </div>
+                                  <span className="text-[10px] font-bold text-slate-400 font-mono">
+                                    {order.invoiceDate || '—'}
+                                  </span>
+                                </div>
 
-                          {/* Client Notes & Order Notes */}
-                          {(clientNotes || order.externalComments || order.internalComments) && (
-                            <div className="space-y-1.5 pt-1 text-xs">
-                              {clientNotes && (
-                                <div className="p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5">
-                                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                <div className="font-extrabold text-xs text-slate-900 leading-tight truncate" title={order.clientName}>
+                                  {order.clientName || '—'}
+                                </div>
+
+                                {showBranchName && (
+                                  <div className="text-[10px] font-bold text-slate-500 truncate" title={order.branchName}>
+                                    {order.branchName}
+                                  </div>
+                                )}
+
+                                {order.region && (
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] bg-slate-200/70 text-slate-700 px-1.5 py-0.2 rounded font-semibold truncate max-w-full">
+                                    <MapPin className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                    <span className="truncate">{order.region}</span>
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="pt-2 border-t border-slate-200/70 space-y-1">
+                                <div className="text-xs font-mono font-black text-slate-900">
+                                  {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                </div>
+                                <div className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                                  <Weight className="w-2.5 h-2.5 text-emerald-600" />
+                                  <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Expanded Assignment Form Panel (80% width) */}
+                            <div className="w-full md:w-[80%] p-4 sm:p-5 bg-white flex flex-col justify-between space-y-3 text-start animate-in fade-in duration-200">
+                              <div className="space-y-3">
+                                {/* Header */}
+                                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                                  <div className="flex items-center gap-2">
+                                    <div className="p-1.5 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                      <Truck className="w-4 h-4" />
+                                    </div>
+                                    <div>
+                                      <h4 className="font-extrabold text-xs sm:text-sm text-slate-900">
+                                        {isAr ? 'تسكين وتوزيع الشاحنة' : 'Assign Loading Order & Truck'}
+                                      </h4>
+                                      <span className="text-[10px] text-slate-400">
+                                        {isAr ? `تعديل خطة التحميل للطلب #${orderSerial}` : `Editing dispatch for order #${orderSerial}`}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveEditingOrderId(null)}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer shadow-xs"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>{isAr ? 'تم' : 'Done'}</span>
+                                  </button>
+                                </div>
+
+                                {/* Form Fields Grid */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+                                  {/* 1. Loading Order Number */}
                                   <div>
-                                    <span className="font-bold me-1">{isAr ? 'ملاحظة العميل الدائمة:' : 'Client Note:'}</span>
-                                    <span>{clientNotes}</span>
+                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                      {isAr ? 'رقم أمر التحميل:' : 'Loading Order #:'} *
+                                    </label>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      value={eff.loadingOrderNumber}
+                                      onChange={(e) => handleStageChange(order.id, 'loadingOrderNumber', e.target.value)}
+                                      placeholder={isAr ? 'مثال: 1' : 'e.g. 1'}
+                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+                                    />
+                                  </div>
+
+                                  {/* 2. Loading Date */}
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                      {isAr ? 'تاريخ التحميل:' : 'Loading Date:'} *
+                                    </label>
+                                    <input
+                                      type="date"
+                                      value={eff.loadingDate || targetPlanningDate}
+                                      onChange={(e) => handleStageChange(order.id, 'loadingDate', e.target.value)}
+                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+                                    />
+                                  </div>
+
+                                  {/* 3. Truck Selector */}
+                                  <div className="sm:col-span-2">
+                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                      {isAr ? 'السيارة / الشاحنة:' : 'Vehicle / Truck:'} *
+                                    </label>
+                                    <select
+                                      value={eff.assignedVehicleId}
+                                      onChange={(e) => handleStageChange(order.id, 'assignedVehicleId', e.target.value)}
+                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                    >
+                                      <option value="">{isAr ? '— اختر السيارة من الأسطول —' : '— Select Truck —'}</option>
+                                      {vehicles.map((v) => (
+                                        <option key={v.id} value={v.id}>
+                                          {v.plateNumber} — {v.vehicleModel} {v.maxCapacityKg ? `(سعة ${v.maxCapacityKg} كجم)` : ''}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+
+                                  {/* 4. Driver Selector */}
+                                  <div className="sm:col-span-2">
+                                    <div className="flex items-center justify-between mb-0.5">
+                                      <label className="text-[10px] font-bold text-slate-500">
+                                        {isAr ? 'السائق المكلف:' : 'Assigned Driver:'} *
+                                      </label>
+                                      {eff.assignedVehicleId && (
+                                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                                          isDefaultDriver
+                                            ? 'bg-emerald-100 text-emerald-800'
+                                            : eff.assignedDriverId
+                                            ? 'bg-blue-100 text-blue-800'
+                                            : 'bg-rose-100 text-rose-800'
+                                        }`}>
+                                          {isDefaultDriver
+                                            ? (isAr ? '✓ سائق المركبة الأساسي' : '✓ Default Driver')
+                                            : eff.assignedDriverId
+                                            ? (isAr ? '✓ سائق بديل' : '✓ Override Driver')
+                                            : (isAr ? '! سائق مطلوب' : '! Driver Needed')}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <select
+                                      value={eff.assignedDriverId}
+                                      onChange={(e) => handleStageChange(order.id, 'assignedDriverId', e.target.value)}
+                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                    >
+                                      <option value="">{isAr ? '— اختر السائق —' : '— Select Driver —'}</option>
+                                      {employees.map((emp) => (
+                                        <option key={emp.id} value={emp.id}>
+                                          {emp.nameAr || emp.name} {emp.jobTitle ? `(${emp.jobTitle})` : ''}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+
+                                  {/* 5. Delivery Rep Selector */}
+                                  <div className="sm:col-span-2">
+                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                      {isAr ? 'مندوب التسليم (اختياري):' : 'Delivery Rep (Optional):'}
+                                    </label>
+                                    <select
+                                      value={eff.assignedDeliveryRepId}
+                                      onChange={(e) => handleStageChange(order.id, 'assignedDeliveryRepId', e.target.value)}
+                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                    >
+                                      <option value="">{isAr ? '— بدون مندوب تسليم —' : '— No Delivery Rep —'}</option>
+                                      {employees.map((emp) => (
+                                        <option key={emp.id} value={emp.id}>
+                                          {emp.nameAr || emp.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Footer Actions */}
+                              <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                                <div>
+                                  {isAssigned && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleClearAssignment(order.id)}
+                                      className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
+                                    >
+                                      <RotateCcw className="w-3 h-3" />
+                                      <span>{isAr ? 'مسح التعيين بالكامل' : 'Clear Assignment'}</span>
+                                    </button>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveEditingOrderId(null)}
+                                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition cursor-pointer"
+                                  >
+                                    {isAr ? 'إغلاق' : 'Close'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveEditingOrderId(null)}
+                                    className="inline-flex items-center gap-1 px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer shadow-xs"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>{isAr ? 'حفظ وإغلاق' : 'Save & Close'}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </>
+                        ) : isAssigned ? (
+                          /* ========================================================================= */
+                          /* CASE 2: IS ASSIGNED & CLOSED (Order Data 80%, Summary 2x2 Grid 20%)       */
+                          /* ========================================================================= */
+                          <>
+                            {/* Main Order Data (80% width) */}
+                            <div className="w-full md:w-[80%] p-4 sm:p-5 space-y-2.5 text-start">
+                              {/* Header Row: Type, Serial, Client, Branch, Region, Map, Dates */}
+                              <div className="flex items-start justify-between gap-2 flex-wrap">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <span>{isAr ? orderTypeObj.labelAr : orderTypeObj.labelEn}</span>
+                                  </span>
+
+                                  <span className="font-mono text-xs font-black text-slate-800">
+                                    #{orderSerial}
+                                  </span>
+
+                                  <span className="text-[11px] font-mono text-slate-400">
+                                    {order.invoiceDate || '—'}
+                                  </span>
+                                </div>
+
+                                {/* Cartons & Weight Summary Badge */}
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-slate-900 text-xs font-mono">
+                                    {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                    {order.totalBonus > 0 ? (
+                                      <span className="text-emerald-600 text-[10px] font-bold ms-1">+{order.totalBonus}</span>
+                                    ) : null}
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                                    <Weight className="w-3 h-3 text-slate-500" />
+                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Client & Branch & Region & Maps */}
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs"
+                                    style={{
+                                      backgroundColor: `${segColor}18`,
+                                      color: segColor,
+                                      border: `1px solid ${segColor}35`
+                                    }}
+                                  >
+                                    <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                  </span>
+                                  <span className="font-extrabold text-slate-900 text-sm">
+                                    {order.clientName || order.clientId || '—'}
+                                  </span>
+                                  {showBranchName && (
+                                    <span className="text-xs font-bold text-slate-500">
+                                      ({order.branchName})
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                  {order.region && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-semibold">
+                                      <MapPin className="w-3 h-3 text-slate-400" />
+                                      <span>{order.region}</span>
+                                    </span>
+                                  )}
+
+                                  {/* Map Icon: Accurate GPS (Map icon) vs Fallback Search (MapPin+Search in Pale Yellow) */}
+                                  {locInfo?.type === 'accurate' ? (
+                                    <a
+                                      href={locInfo.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="inline-flex items-center gap-1 text-[11px] text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md font-bold transition cursor-pointer shadow-2xs"
+                                      title={isAr ? 'فتح الموقع المسجل الدقيق على الخريطة' : 'Open Saved Accurate Location on Map'}
+                                    >
+                                      <Map className="w-3.5 h-3.5 text-emerald-600" />
+                                      <span>{isAr ? 'الموقع مسجل' : 'Location'}</span>
+                                    </a>
+                                  ) : locInfo?.type === 'search' ? (
+                                    <a
+                                      href={locInfo.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="inline-flex items-center gap-1 text-[11px] text-amber-800 hover:text-amber-900 bg-amber-50/90 hover:bg-amber-100 border border-amber-200/90 px-2 py-0.5 rounded-md font-semibold transition cursor-pointer shadow-2xs"
+                                      title={isAr ? 'بحث بالاسم أو العنوان على الخريطة (موقع غير مثبت بدقة)' : 'Search by name/address on Map'}
+                                    >
+                                      <span className="relative inline-flex items-center">
+                                        <MapPin className="w-3.5 h-3.5 text-amber-600" />
+                                        <Search className="w-2 h-2 text-amber-800 absolute -bottom-0.5 -end-0.5" />
+                                      </span>
+                                      <span>{isAr ? 'بحث على الخريطة' : 'Search Map'}</span>
+                                    </a>
+                                  ) : (
+                                    <span className="text-[11px] text-slate-300 flex items-center gap-1">
+                                      <Map className="w-3 h-3" />
+                                      <span>{isAr ? 'بدون موقع مسجل' : 'No Map'}</span>
+                                    </span>
+                                  )}
+
+                                  {workingHoursDisplay && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-mono">
+                                      <Clock className="w-3 h-3 text-slate-400" />
+                                      <span>{workingHoursDisplay}</span>
+                                    </span>
+                                  )}
+
+                                  {holidaysList.length > 0 && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[11px] text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200"
+                                      title={isAr ? 'عطلة أسبوعية' : 'Weekly holiday'}
+                                    >
+                                      <Calendar className="w-3 h-3 text-rose-500" />
+                                      <span>
+                                        {isAr ? 'عطلة:' : 'Holiday:'}{' '}
+                                        {holidaysList.map((d) => (isAr ? WEEKDAY_NAMES_AR[d] : WEEKDAY_NAMES_EN[d])).join('، ')}
+                                      </span>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Client Notes & Order Notes */}
+                              {(clientNotes || order.externalComments || order.internalComments) && (
+                                <div className="space-y-1.5 pt-1 text-xs">
+                                  {clientNotes && (
+                                    <div className="p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5">
+                                      <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                      <div>
+                                        <span className="font-bold me-1">{isAr ? 'ملاحظة العميل الدائمة:' : 'Client Note:'}</span>
+                                        <span>{clientNotes}</span>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {order.internalComments && (
+                                    <div className="p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-700 text-[11px] flex items-start gap-1">
+                                      <Lock className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
+                                      <span className="break-words">{order.internalComments}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* CHIPS OF TOTAL PER PRODUCT QTY (Space-Saving) */}
+                              {Array.isArray(order.items) && order.items.length > 0 && (
+                                <div className="pt-1.5">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    {order.items.map((it, idx) => (
+                                      <span
+                                        key={idx}
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200"
+                                        title={`${it.nameAr || it.productName || it.itemCode}: ${it.quantity} كرتونة`}
+                                      >
+                                        <span className="truncate max-w-[140px]">{it.nameAr || it.productName || it.name || it.itemCode}</span>
+                                        <span className="text-emerald-700 font-mono font-black">
+                                          ({it.quantity} {isAr ? 'ك' : 'c'})
+                                        </span>
+                                      </span>
+                                    ))}
                                   </div>
                                 </div>
                               )}
-
-                              {order.internalComments && (
-                                <div className="p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-700 text-[11px] flex items-start gap-1">
-                                  <Lock className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
-                                  <span className="break-words">{order.internalComments}</span>
-                                </div>
-                              )}
                             </div>
-                          )}
 
-                          {/* Products Mini-Grid */}
-                          {Array.isArray(order.items) && order.items.length > 0 && (
-                            <div className="pt-2 border-t border-slate-100">
-                              <span className="text-[10px] font-black uppercase text-slate-400 block mb-1">
-                                {isAr ? `المنتجات (${order.items.length} صنف):` : `Products (${order.items.length} items):`}
-                              </span>
-                              <div className="flex flex-wrap gap-1.5">
-                                {order.items.slice(0, 4).map((it, idx) => (
-                                  <span
-                                    key={idx}
-                                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-50 text-slate-700 border border-slate-200"
-                                  >
-                                    <span className="truncate max-w-[140px]">{it.nameAr || it.productName || it.name || it.itemCode}</span>
-                                    <span className="text-emerald-700 font-mono">
-                                      {it.quantity} {isAr ? 'ك' : 'c'}
-                                    </span>
+                            {/* COMPACT 2X2 SUMMARY GRID STRIP (20% width) */}
+                            <div
+                              onClick={() => setActiveEditingOrderId(order.id)}
+                              className="w-full md:w-[20%] p-3 bg-emerald-50/40 hover:bg-emerald-50/70 border-t md:border-t-0 md:border-s border-emerald-100 flex flex-col justify-between transition-all duration-300 shrink-0 cursor-pointer text-start select-none group"
+                              title={isAr ? 'انقر لتعديل بيانات التسكين' : 'Click to edit dispatch assignment'}
+                            >
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-black uppercase text-emerald-800 flex items-center gap-1">
+                                    <Truck className="w-3.5 h-3.5 text-emerald-600" />
+                                    <span>{isAr ? 'بيانات الشاحنة' : 'Assigned Truck'}</span>
                                   </span>
-                                ))}
-                                {order.items.length > 4 && (
-                                  <span className="text-[10px] font-bold text-slate-400 self-center">
-                                    +{order.items.length - 4} {isAr ? 'أصناف أخرى' : 'more'}
+                                  <span className="text-[10px] font-bold text-emerald-700 group-hover:underline flex items-center gap-0.5">
+                                    <Edit2 className="w-2.5 h-2.5" />
+                                    <span>{isAr ? 'تعديل' : 'Edit'}</span>
+                                  </span>
+                                </div>
+
+                                {/* 2x2 Cell Badge Box */}
+                                <div className="grid grid-cols-2 gap-1.5 text-start">
+                                  {/* Cell 1: LO Number */}
+                                  <div className="bg-white p-1.5 rounded-xl border border-emerald-200 shadow-2xs font-mono font-black text-xs text-emerald-800 flex items-center gap-1 truncate">
+                                    <Truck className="w-3 h-3 text-emerald-600 shrink-0" />
+                                    <span>#{eff.loadingOrderNumber}</span>
+                                  </div>
+
+                                  {/* Cell 2: Vehicle Plate */}
+                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 truncate" title={eff.assignedVehiclePlate}>
+                                    {eff.assignedVehiclePlate || '—'}
+                                  </div>
+
+                                  {/* Cell 3: Driver Name */}
+                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-semibold text-slate-700 flex items-center gap-1 truncate" title={eff.assignedDriverName}>
+                                    <User className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                    <span className="truncate">{eff.assignedDriverName || (isAr ? 'بدون سائق' : 'No driver')}</span>
+                                  </div>
+
+                                  {/* Cell 4: Rep Name */}
+                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-medium text-slate-500 truncate" title={eff.assignedDeliveryRepName}>
+                                    {eff.assignedDeliveryRepName || '—'}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between text-[10px] font-mono text-emerald-800">
+                                <span>📅 {eff.loadingDate}</span>
+                                {isStaged && (
+                                  <span className="text-[9px] font-bold px-1 rounded bg-amber-100 text-amber-900 border border-amber-200">
+                                    {isAr ? 'معلق' : 'staged'}
                                   </span>
                                 )}
                               </div>
                             </div>
-                          )}
-                        </div>
+                          </>
+                        ) : (
+                          /* ========================================================================= */
+                          /* CASE 3: IS UNASSIGNED & CLOSED (Full Order Data + Compact Strip)          */
+                          /* ========================================================================= */
+                          <>
+                            {/* Full Order Data (Left) */}
+                            <div className="flex-1 p-4 sm:p-5 space-y-2.5 text-start">
+                              {/* Header Row: Type, Serial, Client, Branch, Region, Map, Dates */}
+                              <div className="flex items-start justify-between gap-2 flex-wrap">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <span>{isAr ? orderTypeObj.labelAr : orderTypeObj.labelEn}</span>
+                                  </span>
 
-                        {/* RIGHT COLUMN: Dispatch Assignment Inputs (5 cols) */}
-                        <div className="p-4 sm:p-5 lg:col-span-5 bg-slate-50/60 flex flex-col justify-between space-y-3">
-                          <div className="space-y-2.5">
-                            {/* Panel Header & Current Status */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-black text-slate-800 flex items-center gap-1">
-                                <Truck className="w-3.5 h-3.5 text-emerald-600" />
-                                <span>{isAr ? 'تسكين الشاحنة والتحميل' : 'Truck & Loading'}</span>
-                              </span>
+                                  <span className="font-mono text-xs font-black text-slate-800">
+                                    #{orderSerial}
+                                  </span>
 
-                              {eff.loadingOrderNumber ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 font-mono">
-                                  <span>{isAr ? `أمر تحميل #${eff.loadingOrderNumber}` : `LO #${eff.loadingOrderNumber}`}</span>
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-600">
-                                  <span>{isAr ? 'غير مسكن بعد' : 'Unscheduled'}</span>
-                                </span>
-                              )}
-                            </div>
+                                  <span className="text-[11px] font-mono text-slate-400">
+                                    {order.invoiceDate || '—'}
+                                  </span>
+                                </div>
 
-                            {/* Inputs Grid */}
-                            <div className="grid grid-cols-2 gap-2 text-xs">
-                              {/* 1. Loading Order Number */}
-                              <div>
-                                <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                  {isAr ? 'رقم أمر التحميل:' : 'Loading Order #:'}
-                                </label>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  value={eff.loadingOrderNumber}
-                                  onChange={(e) => handleStageChange(order.id, 'loadingOrderNumber', e.target.value)}
-                                  placeholder={isAr ? 'مثال: 1' : 'e.g. 1'}
-                                  className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-xl font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                />
+                                {/* Cartons & Weight Summary Badge */}
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-slate-900 text-xs font-mono">
+                                    {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                    {order.totalBonus > 0 ? (
+                                      <span className="text-emerald-600 text-[10px] font-bold ms-1">+{order.totalBonus}</span>
+                                    ) : null}
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                                    <Weight className="w-3 h-3 text-slate-500" />
+                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                                  </span>
+                                </div>
                               </div>
 
-                              {/* 2. Loading Date */}
-                              <div>
-                                <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                  {isAr ? 'تاريخ التحميل:' : 'Loading Date:'}
-                                </label>
-                                <input
-                                  type="date"
-                                  value={eff.loadingDate}
-                                  onChange={(e) => handleStageChange(order.id, 'loadingDate', e.target.value)}
-                                  className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-xl font-mono text-[11px] font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                />
-                              </div>
-
-                              {/* 3. Truck Selector */}
-                              <div className="col-span-2">
-                                <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                  {isAr ? 'السيارة / الشاحنة:' : 'Vehicle / Truck:'}
-                                </label>
-                                <select
-                                  value={eff.assignedVehicleId}
-                                  onChange={(e) => handleStageChange(order.id, 'assignedVehicleId', e.target.value)}
-                                  className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
-                                >
-                                  <option value="">{isAr ? '— اختر السيارة من الأسطول —' : '— Select Truck —'}</option>
-                                  {vehicles.map((v) => (
-                                    <option key={v.id} value={v.id}>
-                                      {v.plateNumber} — {v.vehicleModel} {v.maxCapacityKg ? `(سعة ${v.maxCapacityKg} كجم)` : ''}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              {/* 4. Driver Selector */}
-                              <div className="col-span-2">
-                                <div className="flex items-center justify-between mb-0.5">
-                                  <label className="text-[10px] font-bold text-slate-500">
-                                    {isAr ? 'السائق المكلف:' : 'Assigned Driver:'}
-                                  </label>
-                                  {eff.assignedVehicleId && (
-                                    <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
-                                      isDefaultDriver
-                                        ? 'bg-emerald-100 text-emerald-800'
-                                        : eff.assignedDriverId
-                                        ? 'bg-blue-100 text-blue-800'
-                                        : 'bg-rose-100 text-rose-800'
-                                    }`}>
-                                      {isDefaultDriver
-                                        ? (isAr ? '✓ سائق المركبة الأساسي' : '✓ Default Driver')
-                                        : eff.assignedDriverId
-                                        ? (isAr ? '✓ سائق بديل' : '✓ Override Driver')
-                                        : (isAr ? '! سائق مطلوب' : '! Driver Needed')}
+                              {/* Client & Branch & Region & Maps */}
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs"
+                                    style={{
+                                      backgroundColor: `${segColor}18`,
+                                      color: segColor,
+                                      border: `1px solid ${segColor}35`
+                                    }}
+                                  >
+                                    <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                  </span>
+                                  <span className="font-extrabold text-slate-900 text-sm">
+                                    {order.clientName || order.clientId || '—'}
+                                  </span>
+                                  {showBranchName && (
+                                    <span className="text-xs font-bold text-slate-500">
+                                      ({order.branchName})
                                     </span>
                                   )}
                                 </div>
-                                <select
-                                  value={eff.assignedDriverId}
-                                  onChange={(e) => handleStageChange(order.id, 'assignedDriverId', e.target.value)}
-                                  className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
-                                >
-                                  <option value="">{isAr ? '— اختر السائق —' : '— Select Driver —'}</option>
-                                  {employees.map((emp) => (
-                                    <option key={emp.id} value={emp.id}>
-                                      {emp.nameAr || emp.name} {emp.jobTitle ? `(${emp.jobTitle})` : ''}
-                                    </option>
-                                  ))}
-                                </select>
+
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                  {order.region && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-semibold">
+                                      <MapPin className="w-3 h-3 text-slate-400" />
+                                      <span>{order.region}</span>
+                                    </span>
+                                  )}
+
+                                  {/* Map Icon: Accurate GPS (Map icon) vs Fallback Search (MapPin+Search in Pale Yellow) */}
+                                  {locInfo?.type === 'accurate' ? (
+                                    <a
+                                      href={locInfo.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="inline-flex items-center gap-1 text-[11px] text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md font-bold transition cursor-pointer shadow-2xs"
+                                      title={isAr ? 'فتح الموقع المسجل الدقيق على الخريطة' : 'Open Saved Accurate Location on Map'}
+                                    >
+                                      <Map className="w-3.5 h-3.5 text-emerald-600" />
+                                      <span>{isAr ? 'الموقع مسجل' : 'Location'}</span>
+                                    </a>
+                                  ) : locInfo?.type === 'search' ? (
+                                    <a
+                                      href={locInfo.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="inline-flex items-center gap-1 text-[11px] text-amber-800 hover:text-amber-900 bg-amber-50/90 hover:bg-amber-100 border border-amber-200/90 px-2 py-0.5 rounded-md font-semibold transition cursor-pointer shadow-2xs"
+                                      title={isAr ? 'بحث بالاسم أو العنوان على الخريطة (موقع غير مثبت بدقة)' : 'Search by name/address on Map'}
+                                    >
+                                      <span className="relative inline-flex items-center">
+                                        <MapPin className="w-3.5 h-3.5 text-amber-600" />
+                                        <Search className="w-2 h-2 text-amber-800 absolute -bottom-0.5 -end-0.5" />
+                                      </span>
+                                      <span>{isAr ? 'بحث على الخريطة' : 'Search Map'}</span>
+                                    </a>
+                                  ) : (
+                                    <span className="text-[11px] text-slate-300 flex items-center gap-1">
+                                      <Map className="w-3 h-3" />
+                                      <span>{isAr ? 'بدون موقع مسجل' : 'No Map'}</span>
+                                    </span>
+                                  )}
+
+                                  {workingHoursDisplay && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-mono">
+                                      <Clock className="w-3 h-3 text-slate-400" />
+                                      <span>{workingHoursDisplay}</span>
+                                    </span>
+                                  )}
+
+                                  {holidaysList.length > 0 && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[11px] text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200"
+                                      title={isAr ? 'عطلة أسبوعية' : 'Weekly holiday'}
+                                    >
+                                      <Calendar className="w-3 h-3 text-rose-500" />
+                                      <span>
+                                        {isAr ? 'عطلة:' : 'Holiday:'}{' '}
+                                        {holidaysList.map((d) => (isAr ? WEEKDAY_NAMES_AR[d] : WEEKDAY_NAMES_EN[d])).join('، ')}
+                                      </span>
+                                    </span>
+                                  )}
+                                </div>
                               </div>
 
-                              {/* 5. Delivery Rep Selector (Optional) */}
-                              <div className="col-span-2">
-                                <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                  {isAr ? 'مندوب التسليم (اختياري):' : 'Delivery Rep (Optional):'}
-                                </label>
-                                <select
-                                  value={eff.assignedDeliveryRepId}
-                                  onChange={(e) => handleStageChange(order.id, 'assignedDeliveryRepId', e.target.value)}
-                                  className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
-                                >
-                                  <option value="">{isAr ? '— بدون مندوب تسليم —' : '— No Delivery Rep —'}</option>
-                                  {employees.map((emp) => (
-                                    <option key={emp.id} value={emp.id}>
-                                      {emp.nameAr || emp.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
+                              {/* Client Notes & Order Notes */}
+                              {(clientNotes || order.externalComments || order.internalComments) && (
+                                <div className="space-y-1.5 pt-1 text-xs">
+                                  {clientNotes && (
+                                    <div className="p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5">
+                                      <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                                      <div>
+                                        <span className="font-bold me-1">{isAr ? 'ملاحظة العميل الدائمة:' : 'Client Note:'}</span>
+                                        <span>{clientNotes}</span>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {order.internalComments && (
+                                    <div className="p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-700 text-[11px] flex items-start gap-1">
+                                      <Lock className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
+                                      <span className="break-words">{order.internalComments}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* CHIPS OF TOTAL PER PRODUCT QTY (Space-Saving) */}
+                              {Array.isArray(order.items) && order.items.length > 0 && (
+                                <div className="pt-1.5">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    {order.items.map((it, idx) => (
+                                      <span
+                                        key={idx}
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200"
+                                        title={`${it.nameAr || it.productName || it.itemCode}: ${it.quantity} كرتونة`}
+                                      >
+                                        <span className="truncate max-w-[140px]">{it.nameAr || it.productName || it.name || it.itemCode}</span>
+                                        <span className="text-emerald-700 font-mono font-black">
+                                          ({it.quantity} {isAr ? 'ك' : 'c'})
+                                        </span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
-                          </div>
 
-                          {/* Card Footer Actions */}
-                          {(eff.loadingOrderNumber || eff.assignedVehicleId) && (
-                            <div className="pt-2 border-t border-slate-200/70 flex items-center justify-between">
-                              <span className="text-[10px] text-slate-400 font-mono">
-                                {isStaged ? (isAr ? 'تعديل معلق' : 'Staged edit') : (isAr ? 'محفوظ في الخطة' : 'Saved')}
+                            {/* COMPACT STRIP WITH TRUCK ICON (+ تسكين) */}
+                            <div
+                              onClick={() => setActiveEditingOrderId(order.id)}
+                              className="w-14 sm:w-16 bg-slate-50 hover:bg-emerald-50/70 border-t md:border-t-0 md:border-s border-slate-100 flex flex-col items-center justify-center p-2 cursor-pointer transition select-none group shrink-0"
+                              title={isAr ? 'انقر لتسكين الطلب في شاحنة وأمر تحميل' : 'Click to assign order to truck'}
+                            >
+                              <div className="w-9 h-9 rounded-2xl bg-white group-hover:bg-emerald-600 text-slate-400 group-hover:text-white border border-slate-200 group-hover:border-emerald-600 flex items-center justify-center transition shadow-2xs">
+                                <Truck className="w-4 h-4" />
+                              </div>
+                              <span className="text-[10px] font-black text-slate-400 group-hover:text-emerald-700 mt-1.5">
+                                {isAr ? '+ تسكين' : '+ Assign'}
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => handleClearAssignment(order.id)}
-                                className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
-                              >
-                                <RotateCcw className="w-3 h-3" />
-                                <span>{isAr ? 'إلغاء التسكين' : 'Clear Assignment'}</span>
-                              </button>
                             </div>
-                          )}
-                        </div>
+                          </>
+                        )}
                       </div>
                     </div>
                   );
@@ -1252,18 +1639,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       {stagedOrdersCount > 0 && (
         <div className="fixed bottom-4 inset-x-4 sm:inset-x-8 z-40 animate-in slide-in-from-bottom-5 duration-200">
           <div className="bg-slate-900 text-white rounded-3xl shadow-2xl border border-slate-700/80 overflow-hidden">
-            {/* Expanded Manifest Drawer (Carousel / Cards per Truck) */}
+            {/* Expanded Manifest Drawer (Cards per Compound Truck/Date Key) */}
             {isManifestExpanded && (
               <div className="p-4 sm:p-5 border-b border-slate-800 max-h-[55vh] overflow-y-auto space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Truck className="w-5 h-5 text-emerald-400" />
                     <h4 className="font-extrabold text-sm text-white">
-                      {isAr ? 'بيان الشاحنات وأوامر التحميل النشطة' : 'Active Trucks & Loading Manifest'}
+                      {isAr ? 'بيان الشاحنات وأوامر التحميل المجدولة' : 'Scheduled Trucks & Loading Manifest'}
                     </h4>
                   </div>
                   <span className="text-xs text-slate-400 font-bold">
-                    {truckManifest.length} {isAr ? 'شاحنات مجدولة' : 'trucks scheduled'}
+                    {truckManifest.length} {isAr ? 'رحلات / شاحنات مجدولة' : 'truck trips scheduled'}
                   </span>
                 </div>
 
@@ -1272,7 +1659,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   {truckManifest.map((tm) => {
                     return (
                       <div
-                        key={tm.loadingOrderNumber}
+                        key={tm.compoundKey}
                         className={`rounded-2xl p-4 border transition ${
                           tm.isMisaligned
                             ? 'bg-rose-950/60 border-rose-500/80'
@@ -1290,9 +1677,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                 {tm.primaryVehiclePlate || (isAr ? 'بدون لوحة' : 'No Plate')}
                               </span>
                             </div>
-                            <span className="text-[10px] text-slate-400 font-mono block">
-                              {isAr ? 'إذن صرف:' : 'Dismiss #:'} {tm.dismissNumber}
-                            </span>
+                            <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
+                              <span>📅 {tm.loadingDate}</span>
+                              <span>•</span>
+                              <span>{isAr ? 'إذن صرف:' : 'Dismiss #:'} {tm.dismissNumber}</span>
+                            </div>
                           </div>
 
                           <span className="text-[10px] font-mono font-bold bg-slate-900 text-slate-300 px-2 py-0.5 rounded-lg border border-slate-700">
@@ -1361,14 +1750,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                           <div className="mt-3 p-2 rounded-xl bg-rose-900/80 border border-rose-600 text-rose-100 text-[11px] space-y-1.5">
                             <div className="flex items-center gap-1 font-bold">
                               <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-                              <span>{isAr ? 'تعارض في بيانات السيارة أو السائق!' : 'Truck or Driver Conflict!'}</span>
+                              <span>{isAr ? `تعارض في أمر تحميل #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in LO #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
                             </div>
                             <p className="text-[10px] text-rose-200">
-                              {isAr ? 'أوامر مختلفة بنفس رقم التحميل مسندة لشاحنات وسائقين متباينين.' : 'Different orders in this LO have conflicting trucks/drivers.'}
+                              {isAr ? 'أوامر مختلفة بنفس رقم التحميل لنفس اليوم مسندة لشاحنات وسائقين متباينين.' : 'Different orders in this LO on this date have conflicting trucks/drivers.'}
                             </p>
                             <button
                               type="button"
-                              onClick={() => handleAlignTruckOrders(tm.loadingOrderNumber, tm.primaryVehicleId, tm.primaryDriverId)}
+                              onClick={() => handleAlignTruckOrders(tm.compoundKey, tm.loadingOrderNumber, tm.loadingDate, tm.primaryVehicleId, tm.primaryDriverId)}
                               className="w-full py-1 px-2 rounded-lg bg-rose-500 hover:bg-rose-400 text-white font-bold text-[10px] transition cursor-pointer shadow-xs"
                             >
                               {isAr ? 'مطابقة وتوحيد كافة الطلبات' : 'Align All Orders'}
