@@ -1823,16 +1823,47 @@ function SalesOrderEditorModal({
 
     // 3. Operational Schedule / Working Hours
     const useCustom = Boolean(br?.useCustomSchedule);
-    const hoursFrom = useCustom && br?.workingHoursFrom ? br.workingHoursFrom : (selectedClient.workingHoursFrom || '08:00');
-    const hoursTo = useCustom && br?.workingHoursTo ? br.workingHoursTo : (selectedClient.workingHoursTo || '16:00');
-    const scheduleDisplay = `${hoursFrom} — ${hoursTo}`;
+    const branchHoursFrom = (br?.workingHoursFrom || '').trim();
+    const branchHoursTo = (br?.workingHoursTo || '').trim();
+    const clientHoursFrom = (selectedClient.workingHoursFrom || '').trim();
+    const clientHoursTo = (selectedClient.workingHoursTo || '').trim();
 
-    // 4. Weekly Holidays
-    const rawHolidays = (useCustom && Array.isArray(br?.weeklyHolidays) && br.weeklyHolidays.length > 0)
-      ? br.weeklyHolidays
-      : (Array.isArray(selectedClient.weeklyHolidays) && selectedClient.weeklyHolidays.length > 0
-        ? selectedClient.weeklyHolidays
-        : ['friday']);
+    let hoursFrom = '';
+    let hoursTo = '';
+
+    if (useCustom && (branchHoursFrom || branchHoursTo)) {
+      hoursFrom = branchHoursFrom;
+      hoursTo = branchHoursTo;
+    } else {
+      hoursFrom = clientHoursFrom || branchHoursFrom;
+      hoursTo = clientHoursTo || branchHoursTo;
+    }
+
+    let scheduleDisplay = '';
+    if (hoursFrom && hoursTo) {
+      scheduleDisplay = `${hoursFrom} — ${hoursTo}`;
+    } else if (hoursFrom) {
+      scheduleDisplay = hoursFrom;
+    } else if (hoursTo) {
+      scheduleDisplay = hoursTo;
+    } else {
+      scheduleDisplay = isAr ? '— (غير محدد)' : '— (Unknown)';
+    }
+
+    // 4. Weekly Holidays (Strictly leave empty if not assigned)
+    const branchHolidays = Array.isArray(br?.weeklyHolidays) ? br.weeklyHolidays.filter(Boolean) : [];
+    const clientHolidays = Array.isArray(selectedClient.weeklyHolidays) ? selectedClient.weeklyHolidays.filter(Boolean) : [];
+
+    let rawHolidays = [];
+    if (useCustom && branchHolidays.length > 0) {
+      rawHolidays = branchHolidays;
+    } else if (clientHolidays.length > 0) {
+      rawHolidays = clientHolidays;
+    } else if (branchHolidays.length > 0) {
+      rawHolidays = branchHolidays;
+    } else {
+      rawHolidays = [];
+    }
 
     const DAY_MAP_AR = {
       friday: 'الجمعة',
@@ -1861,7 +1892,7 @@ function SalesOrderEditorModal({
 
     // 5. Holiday Conflict Detection with order dates
     const checkDateConflict = (dateStr) => {
-      if (!dateStr) return null;
+      if (!dateStr || rawHolidays.length === 0) return null;
       try {
         const d = new Date(dateStr + 'T00:00:00');
         const dayIdx = d.getDay();
@@ -1875,7 +1906,7 @@ function SalesOrderEditorModal({
     };
 
     const invoiceHolidayConflict = checkDateConflict(formData.invoiceDate);
-    const loadingHolidayConflict = checkDateConflict(formData.loadingDate);
+    const loadingHolidayConflict = !isAdminModal && formData.loadingDate ? checkDateConflict(formData.loadingDate) : null;
 
     return {
       branchName: br ? resolveBranchDisplayName(br, isAr) : (isAr ? 'الفرع الرئيسي' : 'Main Branch'),
@@ -2925,8 +2956,8 @@ function SalesOrderEditorModal({
               </div>
             </div>
 
-            {/* Row 3: Then the operational profile */}
-            {clientOperationalProfile && !isAdminModal && (
+            {/* Row 3: Then the operational profile (Sales & Admin Modals) */}
+            {clientOperationalProfile && (
               <div className="mt-3 p-3.5 bg-gradient-to-r from-slate-50 to-indigo-50/30 border border-slate-200/90 rounded-xl space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
                   <div className="flex items-center gap-2">
@@ -2995,7 +3026,7 @@ function SalesOrderEditorModal({
                     </div>
                     <div className="flex flex-wrap gap-1">
                       {clientOperationalProfile.holidays.length === 0 ? (
-                        <span className="text-slate-400">{isAr ? 'يعمل طوال الأسبوع' : 'Open all week'}</span>
+                        <span className="text-slate-400 font-mono text-xs">—</span>
                       ) : (
                         clientOperationalProfile.holidays.map((h) => (
                           <span key={h.key} className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
