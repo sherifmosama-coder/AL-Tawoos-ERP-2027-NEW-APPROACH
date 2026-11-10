@@ -65,6 +65,7 @@ import {
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
 import PeacockLoader from './PeacockLoader';
+import { normalizeLocationUrl } from '../utils/locationUtils';
 import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from './ClientSegmentsMaster';
 import {
   DEFAULT_PRICING_STRATEGIES,
@@ -266,16 +267,23 @@ const resolveBranchDisplayName = (b, isAr = true) => {
 };
 
 /**
- * Resolves a Google Maps / location URL for a branch or client
+ * Resolves a Google Maps / location URL for a branch, client, or order
  */
-const resolveLocationUrl = (branch, client) => {
-  const raw = branch?.gpsCoordinates || branch?.googleMapsUrl || branch?.locationUrl || client?.gpsCoordinates || client?.googleMapsUrl || '';
-  if (!raw || !String(raw).trim()) return null;
-  const trimmed = String(raw).trim();
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return trimmed;
-  }
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(trimmed)}`;
+const resolveLocationUrl = (branch, client, order = null) => {
+  const raw = (
+    order?.gpsCoordinates ||
+    order?.googleMapsUrl ||
+    order?.locationUrl ||
+    branch?.gpsCoordinates ||
+    branch?.googleMapsUrl ||
+    branch?.locationUrl ||
+    client?.gpsCoordinates ||
+    client?.googleMapsUrl ||
+    client?.locationUrl ||
+    ''
+  ).trim();
+  if (!raw) return null;
+  return normalizeLocationUrl(raw);
 };
 
 /**
@@ -1414,8 +1422,12 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       const clientObj = clients.find((c) => c.id === order.clientId) || null;
                       const branchCount = (clientObj?.branches || []).length;
                       const showBranchName = branchCount > 1 && order.branchName;
-                      const targetBranch = (clientObj?.branches || []).find((b) => b.id === order.branchId) || clientObj?.branches?.[0] || null;
-                      const locationUrl = resolveLocationUrl(targetBranch, clientObj);
+                      const targetBranch = (clientObj?.branches || []).find((b) => 
+                        (b.id && order.branchId && b.id === order.branchId) ||
+                        (b.name && order.branchName && (b.name === order.branchName || b.nameAr === order.branchName)) ||
+                        (b.nameAr && order.branchName && b.nameAr === order.branchName)
+                      ) || clientObj?.branches?.[0] || null;
+                      const locationUrl = resolveLocationUrl(targetBranch, clientObj, order);
                       const profile = resolveOrderOperationalProfile(order, clientObj, isAr);
 
                       // Segment resolution

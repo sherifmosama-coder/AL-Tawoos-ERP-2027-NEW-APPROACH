@@ -46,6 +46,7 @@ import { db } from '../firebase.js';
 import SearchableSelect from './SearchableSelect.jsx';
 import PeacockLoader from './PeacockLoader.jsx';
 import { canAccessAction } from '../config/appArchitecture.js';
+import { resolveLocationInfo, normalizeLocationUrl } from '../utils/locationUtils.js';
 
 // Segment Icon Mapping
 const SEGMENT_ICON_MAP = {
@@ -110,40 +111,6 @@ function calculateDismissNumber(dateStr, loNumber) {
   const dd = parts[2];
   const nn = String(loNumber).padStart(2, '0');
   return `${mm}${dd}${nn}`;
-}
-
-// Resolve accurate GPS location link vs search location link
-function resolveLocationInfo(targetBranch, clientObj) {
-  const hasAccurateGps = Boolean(
-    (targetBranch?.gpsCoordinates && targetBranch.gpsCoordinates.trim() !== '') ||
-    (clientObj?.branches?.[0]?.gpsCoordinates && clientObj.branches[0].gpsCoordinates.trim() !== '')
-  );
-
-  if (hasAccurateGps) {
-    const coords = targetBranch?.gpsCoordinates?.trim() || clientObj?.branches?.[0]?.gpsCoordinates?.trim();
-    return {
-      type: 'accurate',
-      url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(coords)}`
-    };
-  }
-
-  const searchAddress = (
-    targetBranch?.address?.trim() ||
-    clientObj?.branches?.[0]?.address?.trim() ||
-    targetBranch?.name?.trim() ||
-    clientObj?.tradeNameAr?.trim() ||
-    clientObj?.name?.trim() ||
-    ''
-  );
-
-  if (searchAddress) {
-    return {
-      type: 'search',
-      url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(searchAddress)}`
-    };
-  }
-
-  return null;
 }
 
 // Resolve Order Serial format
@@ -1272,10 +1239,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   const clientObj = clients.find((c) => c.id === order.clientId) || null;
                   const branchCount = (clientObj?.branches || []).length;
                   const showBranchName = branchCount > 1 && order.branchName;
-                  const targetBranch = (clientObj?.branches || []).find((b) => b.id === order.branchId) || clientObj?.branches?.[0] || null;
+                  const targetBranch = (clientObj?.branches || []).find((b) => 
+                    (b.id && order.branchId && b.id === order.branchId) ||
+                    (b.name && order.branchName && (b.name === order.branchName || b.nameAr === order.branchName)) ||
+                    (b.nameAr && order.branchName && b.nameAr === order.branchName)
+                  ) || clientObj?.branches?.[0] || null;
 
                   // Location detection: accurate GPS vs fallback address/name search
-                  const locInfo = resolveLocationInfo(targetBranch, clientObj);
+                  const locInfo = resolveLocationInfo(targetBranch, clientObj, order);
 
                   // Operational Profile
                   const workingHoursDisplay = targetBranch?.workingHours || clientObj?.workingHours || '';
@@ -1638,7 +1609,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       rel="noopener noreferrer"
                                       onClick={(e) => e.stopPropagation()}
                                       className="inline-flex items-center gap-1 text-[11px] text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md font-bold transition cursor-pointer shadow-2xs"
-                                      title={isAr ? 'فتح الموقع المسجل الدقيق على الخريطة' : 'Open Saved Accurate Location on Map'}
+                                      title={
+                                        locInfo.coords
+                                          ? (isAr ? `إحداثيات دقيقة: ${locInfo.coords}` : `Exact GPS: ${locInfo.coords}`)
+                                          : (isAr ? 'فتح الموقع المسجل الدقيق على الخريطة' : 'Open Saved Accurate Location on Map')
+                                      }
                                     >
                                       <Map className="w-3.5 h-3.5 text-emerald-600" />
                                       <span>{isAr ? 'الموقع مسجل' : 'Location'}</span>
@@ -1911,7 +1886,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       rel="noopener noreferrer"
                                       onClick={(e) => e.stopPropagation()}
                                       className="inline-flex items-center gap-1 text-[11px] text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md font-bold transition cursor-pointer shadow-2xs"
-                                      title={isAr ? 'فتح الموقع المسجل الدقيق على الخريطة' : 'Open Saved Accurate Location on Map'}
+                                      title={
+                                        locInfo.coords
+                                          ? (isAr ? `إحداثيات دقيقة: ${locInfo.coords}` : `Exact GPS: ${locInfo.coords}`)
+                                          : (isAr ? 'فتح الموقع المسجل الدقيق على الخريطة' : 'Open Saved Accurate Location on Map')
+                                      }
                                     >
                                       <Map className="w-3.5 h-3.5 text-emerald-600" />
                                       <span>{isAr ? 'الموقع مسجل' : 'Location'}</span>
