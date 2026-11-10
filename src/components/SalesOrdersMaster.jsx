@@ -144,12 +144,12 @@ const ADMIN_ORDER_TYPES = [
 const ORDER_TYPES = [...SALES_ORDER_TYPES, ...ADMIN_ORDER_TYPES];
 
 /**
- * 4 Confirmation Statuses Dictionary
+ * Confirmation Statuses Dictionary (Modal Dropdown: confirmed, not_confirmed, canceled)
+ * Note: 'revised' is handled as an independent complementary toggle button on the row.
  */
 const CONFIRMATION_STATUSES = [
   { id: 'confirmed', labelAr: 'مؤكد', labelEn: 'Confirmed', color: 'emerald', isDefault: true },
   { id: 'not_confirmed', labelAr: 'غير مؤكد', labelEn: 'Not Confirmed', color: 'amber' },
-  { id: 'revised', labelAr: 'معدل', labelEn: 'Revised', color: 'blue' },
   { id: 'canceled', labelAr: 'ملغي', labelEn: 'Canceled', color: 'rose' },
 ];
 
@@ -159,9 +159,9 @@ const CONFIRMATION_STATUSES = [
 const FULFILLMENT_STATUSES = [
   { id: 'not_yet', labelAr: 'قيد الانتظار', labelEn: 'Pending', color: 'slate', isDefault: true },
   { id: 'prepare', labelAr: 'جاري التجهيز', labelEn: 'Preparing', color: 'amber' },
-  { id: 'shipped', labelAr: 'تم الشحن', labelEn: 'Shipped', color: 'blue' },
-  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered', color: 'emerald' },
-  { id: 'paid', labelAr: 'مدفوع', labelEn: 'Paid', color: 'purple' },
+  { id: 'shipped', labelAr: 'جاري التوصيل', labelEn: 'Out for Delivery', color: 'emerald' },
+  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered', color: 'teal' },
+  { id: 'paid', labelAr: 'مدفوع', labelEn: 'Paid', color: 'blue' },
 ];
 
 /**
@@ -441,9 +441,7 @@ const renderVatAbbrChip = (vatMode, orderType, isAr = true) => {
     case 'none':
     default:
       return (
-        <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200" title={isAr ? 'بدون ضريبة (إذن تسليم)' : 'None (Delivery Note)'}>
-          {isAr ? 'بدون ضريبة' : 'No VAT'}
-        </span>
+        <span className="text-slate-400 font-mono text-xs font-semibold">—</span>
       );
   }
 };
@@ -476,6 +474,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [startDateFilter, setStartDateFilter] = useState('');
   const [endDateFilter, setEndDateFilter] = useState('');
   const [groupBy, setGroupBy] = useState('none'); // 'none' | 'fulfillmentStatus' | 'confirmationStatus' | 'client' | 'region' | 'vatMode' | 'orderType'
+  const [revisedOnlyFilter, setRevisedOnlyFilter] = useState(false);
 
   // Expandable Rows State
   const [expandedOrderIds, setExpandedOrderIds] = useState(new Set());
@@ -487,6 +486,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [auditModalOrder, setAuditModalOrder] = useState(null);
   const [deleteConfirmOrder, setDeleteConfirmOrder] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null);
+  const [cancelModalOrder, setCancelModalOrder] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [isCanceling, setIsCanceling] = useState(false);
 
   // 3-Dots Action Menu Anchor
   const [activeActionsMenuOrderId, setActiveActionsMenuOrderId] = useState(null);
@@ -665,6 +667,161 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     });
   };
 
+  // Toggle complementary 'Revised' status on an order
+  const handleToggleRevised = async (order) => {
+    if (!order?.id) return;
+    const newIsRevised = !(order.isRevised || order.confirmationStatus === 'revised');
+    const now = new Date().toISOString();
+    const orderSerial = resolveOrderSerial(order, orders);
+
+    const auditEvent = {
+      id: `AUD-${Date.now()}-${(order.auditTrail || []).length + 1}`,
+      action: 'toggle_revised',
+      performedBy: currentUserName,
+      performedById: currentUser?.id || currentUser?.uid || '',
+      timestamp: now,
+      summaryAr: newIsRevised
+        ? `تم وسم أمر البيع #${orderSerial} كطلب معدل (Revised)`
+        : `تم إلغاء وسم التعديل عن أمر البيع #${orderSerial}`,
+      summaryEn: newIsRevised
+        ? `Marked order #${orderSerial} as Revised`
+        : `Unmarked Revised status on order #${orderSerial}`
+    };
+
+    const existingAudit = order.auditTrail || [];
+    const updatedAuditTrail = [...existingAudit, auditEvent];
+
+    try {
+      const orderRef = doc(db, 'sales_orders', order.id);
+      await setDoc(
+        orderRef,
+        {
+          isRevised: newIsRevised,
+          revisedAt: newIsRevised ? now : null,
+          revisedBy: newIsRevised ? currentUserName : null,
+          revisedById: newIsRevised ? (currentUser?.id || currentUser?.uid || '') : null,
+          auditTrail: updatedAuditTrail,
+          updatedAt: serverTimestamp(),
+          updatedBy: currentUserName
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error('Error toggling revised status:', err);
+      alert(isAr ? 'حدث خطأ أثناء تعديل حالة الطلب' : 'Failed to update order status');
+    }
+  };
+
+  // Confirm cancellation of an order
+  const handleConfirmCancelOrder = async () => {
+    if (!cancelModalOrder?.id) return;
+    setIsCanceling(true);
+    const now = new Date().toISOString();
+    const orderSerial = resolveOrderSerial(cancelModalOrder, orders);
+
+    const auditEvent = {
+      id: `AUD-${Date.now()}-${(cancelModalOrder.auditTrail || []).length + 1}`,
+      action: 'cancel',
+      performedBy: currentUserName,
+      performedById: currentUser?.id || currentUser?.uid || '',
+      timestamp: now,
+      summaryAr: `تم إلغاء أمر البيع #${orderSerial}${cancelReason.trim() ? ` — السبب: ${cancelReason.trim()}` : ''}`,
+      summaryEn: `Canceled order #${orderSerial}${cancelReason.trim() ? ` — Reason: ${cancelReason.trim()}` : ''}`,
+      cancellationReason: cancelReason.trim() || null
+    };
+
+    const existingAudit = cancelModalOrder.auditTrail || [];
+    const updatedAuditTrail = [...existingAudit, auditEvent];
+
+    try {
+      const orderRef = doc(db, 'sales_orders', cancelModalOrder.id);
+      await setDoc(
+        orderRef,
+        {
+          confirmationStatus: 'canceled',
+          cancellationReason: cancelReason.trim() || null,
+          canceledAt: now,
+          canceledBy: currentUserName,
+          canceledById: currentUser?.id || currentUser?.uid || '',
+          auditTrail: updatedAuditTrail,
+          updatedAt: serverTimestamp(),
+          updatedBy: currentUserName
+        },
+        { merge: true }
+      );
+      setCancelModalOrder(null);
+      setCancelReason('');
+    } catch (err) {
+      console.error('Error canceling order:', err);
+      alert(isAr ? 'حدث خطأ أثناء إلغاء الأمر' : 'Failed to cancel order');
+    } finally {
+      setIsCanceling(false);
+    }
+  };
+
+  // Restore a canceled order back to confirmed
+  const handleRestoreCanceledOrder = async (order) => {
+    if (!order?.id) return;
+    const orderSerial = resolveOrderSerial(order, orders);
+    const now = new Date().toISOString();
+    const auditEvent = {
+      id: `AUD-${Date.now()}-${(order.auditTrail || []).length + 1}`,
+      action: 'restore',
+      performedBy: currentUserName,
+      performedById: currentUser?.id || currentUser?.uid || '',
+      timestamp: now,
+      summaryAr: `تم استعادة أمر البيع #${orderSerial} من حالة الإلغاء`,
+      summaryEn: `Restored order #${orderSerial} from canceled state`
+    };
+
+    const existingAudit = order.auditTrail || [];
+    const updatedAuditTrail = [...existingAudit, auditEvent];
+
+    try {
+      const orderRef = doc(db, 'sales_orders', order.id);
+      await setDoc(
+        orderRef,
+        {
+          confirmationStatus: 'confirmed',
+          cancellationReason: null,
+          canceledAt: null,
+          canceledBy: null,
+          canceledById: null,
+          auditTrail: updatedAuditTrail,
+          updatedAt: serverTimestamp(),
+          updatedBy: currentUserName
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error('Error restoring order:', err);
+      alert(isAr ? 'حدث خطأ أثناء استعادة الأمر' : 'Failed to restore order');
+    }
+  };
+
+  // Helper to determine table row background based on status and fulfillment
+  const resolveRowBackground = (order, isExpanded) => {
+    if (order.confirmationStatus === 'canceled') {
+      return 'bg-slate-100/90 opacity-60 grayscale-[25%]';
+    }
+    if (isExpanded) {
+      return 'bg-slate-50/90 border-blue-200';
+    }
+    switch (order.fulfillmentStatus) {
+      case 'prepare':
+        return 'bg-gradient-to-r from-amber-500/[0.05] via-amber-500/[0.02] to-transparent hover:from-amber-500/[0.09]';
+      case 'shipped':
+      case 'out_for_delivery':
+        return 'bg-gradient-to-r from-emerald-500/[0.06] via-emerald-500/[0.02] to-transparent hover:from-emerald-500/[0.10]';
+      case 'delivered':
+        return 'bg-gradient-to-r from-teal-500/[0.05] via-teal-500/[0.02] to-transparent hover:from-teal-500/[0.09]';
+      case 'paid':
+        return 'bg-gradient-to-r from-blue-500/[0.05] via-blue-500/[0.02] to-transparent hover:from-blue-500/[0.09]';
+      default:
+        return 'hover:bg-slate-50/80';
+    }
+  };
+
   // Filtered orders list
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
@@ -720,6 +877,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         return false;
       }
 
+      // 8. Revised Only filter
+      if (revisedOnlyFilter && !order.isRevised && order.confirmationStatus !== 'revised') {
+        return false;
+      }
+
       return true;
     });
   }, [
@@ -732,7 +894,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     vatModeFilter,
     dateFilterType,
     startDateFilter,
-    endDateFilter
+    endDateFilter,
+    revisedOnlyFilter
   ]);
 
   // Grouped filtered orders if groupBy is selected
@@ -1164,6 +1327,22 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             </button>
           )}
 
+          {/* Quick Filter: Revised Only */}
+          <button
+            type="button"
+            onClick={() => setRevisedOnlyFilter((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer border ${
+              revisedOnlyFilter
+                ? 'bg-blue-600 text-white border-blue-700 shadow-2xs ring-2 ring-blue-300/40'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+            }`}
+            title={isAr ? 'عرض الأوامر المعدلة فقط' : 'Show only revised orders'}
+          >
+            <Edit3 className="w-3 h-3" />
+            <span>{isAr ? 'معدل فقط' : 'Revised Only'}</span>
+            {revisedOnlyFilter && <Check className="w-3 h-3 ms-0.5" />}
+          </button>
+
           <div className="ms-auto text-slate-400 font-mono text-[11px]">
             {isAr
               ? `عرض ${filteredOrders.length} من أصل ${orders.length} أمر بيع`
@@ -1248,7 +1427,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                         <React.Fragment key={order.id}>
                           <tr
                             onClick={() => toggleRowExpand(order.id)}
-                            className={`hover:bg-slate-50/80 transition cursor-pointer select-none ${isExpanded ? 'bg-slate-50/60' : ''}`}
+                            className={`transition cursor-pointer select-none ${resolveRowBackground(order, isExpanded)}`}
                           >
                             {/* 1. Type & Serial */}
                             <td className="py-3 px-3 whitespace-nowrap">
@@ -1466,25 +1645,27 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 8. Single Comments Column (Supports Multiple Lines) */}
+                            {/* 8. Single Comments Column (Supports Multiple Lines) - Internal on top */}
                             <td className="py-3 px-3">
                               <div className="flex flex-col gap-1 items-start min-w-[130px] max-w-[200px]">
-                                {order.externalComments && (
-                                  <div
-                                    className="flex items-start gap-1 p-1 rounded-md text-[10px] font-medium bg-blue-50 text-blue-900 border border-blue-200/70 w-full whitespace-pre-wrap break-words leading-relaxed"
-                                    title={`${isAr ? 'ملاحظة خارجية للعميل:' : 'External Note:'} ${order.externalComments}`}
-                                  >
-                                    <MessageSquare className="w-2.5 h-2.5 text-blue-600 shrink-0 mt-0.5" />
-                                    <span className="break-words">{order.externalComments}</span>
-                                  </div>
-                                )}
+                                {/* Internal confidential comment (FIRST) */}
                                 {order.internalComments && (
                                   <div
-                                    className="flex items-start gap-1 p-1 rounded-md text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-200/70 w-full whitespace-pre-wrap break-words leading-relaxed"
+                                    className="flex items-start gap-1 p-1 rounded-md text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-200/70 w-full whitespace-pre-wrap break-words leading-relaxed shadow-2xs"
                                     title={`${isAr ? 'ملاحظة داخلية سرية:' : 'Internal Secret Note:'} ${order.internalComments}`}
                                   >
                                     <Lock className="w-2.5 h-2.5 text-amber-600 shrink-0 mt-0.5" />
                                     <span className="break-words">{order.internalComments}</span>
+                                  </div>
+                                )}
+                                {/* External client comment (SECOND) */}
+                                {order.externalComments && (
+                                  <div
+                                    className="flex items-start gap-1 p-1 rounded-md text-[10px] font-medium bg-blue-50 text-blue-900 border border-blue-200/70 w-full whitespace-pre-wrap break-words leading-relaxed shadow-2xs"
+                                    title={`${isAr ? 'ملاحظة خارجية للعميل:' : 'External Note:'} ${order.externalComments}`}
+                                  >
+                                    <MessageSquare className="w-2.5 h-2.5 text-blue-600 shrink-0 mt-0.5" />
+                                    <span className="break-words">{order.externalComments}</span>
                                   </div>
                                 )}
                                 {order.adminNotes && !order.externalComments && !order.internalComments && (
@@ -1502,25 +1683,85 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 9. Status (Confirmation & Fulfillment) - MOVED TO THE END */}
+                            {/* 9. Status (Confirmation, Complementary Revised Toggle & Fulfillment) - MOVED TO THE END */}
                             <td className="py-3 px-3 whitespace-nowrap">
-                              <div className="flex flex-col gap-1 items-start">
-                                {/* Confirmation */}
-                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                  order.confirmationStatus === 'confirmed'
-                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                    : order.confirmationStatus === 'canceled'
-                                    ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                                    : 'bg-amber-50 text-amber-700 border border-amber-200'
-                                }`}>
-                                  <span>{isAr ? confStatusObj.labelAr : confStatusObj.labelEn}</span>
-                                </span>
+                              <div className="flex flex-col gap-1.5 items-start">
+                                {/* Confirmation Status & Revised Toggle Row */}
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {/* Confirmation Status: Confirmed is default hidden; not_confirmed and canceled are shown */}
+                                  {order.confirmationStatus === 'not_confirmed' && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 shadow-2xs">
+                                      <span>{isAr ? 'غير مؤكد' : 'Not Confirmed'}</span>
+                                    </span>
+                                  )}
+                                  {order.confirmationStatus === 'canceled' && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200 shadow-2xs">
+                                      <span>{isAr ? 'ملغي' : 'Canceled'}</span>
+                                    </span>
+                                  )}
 
-                                {/* Fulfillment */}
-                                <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
-                                  <Truck className="w-2.5 h-2.5 text-slate-400" />
-                                  <span>{isAr ? fulfStatusObj.labelAr : fulfStatusObj.labelEn}</span>
-                                </span>
+                                  {/* Complementary Revised Toggle Button */}
+                                  {Boolean(order.isRevised || order.confirmationStatus === 'revised') ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleToggleRevised(order);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300 shadow-2xs hover:bg-blue-200 transition cursor-pointer"
+                                      title={
+                                        isAr
+                                          ? `طلب معدل — بواسطة: ${order.revisedBy || 'غير محدد'}${order.revisedAt ? ` (${new Date(order.revisedAt).toLocaleString('ar-EG')})` : ''} — انقر لإلغاء الوسم`
+                                          : `Revised Order — By: ${order.revisedBy || 'Unknown'}${order.revisedAt ? ` (${new Date(order.revisedAt).toLocaleString('en-US')})` : ''} — Click to toggle off`
+                                      }
+                                    >
+                                      <Edit3 className="w-2.5 h-2.5 text-blue-700" />
+                                      <span>{isAr ? 'معدل' : 'Revised'}</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleToggleRevised(order);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-semibold text-slate-400 hover:text-blue-700 hover:bg-blue-50 border border-dashed border-slate-300 hover:border-blue-300 transition cursor-pointer"
+                                      title={isAr ? 'وسم الطلب كطلب معدل' : 'Mark as Revised'}
+                                    >
+                                      <Edit3 className="w-2.5 h-2.5 text-slate-400" />
+                                      <span>{isAr ? 'تعديل' : 'Revise'}</span>
+                                    </button>
+                                  )}
+                                </div>
+
+                                {/* Fulfillment Status (Pending is hidden; Preparing with flashing dot; Out for Delivery with moving truck animation; Delivered with teal check; Paid with blue banknote) */}
+                                {order.fulfillmentStatus === 'prepare' && (
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 shadow-2xs">
+                                    <span className="relative flex h-2 w-2">
+                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                    </span>
+                                    <span>{isAr ? 'جاري التجهيز' : 'Preparing'}</span>
+                                  </span>
+                                )}
+                                {(order.fulfillmentStatus === 'shipped' || order.fulfillmentStatus === 'out_for_delivery') && (
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-2xs">
+                                    <Truck className="w-3 h-3 text-emerald-600 animate-pulse" />
+                                    <span>{isAr ? 'جاري التوصيل' : 'Out for Delivery'}</span>
+                                  </span>
+                                )}
+                                {order.fulfillmentStatus === 'delivered' && (
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200 shadow-2xs">
+                                    <CheckCircle2 className="w-3 h-3 text-teal-600" />
+                                    <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
+                                  </span>
+                                )}
+                                {order.fulfillmentStatus === 'paid' && (
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200 shadow-2xs">
+                                    <Banknote className="w-3 h-3 text-blue-600" />
+                                    <span>{isAr ? 'مدفوع' : 'Paid'}</span>
+                                  </span>
+                                )}
                               </div>
                             </td>
 
@@ -1978,6 +2219,34 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             <span>{isAr ? 'عرض سجل التدقيق' : 'View Audit Trail'}</span>
           </button>
 
+          {/* Cancel or Restore Action */}
+          {activeOrderForMenu.confirmationStatus !== 'canceled' ? (
+            <button
+              type="button"
+              onClick={() => {
+                setCancelModalOrder(activeOrderForMenu);
+                setCancelReason('');
+                setActiveActionsMenuOrderId(null);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-rose-700 hover:bg-rose-50 rounded-xl transition cursor-pointer font-bold text-start"
+            >
+              <XCircle className="w-3.5 h-3.5 text-rose-600" />
+              <span>{isAr ? 'إلغاء أمر البيع' : 'Cancel Order'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                handleRestoreCanceledOrder(activeOrderForMenu);
+                setActiveActionsMenuOrderId(null);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-emerald-700 hover:bg-emerald-50 rounded-xl transition cursor-pointer font-bold text-start"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{isAr ? 'استعادة وتفعيل الأمر' : 'Restore Order'}</span>
+            </button>
+          )}
+
           <div className="border-t border-slate-100 my-1"></div>
 
           <button
@@ -2027,6 +2296,67 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           order={auditModalOrder}
           isAr={isAr}
         />
+      )}
+
+      {/* Cancel Order Confirmation Modal */}
+      {cancelModalOrder && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 duration-100">
+            <div className="flex items-center gap-3 text-rose-600 border-b border-slate-100 pb-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 flex items-center justify-center shrink-0">
+                <XCircle className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h4 className="font-extrabold text-sm text-slate-900">
+                  {isAr ? 'إلغاء أمر البيع' : 'Cancel Sales Order'}
+                </h4>
+                <span className="text-xs text-slate-500 font-mono">
+                  #{resolveOrderSerial(cancelModalOrder, orders)} — {cancelModalOrder.clientName || ''}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {isAr
+                ? 'سيتم وسم أمر البيع كـ "ملغي" وتطبيق المظهر المعطل عليه في الجدول، مع توثيق العملية وتاريخها وهوية منفذها في سجل التدقيق.'
+                : 'This order will be marked as "Canceled" and styled inactive in the table, with audit trail logging.'}
+            </p>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                {isAr ? 'سبب الإلغاء (موثق بسجل التدقيق):' : 'Cancellation Reason:'}
+              </label>
+              <textarea
+                rows={3}
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder={isAr ? 'اكتب سبب الإلغاء (مثال: طلب العميل إلغاء التوريد، إلغاء التعاقد، عجز بضاعة)...' : 'Enter cancellation reason...'}
+                className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-rose-500 font-medium"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setCancelModalOrder(null);
+                  setCancelReason('');
+                }}
+                className="px-3.5 py-1.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition cursor-pointer"
+              >
+                {isAr ? 'تراجع' : 'Close'}
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmCancelOrder}
+                disabled={isCanceling}
+                className="px-4 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 transition cursor-pointer shadow-xs disabled:opacity-50"
+              >
+                {isCanceling ? (isAr ? 'جاري الإلغاء...' : 'Canceling...') : (isAr ? 'تأكيد إلغاء الأمر' : 'Confirm Cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Delete Confirmation Alert Modal */}
@@ -2146,7 +2476,11 @@ function SalesOrderEditorModal({
     collectionAmount: editingOrder?.collectionAmount || (editingOrder?.orderType === 'collection' ? (editingOrder.grandTotal || '') : ''),
     paymentMethod: editingOrder?.paymentMethod || 'cash',
     receiptNumber: editingOrder?.receiptNumber || editingOrder?.chequeNumber || '',
-    confirmationStatus: editingOrder?.confirmationStatus || 'confirmed',
+    confirmationStatus: (editingOrder?.confirmationStatus === 'revised' ? 'confirmed' : editingOrder?.confirmationStatus) || 'confirmed',
+    isRevised: Boolean(editingOrder?.isRevised || editingOrder?.confirmationStatus === 'revised'),
+    revisedAt: editingOrder?.revisedAt || null,
+    revisedBy: editingOrder?.revisedBy || null,
+    revisedById: editingOrder?.revisedById || null,
     fulfillmentStatus: editingOrder?.fulfillmentStatus || (isAdminModal ? 'paid' : 'not_yet'),
     vatMode: initialVatMode,
     poTawoos: editingOrder?.poTawoos || '',
