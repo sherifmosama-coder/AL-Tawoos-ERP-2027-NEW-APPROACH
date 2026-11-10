@@ -30,6 +30,7 @@ import {
   X,
   Building2,
   MapPin,
+  Map,
   FileSpreadsheet,
   FileText,
   Download,
@@ -48,6 +49,7 @@ import {
   ChevronRight,
   Tag,
   Scale,
+  Weight,
   Percent,
   RefreshCw,
   ExternalLink,
@@ -1188,9 +1190,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                   <th className="py-3 px-3 text-start">{isAr ? 'العميل' : 'Client'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'التاريخ' : 'Dates'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'التشغيل' : 'Schedule'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'الوزن' : 'Weight'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'الكمية والوزن' : 'Qty & Weight'}</th>
                   <th className="py-3 px-2 text-center w-20">{isAr ? 'VAT' : 'VAT'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'أمر الشراء' : 'PO#'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'أمر الشراء والمرفقات' : 'PO & Files'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'الملاحظات' : 'Notes'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'الحالة' : 'Status'}</th>
                   <th className="py-3 px-3 text-center w-12">{isAr ? 'إجراءات' : 'Actions'}</th>
@@ -1343,14 +1345,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       className="p-0.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded transition cursor-pointer"
                                       title={isAr ? 'فتح موقع الفرع على الخريطة' : 'Open Location on Map'}
                                     >
-                                      <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                                      <Map className="w-3.5 h-3.5 text-emerald-600" />
                                     </a>
                                   ) : (
                                     <span
                                       className="p-0.5 text-slate-300 cursor-not-allowed"
                                       title={isAr ? 'لا يوجد موقع مسجل' : 'No map location'}
                                     >
-                                      <MapPin className="w-3.5 h-3.5" />
+                                      <Map className="w-3.5 h-3.5" />
                                     </span>
                                   )}
                                 </div>
@@ -1383,7 +1385,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                 {profile.hasHolidays && (
                                   <div className="flex items-center gap-1 text-[10px] text-rose-700 font-bold">
                                     <Calendar className="w-2.5 h-2.5 text-rose-500 shrink-0" />
-                                    <span className="truncate max-w-[130px]" title={profile.holidaysDisplay}>
+                                    <span className="truncate max-w-[130px]" title={isAr ? 'عطلة أسبوعية' : 'Weekly holiday'}>
                                       {profile.holidaysDisplay}
                                     </span>
                                   </div>
@@ -1391,15 +1393,23 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 5. Weight in Tons */}
-                            <td className="py-3 px-3 whitespace-nowrap">
+                            {/* 5. Cartons & Weight in Tons (Cartons kept above weight) */}
+                            <td className="py-3 px-3 whitespace-nowrap font-mono">
                               {order.orderType === 'admin' || order.orderType === 'collection' ? (
                                 <span className="text-slate-300 font-mono block">—</span>
                               ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100/90 text-slate-700 border border-slate-200 shadow-2xs">
-                                  <Scale className="w-3 h-3 text-slate-500 shrink-0" />
-                                  <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
-                                </span>
+                                <div className="flex flex-col gap-0.5 items-start">
+                                  <span className="font-bold text-slate-800 text-xs font-mono">
+                                    {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                    {order.totalBonus > 0 ? (
+                                      <span className="text-emerald-600 text-[10px] font-bold ms-1">+{order.totalBonus}</span>
+                                    ) : null}
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md text-[10px] font-mono font-bold bg-slate-100/90 text-slate-700 border border-slate-200 shadow-2xs">
+                                    <Weight className="w-2.5 h-2.5 text-slate-500 shrink-0" />
+                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                                  </span>
+                                </div>
                               )}
                             </td>
 
@@ -1408,7 +1418,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               {renderVatAbbrChip(order.vatMode, order.orderType, isAr)}
                             </td>
 
-                            {/* 7. Purchase Orders (Tawoos & Private Label) */}
+                            {/* 7. Purchase Orders & Attachments (Merged, files on last line as small icons) */}
                             <td className="py-3 px-3 whitespace-nowrap font-mono text-[11px]">
                               <div className="flex flex-col gap-0.5">
                                 {order.poTawoos && (
@@ -1423,40 +1433,60 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     {order.poPrivateLabel}
                                   </span>
                                 )}
-                                {!order.poTawoos && !order.poPrivateLabel && (
+                                {!order.poTawoos && !order.poPrivateLabel && (order.poAttachments || []).length === 0 && (
                                   <span className="text-slate-300 font-mono">—</span>
+                                )}
+
+                                {/* Attachments placed on the last line as small icon for each file */}
+                                {(order.poAttachments || []).length > 0 && (
+                                  <div className="flex items-center gap-1 pt-1 flex-wrap">
+                                    {order.poAttachments.map((att, attIdx) => (
+                                      <button
+                                        key={attIdx}
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (att.url) setLightboxImage({ url: att.url, title: att.poLabel || att.name });
+                                        }}
+                                        className="p-1 rounded-md bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 border border-slate-200 transition cursor-pointer shadow-2xs flex items-center justify-center"
+                                        title={att.poLabel || att.name || (isAr ? 'مرفق' : 'Attachment')}
+                                      >
+                                        <Paperclip className="w-2.5 h-2.5 shrink-0" />
+                                      </button>
+                                    ))}
+                                  </div>
                                 )}
                               </div>
                             </td>
 
-                            {/* 8. Single Comments Column (Distinctive styling for external vs internal) */}
+                            {/* 8. Single Comments Column (Supports Multiple Lines) */}
                             <td className="py-3 px-3">
-                              <div className="flex flex-col gap-1 items-start max-w-[150px]">
+                              <div className="flex flex-col gap-1 items-start min-w-[130px] max-w-[200px]">
                                 {order.externalComments && (
                                   <div
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-800 border border-blue-200/70 truncate max-w-full"
+                                    className="flex items-start gap-1 p-1 rounded-md text-[10px] font-medium bg-blue-50 text-blue-900 border border-blue-200/70 w-full whitespace-pre-wrap break-words leading-relaxed"
                                     title={`${isAr ? 'ملاحظة خارجية للعميل:' : 'External Note:'} ${order.externalComments}`}
                                   >
-                                    <MessageSquare className="w-2.5 h-2.5 text-blue-600 shrink-0" />
-                                    <span className="truncate">{order.externalComments}</span>
+                                    <MessageSquare className="w-2.5 h-2.5 text-blue-600 shrink-0 mt-0.5" />
+                                    <span className="break-words">{order.externalComments}</span>
                                   </div>
                                 )}
                                 {order.internalComments && (
                                   <div
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200/70 truncate max-w-full"
+                                    className="flex items-start gap-1 p-1 rounded-md text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-200/70 w-full whitespace-pre-wrap break-words leading-relaxed"
                                     title={`${isAr ? 'ملاحظة داخلية سرية:' : 'Internal Secret Note:'} ${order.internalComments}`}
                                   >
-                                    <Lock className="w-2.5 h-2.5 text-amber-600 shrink-0" />
-                                    <span className="truncate">{order.internalComments}</span>
+                                    <Lock className="w-2.5 h-2.5 text-amber-600 shrink-0 mt-0.5" />
+                                    <span className="break-words">{order.internalComments}</span>
                                   </div>
                                 )}
                                 {order.adminNotes && !order.externalComments && !order.internalComments && (
                                   <div
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-50 text-purple-800 border border-purple-200/70 truncate max-w-full"
+                                    className="flex items-start gap-1 p-1 rounded-md text-[10px] font-medium bg-purple-50 text-purple-900 border border-purple-200/70 w-full whitespace-pre-wrap break-words leading-relaxed"
                                     title={order.adminNotes}
                                   >
-                                    <FileText className="w-2.5 h-2.5 text-purple-600 shrink-0" />
-                                    <span className="truncate">{order.adminNotes}</span>
+                                    <FileText className="w-2.5 h-2.5 text-purple-600 shrink-0 mt-0.5" />
+                                    <span className="break-words">{order.adminNotes}</span>
                                   </div>
                                 )}
                                 {!order.externalComments && !order.internalComments && !order.adminNotes && (
@@ -1649,7 +1679,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                                 onClick={(e) => e.stopPropagation()}
                                                 className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200 px-2 py-0.5 rounded-lg transition"
                                               >
-                                                <MapPin className="w-3 h-3 text-emerald-600" />
+                                                <Map className="w-3 h-3 text-emerald-600" />
                                                 <span>{isAr ? 'فتح الخريطة' : 'Open Map'}</span>
                                               </a>
                                             )}
@@ -1665,7 +1695,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                             {profile.hasHolidays && (
                                               <div className="bg-white p-2 rounded-lg border border-slate-200">
                                                 <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'العطلات الأسبوعية:' : 'Weekly Holidays:'}</span>
-                                                <span className="font-bold text-rose-700">{profile.holidaysDisplay}</span>
+                                                <span className="font-bold text-rose-700" title={isAr ? 'العطلة الأسبوعية' : 'Weekly holiday'}>
+                                                  {profile.holidaysDisplay}
+                                                </span>
                                               </div>
                                             )}
                                             {profile.hasAddress && (
@@ -1692,29 +1724,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         </div>
                                       )}
 
-                                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs border-b border-slate-100 pb-3">
-                                        {/* PO Numbers */}
-                                        <div className="space-y-1">
-                                          <span className="font-bold text-slate-500 block">{isAr ? 'أرقام أوامر الشراء (POs):' : 'Purchase Orders:'}</span>
-                                          <div className="space-y-0.5 font-mono text-[11px]">
-                                            {order.poTawoos && (
-                                              <div>
-                                                <span className="text-slate-400 me-1">{isAr ? 'طاووس:' : 'Tawoos:'}</span>
-                                                <span className="font-bold text-slate-800">{order.poTawoos}</span>
-                                              </div>
-                                            )}
-                                            {order.poPrivateLabel && (
-                                              <div>
-                                                <span className="text-slate-400 me-1">{isAr ? 'علامة خاصة:' : 'PL:'}</span>
-                                                <span className="font-bold text-purple-700">{order.poPrivateLabel}</span>
-                                              </div>
-                                            )}
-                                            {!order.poTawoos && !order.poPrivateLabel && (
-                                              <span className="text-slate-400 italic">{isAr ? 'لا يوجد أمر شراء مسجل' : 'No PO recorded'}</span>
-                                            )}
-                                          </div>
-                                        </div>
-
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs border-b border-slate-100 pb-3">
                                         {/* Comments & Sales Rep */}
                                         <div className="space-y-1">
                                           <span className="font-bold text-slate-500 block">{isAr ? 'الملاحظات ومندوب المبيعات:' : 'Notes & Rep:'}</span>
