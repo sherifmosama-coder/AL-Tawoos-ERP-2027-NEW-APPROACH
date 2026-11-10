@@ -55,12 +55,14 @@ import {
   Info,
   Phone,
   Landmark,
-  Banknote
+  Banknote,
+  MessageSquare,
+  Lock
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
 import PeacockLoader from './PeacockLoader';
-import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster';
+import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from './ClientSegmentsMaster';
 import {
   DEFAULT_PRICING_STRATEGIES,
   formatDateKey,
@@ -260,6 +262,183 @@ const resolveBranchDisplayName = (b, isAr = true) => {
   return rawNameAr || rawNameEn || (isAr ? 'الفرع الرئيسي' : 'Main Branch');
 };
 
+/**
+ * Resolves a Google Maps / location URL for a branch or client
+ */
+const resolveLocationUrl = (branch, client) => {
+  const raw = branch?.gpsCoordinates || branch?.googleMapsUrl || branch?.locationUrl || client?.gpsCoordinates || client?.googleMapsUrl || '';
+  if (!raw || !String(raw).trim()) return null;
+  const trimmed = String(raw).trim();
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
+  }
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(trimmed)}`;
+};
+
+/**
+ * Resolves full operational profile for an order
+ */
+const resolveOrderOperationalProfile = (order, client, isAr = true) => {
+  if (!client) {
+    return {
+      hasSchedule: false,
+      scheduleDisplay: '—',
+      holidaysDisplay: '',
+      hasHolidays: false,
+      address: '',
+      hasAddress: false,
+      phonesDisplay: '',
+      contactPerson: '',
+      hasContact: false,
+      notes: '',
+      hasNotes: false
+    };
+  }
+
+  const branches = Array.isArray(client.branches) ? client.branches : [];
+  const br = branches.find((b) => (b.id || 'br_main') === order.branchId) || branches[0] || null;
+
+  const useCustom = Boolean(br?.useCustomSchedule);
+  const branchHoursFrom = (br?.workingHoursFrom || '').trim();
+  const branchHoursTo = (br?.workingHoursTo || '').trim();
+  const clientHoursFrom = (client.workingHoursFrom || '').trim();
+  const clientHoursTo = (client.workingHoursTo || '').trim();
+
+  let hoursFrom = '';
+  let hoursTo = '';
+  if (useCustom && (branchHoursFrom || branchHoursTo)) {
+    hoursFrom = branchHoursFrom;
+    hoursTo = branchHoursTo;
+  } else {
+    hoursFrom = clientHoursFrom || branchHoursFrom;
+    hoursTo = clientHoursTo || branchHoursTo;
+  }
+
+  let scheduleDisplay = '';
+  if (hoursFrom && hoursTo) {
+    scheduleDisplay = `${hoursFrom} — ${hoursTo}`;
+  } else if (hoursFrom) {
+    scheduleDisplay = hoursFrom;
+  } else if (hoursTo) {
+    scheduleDisplay = hoursTo;
+  } else {
+    scheduleDisplay = isAr ? '— (غير محدد)' : '— (Unknown)';
+  }
+
+  const branchHolidays = Array.isArray(br?.weeklyHolidays) ? br.weeklyHolidays.filter(Boolean) : [];
+  const clientHolidays = Array.isArray(client.weeklyHolidays) ? client.weeklyHolidays.filter(Boolean) : [];
+
+  let rawHolidays = [];
+  if (useCustom && branchHolidays.length > 0) {
+    rawHolidays = branchHolidays;
+  } else if (clientHolidays.length > 0) {
+    rawHolidays = clientHolidays;
+  } else if (branchHolidays.length > 0) {
+    rawHolidays = branchHolidays;
+  }
+
+  const DAY_MAP_AR = {
+    friday: 'الجمعة',
+    saturday: 'السبت',
+    sunday: 'الأحد',
+    monday: 'الإثنين',
+    tuesday: 'الثلاثاء',
+    wednesday: 'الأربعاء',
+    thursday: 'الخميس'
+  };
+
+  const holidaysDisplay = rawHolidays
+    .map((d) => (isAr ? (DAY_MAP_AR[d.toLowerCase()] || d) : d))
+    .join('، ');
+
+  // Contact & Phones
+  const contactPerson = br?.contactPerson || client.contactPerson || '';
+  let phoneList = [];
+  if (br?.phone) phoneList.push(br.phone);
+  if (br?.mobile) phoneList.push(br.mobile);
+  if (Array.isArray(br?.phones)) phoneList.push(...br.phones.filter(Boolean));
+  if (phoneList.length === 0) {
+    if (Array.isArray(client.phones)) phoneList.push(...client.phones.filter(Boolean));
+    if (client.phone) phoneList.push(client.phone);
+    if (client.mobile) phoneList.push(client.mobile);
+  }
+  phoneList = Array.from(new Set(phoneList.map((p) => String(p).trim()))).filter(Boolean);
+  const phonesDisplay = phoneList.join(' — ');
+
+  const address = br?.address || client.address || '';
+  const notes = br?.notes || client.notes || '';
+
+  return {
+    hoursFrom,
+    hoursTo,
+    scheduleDisplay,
+    hasHours: Boolean(hoursFrom || hoursTo),
+    holidaysDisplay,
+    hasHolidays: rawHolidays.length > 0,
+    address,
+    hasAddress: Boolean(address && address !== '—' && address !== 'غير محدد'),
+    contactPerson,
+    phonesDisplay,
+    hasContact: Boolean(contactPerson || phonesDisplay),
+    notes,
+    hasNotes: Boolean(notes)
+  };
+};
+
+/**
+ * Abbreviated VAT Mode Chip Renderer (Consistent with modal color theme)
+ */
+const renderVatAbbrChip = (vatMode, orderType, isAr = true) => {
+  if (orderType === 'admin') {
+    return (
+      <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+        {isAr ? 'إداري' : 'Admin'}
+      </span>
+    );
+  }
+  if (orderType === 'collection') {
+    return (
+      <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
+        {isAr ? 'تحصيل' : 'Receipt'}
+      </span>
+    );
+  }
+
+  switch (vatMode) {
+    case 'exclusive':
+      return (
+        <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200" title={isAr ? 'ضريبي (غير شامل الضريبة +14%)' : '+14% VAT Excluded'}>
+          +14%
+        </span>
+      );
+    case 'exclusive_wht':
+      return (
+        <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200" title={isAr ? 'ضريبة وخصم 1% (+14% ضريبة - 1% خصم أ.ت.ص)' : '+14% VAT - 1% WHT'}>
+          +14% / -1%
+        </span>
+      );
+    case 'inclusive':
+      return (
+        <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200" title={isAr ? 'سعر شامل الضريبة (14%)' : 'Tax Included (14%)'}>
+          {isAr ? '14% شامل' : '14% Incl'}
+        </span>
+      );
+    case 'inclusive_wht':
+      return (
+        <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200" title={isAr ? 'شامل الضريبة مع خصم أ.ت.ص (1%)' : 'Tax Incl - 1% WHT'}>
+          {isAr ? 'شامل / -1%' : 'Incl / -1%'}
+        </span>
+      );
+    case 'none':
+    default:
+      return (
+        <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200" title={isAr ? 'بدون ضريبة (إذن تسليم)' : 'None (Delivery Note)'}>
+          {isAr ? 'بدون ضريبة' : 'No VAT'}
+        </span>
+      );
+  }
+};
+
 export default function SalesOrdersMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
@@ -270,6 +449,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   // Cloud State
   const [orders, setOrders] = useState([]);
   const [clients, setClients] = useState([]);
+  const [segments, setSegments] = useState([]);
   const [products, setProducts] = useState([]);
   const [productCategories, setProductCategories] = useState([]);
   const [priceLists, setPriceLists] = useState([]);
@@ -375,6 +555,26 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     });
     return () => unsub();
   }, []);
+
+  // 7. Subscribe to Client Segments
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'client_segments'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setSegments(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // Fast Segment Lookup Map
+  const segmentMap = useMemo(() => {
+    const map = {};
+    (segments.length > 0 ? segments : PRESET_DEFAULT_SEGMENTS).forEach((s) => {
+      map[s.id] = s;
+      if (s.nameAr) map[s.nameAr] = s;
+      if (s.nameEn) map[s.nameEn] = s;
+    });
+    return map;
+  }, [segments]);
 
   // Close 3-dots actions menu on outside click or scroll
   useEffect(() => {
@@ -984,14 +1184,15 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             <table className="w-full text-start border-collapse">
               <thead>
                 <tr className="bg-slate-50/90 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider whitespace-nowrap">
-                  <th className="py-3 px-3 text-center w-8"></th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'النوع ومسلسل الطلب' : 'Type & Serial'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'العميل والفرع والمنطقة' : 'Client & Branch'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'تواريخ الطلب' : 'Dates'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'المعاملة والمستندات' : 'Tax & Documents'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? '#' : '#'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'العميل' : 'Client'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'التاريخ' : 'Dates'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'التشغيل' : 'Schedule'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'الوزن' : 'Weight'}</th>
+                  <th className="py-3 px-2 text-center w-20">{isAr ? 'VAT' : 'VAT'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'أمر الشراء' : 'PO#'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'الملاحظات' : 'Notes'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'الحالة' : 'Status'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'الكمية والوزن' : 'Quantity / Weight'}</th>
-                  <th className="py-3 px-3 text-end">{isAr ? 'الإجمالي (EGP)' : 'Grand Total'}</th>
                   <th className="py-3 px-3 text-center w-12">{isAr ? 'إجراءات' : 'Actions'}</th>
                 </tr>
               </thead>
@@ -1001,7 +1202,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                     {/* Optional Group Header Row */}
                     {groupBy !== 'none' && (
                       <tr className="bg-slate-100/80 border-t border-b border-slate-200">
-                        <td colSpan={9} className="py-2 px-4 font-black text-slate-800 text-xs">
+                        <td colSpan={10} className="py-2 px-4 font-black text-slate-800 text-xs">
                           <div className="flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
                             <span>{group.groupLabel}</span>
@@ -1021,27 +1222,26 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       const fulfStatusObj = FULFILLMENT_STATUSES.find((s) => s.id === order.fulfillmentStatus) || FULFILLMENT_STATUSES[0];
                       const vatModeObj = VAT_MODES.find((v) => v.id === order.vatMode) || VAT_MODES[0];
 
-                      // Product breakdown checks
-                      const hasPrivateLabel = (order.lines || []).some((l) => l.isPrivateLabel);
-                      const hasOwnBrand = (order.lines || []).some((l) => !l.isPrivateLabel);
-                      const isTaxable = order.vatMode && order.vatMode !== 'none';
+                      // Client and Branch resolution
+                      const clientObj = clients.find((c) => c.id === order.clientId) || null;
+                      const branchCount = (clientObj?.branches || []).length;
+                      const showBranchName = branchCount > 1 && order.branchName;
+                      const targetBranch = (clientObj?.branches || []).find((b) => b.id === order.branchId) || clientObj?.branches?.[0] || null;
+                      const locationUrl = resolveLocationUrl(targetBranch, clientObj);
+                      const profile = resolveOrderOperationalProfile(order, clientObj, isAr);
+
+                      // Segment resolution
+                      const segObj = clientObj?.segmentId ? segmentMap[clientObj.segmentId] : null;
+                      const SegIcon = (segObj?.icon && SEGMENT_ICON_MAP[segObj.icon]) ? SEGMENT_ICON_MAP[segObj.icon] : Building2;
+                      const segColor = segObj?.color || '#64748b';
 
                       return (
                         <React.Fragment key={order.id}>
-                          <tr className={`hover:bg-slate-50/80 transition ${isExpanded ? 'bg-slate-50/60' : ''}`}>
-                            {/* Expand Toggle */}
-                            <td className="py-3 px-3 text-center">
-                              <button
-                                type="button"
-                                onClick={() => toggleRowExpand(order.id)}
-                                className="p-1 hover:bg-slate-200/60 text-slate-400 hover:text-slate-700 rounded-md transition cursor-pointer"
-                                title={isExpanded ? (isAr ? 'طي التفاصيل' : 'Collapse') : (isAr ? 'عرض التفاصيل' : 'Expand')}
-                              >
-                                {isExpanded ? <ChevronDown className="w-4 h-4 text-emerald-600" /> : <ChevronRight className="w-4 h-4 rtl:rotate-180" />}
-                              </button>
-                            </td>
-
-                            {/* Order Type Badge & Subtle Serial #0001 + Audit Button */}
+                          <tr
+                            onClick={() => toggleRowExpand(order.id)}
+                            className={`hover:bg-slate-50/80 transition cursor-pointer select-none ${isExpanded ? 'bg-slate-50/60' : ''}`}
+                          >
+                            {/* 1. Type & Serial */}
                             <td className="py-3 px-3 whitespace-nowrap">
                               <div className="flex flex-col gap-1 items-start">
                                 {/* Order Type Badge */}
@@ -1076,7 +1276,10 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   {order.auditTrail?.length > 0 && (
                                     <button
                                       type="button"
-                                      onClick={() => setAuditModalOrder(order)}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setAuditModalOrder(order);
+                                      }}
                                       className="inline-flex items-center gap-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-1 py-0.2 rounded cursor-pointer transition shadow-2xs"
                                       title={isAr ? `سجل التعديلات (${order.auditTrail.length})` : `Audit trail (${order.auditTrail.length})`}
                                     >
@@ -1088,32 +1291,73 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* Client & Branch & Region */}
+                            {/* 2. Client & Branch & Region & Location */}
                             <td className="py-3 px-3">
-                              <div className="flex flex-col gap-0.5">
+                              <div className="flex flex-col gap-1">
                                 <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                                  <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                  {order.orderType === 'admin' && !order.clientId ? (
+                                    <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-purple-50 text-purple-700 border border-purple-200">
+                                      <Landmark className="w-3.5 h-3.5" />
+                                    </span>
+                                  ) : (
+                                    <span
+                                      className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs"
+                                      style={{
+                                        backgroundColor: `${segColor}18`,
+                                        color: segColor,
+                                        border: `1px solid ${segColor}35`
+                                      }}
+                                      title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
+                                    >
+                                      <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                    </span>
+                                  )}
                                   <span className="truncate max-w-[200px]">
                                     {order.orderType === 'admin' && !order.clientId
                                       ? (isAr ? 'إجراء إداري عام' : 'General Administrative')
                                       : (order.clientName || order.clientId || '—')}
                                   </span>
                                 </span>
-                                <div className="flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
-                                  {order.branchName && (
+
+                                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                                  {/* Branch Name: only shown if client has multiple branches */}
+                                  {showBranchName && (
                                     <span className="font-medium text-slate-600">{order.branchName}</span>
                                   )}
+
+                                  {/* Region Chip */}
                                   {order.region && (
-                                    <span className="inline-flex items-center gap-0.5 text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
-                                      <MapPin className="w-2.5 h-2.5" />
+                                    <span className="inline-flex items-center gap-0.5 text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded font-medium">
+                                      <MapPin className="w-2.5 h-2.5 text-slate-400" />
                                       <span>{order.region}</span>
+                                    </span>
+                                  )}
+
+                                  {/* Location Map Icon: Green if available, disabled gray if missing */}
+                                  {locationUrl ? (
+                                    <a
+                                      href={locationUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="p-0.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded transition cursor-pointer"
+                                      title={isAr ? 'فتح موقع الفرع على الخريطة' : 'Open Location on Map'}
+                                    >
+                                      <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                                    </a>
+                                  ) : (
+                                    <span
+                                      className="p-0.5 text-slate-300 cursor-not-allowed"
+                                      title={isAr ? 'لا يوجد موقع مسجل' : 'No map location'}
+                                    >
+                                      <MapPin className="w-3.5 h-3.5" />
                                     </span>
                                   )}
                                 </div>
                               </div>
                             </td>
 
-                            {/* Dual Dates */}
+                            {/* 3. Dates */}
                             <td className="py-3 px-3 whitespace-nowrap font-mono text-[11px]">
                               <div className="flex flex-col gap-0.5">
                                 <div className="flex items-center gap-1 text-slate-700 font-bold">
@@ -1129,67 +1373,99 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* Tax Mode & Document Classification Badge */}
+                            {/* 4. Operating Schedule Key Info */}
                             <td className="py-3 px-3 whitespace-nowrap">
-                              <div className="flex flex-col gap-1 items-start">
-                                {order.orderType === 'admin' ? (
-                                  <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200 flex items-center gap-1">
-                                    <Landmark className="w-3 h-3 text-purple-600" />
-                                    <span>{isAr ? 'قرار / بيان إداري' : 'Administrative Action'}</span>
-                                  </span>
-                                ) : order.orderType === 'collection' ? (
-                                  <div className="flex flex-col gap-0.5">
-                                    <span className="text-[10px] font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 flex items-center gap-1">
-                                      <Receipt className="w-3 h-3 text-teal-600" />
-                                      <span>{isAr ? 'إذن تحصيل مالي' : 'Collection Receipt'}</span>
-                                    </span>
-                                    <span className="text-[9px] text-slate-500 font-medium">
-                                      {order.paymentMethod === 'cash' ? (isAr ? '💵 كاش' : 'Cash') :
-                                       order.paymentMethod === 'cheque' ? (isAr ? '📜 شيك' : 'Cheque') :
-                                       order.paymentMethod === 'bank_transfer' ? (isAr ? '🏦 تحويل' : 'Transfer') :
-                                       (isAr ? '📥 إيداع' : 'Deposit')}
-                                      {order.receiptNumber ? ` (#${order.receiptNumber})` : ''}
+                              <div className="flex flex-col gap-0.5">
+                                <div className="flex items-center gap-1 font-mono text-[11px] text-slate-700 font-semibold">
+                                  <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                                  <span>{profile.scheduleDisplay}</span>
+                                </div>
+                                {profile.hasHolidays && (
+                                  <div className="flex items-center gap-1 text-[10px] text-rose-700 font-bold">
+                                    <Calendar className="w-2.5 h-2.5 text-rose-500 shrink-0" />
+                                    <span className="truncate max-w-[130px]" title={profile.holidaysDisplay}>
+                                      {profile.holidaysDisplay}
                                     </span>
                                   </div>
-                                ) : (
-                                  <>
-                                    {/* Tax Mode Pill */}
-                                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                                      !isTaxable
-                                        ? 'bg-slate-100 text-slate-700 border border-slate-200'
-                                        : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                    }`}>
-                                      <span>{isAr ? vatModeObj.labelAr : vatModeObj.labelEn}</span>
-                                    </span>
-
-                                    {/* Document Type Indicator */}
-                                    {!isTaxable ? (
-                                      <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
-                                        <FileText className="w-2.5 h-2.5 text-slate-400" />
-                                        <span>{isAr ? 'إذن تسليم' : 'Delivery Note'}</span>
-                                      </span>
-                                    ) : hasPrivateLabel && hasOwnBrand ? (
-                                      <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200 flex items-center gap-1">
-                                        <Receipt className="w-2.5 h-2.5 text-purple-600" />
-                                        <span>{isAr ? 'فاتورتين: طاووس + علامة خاصة' : 'Dual Inv: Tawoos + PL'}</span>
-                                      </span>
-                                    ) : hasPrivateLabel ? (
-                                      <span className="text-[10px] font-bold text-purple-700 flex items-center gap-1">
-                                        <Receipt className="w-2.5 h-2.5 text-purple-600" />
-                                        <span>{isAr ? 'فاتورة علامة خاصة' : 'PL Tax Invoice'}</span>
-                                      </span>
-                                    ) : (
-                                      <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
-                                        <Receipt className="w-2.5 h-2.5 text-emerald-600" />
-                                        <span>{isAr ? 'فاتورة طاووس' : 'Tawoos Tax Invoice'}</span>
-                                      </span>
-                                    )}
-                                  </>
                                 )}
                               </div>
                             </td>
 
-                            {/* Statuses (Confirmation & Fulfillment) */}
+                            {/* 5. Weight in Tons */}
+                            <td className="py-3 px-3 whitespace-nowrap">
+                              {order.orderType === 'admin' || order.orderType === 'collection' ? (
+                                <span className="text-slate-300 font-mono block">—</span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100/90 text-slate-700 border border-slate-200 shadow-2xs">
+                                  <Scale className="w-3 h-3 text-slate-500 shrink-0" />
+                                  <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                                </span>
+                              )}
+                            </td>
+
+                            {/* 6. VAT (Narrow Column with Abbreviated Mode Chip) */}
+                            <td className="py-3 px-2 text-center whitespace-nowrap">
+                              {renderVatAbbrChip(order.vatMode, order.orderType, isAr)}
+                            </td>
+
+                            {/* 7. Purchase Orders (Tawoos & Private Label) */}
+                            <td className="py-3 px-3 whitespace-nowrap font-mono text-[11px]">
+                              <div className="flex flex-col gap-0.5">
+                                {order.poTawoos && (
+                                  <span className="text-slate-800 font-bold" title={isAr ? 'أمر شراء طاووس' : 'Tawoos PO'}>
+                                    <span className="text-[9px] text-slate-400 font-sans me-0.5">{isAr ? 'طاووس:' : 'TW:'}</span>
+                                    {order.poTawoos}
+                                  </span>
+                                )}
+                                {order.poPrivateLabel && (
+                                  <span className="text-purple-700 font-bold" title={isAr ? 'أمر شراء علامة خاصة' : 'PL PO'}>
+                                    <span className="text-[9px] text-purple-400 font-sans me-0.5">{isAr ? 'علامة:' : 'PL:'}</span>
+                                    {order.poPrivateLabel}
+                                  </span>
+                                )}
+                                {!order.poTawoos && !order.poPrivateLabel && (
+                                  <span className="text-slate-300 font-mono">—</span>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* 8. Single Comments Column (Distinctive styling for external vs internal) */}
+                            <td className="py-3 px-3">
+                              <div className="flex flex-col gap-1 items-start max-w-[150px]">
+                                {order.externalComments && (
+                                  <div
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-800 border border-blue-200/70 truncate max-w-full"
+                                    title={`${isAr ? 'ملاحظة خارجية للعميل:' : 'External Note:'} ${order.externalComments}`}
+                                  >
+                                    <MessageSquare className="w-2.5 h-2.5 text-blue-600 shrink-0" />
+                                    <span className="truncate">{order.externalComments}</span>
+                                  </div>
+                                )}
+                                {order.internalComments && (
+                                  <div
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200/70 truncate max-w-full"
+                                    title={`${isAr ? 'ملاحظة داخلية سرية:' : 'Internal Secret Note:'} ${order.internalComments}`}
+                                  >
+                                    <Lock className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                                    <span className="truncate">{order.internalComments}</span>
+                                  </div>
+                                )}
+                                {order.adminNotes && !order.externalComments && !order.internalComments && (
+                                  <div
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-50 text-purple-800 border border-purple-200/70 truncate max-w-full"
+                                    title={order.adminNotes}
+                                  >
+                                    <FileText className="w-2.5 h-2.5 text-purple-600 shrink-0" />
+                                    <span className="truncate">{order.adminNotes}</span>
+                                  </div>
+                                )}
+                                {!order.externalComments && !order.internalComments && !order.adminNotes && (
+                                  <span className="text-slate-300 font-mono">—</span>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* 9. Status (Confirmation & Fulfillment) - MOVED TO THE END */}
                             <td className="py-3 px-3 whitespace-nowrap">
                               <div className="flex flex-col gap-1 items-start">
                                 {/* Confirmation */}
@@ -1211,44 +1487,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* Quantity & Weight */}
-                            <td className="py-3 px-3 whitespace-nowrap font-mono">
-                              {order.orderType === 'admin' || order.orderType === 'collection' ? (
-                                <span className="text-slate-400 font-mono text-center block">—</span>
-                              ) : (
-                                <div className="flex flex-col gap-0.5">
-                                  <span className="font-bold text-slate-800 text-xs">
-                                    {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
-                                  </span>
-                                  <span className="text-[10px] text-slate-400">
-                                    {Number(order.totalWeightKg || 0).toLocaleString()} kg
-                                  </span>
-                                </div>
-                              )}
-                            </td>
-
-                            {/* Grand Total EGP */}
-                            <td className="py-3 px-3 whitespace-nowrap text-end font-mono">
-                              {order.orderType === 'admin' ? (
-                                <span className="text-slate-400 font-mono text-end block">—</span>
-                              ) : order.orderType === 'collection' ? (
-                                <div className="flex flex-col gap-0.5 text-end">
-                                  <span className="font-black text-teal-700 text-xs">
-                                    {Number(order.collectionAmount || order.grandTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </span>
-                                  <span className="text-[10px] text-teal-600 font-bold">EGP ({isAr ? 'تحصيل' : 'Collection'})</span>
-                                </div>
-                              ) : (
-                                <div className="flex flex-col gap-0.5">
-                                  <span className="font-black text-slate-900 text-xs">
-                                    {Number(order.grandTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </span>
-                                  <span className="text-[10px] text-slate-400 font-bold">EGP</span>
-                                </div>
-                              )}
-                            </td>
-
-                            {/* Actions Button (3-dots with Portal Menu) */}
+                            {/* 10. Actions Button (3-dots with Portal Menu) */}
                             <td className="py-3 px-3 text-center whitespace-nowrap">
                               <button
                                 type="button"
@@ -1279,7 +1518,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                           {/* Expandable Order Details Row */}
                           {isExpanded && (
                             <tr className="bg-slate-50/70 border-b border-slate-200">
-                              <td colSpan={9} className="py-3 px-4 sm:ps-12 sm:pe-6">
+                              <td colSpan={10} className="py-3 px-4 sm:ps-8 sm:pe-6">
                                 <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
                                   {order.orderType === 'admin' ? (
                                     /* Administrative Directive Display */
@@ -1392,8 +1631,67 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       )}
                                     </div>
                                   ) : (
-                                    /* Sales Order / Invoice Only POs & Notes Display */
-                                    <>
+                                    /* Sales Order / Invoice Only Display */
+                                    <div className="space-y-3">
+                                      {/* Full Operating Schedule Card (Hiding Empty Fields) */}
+                                      {(profile.hasHours || profile.hasHolidays || profile.hasAddress || profile.hasContact || locationUrl || profile.hasNotes) && (
+                                        <div className="p-3 bg-slate-50/90 border border-slate-200 rounded-xl space-y-2">
+                                          <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                                            <span className="font-extrabold text-slate-800 text-xs flex items-center gap-1.5">
+                                              <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                                              <span>{isAr ? 'جدول التشغيل والتسليم للعميل' : 'Client Operating & Delivery Schedule'}</span>
+                                            </span>
+                                            {locationUrl && (
+                                              <a
+                                                href={locationUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                onClick={(e) => e.stopPropagation()}
+                                                className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200 px-2 py-0.5 rounded-lg transition"
+                                              >
+                                                <MapPin className="w-3 h-3 text-emerald-600" />
+                                                <span>{isAr ? 'فتح الخريطة' : 'Open Map'}</span>
+                                              </a>
+                                            )}
+                                          </div>
+
+                                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                                            {profile.hasHours && (
+                                              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'مواعيد العمل:' : 'Working Hours:'}</span>
+                                                <span className="font-mono font-bold text-slate-800">{profile.scheduleDisplay}</span>
+                                              </div>
+                                            )}
+                                            {profile.hasHolidays && (
+                                              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'العطلات الأسبوعية:' : 'Weekly Holidays:'}</span>
+                                                <span className="font-bold text-rose-700">{profile.holidaysDisplay}</span>
+                                              </div>
+                                            )}
+                                            {profile.hasAddress && (
+                                              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'عنوان التسليم:' : 'Delivery Address:'}</span>
+                                                <span className="font-bold text-slate-800 truncate block" title={profile.address}>{profile.address}</span>
+                                              </div>
+                                            )}
+                                            {profile.hasContact && (
+                                              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'مسؤول الاستلام والهواتف:' : 'Contact & Phones:'}</span>
+                                                <span className="font-bold text-slate-800 truncate block">
+                                                  {profile.contactPerson} {profile.phonesDisplay ? `(${profile.phonesDisplay})` : ''}
+                                                </span>
+                                              </div>
+                                            )}
+                                            {profile.hasNotes && (
+                                              <div className="bg-white p-2 rounded-lg border border-slate-200 sm:col-span-2 md:col-span-4">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'ملاحظات وتوجيهات الاستلام والتفريغ:' : 'Delivery Instructions:'}</span>
+                                                <span className="text-slate-700 font-medium whitespace-pre-wrap">{profile.notes}</span>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+
                                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs border-b border-slate-100 pb-3">
                                         {/* PO Numbers */}
                                         <div className="space-y-1">
@@ -1517,7 +1815,64 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                           </tbody>
                                         </table>
                                       </div>
-                                    </>
+
+                                      {/* Financial Totals Breakdown Strip (Moved to Expanded Footer) */}
+                                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+                                        {/* Cartons */}
+                                        <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col justify-between">
+                                          <span className="text-[10px] text-slate-500 font-semibold">{isAr ? 'إجمالي الكراتين:' : 'Total Cartons:'}</span>
+                                          <span className="font-mono font-bold text-slate-900 text-xs">
+                                            {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                            {order.totalBonus > 0 ? ` (+${order.totalBonus})` : ''}
+                                          </span>
+                                        </div>
+
+                                        {/* Weight */}
+                                        <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col justify-between">
+                                          <span className="text-[10px] text-slate-500 font-semibold">{isAr ? 'إجمالي الوزن:' : 'Total Weight:'}</span>
+                                          <span className="font-mono font-bold text-slate-900 text-xs">
+                                            {((order.totalWeightKg || 0) / 1000).toFixed(1)} <span className="text-[10px] text-slate-400 font-sans">{isAr ? 'طن' : 't'}</span>
+                                            <span className="text-[10px] text-slate-400 block font-normal">({Number(order.totalWeightKg || 0).toLocaleString()} kg)</span>
+                                          </span>
+                                        </div>
+
+                                        {/* Net Pre-Tax */}
+                                        <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col justify-between">
+                                          <span className="text-[10px] text-slate-500 font-semibold">{isAr ? 'صافي قبل الضريبة:' : 'Net Pre-Tax:'}</span>
+                                          <span className="font-mono font-bold text-slate-900 text-xs">
+                                            {Number(order.netPreTaxSubtotal || (order.grandTotal - (order.totalVat || 0))).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{' '}
+                                            <span className="text-[10px] text-slate-400 font-sans">EGP</span>
+                                          </span>
+                                        </div>
+
+                                        {/* VAT */}
+                                        <div className="bg-emerald-50/70 p-2 rounded-lg border border-emerald-200 flex flex-col justify-between">
+                                          <span className="text-[10px] text-emerald-800 font-semibold">{isAr ? 'ضريبة القيمة المضافة:' : 'Total VAT (+14%):'}</span>
+                                          <span className="font-mono font-bold text-emerald-700 text-xs">
+                                            +{Number(order.totalVat || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{' '}
+                                            <span className="text-[10px] text-emerald-600 font-sans">EGP</span>
+                                          </span>
+                                        </div>
+
+                                        {/* WHT */}
+                                        <div className="bg-amber-50/70 p-2 rounded-lg border border-amber-200 flex flex-col justify-between">
+                                          <span className="text-[10px] text-amber-800 font-semibold">{isAr ? 'خصم أ.ت.ص (1%):' : 'WHT (-1%):'}</span>
+                                          <span className="font-mono font-bold text-amber-700 text-xs">
+                                            {Number(order.whtAmount || 0) > 0 ? `-${Number(order.whtAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '0.00'}{' '}
+                                            <span className="text-[10px] text-amber-600 font-sans">EGP</span>
+                                          </span>
+                                        </div>
+
+                                        {/* Grand Total */}
+                                        <div className="bg-emerald-600 text-white p-2 rounded-lg border border-emerald-700 flex flex-col justify-between shadow-xs">
+                                          <span className="text-[10px] text-emerald-100 font-bold">{isAr ? 'الإجمالي النهائي:' : 'Grand Total:'}</span>
+                                          <span className="font-mono font-black text-white text-sm">
+                                            {Number(order.grandTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{' '}
+                                            <span className="text-[10px] text-emerald-200 font-sans">EGP</span>
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
                                   )}
                                 </div>
                               </td>
@@ -1783,6 +2138,16 @@ function SalesOrderEditorModal({
   const availableOrderTypes = useMemo(() => {
     return isAdminModal ? ADMIN_ORDER_TYPES : SALES_ORDER_TYPES;
   }, [isAdminModal]);
+
+  // Allowed Fulfillment Statuses:
+  // On creation: strictly 'not_yet' (Pending) and 'prepare' (Preparing)
+  // On editing: show all options
+  const availableFulfillmentStatuses = useMemo(() => {
+    if (!editingOrder) {
+      return FULFILLMENT_STATUSES.filter((s) => s.id === 'not_yet' || s.id === 'prepare');
+    }
+    return FULFILLMENT_STATUSES;
+  }, [editingOrder]);
 
   // Allowed VAT Modes (Taxable only for invoice_only, or all 5 for sales orders)
   const availableVatModes = useMemo(() => {
@@ -3520,7 +3885,7 @@ function SalesOrderEditorModal({
                   onChange={(e) => setFormData({ ...formData, fulfillmentStatus: e.target.value })}
                   className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
                 >
-                  {FULFILLMENT_STATUSES.map((f) => (
+                  {availableFulfillmentStatuses.map((f) => (
                     <option key={f.id} value={f.id}>
                       {isAr ? f.labelAr : f.labelEn}
                     </option>
