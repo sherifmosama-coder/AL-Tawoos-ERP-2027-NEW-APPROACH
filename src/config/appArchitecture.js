@@ -345,6 +345,9 @@ export const APP_ARCHITECTURE = {
             makeModel: { labelAr: "الماركة والموديل", labelEn: "Make & Model", type: "string", required: true, sample: "سوزوكي فان 7 راكب" },
             category: { labelAr: "نوع واستخدام المركبة", labelEn: "Category", type: "enum", options: ["van", "pickup", "truck", "forklift", "car", "other"], sample: "van" },
             assignedDriverId: { labelAr: "السائق المسؤول", labelEn: "Assigned Driver", type: "string", sample: "EMP-1042" },
+            minCapacityKg: { labelAr: "سعة الحمولة الدنيا (كجم)", labelEn: "Min Load Capacity (kg)", type: "number", sample: 500 },
+            optimumCapacityKg: { labelAr: "سعة الحمولة المثالية (كجم)", labelEn: "Optimum Load Capacity (kg)", type: "number", sample: 1500 },
+            maxCapacityKg: { labelAr: "سعة الحمولة القصوى (كجم)", labelEn: "Max Load Capacity (kg)", type: "number", sample: 2500 },
             currentOdometer: { labelAr: "قراءة العداد الحالية (كم)", labelEn: "Odometer (km)", type: "number", sample: 45000 },
             licenseExpiry: { labelAr: "تاريخ انتهاء رخصة التسيير", labelEn: "License Expiry Date", type: "date", sample: "2027-06-30" },
           }
@@ -890,6 +893,22 @@ export const APP_ARCHITECTURE = {
             poTawoos: { labelAr: "أمر شراء طاووس", labelEn: "PO # Tawoos", type: "string", sample: "PO-TW-2026-01" },
             poPrivateLabel: { labelAr: "أمر شراء العلامة الخاصة", labelEn: "PO # Private Label", type: "string", sample: "PO-PL-4401" },
             grandTotal: { labelAr: "إجمالي أمر البيع (EGP)", labelEn: "Order Grand Total (EGP)", type: "number", sample: 45000.00 }
+          }
+        },
+        loading_plan: {
+          id: "loading_plan",
+          collection: "sales_orders",
+          labelAr: "خطة التحميل",
+          labelEn: "Loading Plan",
+          icon: "Truck",
+          actions: [
+            { key: "canManageLoadingPlan", labelAr: "إدارة واعتماد خطة التحميل وتوزيع الشاحنات", labelEn: "Manage Loading Plan" }
+          ],
+          fields: {
+            loadingOrderNumber: { labelAr: "رقم أمر التحميل", labelEn: "Loading Order #", type: "number", sample: 1 },
+            assignedVehicleId: { labelAr: "معرف الشاحنة / السيارة", labelEn: "Assigned Vehicle ID", type: "string", sample: "VEH-01" },
+            assignedDriverId: { labelAr: "معرف السائق", labelEn: "Assigned Driver ID", type: "string", sample: "EMP-101" },
+            loadingDate: { labelAr: "تاريخ التحميل المعتمد", labelEn: "Scheduled Loading Date", type: "date", sample: "2026-11-10" }
           }
         },
         price_lists: {

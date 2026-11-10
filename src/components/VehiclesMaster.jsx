@@ -18,7 +18,8 @@ import {
   X,
   Clock,
   Wrench,
-  Activity
+  Activity,
+  Weight
 } from 'lucide-react';
 import {
   collection,
@@ -75,6 +76,11 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
     motorNumber: '',
     currentOdometerKm: 0,
     status: 'active', // 'active' | 'maintenance' | 'inactive'
+    minCapacityKg: 0,
+    optimumCapacityKg: 0,
+    maxCapacityKg: 0,
+    minMarginPct: 5,
+    maxMarginPct: 5,
     notes: ''
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -139,6 +145,11 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
       motorNumber: '',
       currentOdometerKm: 0,
       status: 'active',
+      minCapacityKg: 0,
+      optimumCapacityKg: 0,
+      maxCapacityKg: 0,
+      minMarginPct: 5,
+      maxMarginPct: 5,
       notes: ''
     });
   };
@@ -161,6 +172,11 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
       motorNumber: v.motorNumber || '',
       currentOdometerKm: Number(v.currentOdometerKm) || 0,
       status: v.status || 'active',
+      minCapacityKg: Number(v.minCapacityKg) || 0,
+      optimumCapacityKg: Number(v.optimumCapacityKg) || 0,
+      maxCapacityKg: Number(v.maxCapacityKg) || 0,
+      minMarginPct: Number(v.minMarginPct) || 5,
+      maxMarginPct: Number(v.maxMarginPct) || 5,
       notes: v.notes || ''
     });
   };
@@ -200,6 +216,11 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
         motorNumber: vehicleModal.motorNumber.trim(),
         currentOdometerKm: Number(vehicleModal.currentOdometerKm) || 0,
         status: vehicleModal.status,
+        minCapacityKg: Number(vehicleModal.minCapacityKg) || 0,
+        optimumCapacityKg: Number(vehicleModal.optimumCapacityKg) || 0,
+        maxCapacityKg: Number(vehicleModal.maxCapacityKg) || 0,
+        minMarginPct: Number(vehicleModal.minMarginPct) || 5,
+        maxMarginPct: Number(vehicleModal.maxMarginPct) || 5,
         notes: vehicleModal.notes.trim(),
         updatedAt: nowIso
       };
@@ -467,6 +488,19 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
                         </span>
                       </div>
                     )}
+
+                    {(Number(veh.optimumCapacityKg) > 0 || Number(veh.maxCapacityKg) > 0) && (
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-200/60">
+                        <span className="text-slate-500 text-[11px] flex items-center gap-1.5 font-bold">
+                          <Weight className="h-3.5 w-3.5 text-amber-600" />
+                          <span>{isAr ? 'سعة الحمولة:' : 'Capacity:'}</span>
+                        </span>
+                        <span className="font-mono text-[11px] font-bold text-amber-900 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                          {veh.optimumCapacityKg ? `${(veh.optimumCapacityKg / 1000).toFixed(1)}t` : ''}
+                          {veh.maxCapacityKg ? ` (max ${(veh.maxCapacityKg / 1000).toFixed(1)}t)` : ''}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -658,6 +692,55 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
                     <option value="maintenance">{isAr ? 'تحت الصيانة' : 'Under maintenance'}</option>
                     <option value="inactive">{isAr ? 'متوقفة / خارج الخدمة' : 'Out of service'}</option>
                   </select>
+                </div>
+              </div>
+
+              {/* Load Capacity Parameters for Loading Plan Weight Gauge */}
+              <div className="p-3 bg-amber-50/60 rounded-2xl border border-amber-200/80 space-y-2">
+                <div className="flex items-center gap-1.5 text-amber-900 font-bold text-xs">
+                  <Weight className="w-3.5 h-3.5 text-amber-600" />
+                  <span>{isAr ? 'محددات سعة الحمولة (لمؤشر خطة التحميل - كجم)' : 'Load Capacity Limits (for Weight Gauge - kg)'}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                      {isAr ? 'الحد الأدنى (كجم):' : 'Min (kg):'}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={vehicleModal.minCapacityKg}
+                      onChange={(e) => setVehicleModal((prev) => ({ ...prev, minCapacityKg: e.target.value }))}
+                      placeholder="e.g. 500"
+                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                      {isAr ? 'الحمولة المثالية (كجم):' : 'Optimum (kg):'}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={vehicleModal.optimumCapacityKg}
+                      onChange={(e) => setVehicleModal((prev) => ({ ...prev, optimumCapacityKg: e.target.value }))}
+                      placeholder="e.g. 1500"
+                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                      {isAr ? 'الحد الأقصى (كجم):' : 'Max (kg):'}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={vehicleModal.maxCapacityKg}
+                      onChange={(e) => setVehicleModal((prev) => ({ ...prev, maxCapacityKg: e.target.value }))}
+                      placeholder="e.g. 2500"
+                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
                 </div>
               </div>
 
