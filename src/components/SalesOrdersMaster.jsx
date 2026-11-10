@@ -2242,32 +2242,25 @@ function SalesOrderEditorModal({
       <span className="w-3 h-3 rounded-full bg-purple-600 inline-block shrink-0 shadow-xs ring-2 ring-purple-200" />
     );
 
-    return [
-      {
-        value: '',
-        label: isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —',
-        sublabel: ''
-      },
-      ...sorted.map((p) => {
-        const isPl = isProductPrivateLabel(p);
-        const isClientPl = isClientPrivateLabel(p);
-        const prodName = isAr ? p.nameAr : (p.nameEn || p.nameAr);
+    return sorted.map((p) => {
+      const isPl = isProductPrivateLabel(p);
+      const isClientPl = isClientPrivateLabel(p);
+      const prodName = isAr ? p.nameAr : (p.nameEn || p.nameAr);
 
-        return {
-          value: p.id,
-          label: prodName,
-          sublabel: '',
-          rawIcon: true,
-          icon: isClientPl ? PurpleDot : null,
-          iconBg: 'transparent',
-          iconColor: '#9333ea',
-          badgeText: '',
-          specs: `${p.code || ''} ${p.id} ${p.nameAr || ''} ${p.nameEn || ''}`.toLowerCase(),
-          isPrivateLabel: isPl,
-          isClientPrivateLabel: isClientPl
-        };
-      })
-    ];
+      return {
+        value: p.id,
+        label: prodName,
+        sublabel: '',
+        rawIcon: true,
+        icon: isClientPl ? PurpleDot : null,
+        iconBg: 'transparent',
+        iconColor: '#9333ea',
+        badgeText: '',
+        specs: `${p.code || ''} ${p.id} ${p.nameAr || ''} ${p.nameEn || ''}`.toLowerCase(),
+        isPrivateLabel: isPl,
+        isClientPrivateLabel: isClientPl
+      };
+    });
   }, [products, formData.clientId, formData.clientName, selectedCategory, isAr]);
 
   // Add Product to Lines Handler
@@ -3275,7 +3268,7 @@ function SalesOrderEditorModal({
                     options={availableProductOptions}
                     value={selectedProductId}
                     onChange={handleAddProduct}
-                    placeholder={isAr ? 'ابحث عن صنف لإضافته للطلب...' : 'Select product to add...'}
+                    placeholder={isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —'}
                     searchPlaceholder={isAr ? 'ابحث باسم أو كود الصنف...' : 'Search product...'}
                     isAr={isAr}
                   />
