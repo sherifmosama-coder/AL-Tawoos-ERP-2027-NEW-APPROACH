@@ -45,6 +45,7 @@ import {
 import { db } from '../firebase.js';
 import SearchableSelect from './SearchableSelect.jsx';
 import PeacockLoader from './PeacockLoader.jsx';
+import { canAccessAction } from '../config/appArchitecture.js';
 
 // Segment Icon Mapping
 const SEGMENT_ICON_MAP = {
@@ -147,10 +148,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
-  const canManageLoadingPlan =
-    isGeneralAdmin ||
-    !permissions ||
-    permissions?.actions?.sales_orders?.canManageLoadingPlan !== false;
+  const canManageLoadingPlan = canAccessAction(
+    permissions,
+    'loading_plan',
+    'canManageLoadingPlan',
+    currentUser
+  );
 
   const currentUserName = currentUser?.nameAr || currentUser?.name || 'مستخدم معتمد';
   const currentUserId = currentUser?.id || 'usr_unknown';

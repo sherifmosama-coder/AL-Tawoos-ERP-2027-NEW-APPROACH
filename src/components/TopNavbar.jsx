@@ -368,6 +368,13 @@ export default function TopNavbar({
           icon: ShoppingCart,
         },
         {
+          id: 'loading_plan',
+          moduleKey: 'loading_plan',
+          labelAr: 'خطة التحميل',
+          labelEn: 'Loading Plan',
+          icon: Truck,
+        },
+        {
           id: 'price_lists',
           moduleKey: 'price_lists',
           labelAr: 'قوائم الأسعار',

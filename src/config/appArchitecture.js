@@ -1013,11 +1013,13 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       financial_statements: true,
       sales: true,
       sales_orders: true,
+      loading_plan: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: true
     },
     actions: {
+      canManageLoadingPlan: true,
       canCreate: true,
       canEdit: true,
       canApprove: true,
@@ -1120,11 +1122,13 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       financial_statements: true,
       sales: true,
       sales_orders: true,
+      loading_plan: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: false
     },
     actions: {
+      canManageLoadingPlan: true,
       canCreate: true,
       canEdit: true,
       canApprove: true,
