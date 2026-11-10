@@ -667,7 +667,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     });
   };
 
-  // Toggle complementary 'Revised' status on an order
+  // Toggle complementary 'Reviewed' (PO Review & Price Verification) status on an order
   const handleToggleRevised = async (order) => {
     if (!order?.id) return;
     const newIsRevised = !(order.isRevised || order.confirmationStatus === 'revised');
@@ -681,11 +681,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
       performedById: currentUser?.id || currentUser?.uid || '',
       timestamp: now,
       summaryAr: newIsRevised
-        ? `تم وسم أمر البيع #${orderSerial} كطلب معدل (Revised)`
-        : `تم إلغاء وسم التعديل عن أمر البيع #${orderSerial}`,
+        ? `تمت مراجعة ومطابقة أمر الشراء والأسعار لأمر البيع #${orderSerial}`
+        : `تم إلغاء تأشيرة مراجعة ومطابقة أمر الشراء لأمر البيع #${orderSerial}`,
       summaryEn: newIsRevised
-        ? `Marked order #${orderSerial} as Revised`
-        : `Unmarked Revised status on order #${orderSerial}`
+        ? `PO quantities and prices reviewed & verified for order #${orderSerial}`
+        : `PO review verification removed for order #${orderSerial}`
     };
 
     const existingAudit = order.auditTrail || [];
@@ -707,8 +707,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         { merge: true }
       );
     } catch (err) {
-      console.error('Error toggling revised status:', err);
-      alert(isAr ? 'حدث خطأ أثناء تعديل حالة الطلب' : 'Failed to update order status');
+      console.error('Error toggling PO review status:', err);
+      alert(isAr ? 'حدث خطأ أثناء تحديث حالة مراجعة الطلب' : 'Failed to update review status');
     }
   };
 
@@ -1327,7 +1327,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             </button>
           )}
 
-          {/* Quick Filter: Revised Only */}
+          {/* Quick Filter: Reviewed / Verified Only */}
           <button
             type="button"
             onClick={() => setRevisedOnlyFilter((prev) => !prev)}
@@ -1336,10 +1336,10 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                 ? 'bg-blue-600 text-white border-blue-700 shadow-2xs ring-2 ring-blue-300/40'
                 : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:text-slate-900'
             }`}
-            title={isAr ? 'عرض الأوامر المعدلة فقط' : 'Show only revised orders'}
+            title={isAr ? 'عرض الأوامر التي تمت مراجعتها ومطابقتها فقط' : 'Show only PO reviewed & verified orders'}
           >
-            <Edit3 className="w-3 h-3" />
-            <span>{isAr ? 'معدل فقط' : 'Revised Only'}</span>
+            <FileCheck className="w-3 h-3" />
+            <span>{isAr ? 'مُراجَع فقط' : 'Reviewed Only'}</span>
             {revisedOnlyFilter && <Check className="w-3 h-3 ms-0.5" />}
           </button>
 
@@ -1700,7 +1700,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     </span>
                                   )}
 
-                                  {/* Complementary Revised Toggle Button */}
+                                  {/* Complementary PO Review / Verification Toggle Button */}
                                   {Boolean(order.isRevised || order.confirmationStatus === 'revised') ? (
                                     <button
                                       type="button"
@@ -1711,12 +1711,12 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300 shadow-2xs hover:bg-blue-200 transition cursor-pointer"
                                       title={
                                         isAr
-                                          ? `طلب معدل — بواسطة: ${order.revisedBy || 'غير محدد'}${order.revisedAt ? ` (${new Date(order.revisedAt).toLocaleString('ar-EG')})` : ''} — انقر لإلغاء الوسم`
-                                          : `Revised Order — By: ${order.revisedBy || 'Unknown'}${order.revisedAt ? ` (${new Date(order.revisedAt).toLocaleString('en-US')})` : ''} — Click to toggle off`
+                                          ? `تمت مراجعة ومطابقة أمر الشراء والأسعار — بواسطة: ${order.revisedBy || 'غير محدد'}${order.revisedAt ? ` (${new Date(order.revisedAt).toLocaleString('ar-EG')})` : ''} — انقر لإلغاء المراجعة`
+                                          : `PO Quantities & Prices Reviewed — By: ${order.revisedBy || 'Unknown'}${order.revisedAt ? ` (${new Date(order.revisedAt).toLocaleString('en-US')})` : ''} — Click to remove review`
                                       }
                                     >
-                                      <Edit3 className="w-2.5 h-2.5 text-blue-700" />
-                                      <span>{isAr ? 'معدل' : 'Revised'}</span>
+                                      <FileCheck className="w-2.5 h-2.5 text-blue-700" />
+                                      <span>{isAr ? 'مُراجَع' : 'Reviewed'}</span>
                                     </button>
                                   ) : (
                                     <button
@@ -1726,10 +1726,10 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         handleToggleRevised(order);
                                       }}
                                       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-semibold text-slate-400 hover:text-blue-700 hover:bg-blue-50 border border-dashed border-slate-300 hover:border-blue-300 transition cursor-pointer"
-                                      title={isAr ? 'وسم الطلب كطلب معدل' : 'Mark as Revised'}
+                                      title={isAr ? 'تأشير بمراجعة ومطابقة تفاصيل وأسعار أمر الشراء قبل التوزيع' : 'Mark as PO Reviewed & Verified before dispatch'}
                                     >
-                                      <Edit3 className="w-2.5 h-2.5 text-slate-400" />
-                                      <span>{isAr ? 'تعديل' : 'Revise'}</span>
+                                      <FileCheck className="w-2.5 h-2.5 text-slate-400" />
+                                      <span>{isAr ? 'مراجعة' : 'Review'}</span>
                                     </button>
                                   )}
                                 </div>

@@ -14,7 +14,10 @@ import {
   FileText,
   Boxes,
   Trash2,
-  Receipt
+  Receipt,
+  FileCheck,
+  XCircle,
+  RotateCcw
 } from 'lucide-react';
 
 export default function SalesOrderAuditModal({
@@ -36,7 +39,16 @@ export default function SalesOrderAuditModal({
     return list.filter((entry) => {
       if (actionFilter !== 'all') {
         if (actionFilter === 'create' && entry.action !== 'create') return false;
-        if (actionFilter === 'edit' && entry.action !== 'edit' && entry.action !== 'status_change') return false;
+        if (
+          actionFilter === 'edit' &&
+          entry.action !== 'edit' &&
+          entry.action !== 'status_change' &&
+          entry.action !== 'toggle_revised' &&
+          entry.action !== 'cancel_order' &&
+          entry.action !== 'restore_order'
+        ) {
+          return false;
+        }
       }
 
       if (searchTerm.trim()) {
@@ -105,6 +117,24 @@ export default function SalesOrderAuditModal({
           bg: 'bg-amber-50 text-amber-800 border-amber-200',
           icon: CheckCircle2,
           label: isAr ? 'تحديث الحالة' : 'Status Updated'
+        };
+      case 'toggle_revised':
+        return {
+          bg: 'bg-blue-50 text-blue-800 border-blue-200',
+          icon: FileCheck,
+          label: isAr ? 'مراجعة ومطابقة أمر الشراء' : 'PO Review & Verification'
+        };
+      case 'cancel_order':
+        return {
+          bg: 'bg-rose-50 text-rose-800 border-rose-200',
+          icon: XCircle,
+          label: isAr ? 'إلغاء أمر البيع' : 'Order Canceled'
+        };
+      case 'restore_order':
+        return {
+          bg: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+          icon: RotateCcw,
+          label: isAr ? 'استعادة وتفعيل الأمر' : 'Order Restored'
         };
       case 'edit':
       default:
