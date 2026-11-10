@@ -66,7 +66,8 @@ import {
   CheckSquare,
   Filter,
   RotateCcw,
-  MoreVertical
+  MoreVertical,
+  StickyNote
 } from 'lucide-react';
 import VatNumberInput from './VatNumberInput';
 import VatNumberDisplay from './VatNumberDisplay';
@@ -3352,6 +3353,21 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                   </div>
                                 </div>
                               </div>
+
+                              {/* Client Master Notes (Prominent & Multi-Line) */}
+                              {client.notes && String(client.notes).trim() && (
+                                <div className="p-3 bg-amber-50/80 border border-amber-200/90 rounded-xl flex items-start gap-2.5 shadow-2xs">
+                                  <StickyNote className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                                  <div className="space-y-0.5 flex-1 min-w-0">
+                                    <span className="text-xs font-bold text-amber-900 block">
+                                      {isAr ? 'ملاحظات وتوجيهات خاصة بالعميل:' : 'Customer Notes & Instructions:'}
+                                    </span>
+                                    <p className="text-xs text-amber-950 font-medium whitespace-pre-wrap break-words leading-relaxed">
+                                      {client.notes}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
 
                               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                                 <h4 className="text-xs font-black text-slate-800 flex items-center gap-2">

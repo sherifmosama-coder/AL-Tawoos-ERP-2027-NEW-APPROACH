@@ -59,7 +59,8 @@ import {
   Landmark,
   Banknote,
   MessageSquare,
-  Lock
+  Lock,
+  StickyNote
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
@@ -368,7 +369,9 @@ const resolveOrderOperationalProfile = (order, client, isAr = true) => {
   const phonesDisplay = phoneList.join(' — ');
 
   const address = br?.address || client.address || '';
-  const notes = br?.notes || client.notes || '';
+  const clientNotes = (client.notes || '').trim();
+  const branchNotes = (br?.notes || '').trim();
+  const notes = branchNotes || clientNotes || '';
 
   return {
     hoursFrom,
@@ -383,7 +386,11 @@ const resolveOrderOperationalProfile = (order, client, isAr = true) => {
     phonesDisplay,
     hasContact: Boolean(contactPerson || phonesDisplay),
     notes,
-    hasNotes: Boolean(notes)
+    hasNotes: Boolean(notes),
+    clientNotes,
+    hasClientNotes: Boolean(clientNotes),
+    branchNotes,
+    hasBranchNotes: Boolean(branchNotes && branchNotes !== clientNotes)
   };
 };
 
@@ -1664,7 +1671,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     /* Sales Order / Invoice Only Display */
                                     <div className="space-y-3">
                                       {/* Full Operating Schedule Card (Hiding Empty Fields) */}
-                                      {(profile.hasHours || profile.hasHolidays || profile.hasAddress || profile.hasContact || locationUrl || profile.hasNotes) && (
+                                      {(profile.hasHours || profile.hasHolidays || profile.hasAddress || profile.hasContact || locationUrl || profile.hasClientNotes || profile.hasBranchNotes || profile.hasNotes) && (
                                         <div className="p-3 bg-slate-50/90 border border-slate-200 rounded-xl space-y-2">
                                           <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
                                             <span className="font-extrabold text-slate-800 text-xs flex items-center gap-1.5">
@@ -1714,10 +1721,30 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                                 </span>
                                               </div>
                                             )}
-                                            {profile.hasNotes && (
-                                              <div className="bg-white p-2 rounded-lg border border-slate-200 sm:col-span-2 md:col-span-4">
-                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'ملاحظات وتوجيهات الاستلام والتفريغ:' : 'Delivery Instructions:'}</span>
-                                                <span className="text-slate-700 font-medium whitespace-pre-wrap">{profile.notes}</span>
+                                            {profile.hasClientNotes && (
+                                              <div className="p-2.5 bg-amber-50/80 border border-amber-200/90 rounded-xl sm:col-span-2 md:col-span-4 flex items-start gap-2 shadow-2xs">
+                                                <StickyNote className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                                                <div className="flex-1 min-w-0">
+                                                  <span className="text-[10px] text-amber-800 font-bold block font-sans">
+                                                    {isAr ? 'ملاحظات وتوجيهات خاصة بالعميل:' : 'Customer Notes & Instructions:'}
+                                                  </span>
+                                                  <p className="text-xs text-amber-950 font-medium whitespace-pre-wrap break-words leading-relaxed">
+                                                    {profile.clientNotes}
+                                                  </p>
+                                                </div>
+                                              </div>
+                                            )}
+                                            {profile.hasBranchNotes && (
+                                              <div className="p-2.5 bg-slate-100 border border-slate-200 rounded-xl sm:col-span-2 md:col-span-4 flex items-start gap-2">
+                                                <Building2 className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                                                <div className="flex-1 min-w-0">
+                                                  <span className="text-[10px] text-slate-600 font-bold block font-sans">
+                                                    {isAr ? 'ملاحظات خاصة بفرع التسليم:' : 'Branch Specific Delivery Notes:'}
+                                                  </span>
+                                                  <p className="text-xs text-slate-700 font-medium whitespace-pre-wrap break-words leading-relaxed">
+                                                    {profile.branchNotes}
+                                                  </p>
+                                                </div>
                                               </div>
                                             )}
                                           </div>
@@ -1788,40 +1815,52 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                               <th className="py-2 px-3 text-start">{isAr ? 'سعر الوحدة' : 'Unit Price'}</th>
                                               <th className="py-2 px-3 text-start">{isAr ? 'الخصم/كرتونة' : 'Discount/ctn'}</th>
                                               <th className="py-2 px-3 text-start">{isAr ? 'الضريبة' : 'VAT'}</th>
+                                              <th className="py-2 px-3 text-start">{isAr ? 'أ.ت.ص' : 'WHT'}</th>
                                               <th className="py-2 px-3 text-start">{isAr ? 'الوزن' : 'Weight'}</th>
                                               <th className="py-2 px-3 text-end">{isAr ? 'الإجمالي (EGP)' : 'Total (EGP)'}</th>
                                             </tr>
                                           </thead>
                                           <tbody className="divide-y divide-slate-100 font-mono">
-                                            {(order.lines || []).map((line, lIdx) => (
-                                              <tr key={lIdx} className="hover:bg-slate-50/50">
-                                                <td className="py-2 px-3 font-sans font-bold text-slate-800">
-                                                  <div className="flex items-center gap-1.5">
-                                                    <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1 py-0.2 rounded border border-indigo-200">
-                                                      {line.productCode}
-                                                    </span>
-                                                    <span>{isAr ? line.productNameAr : (line.productNameEn || line.productNameAr)}</span>
-                                                    {line.isPrivateLabel && (
-                                                      <span className="text-[9px] font-bold text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
-                                                        {isAr ? 'علامة خاصة' : 'PL'}
+                                            {(order.lines || []).map((line, lIdx) => {
+                                              const isWhtApplicable = order.vatMode === 'exclusive_wht' || order.vatMode === 'inclusive_wht';
+                                              const lineWht = line.lineWht !== undefined
+                                                ? Number(line.lineWht)
+                                                : (isWhtApplicable ? Number(line.lineNet || 0) * 0.01 : 0);
+                                              const effectiveLineTotal = isWhtApplicable
+                                                ? Math.max(0, Number(line.lineNet || 0) + Number(line.lineVat || 0) - lineWht)
+                                                : Number(line.lineTotal || 0);
+
+                                              return (
+                                                <tr key={lIdx} className="hover:bg-slate-50/50">
+                                                  <td className="py-2 px-3 font-sans font-bold text-slate-800">
+                                                    <div className="flex items-center gap-1.5">
+                                                      <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1 py-0.2 rounded border border-indigo-200">
+                                                        {line.productCode}
                                                       </span>
-                                                    )}
-                                                    {line.isPromotional && (
-                                                      <span title={isAr ? 'عرض ترويجي' : 'Promotion'}>
-                                                        <Zap className="w-3 h-3 text-rose-500 fill-rose-500 shrink-0" />
-                                                      </span>
-                                                    )}
-                                                  </div>
-                                                </td>
-                                                <td className="py-2 px-3 font-bold text-slate-800">{line.qty} {line.largeUnitName || (isAr ? 'كرتونة' : 'ctn')}</td>
-                                                <td className="py-2 px-3 text-emerald-700">{line.bonus > 0 ? `+${line.bonus}` : '—'}</td>
-                                                <td className="py-2 px-3 text-slate-700">{Number(line.detectedUnitPrice || line.unitPrice || 0).toFixed(2)}</td>
-                                                <td className="py-2 px-3 text-rose-600">{Number(line.manualDiscountPerUnit || 0) > 0 ? `-${Number(line.manualDiscountPerUnit).toFixed(2)}` : '—'}</td>
-                                                <td className="py-2 px-3 text-slate-600">{Number(line.lineVat || 0) > 0 ? `${Number(line.lineVat).toFixed(2)} (${line.vatRate || '14%'})` : '0%'}</td>
-                                                <td className="py-2 px-3 text-slate-500">{Number(line.lineWeightKg || 0).toFixed(1)} kg</td>
-                                                <td className="py-2 px-3 text-end font-bold text-slate-900">{Number(line.lineTotal || 0).toFixed(2)}</td>
-                                              </tr>
-                                            ))}
+                                                      <span>{isAr ? line.productNameAr : (line.productNameEn || line.productNameAr)}</span>
+                                                      {line.isPrivateLabel && (
+                                                        <span className="text-[9px] font-bold text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
+                                                          {isAr ? 'علامة خاصة' : 'PL'}
+                                                        </span>
+                                                      )}
+                                                      {line.isPromotional && (
+                                                        <span title={isAr ? 'عرض ترويجي' : 'Promotion'}>
+                                                          <Zap className="w-3 h-3 text-rose-500 fill-rose-500 shrink-0" />
+                                                        </span>
+                                                      )}
+                                                    </div>
+                                                  </td>
+                                                  <td className="py-2 px-3 font-bold text-slate-800">{line.qty} {line.largeUnitName || (isAr ? 'كرتونة' : 'ctn')}</td>
+                                                  <td className="py-2 px-3 text-emerald-700">{line.bonus > 0 ? `+${line.bonus}` : '—'}</td>
+                                                  <td className="py-2 px-3 text-slate-700">{Number(line.detectedUnitPrice || line.unitPrice || 0).toFixed(2)}</td>
+                                                  <td className="py-2 px-3 text-rose-600">{Number(line.manualDiscountPerUnit || 0) > 0 ? `-${Number(line.manualDiscountPerUnit).toFixed(2)}` : '—'}</td>
+                                                  <td className="py-2 px-3 text-slate-600">{Number(line.lineVat || 0) > 0 ? `${Number(line.lineVat).toFixed(2)} (${line.vatRate || '14%'})` : '0%'}</td>
+                                                  <td className="py-2 px-3 text-amber-700 font-semibold">{lineWht > 0 ? `-${lineWht.toFixed(2)}` : '—'}</td>
+                                                  <td className="py-2 px-3 text-slate-500">{Number(line.lineWeightKg || 0).toFixed(1)} kg</td>
+                                                  <td className="py-2 px-3 text-end font-bold text-slate-900">{effectiveLineTotal.toFixed(2)}</td>
+                                                </tr>
+                                              );
+                                            })}
                                           </tbody>
                                         </table>
                                       </div>
@@ -2283,6 +2322,9 @@ function SalesOrderEditorModal({
     const invoiceHolidayConflict = checkDateConflict(formData.invoiceDate);
     const loadingHolidayConflict = !isAdminModal && formData.loadingDate ? checkDateConflict(formData.loadingDate) : null;
 
+    const clientNotes = (selectedClient.notes || '').trim();
+    const branchNotes = (br?.notes || '').trim();
+
     return {
       branchName: br ? resolveBranchDisplayName(br, isAr) : (isAr ? 'الفرع الرئيسي' : 'Main Branch'),
       region,
@@ -2292,7 +2334,11 @@ function SalesOrderEditorModal({
       scheduleDisplay,
       holidays,
       invoiceHolidayConflict,
-      loadingHolidayConflict
+      loadingHolidayConflict,
+      clientNotes,
+      hasClientNotes: Boolean(clientNotes),
+      branchNotes,
+      hasBranchNotes: Boolean(branchNotes && branchNotes !== clientNotes)
     };
   }, [selectedClient, clientBranches, formData.branchId, formData.invoiceDate, formData.loadingDate, isAr]);
 
@@ -2543,6 +2589,7 @@ function SalesOrderEditorModal({
 
     const isTaxable = vatMode && vatMode !== 'none';
     const isInclusive = vatMode === 'inclusive' || vatMode === 'inclusive_wht';
+    const isWhtApplicable = vatMode === 'exclusive_wht' || vatMode === 'inclusive_wht';
     const hasVat = line.vatRate !== '0%' && line.vatRate !== 0;
 
     // For inclusive VAT, extract net base unit price before tax (price / 1.14)
@@ -2554,7 +2601,8 @@ function SalesOrderEditorModal({
     const netBasePriceAfterDiscount = Math.max(0, effectiveBaseUnitPrice - manualDiscount);
     const lineNet = qty * netBasePriceAfterDiscount;
     const lineVat = (isTaxable && hasVat) ? lineNet * 0.14 : 0;
-    const lineTotal = lineNet + lineVat;
+    const lineWht = isWhtApplicable ? lineNet * 0.01 : 0;
+    const lineTotal = lineNet + lineVat - lineWht;
     const lineWeightKg = (qty + bonus) * (Number(line.largeUnitWeightKg) || 0);
 
     return {
@@ -2565,6 +2613,7 @@ function SalesOrderEditorModal({
       promoDiscountPct,
       lineNet,
       lineVat,
+      lineWht,
       lineTotal,
       lineWeightKg
     };
@@ -3406,6 +3455,21 @@ function SalesOrderEditorModal({
                   </div>
                 </div>
 
+                {/* Client Master Notes */}
+                {clientOperationalProfile.hasClientNotes && (
+                  <div className="p-2.5 bg-amber-50/80 border border-amber-200/90 rounded-xl flex items-start gap-2 shadow-2xs">
+                    <StickyNote className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[10px] text-amber-800 font-bold block font-sans">
+                        {isAr ? 'ملاحظات وتوجيهات خاصة بالعميل:' : 'Customer Notes & Instructions:'}
+                      </span>
+                      <p className="text-xs text-amber-950 font-medium whitespace-pre-wrap break-words leading-relaxed">
+                        {clientOperationalProfile.clientNotes}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 {/* Holiday Conflict Warning */}
                 {(clientOperationalProfile.invoiceHolidayConflict || clientOperationalProfile.loadingHolidayConflict) && (
                   <div className="p-2.5 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 flex items-center gap-2 text-[11px] font-bold">
@@ -3666,6 +3730,7 @@ function SalesOrderEditorModal({
                         <th className="py-2.5 px-2 text-center w-28">{isAr ? 'السعر (مقفل)' : 'Unit Price'}</th>
                         <th className="py-2.5 px-2 text-center w-24">{isAr ? 'خصم/كرتونة' : 'Disc/Ctn'}</th>
                         <th className="py-2.5 px-2 text-center w-24">{isAr ? 'الضريبة' : 'VAT'}</th>
+                        <th className="py-2.5 px-2 text-center w-20">{isAr ? 'أ.ت.ص' : 'WHT'}</th>
                         <th className="py-2.5 px-2 text-center w-24">{isAr ? 'الوزن (كجم)' : 'Weight (kg)'}</th>
                         <th className="py-2.5 px-3 text-end w-28">{isAr ? 'الإجمالي (EGP)' : 'Total'}</th>
                         <th className="py-2.5 px-2 text-center w-10"></th>
@@ -3755,6 +3820,17 @@ function SalesOrderEditorModal({
                               {Number(line.lineVat || 0) > 0 ? (
                                 <span className="text-emerald-700 font-bold">
                                   +{Number(line.lineVat).toFixed(2)}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">0.00</span>
+                              )}
+                            </td>
+
+                            {/* WHT */}
+                            <td className="py-2 px-2 text-center font-mono text-[11px]">
+                              {Number(line.lineWht || 0) > 0 ? (
+                                <span className="text-amber-700 font-bold">
+                                  -{Number(line.lineWht).toFixed(2)}
                                 </span>
                               ) : (
                                 <span className="text-slate-400">0.00</span>
