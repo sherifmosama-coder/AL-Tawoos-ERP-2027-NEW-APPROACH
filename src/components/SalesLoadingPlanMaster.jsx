@@ -74,6 +74,16 @@ const FULFILLMENT_STATUSES = [
   { id: 'paid', labelAr: 'مدفوع ومحصل', labelEn: 'Paid' }
 ];
 
+const WORKER_ROLE_LABELS = {
+  operator: { ar: 'فني تشغيل ماكينات', en: 'Machine Operator' },
+  technician: { ar: 'فني صيانة', en: 'Maintenance Technician' },
+  qc: { ar: 'فني جودة', en: 'QC Inspector' },
+  line_leader: { ar: 'قائد خط', en: 'Line Leader' },
+  assistant: { ar: 'عامل مناولة', en: 'Packaging Assistant' },
+  forklift: { ar: 'سائق كلارك / رافعة', en: 'Forklift Driver' },
+  driver: { ar: 'سائق شاحنة', en: 'Truck Driver' },
+};
+
 const WEEKDAY_NAMES_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const WEEKDAY_NAMES_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -229,15 +239,86 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return () => unsub();
   }, []);
 
-  // 3. Subscribe to Employees (Drivers & Delivery Reps)
+  // 3. Subscribe to Workers Directory (production_workers + users + employees)
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'employees'), (snapshot) => {
-      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-      loaded.sort((a, b) => (a.nameAr || a.name || '').localeCompare(b.nameAr || b.name || '', 'ar'));
-      setEmployees(loaded);
+    let workers = [];
+    let users = [];
+    let emps = [];
+
+    const rebuildWorkersPool = () => {
+      const combined = [];
+      const seenIds = new Set();
+
+      // Priority 1: Production Workers (existing workers directory)
+      workers.forEach((w) => {
+        if (!w.id || seenIds.has(w.id)) return;
+        if (w.isActive === false || w.status === 'inactive') return;
+        seenIds.add(w.id);
+        const roleLabel = WORKER_ROLE_LABELS[w.role]?.[isAr ? 'ar' : 'en'] || w.role || (isAr ? 'عامل' : 'Worker');
+        combined.push({
+          id: w.id,
+          name: isAr ? (w.nameAr || w.name) : (w.name || w.nameAr),
+          nameAr: w.nameAr || w.name || '',
+          nameEn: w.nameEn || w.name || '',
+          role: roleLabel,
+          department: w.department || ''
+        });
+      });
+
+      // Priority 2: System Users
+      users.forEach((u) => {
+        if (!u.id || seenIds.has(u.id)) return;
+        if (u.isActive === false || u.status === 'inactive') return;
+        seenIds.add(u.id);
+        combined.push({
+          id: u.id,
+          name: isAr ? (u.nameAr || u.name) : (u.name || u.nameAr),
+          nameAr: u.nameAr || u.name || '',
+          nameEn: u.nameEn || u.name || '',
+          role: u.role || (isAr ? 'مستخدم' : 'User'),
+          department: u.department || ''
+        });
+      });
+
+      // Priority 3: Employees (if any exist in employees collection)
+      emps.forEach((e) => {
+        if (!e.id || seenIds.has(e.id)) return;
+        seenIds.add(e.id);
+        combined.push({
+          id: e.id,
+          name: isAr ? (e.nameAr || e.name) : (e.name || e.nameAr),
+          nameAr: e.nameAr || e.name || '',
+          nameEn: e.nameEn || e.name || '',
+          role: e.role || (isAr ? 'موظف' : 'Staff'),
+          department: e.department || ''
+        });
+      });
+
+      combined.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ar'));
+      setEmployees(combined);
+    };
+
+    const unsubWorkers = onSnapshot(collection(db, 'production_workers'), (snapshot) => {
+      workers = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rebuildWorkersPool();
     });
-    return () => unsub();
-  }, []);
+
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+      users = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rebuildWorkersPool();
+    });
+
+    const unsubEmps = onSnapshot(collection(db, 'employees'), (snapshot) => {
+      emps = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rebuildWorkersPool();
+    });
+
+    return () => {
+      unsubWorkers();
+      unsubUsers();
+      unsubEmps();
+    };
+  }, [isAr]);
 
   // 4. Subscribe to Clients
   useEffect(() => {
@@ -294,10 +375,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     if (stagedAssignments[order.id]) {
       return stagedAssignments[order.id];
     }
+    const matchedVeh = vehicles.find((v) => v.id === order.assignedVehicleId);
     return {
       loadingOrderNumber: order.loadingOrderNumber || '',
       assignedVehicleId: order.assignedVehicleId || '',
-      assignedVehiclePlate: order.assignedVehiclePlate || '',
+      assignedVehicleName: order.assignedVehicleName || matchedVeh?.vehicleModel || matchedVeh?.name || matchedVeh?.nameAr || matchedVeh?.code || '',
+      assignedVehiclePlate: order.assignedVehiclePlate || matchedVeh?.plateNumber || '',
       assignedDriverId: order.assignedDriverId || '',
       assignedDriverName: order.assignedDriverName || '',
       assignedDeliveryRepId: order.assignedDeliveryRepId || '',
@@ -316,10 +399,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         [field]: value
       };
 
-      // Auto-populate driver when vehicle changes
+      // Auto-populate driver and truck name when vehicle changes
       if (field === 'assignedVehicleId') {
         const matchedVeh = vehicles.find((v) => v.id === value);
         if (matchedVeh) {
+          updated.assignedVehicleName = matchedVeh.vehicleModel || matchedVeh.name || matchedVeh.nameAr || matchedVeh.code || '';
           updated.assignedVehiclePlate = matchedVeh.plateNumber || '';
           if (matchedVeh.driverUserId) {
             updated.assignedDriverId = matchedVeh.driverUserId;
@@ -327,6 +411,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             updated.assignedDriverName = matchedEmp ? (matchedEmp.nameAr || matchedEmp.name) : matchedVeh.driverName || '';
           }
         } else {
+          updated.assignedVehicleName = '';
           updated.assignedVehiclePlate = '';
         }
       }
@@ -357,6 +442,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       [orderId]: {
         loadingOrderNumber: '',
         assignedVehicleId: '',
+        assignedVehicleName: '',
         assignedVehiclePlate: '',
         assignedDriverId: '',
         assignedDriverName: '',
@@ -365,6 +451,31 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         loadingDate: ''
       }
     }));
+    setActiveEditingOrderId(null);
+  };
+
+  // Cancel editing an order and discard its uncommitted changes
+  const handleCancelEdit = (orderId) => {
+    const original = orders.find((o) => o.id === orderId);
+    setStagedAssignments((prev) => {
+      const copy = { ...prev };
+      if (!original || !original.loadingOrderNumber) {
+        delete copy[orderId];
+      } else {
+        copy[orderId] = {
+          loadingOrderNumber: original.loadingOrderNumber || '',
+          assignedVehicleId: original.assignedVehicleId || '',
+          assignedVehicleName: original.assignedVehicleName || '',
+          assignedVehiclePlate: original.assignedVehiclePlate || '',
+          assignedDriverId: original.assignedDriverId || '',
+          assignedDriverName: original.assignedDriverName || '',
+          assignedDeliveryRepId: original.assignedDeliveryRepId || '',
+          assignedDeliveryRepName: original.assignedDeliveryRepName || '',
+          loadingDate: original.loadingDate || ''
+        };
+      }
+      return copy;
+    });
     setActiveEditingOrderId(null);
   };
 
@@ -481,9 +592,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         label = order.clientName || (isAr ? 'عميل غير محدد' : 'Unspecified Client');
       } else if (groupBy === 'loadingOrder') {
         const eff = getEffectiveAssignment(order);
+        const vObj = vehicles.find((v) => v.id === eff.assignedVehicleId);
+        const tName = eff.assignedVehicleName || vObj?.vehicleModel || vObj?.name || vObj?.code || '';
         key = eff.loadingOrderNumber ? `lo_${eff.loadingOrderNumber}` : 'unassigned';
         label = eff.loadingOrderNumber
-          ? `${isAr ? 'أمر تحميل #' : 'Loading Order #'}${eff.loadingOrderNumber}${eff.assignedVehiclePlate ? ` — ${eff.assignedVehiclePlate}` : ''}`
+          ? `${isAr ? 'أمر تحميل #' : 'Loading Order #'}${eff.loadingOrderNumber}${tName ? ` — ${tName}` : ''}`
           : (isAr ? 'غير مسكن بشاحنة' : 'Unassigned to Truck');
       } else if (groupBy === 'fulfillmentStatus') {
         const fulf = FULFILLMENT_STATUSES.find((f) => f.id === order.fulfillmentStatus);
@@ -527,6 +640,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           totalCartons: 0,
           totalWeightKg: 0,
           primaryVehicleId: eff.assignedVehicleId,
+          primaryVehicleName: eff.assignedVehicleName || '',
           primaryVehiclePlate: eff.assignedVehiclePlate,
           primaryDriverId: eff.assignedDriverId,
           primaryDriverName: eff.assignedDriverName,
@@ -536,7 +650,13 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       }
 
       const g = loGroups[compoundKey];
-      if (eff.assignedVehicleId) g.vehiclesAssigned.add(eff.assignedVehicleId);
+      if (eff.assignedVehicleId) {
+        g.vehiclesAssigned.add(eff.assignedVehicleId);
+        if (!g.primaryVehicleName) {
+          const vObj = vehicles.find((v) => v.id === eff.assignedVehicleId);
+          g.primaryVehicleName = eff.assignedVehicleName || vObj?.vehicleModel || vObj?.name || vObj?.code || '';
+        }
+      }
       if (eff.assignedDriverId) g.driversAssigned.add(eff.assignedDriverId);
       if (eff.assignedDeliveryRepId) g.repsAssigned.add(eff.assignedDeliveryRepId);
 
@@ -575,6 +695,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return {
         ...g,
         vehicleObj: vehObj,
+        primaryVehicleName: g.primaryVehicleName || vehObj?.vehicleModel || vehObj?.name || vehObj?.code || '',
         isMisaligned,
         hasVehicleMismatch,
         hasDriverMismatch,
@@ -601,6 +722,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return truckManifest.filter((t) => t.isMisaligned).length;
   }, [truckManifest]);
 
+  // Check if any staged assignment has missing mandatory fields (LO #, Vehicle, or Driver)
+  const hasIncompleteStagedOrder = useMemo(() => {
+    return Object.entries(stagedAssignments).some(([orderId, eff]) => {
+      // If order is completely cleared (no LO #, vehicle, or driver), it's a valid clear
+      if (!eff.loadingOrderNumber && !eff.assignedVehicleId && !eff.assignedDriverId) {
+        return false;
+      }
+      return (
+        !eff.loadingOrderNumber ||
+        Number(eff.loadingOrderNumber) <= 0 ||
+        !eff.assignedVehicleId ||
+        !eff.assignedDriverId
+      );
+    });
+  }, [stagedAssignments]);
+
   // 1-Click Alignment Handler: Unifies all orders in an LO # on a specific date to the chosen vehicle and driver
   const handleAlignTruckOrders = (compoundKey, loNumber, targetLoadingDate, targetVehicleId, targetDriverId) => {
     const veh = vehicles.find((v) => v.id === targetVehicleId);
@@ -616,6 +753,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             ...eff,
             loadingDate: targetLoadingDate,
             assignedVehicleId: targetVehicleId,
+            assignedVehicleName: veh ? (veh.vehicleModel || veh.name || veh.code || '') : eff.assignedVehicleName,
             assignedVehiclePlate: veh ? veh.plateNumber : eff.assignedVehiclePlate,
             assignedDriverId: targetDriverId,
             assignedDriverName: emp ? (emp.nameAr || emp.name) : eff.assignedDriverName
@@ -647,6 +785,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const handleOpenSaveModal = () => {
     if (totalMisalignments > 0) {
       alert(isAr ? 'لا يمكن حفظ الخطة! يوجد تعارض في تعيين الشاحنات أو السائقين لنفس أمر التحميل على نفس التاريخ. يرجى الضغط على "مطابقة" لحل التعارض.' : 'Cannot save plan! There are conflicting trucks or drivers for the same Loading Order and date. Please align them first.');
+      return;
+    }
+
+    if (hasIncompleteStagedOrder) {
+      alert(isAr ? 'لا يمكن حفظ الخطة! يوجد طلبات غير مكتملة البيانات الإلزامية (رقم أمر التحميل، السيارة، أو السائق). يرجى استكمالها أولاً.' : 'Cannot save plan! Some orders have incomplete mandatory fields (LO #, Truck, or Driver). Please complete them first.');
       return;
     }
 
@@ -683,6 +826,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         const updatePayload = {
           loadingOrderNumber: staged.loadingOrderNumber ? Number(staged.loadingOrderNumber) : null,
           assignedVehicleId: staged.assignedVehicleId || '',
+          assignedVehicleName: staged.assignedVehicleName || '',
           assignedVehiclePlate: staged.assignedVehiclePlate || '',
           assignedDriverId: staged.assignedDriverId || '',
           assignedDriverName: staged.assignedDriverName || '',
@@ -710,10 +854,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           userName: currentUserName,
           action: 'dispatch_plan_update',
           summaryAr: staged.loadingOrderNumber
-            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}`
+            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}`
             : 'إلغاء تسكين الشاحنة وأمر التحميل',
           summaryEn: staged.loadingOrderNumber
-            ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}`
+            ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}`
             : 'Unassigned from truck'
         };
 
@@ -991,6 +1135,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   // Driver match indicator
                   const selectedVehicle = vehicles.find((v) => v.id === eff.assignedVehicleId);
                   const isDefaultDriver = selectedVehicle?.driverUserId && selectedVehicle.driverUserId === eff.assignedDriverId;
+                  const truckDisplayName = eff.assignedVehicleName || selectedVehicle?.vehicleModel || selectedVehicle?.name || selectedVehicle?.nameAr || selectedVehicle?.code || '';
+
+                  // Mandatory fields check for assignment
+                  const isMandatoryFilled = Boolean(
+                    eff.loadingOrderNumber &&
+                    Number(eff.loadingOrderNumber) > 0 &&
+                    eff.assignedVehicleId &&
+                    eff.assignedDriverId
+                  );
 
                   return (
                     <div
@@ -1094,11 +1247,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
                                   >
                                     <option value="">{isAr ? '— اختر السيارة —' : '— Select Truck —'}</option>
-                                    {vehicles.map((v) => (
-                                      <option key={v.id} value={v.id}>
-                                        {v.plateNumber} — {v.vehicleModel}
-                                      </option>
-                                    ))}
+                                    {vehicles.map((v) => {
+                                      const truckName = v.vehicleModel || v.name || v.nameAr || v.code || v.plateNumber;
+                                      return (
+                                        <option key={v.id} value={v.id}>
+                                          {truckName}
+                                        </option>
+                                      );
+                                    })}
                                   </select>
                                 </div>
 
@@ -1132,7 +1288,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <option value="">{isAr ? '— اختر السائق —' : '— Select Driver —'}</option>
                                     {employees.map((emp) => (
                                       <option key={emp.id} value={emp.id}>
-                                        {emp.nameAr || emp.name}
+                                        {emp.nameAr || emp.name} {emp.role ? `(${emp.role})` : ''}
                                       </option>
                                     ))}
                                   </select>
@@ -1151,7 +1307,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <option value="">{isAr ? '— بدون مندوب —' : '— None —'}</option>
                                     {employees.map((emp) => (
                                       <option key={emp.id} value={emp.id}>
-                                        {emp.nameAr || emp.name}
+                                        {emp.nameAr || emp.name} {emp.role ? `(${emp.role})` : ''}
                                       </option>
                                     ))}
                                   </select>
@@ -1175,23 +1331,37 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </button>
                                 )}
 
-                                {/* Save / Check Button */}
+                                {/* Save / Check Button (Disabled if mandatory data is missing) */}
                                 <button
                                   type="button"
-                                  onClick={() => setActiveEditingOrderId(null)}
-                                  className="group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-all duration-300 shadow-xs cursor-pointer overflow-hidden"
-                                  title={isAr ? 'حفظ' : 'Save'}
+                                  disabled={!isMandatoryFilled}
+                                  onClick={() => {
+                                    if (!isMandatoryFilled) return;
+                                    setActiveEditingOrderId(null);
+                                  }}
+                                  className={`group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl transition-all duration-300 shadow-xs overflow-hidden ${
+                                    isMandatoryFilled
+                                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                                      : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-50 shadow-none'
+                                  }`}
+                                  title={
+                                    isMandatoryFilled
+                                      ? (isAr ? 'حفظ' : 'Save')
+                                      : (isAr ? 'يرجى إكمال البيانات الإلزامية: (رقم التحميل، السيارة، والسائق)' : 'Please fill all mandatory fields: LO #, Truck, Driver')
+                                  }
                                 >
                                   <Check className="w-4 h-4 shrink-0" />
-                                  <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
-                                    {isAr ? 'حفظ' : 'Save'}
-                                  </span>
+                                  {isMandatoryFilled && (
+                                    <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
+                                      {isAr ? 'حفظ' : 'Save'}
+                                    </span>
+                                  )}
                                 </button>
 
                                 {/* Cancel / X Button */}
                                 <button
                                   type="button"
-                                  onClick={() => setActiveEditingOrderId(null)}
+                                  onClick={() => handleCancelEdit(order.id)}
                                   className="group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition-all duration-300 cursor-pointer overflow-hidden"
                                   title={isAr ? 'إلغاء' : 'Cancel'}
                                 >
@@ -1398,9 +1568,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <span>#{eff.loadingOrderNumber}</span>
                                   </div>
 
-                                  {/* Cell 2: Vehicle Plate */}
-                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 truncate" title={eff.assignedVehiclePlate}>
-                                    {eff.assignedVehiclePlate || '—'}
+                                  {/* Cell 2: Vehicle Truck Name (Only Truck Name, no plate) */}
+                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 truncate" title={truckDisplayName || eff.assignedVehiclePlate}>
+                                    {truckDisplayName || eff.assignedVehiclePlate || '—'}
                                   </div>
 
                                   {/* Cell 3: Driver Name */}
@@ -1658,8 +1828,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               <span className="font-mono text-xs font-black text-amber-400">
                                 #{tm.loadingOrderNumber}
                               </span>
-                              <span className="font-bold text-white text-xs truncate max-w-[140px]">
-                                {tm.primaryVehiclePlate || (isAr ? 'بدون لوحة' : 'No Plate')}
+                              <span className="font-bold text-white text-xs truncate max-w-[140px]" title={tm.primaryVehicleName}>
+                                {tm.primaryVehicleName || (isAr ? 'شاحنة' : 'Truck')}
                               </span>
                             </div>
                             <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
@@ -1776,6 +1946,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                         <AlertTriangle className="w-3 h-3 text-rose-400" />
                         <span>{isAr ? `${totalMisalignments} تعارض يتطلب المطابقة` : `${totalMisalignments} conflict(s)`}</span>
                       </span>
+                    ) : hasIncompleteStagedOrder ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                        <AlertTriangle className="w-3 h-3 text-amber-400" />
+                        <span>{isAr ? 'بيانات إلزامية ناقصة' : 'Incomplete Fields'}</span>
+                      </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                         <Check className="w-3 h-3 text-emerald-400" />
@@ -1813,12 +1988,19 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 <button
                   type="button"
                   onClick={handleOpenSaveModal}
-                  disabled={totalMisalignments > 0}
-                  className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer shadow-sm ${
-                    totalMisalignments > 0
+                  disabled={totalMisalignments > 0 || hasIncompleteStagedOrder}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition shadow-sm ${
+                    totalMisalignments > 0 || hasIncompleteStagedOrder
                       ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                      : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/30'
+                      : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/30 cursor-pointer'
                   }`}
+                  title={
+                    hasIncompleteStagedOrder
+                      ? (isAr ? 'يوجد طلبات ببيانات غير مكتملة (رقم التحميل، السيارة، أو السائق)' : 'Some orders have incomplete mandatory fields')
+                      : totalMisalignments > 0
+                      ? (isAr ? 'يوجد تعارض في التعيين يتطلب المطابقة' : 'Resolve truck conflicts first')
+                      : (isAr ? 'حفظ الخطة' : 'Save Plan')
+                  }
                 >
                   <Save className="w-4 h-4" />
                   <span>{isAr ? 'حفظ الخطة' : 'Save Plan'}</span>
