@@ -88,6 +88,107 @@ const WORKER_ROLE_LABELS = {
 const WEEKDAY_NAMES_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const WEEKDAY_NAMES_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+const DAY_MAP_AR = {
+  friday: 'الجمعة',
+  saturday: 'السبت',
+  sunday: 'الأحد',
+  monday: 'الإثنين',
+  tuesday: 'الثلاثاء',
+  wednesday: 'الأربعاء',
+  thursday: 'الخميس',
+  0: 'الأحد',
+  1: 'الإثنين',
+  2: 'الثلاثاء',
+  3: 'الأربعاء',
+  4: 'الخميس',
+  5: 'الجمعة',
+  6: 'السبت'
+};
+
+const DAY_MAP_EN = {
+  friday: 'Friday',
+  saturday: 'Saturday',
+  sunday: 'Sunday',
+  monday: 'Monday',
+  tuesday: 'Tuesday',
+  wednesday: 'Wednesday',
+  thursday: 'Thursday',
+  0: 'Sunday',
+  1: 'Monday',
+  2: 'Tuesday',
+  3: 'Wednesday',
+  4: 'Thursday',
+  5: 'Friday',
+  6: 'Saturday'
+};
+
+// Resolve comprehensive operational profile and schedule notes
+function resolveClientOperationalProfile(targetBranch, clientObj, isAr = true) {
+  if (!clientObj && !targetBranch) {
+    return {
+      workingHoursDisplay: '',
+      holidaysList: [],
+      holidaysDisplay: '',
+      clientNotes: '',
+      branchNotes: '',
+      combinedNotes: ''
+    };
+  }
+
+  const useCustom = Boolean(targetBranch?.useCustomSchedule);
+  const branchFrom = (targetBranch?.workingHoursFrom || '').trim();
+  const branchTo = (targetBranch?.workingHoursTo || '').trim();
+  const clientFrom = (clientObj?.workingHoursFrom || '').trim();
+  const clientTo = (clientObj?.workingHoursTo || '').trim();
+
+  const hoursFrom = useCustom && (branchFrom || branchTo) ? branchFrom : (clientFrom || branchFrom);
+  const hoursTo = useCustom && (branchFrom || branchTo) ? branchTo : (clientTo || branchTo);
+
+  let workingHoursDisplay = '';
+  if (hoursFrom && hoursTo) {
+    workingHoursDisplay = `${hoursFrom} — ${hoursTo}`;
+  } else if (hoursFrom) {
+    workingHoursDisplay = `${isAr ? 'من' : 'From'} ${hoursFrom}`;
+  } else if (hoursTo) {
+    workingHoursDisplay = `${isAr ? 'إلى' : 'To'} ${hoursTo}`;
+  }
+
+  const branchHolidays = Array.isArray(targetBranch?.weeklyHolidays) ? targetBranch.weeklyHolidays.filter(Boolean) : [];
+  const clientHolidays = Array.isArray(clientObj?.weeklyHolidays) ? clientObj.weeklyHolidays.filter(Boolean) : [];
+
+  let rawHolidays = [];
+  if (useCustom && branchHolidays.length > 0) {
+    rawHolidays = branchHolidays;
+  } else if (clientHolidays.length > 0) {
+    rawHolidays = clientHolidays;
+  } else if (branchHolidays.length > 0) {
+    rawHolidays = branchHolidays;
+  }
+
+  const holidaysList = rawHolidays;
+  const holidaysDisplay = rawHolidays
+    .map((d) => {
+      const key = String(d).toLowerCase().trim();
+      return isAr ? (DAY_MAP_AR[key] || d) : (DAY_MAP_EN[key] || d);
+    })
+    .join('، ');
+
+  const clientNotes = (clientObj?.notes || clientObj?.deliveryNotes || '').trim();
+  const branchNotes = (targetBranch?.notes || '').trim();
+  const combinedNotes = branchNotes && clientNotes && branchNotes !== clientNotes
+    ? `${clientNotes} | ${branchNotes}`
+    : (branchNotes || clientNotes);
+
+  return {
+    workingHoursDisplay,
+    holidaysList,
+    holidaysDisplay,
+    clientNotes,
+    branchNotes,
+    combinedNotes
+  };
+}
+
 function formatDateKey(dateObj) {
   const d = new Date(dateObj);
   const year = d.getFullYear();
@@ -153,8 +254,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // 1. Target Planning Date (Anchor Date for Assignments & Sequence Validation)
   const [targetPlanningDate, setTargetPlanningDate] = useState(() => formatDateKey(new Date()));
 
-  // 2. Date Scope: 'today' | 'tomorrow' | 'week' | 'custom'
-  const [dateScope, setDateScope] = useState('today');
+  // 2. Date Scope: 'all_pending' | 'today' | 'tomorrow' | 'week' | 'custom'
+  const [dateScope, setDateScope] = useState('all_pending');
   const [customDate, setCustomDate] = useState(() => formatDateKey(new Date()));
 
   // 3. Single Active Editing Card
@@ -165,10 +266,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
   // Filters & Controls
   const [searchTerm, setSearchTerm] = useState('');
-  const [unscheduledOnly, setUnscheduledOnly] = useState(false);
   const [confirmedOnly, setConfirmedOnly] = useState(true);
   const [fulfillmentFilter, setFulfillmentFilter] = useState('all');
-  const [groupBy, setGroupBy] = useState('none'); // 'none' | 'region' | 'client' | 'loadingOrder' | 'fulfillmentStatus'
+  const [groupBy, setGroupBy] = useState('loadingDate'); // 'loadingDate' | 'none' | 'region' | 'client' | 'loadingOrder' | 'fulfillmentStatus'
   const [sortBy, setSortBy] = useState('weight_desc'); // 'weight_desc' | 'weight_asc' | 'cartons_desc' | 'serial_asc' | 'client_asc'
 
   // Staged Assignments: Record<orderId, { loadingOrderNumber, assignedVehicleId, assignedVehiclePlate, assignedDriverId, assignedDriverName, assignedDeliveryRepId, assignedDeliveryRepName, loadingDate }>
@@ -340,6 +440,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const weekEndStr = useMemo(() => formatDateKey(addDays(new Date(), 7)), []);
 
   const activeDateScopeLabel = useMemo(() => {
+    if (dateScope === 'all_pending') return isAr ? 'كافة المعلقة (غير منتهية التسليم)' : 'All Pending Orders';
     if (dateScope === 'today') return isAr ? `اليوم (${todayStr})` : `Today (${todayStr})`;
     if (dateScope === 'tomorrow') return isAr ? `غداً (${tomorrowStr})` : `Tomorrow (${tomorrowStr})`;
     if (dateScope === 'week') return isAr ? `خلال 7 أيام (${todayStr} إلى ${weekEndStr})` : `Next 7 Days (${todayStr} to ${weekEndStr})`;
@@ -558,7 +659,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       const effectiveDate = eff.loadingDate || order.loadingDate || order.invoiceDate || '';
 
       // Date Scope Filter
-      if (dateScope === 'today') {
+      if (dateScope === 'all_pending') {
+        // Default to all orders with 'pending' fulfillment status (not_yet or undefined) across all dates
+        if (order.fulfillmentStatus && order.fulfillmentStatus !== 'not_yet') {
+          return false;
+        }
+      } else if (dateScope === 'today') {
         if (effectiveDate !== todayStr) return false;
       } else if (dateScope === 'tomorrow') {
         if (effectiveDate !== tomorrowStr) return false;
@@ -566,11 +672,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         if (!effectiveDate || effectiveDate < todayStr || effectiveDate > weekEndStr) return false;
       } else if (dateScope === 'custom') {
         if (effectiveDate !== customDate) return false;
-      }
-
-      // Unscheduled only filter
-      if (unscheduledOnly) {
-        if (eff.loadingOrderNumber && eff.assignedVehicleId) return false;
       }
 
       // Fulfillment status filter
@@ -604,7 +705,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       return true;
     });
-  }, [orders, stagedAssignments, dateScope, todayStr, tomorrowStr, weekEndStr, customDate, unscheduledOnly, confirmedOnly, fulfillmentFilter, searchTerm]);
+  }, [orders, stagedAssignments, dateScope, todayStr, tomorrowStr, weekEndStr, customDate, confirmedOnly, fulfillmentFilter, searchTerm]);
 
   // Sorted Orders
   const sortedOrders = useMemo(() => {
@@ -641,7 +742,24 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       let key = 'other';
       let label = isAr ? 'أخرى' : 'Other';
 
-      if (groupBy === 'region') {
+      if (groupBy === 'loadingDate') {
+        const eff = getEffectiveAssignment(order);
+        const lDate = eff.loadingDate || order.loadingDate || '';
+        key = lDate || 'unscheduled';
+        if (lDate) {
+          const isTarget = lDate === targetPlanningDate;
+          const isToday = lDate === todayStr;
+          const isTomorrow = lDate === tomorrowStr;
+          let tag = '';
+          if (isTarget) tag = isAr ? ' ★ [تاريخ التسكين المستهدف]' : ' ★ [Target Plan Date]';
+          else if (isToday) tag = isAr ? ' (اليوم)' : ' (Today)';
+          else if (isTomorrow) tag = isAr ? ' (غداً)' : ' (Tomorrow)';
+
+          label = `${isAr ? 'تاريخ التحميل:' : 'Loading Date:'} ${lDate}${tag}`;
+        } else {
+          label = isAr ? 'بدون تاريخ تحميل محدد (غير مجدول)' : 'Unscheduled / No Date';
+        }
+      } else if (groupBy === 'region') {
         key = order.region || 'unspecified';
         label = order.region || (isAr ? 'منطقة غير محددة' : 'Unspecified Region');
       } else if (groupBy === 'client') {
@@ -667,8 +785,21 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       groups[key].items.push(order);
     });
 
-    return Object.values(groups);
-  }, [sortedOrders, groupBy, isAr, stagedAssignments]);
+    const groupList = Object.values(groups);
+
+    // Group Sorting: for loadingDate, targetPlanningDate on top, then descending, unscheduled last
+    if (groupBy === 'loadingDate') {
+      groupList.sort((a, b) => {
+        if (a.groupKey === targetPlanningDate) return -1;
+        if (b.groupKey === targetPlanningDate) return 1;
+        if (a.groupKey === 'unscheduled') return 1;
+        if (b.groupKey === 'unscheduled') return -1;
+        return b.groupKey.localeCompare(a.groupKey);
+      });
+    }
+
+    return groupList;
+  }, [sortedOrders, groupBy, isAr, stagedAssignments, targetPlanningDate, todayStr, tomorrowStr, vehicles]);
 
   // Active Trucks / Loading Orders Manifest Analysis (COMPOUND ALIGNMENT: loadingDate + loadingOrderNumber)
   const truckManifest = useMemo(() => {
@@ -945,7 +1076,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const stagedOrdersCount = Object.keys(stagedAssignments).length;
 
   return (
-    <div className="space-y-4 max-w-7xl mx-auto pb-32">
+    <div className="space-y-4 max-w-[1700px] w-full mx-auto px-2 sm:px-4 lg:px-6 pb-32">
       {/* Toast Notification */}
       {toastMsg && (
         <div className={`fixed top-4 end-4 z-50 flex items-center gap-2 px-4 py-2.5 rounded-2xl shadow-lg border text-xs font-bold transition animate-in fade-in ${
@@ -970,6 +1101,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
             {/* Scope Shortcuts */}
             <div className="flex items-center gap-1 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setDateScope('all_pending')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                  dateScope === 'all_pending'
+                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                {isAr ? 'كافة المعلقة' : 'All Pending'}
+              </button>
+
               <button
                 type="button"
                 onClick={() => setDateScope('today')}
@@ -1051,7 +1194,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         {/* Row 2: Search, Quick Chips, Grouping & Sorting */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
           {/* Search Box */}
-          <div className="relative lg:col-span-4">
+          <div className="relative lg:col-span-5">
             <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -1063,25 +1206,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           </div>
 
           {/* Quick Filters */}
-          <div className="flex items-center gap-1.5 lg:col-span-4 flex-wrap">
-            <button
-              type="button"
-              onClick={() => setUnscheduledOnly((prev) => !prev)}
-              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                unscheduledOnly
-                  ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
-                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-              }`}
-            >
-              <Truck className="w-3.5 h-3.5" />
-              <span>{isAr ? 'غير مُجدول فقط' : 'Unscheduled Only'}</span>
-              {unscheduledOnly && <Check className="w-3 h-3 ms-0.5" />}
-            </button>
-
+          <div className="flex items-center gap-1.5 lg:col-span-3 flex-wrap">
             <button
               type="button"
               onClick={() => setConfirmedOnly((prev) => !prev)}
-              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
+              className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
                 confirmedOnly
                   ? 'bg-blue-600 text-white border-blue-700 shadow-2xs'
                   : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -1099,6 +1228,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               onChange={(e) => setGroupBy(e.target.value)}
               className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none cursor-pointer"
             >
+              <option value="loadingDate">{isAr ? 'تجميع: تاريخ التحميل' : 'Group: Loading Date'}</option>
               <option value="none">{isAr ? 'تجميع: بدون' : 'Group: None'}</option>
               <option value="region">{isAr ? 'تجميع: المنطقة' : 'Group: Region'}</option>
               <option value="client">{isAr ? 'تجميع: العميل' : 'Group: Client'}</option>
@@ -1216,12 +1346,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             <div key={group.groupKey} className="space-y-3">
               {/* Optional Group Header */}
               {groupBy !== 'none' && (
-                <div className="flex items-center gap-2 px-2 pt-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-                  <h3 className="font-black text-slate-800 text-sm">{group.groupLabel}</h3>
-                  <span className="text-[11px] font-mono font-bold text-slate-400">
-                    ({group.items.length} {isAr ? 'أوامر' : 'orders'})
-                  </span>
+                <div className="flex items-center justify-between px-2 pt-2 flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${
+                      group.groupKey === targetPlanningDate ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'
+                    }`}></span>
+                    <h3 className="font-black text-slate-800 text-sm">{group.groupLabel}</h3>
+                    <span className="text-[11px] font-mono font-bold text-slate-400">
+                      ({group.items.length} {isAr ? 'أوامر' : 'orders'})
+                    </span>
+                  </div>
+
+                  <div className="text-xs font-mono font-bold text-slate-500 flex items-center gap-2">
+                    <span>{group.items.reduce((s, o) => s + (Number(o.totalCartons || o.totalQty) || 0), 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
+                    <span className="text-slate-300">•</span>
+                    <span className="text-emerald-700 font-black">{(group.items.reduce((s, o) => s + (Number(o.totalWeightKg) || 0), 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                  </div>
                 </div>
               )}
 
@@ -1248,10 +1388,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   // Location detection: accurate GPS vs fallback address/name search
                   const locInfo = resolveLocationInfo(targetBranch, clientObj, order);
 
-                  // Operational Profile
-                  const workingHoursDisplay = targetBranch?.workingHours || clientObj?.workingHours || '';
-                  const holidaysList = targetBranch?.weeklyHolidays || clientObj?.weeklyHolidays || [];
-                  const clientNotes = clientObj?.notes || '';
+                  // Operational Profile & Notes
+                  const opProfile = resolveClientOperationalProfile(targetBranch, clientObj, isAr);
+                  const workingHoursDisplay = opProfile.workingHoursDisplay;
+                  const holidaysList = opProfile.holidaysList;
+                  const holidaysDisplay = opProfile.holidaysDisplay;
+                  const clientNotes = opProfile.combinedNotes;
 
                   // Segment
                   const segObj = clientObj?.segmentId ? segmentMap[clientObj.segmentId] : null;
@@ -1322,6 +1464,19 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <MapPin className="w-2.5 h-2.5 text-slate-400 shrink-0" />
                                     <span className="truncate">{order.region}</span>
                                   </span>
+                                )}
+
+                                {workingHoursDisplay && (
+                                  <div className="text-[10px] text-slate-600 font-mono flex items-center gap-1 truncate" title={workingHoursDisplay}>
+                                    <Clock className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                    <span className="truncate">{workingHoursDisplay}</span>
+                                  </div>
+                                )}
+
+                                {clientNotes && (
+                                  <div className="text-[9px] text-amber-900 bg-amber-50/90 p-1 rounded border border-amber-200 line-clamp-2" title={clientNotes}>
+                                    <span className="font-bold">{isAr ? 'ملاحظة:' : 'Note:'}</span> {clientNotes}
+                                  </div>
                                 )}
                               </div>
 
@@ -1641,21 +1796,20 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   )}
 
                                   {workingHoursDisplay && (
-                                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-mono">
-                                      <Clock className="w-3 h-3 text-slate-400" />
+                                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-700 font-mono bg-slate-50 px-2 py-0.5 rounded-md border border-slate-200" title={isAr ? 'مواعيد العمل الرسمية' : 'Working hours'}>
+                                      <Clock className="w-3 h-3 text-slate-500" />
                                       <span>{workingHoursDisplay}</span>
                                     </span>
                                   )}
 
-                                  {holidaysList.length > 0 && (
+                                  {holidaysDisplay && (
                                     <span
                                       className="inline-flex items-center gap-1 text-[11px] text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200"
-                                      title={isAr ? 'عطلة أسبوعية' : 'Weekly holiday'}
+                                      title={isAr ? 'عطلة أسبوعية للعميل' : 'Client weekly holiday'}
                                     >
                                       <Calendar className="w-3 h-3 text-rose-500" />
                                       <span>
-                                        {isAr ? 'عطلة:' : 'Holiday:'}{' '}
-                                        {holidaysList.map((d) => (isAr ? WEEKDAY_NAMES_AR[d] : WEEKDAY_NAMES_EN[d])).join('، ')}
+                                        {isAr ? 'عطلة:' : 'Holiday:'} {holidaysDisplay}
                                       </span>
                                     </span>
                                   )}
@@ -1666,19 +1820,34 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {(clientNotes || order.externalComments || order.internalComments) && (
                                 <div className="space-y-1.5 pt-1 text-xs">
                                   {clientNotes && (
-                                    <div className="p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5">
+                                    <div className="p-2 rounded-xl bg-amber-50/90 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5 shadow-2xs">
                                       <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
                                       <div>
-                                        <span className="font-bold me-1">{isAr ? 'ملاحظة العميل الدائمة:' : 'Client Note:'}</span>
-                                        <span>{clientNotes}</span>
+                                        <span className="font-bold me-1 text-[11px] uppercase tracking-wider text-amber-800">
+                                          {isAr ? 'ملاحظة العميل التشغيلية:' : 'Client Note:'}
+                                        </span>
+                                        <span className="font-medium text-amber-950">{clientNotes}</span>
                                       </div>
+                                    </div>
+                                  )}
+
+                                  {order.externalComments && (
+                                    <div className="p-1.5 rounded-lg bg-blue-50/70 border border-blue-200 text-blue-900 text-[11px] flex items-start gap-1">
+                                      <FileText className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
+                                      <span className="break-words">
+                                        <span className="font-bold me-1">{isAr ? 'ملاحظة الطلب:' : 'Order Note:'}</span>
+                                        {order.externalComments}
+                                      </span>
                                     </div>
                                   )}
 
                                   {order.internalComments && (
                                     <div className="p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-700 text-[11px] flex items-start gap-1">
                                       <Lock className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
-                                      <span className="break-words">{order.internalComments}</span>
+                                      <span className="break-words">
+                                        <span className="font-bold me-1">{isAr ? 'ملاحظة داخلية:' : 'Internal Note:'}</span>
+                                        {order.internalComments}
+                                      </span>
                                     </div>
                                   )}
                                 </div>
@@ -1918,21 +2087,20 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   )}
 
                                   {workingHoursDisplay && (
-                                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-mono">
-                                      <Clock className="w-3 h-3 text-slate-400" />
+                                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-700 font-mono bg-slate-50 px-2 py-0.5 rounded-md border border-slate-200" title={isAr ? 'مواعيد العمل الرسمية' : 'Working hours'}>
+                                      <Clock className="w-3 h-3 text-slate-500" />
                                       <span>{workingHoursDisplay}</span>
                                     </span>
                                   )}
 
-                                  {holidaysList.length > 0 && (
+                                  {holidaysDisplay && (
                                     <span
                                       className="inline-flex items-center gap-1 text-[11px] text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200"
-                                      title={isAr ? 'عطلة أسبوعية' : 'Weekly holiday'}
+                                      title={isAr ? 'عطلة أسبوعية للعميل' : 'Client weekly holiday'}
                                     >
                                       <Calendar className="w-3 h-3 text-rose-500" />
                                       <span>
-                                        {isAr ? 'عطلة:' : 'Holiday:'}{' '}
-                                        {holidaysList.map((d) => (isAr ? WEEKDAY_NAMES_AR[d] : WEEKDAY_NAMES_EN[d])).join('، ')}
+                                        {isAr ? 'عطلة:' : 'Holiday:'} {holidaysDisplay}
                                       </span>
                                     </span>
                                   )}
@@ -1943,19 +2111,34 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {(clientNotes || order.externalComments || order.internalComments) && (
                                 <div className="space-y-1.5 pt-1 text-xs">
                                   {clientNotes && (
-                                    <div className="p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5">
+                                    <div className="p-2 rounded-xl bg-amber-50/90 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5 shadow-2xs">
                                       <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
                                       <div>
-                                        <span className="font-bold me-1">{isAr ? 'ملاحظة العميل الدائمة:' : 'Client Note:'}</span>
-                                        <span>{clientNotes}</span>
+                                        <span className="font-bold me-1 text-[11px] uppercase tracking-wider text-amber-800">
+                                          {isAr ? 'ملاحظة العميل التشغيلية:' : 'Client Note:'}
+                                        </span>
+                                        <span className="font-medium text-amber-950">{clientNotes}</span>
                                       </div>
+                                    </div>
+                                  )}
+
+                                  {order.externalComments && (
+                                    <div className="p-1.5 rounded-lg bg-blue-50/70 border border-blue-200 text-blue-900 text-[11px] flex items-start gap-1">
+                                      <FileText className="w-3 h-3 text-blue-500 shrink-0 mt-0.5" />
+                                      <span className="break-words">
+                                        <span className="font-bold me-1">{isAr ? 'ملاحظة الطلب:' : 'Order Note:'}</span>
+                                        {order.externalComments}
+                                      </span>
                                     </div>
                                   )}
 
                                   {order.internalComments && (
                                     <div className="p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-700 text-[11px] flex items-start gap-1">
                                       <Lock className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
-                                      <span className="break-words">{order.internalComments}</span>
+                                      <span className="break-words">
+                                        <span className="font-bold me-1">{isAr ? 'ملاحظة داخلية:' : 'Internal Note:'}</span>
+                                        {order.internalComments}
+                                      </span>
                                     </div>
                                   )}
                                 </div>
