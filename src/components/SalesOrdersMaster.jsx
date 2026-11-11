@@ -358,8 +358,13 @@ const resolveOrderOperationalProfile = (order, client, isAr = true) => {
     thursday: 'الخميس'
   };
 
-  const holidaysDisplay = rawHolidays
-    .map((d) => (isAr ? (DAY_MAP_AR[d.toLowerCase()] || d) : d))
+  // Filter out Friday - only show weekly holidays if not Friday
+  const nonFridayHolidays = rawHolidays.filter(
+    (d) => String(d).toLowerCase().trim() !== 'friday' && d !== 5
+  );
+
+  const holidaysDisplay = nonFridayHolidays
+    .map((d) => (isAr ? (DAY_MAP_AR[String(d).toLowerCase().trim()] || d) : d))
     .join('، ');
 
   // Contact & Phones
@@ -387,7 +392,7 @@ const resolveOrderOperationalProfile = (order, client, isAr = true) => {
     scheduleDisplay,
     hasHours: Boolean(hoursFrom || hoursTo),
     holidaysDisplay,
-    hasHolidays: rawHolidays.length > 0,
+    hasHolidays: nonFridayHolidays.length > 0,
     address,
     hasAddress: Boolean(address && address !== '—' && address !== 'غير محدد'),
     contactPerson,
@@ -2016,14 +2021,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                               </div>
                                             )}
                                             {order.externalComments && (
-                                              <div className="text-slate-700">
-                                                <span className="text-slate-400 me-1">💬</span>
+                                              <div className="text-slate-700 flex items-start gap-1">
+                                                <MessageSquare className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
                                                 <span>{order.externalComments}</span>
                                               </div>
                                             )}
                                             {order.internalComments && (
-                                              <div className="text-amber-700">
-                                                <span className="text-slate-400 me-1">🔒</span>
+                                              <div className="text-amber-700 flex items-start gap-1">
+                                                <Lock className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
                                                 <span>{order.internalComments}</span>
                                               </div>
                                             )}
@@ -4341,7 +4346,7 @@ function SalesOrderEditorModal({
               <div className="sm:col-span-3 grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center gap-1">
-                    <span>💬</span>
+                    <MessageSquare className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                     <span>{isAr ? 'ملاحظات خارجية (تظهر على الفاتورة / الإذن)' : 'External Comments (On Invoice)'}</span>
                   </label>
                   <textarea
@@ -4355,7 +4360,7 @@ function SalesOrderEditorModal({
 
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center gap-1">
-                    <span>🔒</span>
+                    <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                     <span>{isAr ? 'ملاحظات داخلية (خاصة بالإدارة)' : 'Internal Comments (Private)'}</span>
                   </label>
                   <textarea

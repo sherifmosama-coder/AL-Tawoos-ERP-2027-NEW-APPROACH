@@ -75,6 +75,41 @@ const FULFILLMENT_STATUSES = [
   { id: 'paid', labelAr: 'مدفوع ومحصل', labelEn: 'Paid' }
 ];
 
+const SEQUENTIAL_FULFILLMENT_STEPS = [
+  {
+    id: 'not_yet',
+    labelAr: 'معلق',
+    labelEn: 'Pending',
+    icon: Clock,
+    color: 'slate',
+    badgeClasses: 'bg-slate-100 text-slate-700 border-slate-300'
+  },
+  {
+    id: 'prepare',
+    labelAr: 'جاري التجهيز',
+    labelEn: 'Preparing',
+    icon: PackageCheck,
+    color: 'indigo',
+    badgeClasses: 'bg-indigo-50 text-indigo-700 border-indigo-200'
+  },
+  {
+    id: 'shipped',
+    labelAr: 'جاري التوصيل',
+    labelEn: 'Out for Delivery',
+    icon: Truck,
+    color: 'purple',
+    badgeClasses: 'bg-purple-50 text-purple-700 border-purple-200'
+  },
+  {
+    id: 'delivered',
+    labelAr: 'تم التسليم',
+    labelEn: 'Delivered',
+    icon: CheckCircle2,
+    color: 'emerald',
+    badgeClasses: 'bg-emerald-50 text-emerald-800 border-emerald-300'
+  }
+];
+
 const WORKER_ROLE_LABELS = {
   operator: { ar: 'فني تشغيل ماكينات', en: 'Machine Operator' },
   technician: { ar: 'فني صيانة', en: 'Maintenance Technician' },
@@ -165,8 +200,13 @@ function resolveClientOperationalProfile(targetBranch, clientObj, isAr = true) {
     rawHolidays = branchHolidays;
   }
 
-  const holidaysList = rawHolidays;
-  const holidaysDisplay = rawHolidays
+  // Filter out Friday - only show weekly holidays if not Friday
+  const nonFridayHolidays = rawHolidays.filter(
+    (d) => String(d).toLowerCase().trim() !== 'friday' && d !== 5
+  );
+
+  const holidaysList = nonFridayHolidays;
+  const holidaysDisplay = nonFridayHolidays
     .map((d) => {
       const key = String(d).toLowerCase().trim();
       return isAr ? (DAY_MAP_AR[key] || d) : (DAY_MAP_EN[key] || d);
@@ -281,6 +321,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [advancePendingToPreparing, setAdvancePendingToPreparing] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Intentional Alignment Discrepancy Modal Confirmation
+  const [isIntentionalDiscrepancyModalOpen, setIsIntentionalDiscrepancyModalOpen] = useState(false);
+
+  // Status Jump Confirmation Modal (for admin jump or reverting delivered status)
+  const [statusJumpConfirmModal, setStatusJumpConfirmModal] = useState(null);
 
   // Notification Toast
   const [toastMsg, setToastMsg] = useState(null);
@@ -462,7 +508,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       assignedDriverName: order.assignedDriverName || '',
       assignedDeliveryRepId: order.assignedDeliveryRepId || '',
       assignedDeliveryRepName: order.assignedDeliveryRepName || '',
-      loadingDate: order.loadingDate || targetPlanningDate || todayStr
+      loadingDate: order.loadingDate || targetPlanningDate || todayStr,
+      invoiceDate: order.invoiceDate || '',
+      fulfillmentStatus: order.fulfillmentStatus || 'not_yet'
     };
   };
 
@@ -514,6 +562,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
   // Helper to clear assignment for an order
   const handleClearAssignment = (orderId) => {
+    const original = orders.find((o) => o.id === orderId) || {};
     setStagedAssignments((prev) => ({
       ...prev,
       [orderId]: {
@@ -525,7 +574,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         assignedDriverName: '',
         assignedDeliveryRepId: '',
         assignedDeliveryRepName: '',
-        loadingDate: ''
+        loadingDate: '',
+        invoiceDate: original.invoiceDate || '',
+        fulfillmentStatus: original.fulfillmentStatus || 'not_yet'
       }
     }));
     setActiveEditingOrderId(null);
@@ -548,7 +599,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           assignedDriverName: original.assignedDriverName || '',
           assignedDeliveryRepId: original.assignedDeliveryRepId || '',
           assignedDeliveryRepName: original.assignedDeliveryRepName || '',
-          loadingDate: original.loadingDate || ''
+          loadingDate: original.loadingDate || '',
+          invoiceDate: original.invoiceDate || '',
+          fulfillmentStatus: original.fulfillmentStatus || 'not_yet'
         };
       }
       return copy;
@@ -570,14 +623,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     }
 
     const eff = getEffectiveAssignment(order);
-    const existingDate = eff.loadingDate || order.loadingDate;
+    const existingLoadingDate = eff.loadingDate || order.loadingDate || '';
+    const existingInvoiceDate = eff.invoiceDate || order.invoiceDate || '';
 
-    // Check loading date mismatch with targetPlanningDate
-    if (existingDate && existingDate !== targetPlanningDate) {
+    // Check loading date or invoice date mismatch with targetPlanningDate
+    const hasLoadingMismatch = Boolean(existingLoadingDate && existingLoadingDate !== targetPlanningDate);
+    const hasInvoiceMismatch = Boolean(existingInvoiceDate && existingInvoiceDate !== targetPlanningDate);
+
+    if (hasLoadingMismatch || hasInvoiceMismatch) {
       setDateMismatchModal({
         order,
-        existingDate,
-        targetDate: targetPlanningDate,
+        existingLoadingDate,
+        targetLoadingDate: targetPlanningDate,
+        existingInvoiceDate,
+        updateLoadingDate: hasLoadingMismatch,
+        updateInvoiceDate: false,
+        customInvoiceDate: existingInvoiceDate || targetPlanningDate,
         isSavingCheck: false
       });
       return;
@@ -601,11 +662,20 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     );
     if (!isMandatoryFilled) return;
 
-    if (eff.loadingDate && eff.loadingDate !== targetPlanningDate) {
+    const existingLoadingDate = eff.loadingDate || '';
+    const existingInvoiceDate = eff.invoiceDate || '';
+    const hasLoadingMismatch = Boolean(existingLoadingDate && existingLoadingDate !== targetPlanningDate);
+    const hasInvoiceMismatch = Boolean(existingInvoiceDate && existingInvoiceDate !== targetPlanningDate);
+
+    if (hasLoadingMismatch || hasInvoiceMismatch) {
       setDateMismatchModal({
         order,
-        existingDate: eff.loadingDate,
-        targetDate: targetPlanningDate,
+        existingLoadingDate,
+        targetLoadingDate: targetPlanningDate,
+        existingInvoiceDate,
+        updateLoadingDate: hasLoadingMismatch,
+        updateInvoiceDate: false,
+        customInvoiceDate: existingInvoiceDate || targetPlanningDate,
         isSavingCheck: true
       });
       return;
@@ -614,11 +684,19 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     setActiveEditingOrderId(null);
   };
 
-  // Confirm date mismatch update: update order's loading date to targetPlanningDate
-  const handleConfirmDateMismatchUpdate = () => {
+  // Confirm date mismatch update: applies selected date updates to staged assignment
+  const handleConfirmDateMismatchUpdate = (options = {}) => {
     if (!dateMismatchModal) return;
-    const { order, targetDate, isSavingCheck } = dateMismatchModal;
-    handleStageChange(order.id, 'loadingDate', targetDate);
+    const { order, targetLoadingDate, isSavingCheck } = dateMismatchModal;
+    const { updateLoading, updateInvoice, newInvoiceDate } = options;
+
+    if (updateLoading) {
+      handleStageChange(order.id, 'loadingDate', targetLoadingDate);
+    }
+    if (updateInvoice && newInvoiceDate) {
+      handleStageChange(order.id, 'invoiceDate', newInvoiceDate);
+    }
+
     if (isSavingCheck) {
       setActiveEditingOrderId(null);
     } else {
@@ -627,14 +705,101 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     setDateMismatchModal(null);
     showToast(
       isAr
-        ? `تم تحديث تاريخ التحميل إلى (${targetDate}) بنجاح ✓`
-        : `Loading date updated to (${targetDate}) ✓`
+        ? 'تم تحديث التواريخ ومتابعة التعديل بنجاح'
+        : 'Dates updated successfully'
     );
+  };
+
+  // Continue to edit or save without changing original dates
+  const handleContinueWithoutDateChange = () => {
+    if (!dateMismatchModal) return;
+    const { order, isSavingCheck } = dateMismatchModal;
+    if (isSavingCheck) {
+      setActiveEditingOrderId(null);
+    } else {
+      setActiveEditingOrderId(order.id);
+    }
+    setDateMismatchModal(null);
   };
 
   // Cancel date mismatch modal
   const handleCancelDateMismatch = () => {
     setDateMismatchModal(null);
+  };
+
+  // Stepper status change handler
+  const handleStepStatusClick = (order, step, currentIndex, targetIndex) => {
+    const isClosedOrder = order.fulfillmentStatus === 'delivered' || order.fulfillmentStatus === 'paid';
+    const isOrderLocked = isClosedOrder && !canModifyClosedOrders;
+    if (isOrderLocked) {
+      showToast(
+        isAr
+          ? 'الطلب مكتمل ومغلق للتعديل إلا بصلاحية الإدارة العامة'
+          : 'Order is delivered/paid and locked without admin permission',
+        'info'
+      );
+      return;
+    }
+
+    // Clicking current status -> do nothing
+    if (targetIndex === currentIndex) return;
+
+    // Standard 1-step forward (Clickable Next)
+    if (targetIndex === currentIndex + 1) {
+      handleStageChange(order.id, 'fulfillmentStatus', step.id);
+      return;
+    }
+
+    // Reverting back 1 step
+    if (targetIndex === currentIndex - 1) {
+      // If current is delivered (index 3), reverting requires admin permission or confirmation
+      if (currentIndex === 3 && !canModifyClosedOrders) {
+        showToast(
+          isAr
+            ? 'تعديل الطلبات بعد التسليم يتطلب صلاحية الإدارة العامة'
+            : 'Reverting delivered orders requires admin permission',
+          'info'
+        );
+        return;
+      }
+      handleStageChange(order.id, 'fulfillmentStatus', step.id);
+      return;
+    }
+
+    // Non-sequential jump (jumping forward or backward multiple steps)
+    if (canModifyClosedOrders || isGeneralAdmin) {
+      setStatusJumpConfirmModal({
+        order,
+        targetStep: step,
+        currentStepId: SEQUENTIAL_FULFILLMENT_STEPS[currentIndex]?.id || 'not_yet',
+        currentStepLabel: isAr
+          ? SEQUENTIAL_FULFILLMENT_STEPS[currentIndex]?.labelAr || 'معلق'
+          : SEQUENTIAL_FULFILLMENT_STEPS[currentIndex]?.labelEn || 'Pending',
+        targetStepLabel: isAr ? step.labelAr : step.labelEn
+      });
+      return;
+    }
+
+    // Normal user attempting jump
+    showToast(
+      isAr
+        ? 'يجب التدرج في حالات التنفيذ خطوة بخطوة بالترتيب'
+        : 'Fulfillment statuses must be progressed sequentially step-by-step',
+      'info'
+    );
+  };
+
+  // Confirm status jump for admin
+  const handleConfirmStatusJump = () => {
+    if (!statusJumpConfirmModal) return;
+    const { order, targetStep } = statusJumpConfirmModal;
+    handleStageChange(order.id, 'fulfillmentStatus', targetStep.id);
+    setStatusJumpConfirmModal(null);
+    showToast(
+      isAr
+        ? `تم الانتقال إلى حالة (${targetStep.labelAr}) بنجاح`
+        : `Status changed to (${targetStep.labelEn})`
+    );
   };
 
   // Filtered Orders
@@ -751,7 +916,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           const isToday = lDate === todayStr;
           const isTomorrow = lDate === tomorrowStr;
           let tag = '';
-          if (isTarget) tag = isAr ? ' ★ [تاريخ التسكين المستهدف]' : ' ★ [Target Plan Date]';
+          if (isTarget) tag = isAr ? ' [تاريخ التسكين المستهدف]' : ' [Target Plan Date]';
           else if (isToday) tag = isAr ? ' (اليوم)' : ' (Today)';
           else if (isTomorrow) tag = isAr ? ' (غداً)' : ' (Tomorrow)';
 
@@ -956,8 +1121,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
     showToast(
       isAr
-        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق لأمر تحميل #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح ✓`
-        : `Truck and driver aligned for LO #${loNumber} on ${targetLoadingDate} ✓`
+        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق لأمر تحميل #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح`
+        : `Truck and driver aligned for LO #${loNumber} on ${targetLoadingDate}`
     );
   };
 
@@ -974,11 +1139,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
   // Pre-Save Validations & Open Confirmation Modal
   const handleOpenSaveModal = () => {
-    if (totalMisalignments > 0) {
-      alert(isAr ? 'لا يمكن حفظ الخطة! يوجد تعارض في تعيين الشاحنات أو السائقين لنفس أمر التحميل على نفس التاريخ. يرجى الضغط على "مطابقة" لحل التعارض.' : 'Cannot save plan! There are conflicting trucks or drivers for the same Loading Order and date. Please align them first.');
-      return;
-    }
-
     if (hasIncompleteStagedOrder) {
       alert(isAr ? 'لا يمكن حفظ الخطة! يوجد طلبات غير مكتملة البيانات الإلزامية (رقم أمر التحميل، السيارة، أو السائق). يرجى استكمالها أولاً.' : 'Cannot save plan! Some orders have incomplete mandatory fields (LO #, Truck, or Driver). Please complete them first.');
       return;
@@ -997,6 +1157,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           return;
         }
       }
+    }
+
+    // If there are misalignments, prompt the user to confirm intentional discrepancy
+    if (totalMisalignments > 0) {
+      setIsIntentionalDiscrepancyModalOpen(true);
+      return;
     }
 
     setIsSaveModalOpen(true);
@@ -1028,8 +1194,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           updatedBy: currentUserName
         };
 
-        // Advance to preparing if checked and order is pending
-        if (
+        // Custom invoice date if staged
+        if (staged.invoiceDate) {
+          updatePayload.invoiceDate = staged.invoiceDate;
+        }
+
+        // Custom fulfillment status if staged
+        if (staged.fulfillmentStatus) {
+          updatePayload.fulfillmentStatus = staged.fulfillmentStatus;
+        } else if (
           advancePendingToPreparing &&
           staged.loadingOrderNumber &&
           originalOrder?.fulfillmentStatus === 'not_yet'
@@ -1045,10 +1218,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           userName: currentUserName,
           action: 'dispatch_plan_update',
           summaryAr: staged.loadingOrderNumber
-            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}`
+            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}${staged.fulfillmentStatus ? ` — حالة التنفيذ: ${staged.fulfillmentStatus}` : ''}${staged.invoiceDate ? ` — تاريخ الفاتورة: ${staged.invoiceDate}` : ''}`
             : 'إلغاء تسكين الشاحنة وأمر التحميل',
           summaryEn: staged.loadingOrderNumber
-            ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}`
+            ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}${staged.fulfillmentStatus ? ` — Status: ${staged.fulfillmentStatus}` : ''}${staged.invoiceDate ? ` — Invoice Date: ${staged.invoiceDate}` : ''}`
             : 'Unassigned from truck'
         };
 
@@ -1062,9 +1235,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       setStagedAssignments({});
       setIsSaveModalOpen(false);
+      setIsIntentionalDiscrepancyModalOpen(false);
       setIsManifestExpanded(false);
       setActiveEditingOrderId(null);
-      showToast(isAr ? `تم حفظ واعتماد خطة التحميل بنجاح (${updatedCount} أمر بيع) ✓` : `Loading Plan saved successfully (${updatedCount} orders) ✓`);
+      showToast(isAr ? `تم حفظ واعتماد خطة التحميل بنجاح (${updatedCount} أمر بيع)` : `Loading Plan saved successfully (${updatedCount} orders)`);
     } catch (err) {
       console.error('Error saving loading plan:', err);
       alert(isAr ? `حدث خطأ أثناء حفظ الخطة: ${err.message}` : `Error saving plan: ${err.message}`);
@@ -1417,6 +1591,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     eff.assignedDriverId
                   );
 
+                  // Fulfillment Status resolution & configuration
+                  const currentFulfillmentStatus = eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet';
+                  const currentStepConfig = SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === currentFulfillmentStatus) ||
+                    (currentFulfillmentStatus === 'paid' ? SEQUENTIAL_FULFILLMENT_STEPS[3] : SEQUENTIAL_FULFILLMENT_STEPS[0]);
+                  const CurrentStatusIcon = currentStepConfig.icon;
+
                   return (
                     <div
                       key={order.id}
@@ -1492,168 +1672,289 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             </div>
 
                             {/* Ultra-Compact Assignment Form Panel (80% width) - Header and Footer removed */}
-                            <div className="w-full md:w-[80%] p-3 sm:p-4 bg-white flex flex-col sm:flex-row items-center justify-between gap-3 text-start transition-all duration-700 ease-out origin-right rtl:origin-left animate-in fade-in slide-in-from-right-16 rtl:slide-in-from-left-16 duration-700">
-                              {/* Fields Grid */}
-                              <div className="w-full flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
-                                {/* 1. Loading Order Number */}
-                                <div>
-                                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                    {isAr ? 'رقم التحميل:' : 'LO #:'} *
-                                  </label>
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    value={eff.loadingOrderNumber}
-                                    onChange={(e) => handleStageChange(order.id, 'loadingOrderNumber', e.target.value)}
-                                    placeholder={isAr ? 'مثال: 1' : 'e.g. 1'}
-                                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-indigo-500"
-                                  />
+                            <div className="w-full md:w-[80%] p-3 sm:p-4 bg-white flex flex-col justify-between gap-3 text-start transition-all duration-700 ease-out origin-right rtl:origin-left animate-in fade-in slide-in-from-right-16 rtl:slide-in-from-left-16 duration-700">
+                              {/* 1. Sequential Fulfillment Status Stepper (Pending -> Preparing -> Out for Delivery -> Delivered) */}
+                              <div className="w-full p-2 bg-slate-50/90 rounded-2xl border border-slate-200/90 space-y-1.5">
+                                <div className="flex items-center justify-between px-1">
+                                  <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
+                                    <Layers className="w-3 h-3 text-slate-400" />
+                                    <span>{isAr ? 'مراحل تنفيذ وتسليم الطلب (بالترتيب التسلسلي):' : 'Delivery Fulfillment Progression:'}</span>
+                                  </span>
+                                  <span className="text-[10px] font-mono font-bold text-slate-400">
+                                    {Math.min(4, Math.max(1, (SEQUENTIAL_FULFILLMENT_STEPS.findIndex((s) => s.id === (eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet')) + 1) || 1))} / 4
+                                  </span>
                                 </div>
 
-                                {/* 2. Loading Date */}
-                                <div>
-                                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                    {isAr ? 'تاريخ التحميل:' : 'Date:'} *
-                                  </label>
-                                  <input
-                                    type="date"
-                                    value={eff.loadingDate || targetPlanningDate}
-                                    onChange={(e) => handleStageChange(order.id, 'loadingDate', e.target.value)}
-                                    className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500"
-                                  />
-                                </div>
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                                  {SEQUENTIAL_FULFILLMENT_STEPS.map((step, idx) => {
+                                    const StepIcon = step.icon;
+                                    const currentStatusId = eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet';
+                                    const currentIdx = Math.max(0, SEQUENTIAL_FULFILLMENT_STEPS.findIndex((s) => s.id === currentStatusId));
+                                    const isCurrent = idx === currentIdx;
+                                    const isPast = idx < currentIdx;
+                                    const isImmediatePrev = idx === currentIdx - 1;
+                                    const isNext = idx === currentIdx + 1;
 
-                                {/* 3. Truck Selector */}
-                                <div>
-                                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                    {isAr ? 'السيارة:' : 'Truck:'} *
-                                  </label>
-                                  <select
-                                    value={eff.assignedVehicleId}
-                                    onChange={(e) => handleStageChange(order.id, 'assignedVehicleId', e.target.value)}
-                                    className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-                                  >
-                                    <option value="">{isAr ? '— اختر السيارة —' : '— Select Truck —'}</option>
-                                    {vehicles.map((v) => {
-                                      const truckName = v.vehicleModel || v.name || v.nameAr || v.code || v.plateNumber;
-                                      return (
-                                        <option key={v.id} value={v.id}>
-                                          {truckName}
-                                        </option>
-                                      );
-                                    })}
-                                  </select>
-                                </div>
+                                    let btnStyle = '';
+                                    let iconColor = '';
+                                    let badgeText = '';
 
-                                {/* 4. Driver Selector */}
-                                <div>
-                                  <div className="flex items-center justify-between mb-0.5">
-                                    <label className="text-[10px] font-bold text-slate-500">
-                                      {isAr ? 'السائق:' : 'Driver:'} *
-                                    </label>
-                                    {eff.assignedVehicleId && (
-                                      <span className={`text-[9px] font-bold px-1 rounded ${
-                                        isDefaultDriver
-                                          ? 'bg-emerald-100 text-emerald-800'
-                                          : eff.assignedDriverId
-                                          ? 'bg-blue-100 text-blue-800'
-                                          : 'bg-rose-100 text-rose-800'
-                                      }`}>
-                                        {isDefaultDriver
-                                          ? (isAr ? '✓ أساسي' : '✓ Default')
-                                          : eff.assignedDriverId
-                                          ? (isAr ? '✓ بديل' : '✓ Override')
-                                          : (isAr ? '! مطلوب' : '! Needed')}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <select
-                                    value={eff.assignedDriverId}
-                                    onChange={(e) => handleStageChange(order.id, 'assignedDriverId', e.target.value)}
-                                    className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-                                  >
-                                    <option value="">{isAr ? '— اختر السائق —' : '— Select Driver —'}</option>
-                                    {employees.map((emp) => (
-                                      <option key={emp.id} value={emp.id}>
-                                        {emp.nameAr || emp.name} {emp.role ? `(${emp.role})` : ''}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
+                                    if (isCurrent) {
+                                      btnStyle = 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/30 shadow-xs cursor-default';
+                                      iconColor = 'text-white';
+                                      badgeText = isAr ? 'الحالية' : 'Current';
+                                    } else if (isPast) {
+                                      btnStyle = isImmediatePrev
+                                        ? 'bg-emerald-50 hover:bg-amber-50 text-emerald-800 hover:text-amber-800 border-emerald-300 hover:border-amber-300 cursor-pointer shadow-2xs group/prev'
+                                        : canModifyClosedOrders || isGeneralAdmin
+                                        ? 'bg-emerald-50/80 text-emerald-700 border-emerald-200 cursor-pointer hover:bg-amber-50 hover:border-amber-300'
+                                        : 'bg-emerald-50/60 text-emerald-700 border-emerald-200 cursor-default opacity-90';
+                                      iconColor = 'text-emerald-600';
+                                      badgeText = isImmediatePrev ? (isAr ? 'تراجع' : 'Revert') : (isAr ? 'مكتمل' : 'Done');
+                                    } else if (isNext) {
+                                      btnStyle = 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-300 ring-1 ring-indigo-400/40 cursor-pointer shadow-2xs animate-pulse';
+                                      iconColor = 'text-indigo-600';
+                                      badgeText = isAr ? 'التالي' : 'Next';
+                                    } else {
+                                      btnStyle = canModifyClosedOrders || isGeneralAdmin
+                                        ? 'bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 border-slate-200 cursor-pointer'
+                                        : 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed opacity-50';
+                                      iconColor = 'text-slate-300';
+                                      badgeText = '';
+                                    }
 
-                                {/* 5. Delivery Rep Selector */}
-                                <div>
-                                  <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                    {isAr ? 'المندوب:' : 'Rep:'}
-                                  </label>
-                                  <select
-                                    value={eff.assignedDeliveryRepId}
-                                    onChange={(e) => handleStageChange(order.id, 'assignedDeliveryRepId', e.target.value)}
-                                    className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-                                  >
-                                    <option value="">{isAr ? '— بدون مندوب —' : '— None —'}</option>
-                                    {employees.map((emp) => (
-                                      <option key={emp.id} value={emp.id}>
-                                        {emp.nameAr || emp.name} {emp.role ? `(${emp.role})` : ''}
-                                      </option>
-                                    ))}
-                                  </select>
+                                    return (
+                                      <button
+                                        key={step.id}
+                                        type="button"
+                                        onClick={() => handleStepStatusClick(order, step, currentIdx, idx)}
+                                        className={`flex items-center justify-between p-2 rounded-xl border text-xs font-bold transition-all select-none ${btnStyle}`}
+                                        title={
+                                          isCurrent
+                                            ? (isAr ? 'الحالة الحالية' : 'Current status')
+                                            : isImmediatePrev
+                                            ? (isAr ? 'انقر للرجوع خطوة واحدة إلى هذه الحالة' : 'Click to revert 1 step to this status')
+                                            : isNext
+                                            ? (isAr ? 'انقر للترقية خطوة واحدة إلى هذه الحالة' : 'Click to advance 1 step to this status')
+                                            : isPast
+                                            ? (isAr ? 'حالة مكتملة' : 'Completed step')
+                                            : (isAr ? 'غير متاح حالياً (يلزم إكمال الخطوات بالترتيب)' : 'Sequential step locked')
+                                        }
+                                      >
+                                        <div className="flex items-center gap-1.5 truncate">
+                                          <StepIcon className={`w-3.5 h-3.5 shrink-0 ${iconColor}`} />
+                                          <span className="truncate">{isAr ? step.labelAr : step.labelEn}</span>
+                                        </div>
+                                        {badgeText && (
+                                          <span className={`text-[9px] px-1 py-0.2 rounded font-mono font-bold shrink-0 ${
+                                            isCurrent ? 'bg-white/20 text-white' : 'bg-white/80 text-slate-600'
+                                          }`}>
+                                            {badgeText}
+                                          </span>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
                                 </div>
                               </div>
 
-                              {/* Action Buttons: Expanding Check and X */}
-                              <div className="flex items-center gap-1.5 shrink-0 self-center">
-                                {/* Clear Button if assigned */}
-                                {isAssigned && (
+                              {/* 2. Fields Grid & Action Buttons */}
+                              <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                                <div className="w-full flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2 text-xs">
+                                  {/* 1. Loading Order Number */}
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                      {isAr ? 'رقم التحميل:' : 'LO #:'} *
+                                    </label>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      value={eff.loadingOrderNumber}
+                                      onChange={(e) => handleStageChange(order.id, 'loadingOrderNumber', e.target.value)}
+                                      placeholder={isAr ? 'مثال: 1' : 'e.g. 1'}
+                                      className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+                                    />
+                                  </div>
+
+                                  {/* 2. Loading Date */}
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                      {isAr ? 'تاريخ التحميل:' : 'Date:'} *
+                                    </label>
+                                    <input
+                                      type="date"
+                                      value={eff.loadingDate || targetPlanningDate}
+                                      onChange={(e) => handleStageChange(order.id, 'loadingDate', e.target.value)}
+                                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+                                    />
+                                  </div>
+
+                                  {/* 3. Invoice Date (Editable if not delivered, or admin) */}
+                                  <div>
+                                    <div className="flex items-center justify-between mb-0.5">
+                                      <label className="text-[10px] font-bold text-slate-500">
+                                        {isAr ? 'تاريخ الفاتورة:' : 'Invoice Date:'}
+                                      </label>
+                                      {isClosedOrder && !canModifyClosedOrders && (
+                                        <Lock className="w-2.5 h-2.5 text-slate-400" />
+                                      )}
+                                    </div>
+                                    <input
+                                      type="date"
+                                      disabled={isClosedOrder && !canModifyClosedOrders}
+                                      value={eff.invoiceDate || order.invoiceDate || ''}
+                                      onChange={(e) => handleStageChange(order.id, 'invoiceDate', e.target.value)}
+                                      className={`w-full px-2 py-1.5 rounded-xl font-mono text-xs font-bold ${
+                                        isClosedOrder && !canModifyClosedOrders
+                                          ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                                          : 'bg-slate-50 border border-slate-200 text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500'
+                                      }`}
+                                    />
+                                  </div>
+
+                                  {/* 4. Truck Selector */}
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                      {isAr ? 'السيارة:' : 'Truck:'} *
+                                    </label>
+                                    <select
+                                      value={eff.assignedVehicleId}
+                                      onChange={(e) => handleStageChange(order.id, 'assignedVehicleId', e.target.value)}
+                                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                    >
+                                      <option value="">{isAr ? '— اختر السيارة —' : '— Select Truck —'}</option>
+                                      {vehicles.map((v) => {
+                                        const truckName = v.vehicleModel || v.name || v.nameAr || v.code || v.plateNumber;
+                                        return (
+                                          <option key={v.id} value={v.id}>
+                                            {truckName}
+                                          </option>
+                                        );
+                                      })}
+                                    </select>
+                                  </div>
+
+                                  {/* 5. Driver Selector */}
+                                  <div>
+                                    <div className="flex items-center justify-between mb-0.5">
+                                      <label className="text-[10px] font-bold text-slate-500">
+                                        {isAr ? 'السائق:' : 'Driver:'} *
+                                      </label>
+                                      {eff.assignedVehicleId && (
+                                        <span className={`text-[9px] font-bold px-1 rounded flex items-center gap-0.5 ${
+                                          isDefaultDriver
+                                            ? 'bg-emerald-100 text-emerald-800'
+                                            : eff.assignedDriverId
+                                            ? 'bg-blue-100 text-blue-800'
+                                            : 'bg-rose-100 text-rose-800'
+                                        }`}>
+                                          {isDefaultDriver ? (
+                                            <>
+                                              <Check className="w-2.5 h-2.5 inline shrink-0" />
+                                              <span>{isAr ? 'أساسي' : 'Default'}</span>
+                                            </>
+                                          ) : eff.assignedDriverId ? (
+                                            <>
+                                              <Check className="w-2.5 h-2.5 inline shrink-0" />
+                                              <span>{isAr ? 'بديل' : 'Override'}</span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <AlertCircle className="w-2.5 h-2.5 inline shrink-0" />
+                                              <span>{isAr ? 'مطلوب' : 'Needed'}</span>
+                                            </>
+                                          )}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <select
+                                      value={eff.assignedDriverId}
+                                      onChange={(e) => handleStageChange(order.id, 'assignedDriverId', e.target.value)}
+                                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                    >
+                                      <option value="">{isAr ? '— اختر السائق —' : '— Select Driver —'}</option>
+                                      {employees.map((emp) => (
+                                        <option key={emp.id} value={emp.id}>
+                                          {emp.nameAr || emp.name} {emp.role ? `(${emp.role})` : ''}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+
+                                  {/* 6. Delivery Rep Selector */}
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+                                      {isAr ? 'المندوب:' : 'Rep:'}
+                                    </label>
+                                    <select
+                                      value={eff.assignedDeliveryRepId}
+                                      onChange={(e) => handleStageChange(order.id, 'assignedDeliveryRepId', e.target.value)}
+                                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 focus:bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                                    >
+                                      <option value="">{isAr ? '— بدون مندوب —' : '— None —'}</option>
+                                      {employees.map((emp) => (
+                                        <option key={emp.id} value={emp.id}>
+                                          {emp.nameAr || emp.name} {emp.role ? `(${emp.role})` : ''}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+
+                                {/* Action Buttons: Expanding Check and X */}
+                                <div className="flex items-center gap-1.5 shrink-0 self-center">
+                                  {/* Clear Button if assigned */}
+                                  {isAssigned && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleClearAssignment(order.id)}
+                                      className="group/btn inline-flex items-center gap-1 h-8 px-2 rounded-xl bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition-all duration-300 cursor-pointer overflow-hidden"
+                                      title={isAr ? 'مسح التعيين' : 'Clear Assignment'}
+                                    >
+                                      <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                                      <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-[11px] font-bold whitespace-nowrap overflow-hidden">
+                                        {isAr ? 'مسح' : 'Clear'}
+                                      </span>
+                                    </button>
+                                  )}
+
+                                  {/* Save / Check Button (Disabled if mandatory data is missing) */}
                                   <button
                                     type="button"
-                                    onClick={() => handleClearAssignment(order.id)}
-                                    className="group/btn inline-flex items-center gap-1 h-8 px-2 rounded-xl bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition-all duration-300 cursor-pointer overflow-hidden"
-                                    title={isAr ? 'مسح التعيين' : 'Clear Assignment'}
+                                    disabled={!isMandatoryFilled}
+                                    onClick={() => handleSaveCardAssignment(order)}
+                                    className={`group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl transition-all duration-300 shadow-xs overflow-hidden ${
+                                      isMandatoryFilled
+                                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                                        : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-50 shadow-none'
+                                    }`}
+                                    title={
+                                      isMandatoryFilled
+                                        ? (isAr ? 'حفظ' : 'Save')
+                                        : (isAr ? 'يرجى إكمال البيانات الإلزامية: (رقم التحميل، السيارة، والسائق)' : 'Please fill all mandatory fields: LO #, Truck, Driver')
+                                    }
                                   >
-                                    <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-                                    <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-[11px] font-bold whitespace-nowrap overflow-hidden">
-                                      {isAr ? 'مسح' : 'Clear'}
+                                    <Check className="w-4 h-4 shrink-0" />
+                                    {isMandatoryFilled && (
+                                      <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
+                                        {isAr ? 'حفظ' : 'Save'}
+                                      </span>
+                                    )}
+                                  </button>
+
+                                  {/* Cancel / X Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCancelEdit(order.id)}
+                                    className="group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition-all duration-300 cursor-pointer overflow-hidden"
+                                    title={isAr ? 'إلغاء' : 'Cancel'}
+                                  >
+                                    <X className="w-4 h-4 shrink-0" />
+                                    <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
+                                      {isAr ? 'إلغاء' : 'Cancel'}
                                     </span>
                                   </button>
-                                )}
-
-                                {/* Save / Check Button (Disabled if mandatory data is missing) */}
-                                <button
-                                  type="button"
-                                  disabled={!isMandatoryFilled}
-                                  onClick={() => handleSaveCardAssignment(order)}
-                                  className={`group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl transition-all duration-300 shadow-xs overflow-hidden ${
-                                    isMandatoryFilled
-                                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
-                                      : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-50 shadow-none'
-                                  }`}
-                                  title={
-                                    isMandatoryFilled
-                                      ? (isAr ? 'حفظ' : 'Save')
-                                      : (isAr ? 'يرجى إكمال البيانات الإلزامية: (رقم التحميل، السيارة، والسائق)' : 'Please fill all mandatory fields: LO #, Truck, Driver')
-                                  }
-                                >
-                                  <Check className="w-4 h-4 shrink-0" />
-                                  {isMandatoryFilled && (
-                                    <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
-                                      {isAr ? 'حفظ' : 'Save'}
-                                    </span>
-                                  )}
-                                </button>
-
-                                {/* Cancel / X Button */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleCancelEdit(order.id)}
-                                  className="group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 border border-slate-200 hover:border-rose-200 transition-all duration-300 cursor-pointer overflow-hidden"
-                                  title={isAr ? 'إلغاء' : 'Cancel'}
-                                >
-                                  <X className="w-4 h-4 shrink-0" />
-                                  <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
-                                    {isAr ? 'إلغاء' : 'Cancel'}
-                                  </span>
-                                </button>
+                                </div>
                               </div>
                             </div>
                           </>
@@ -1676,23 +1977,21 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
 
                                   {/* Fulfillment Status Badge */}
-                                  {order.fulfillmentStatus && (
+                                  {currentFulfillmentStatus && (
                                     <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border ${
-                                      order.fulfillmentStatus === 'paid'
+                                      currentFulfillmentStatus === 'paid'
                                         ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                                        : order.fulfillmentStatus === 'delivered'
-                                        ? 'bg-blue-50 text-blue-800 border-blue-300'
-                                        : order.fulfillmentStatus === 'prepare'
-                                        ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                        : order.fulfillmentStatus === 'shipped'
-                                        ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                        : 'bg-amber-50 text-amber-700 border-amber-200'
+                                        : currentStepConfig.badgeClasses
                                     }`}>
-                                      {isClosedOrder && <Lock className="w-3 h-3 shrink-0" />}
+                                      {isClosedOrder ? (
+                                        <Lock className="w-3 h-3 shrink-0" />
+                                      ) : (
+                                        <CurrentStatusIcon className="w-3 h-3 shrink-0" />
+                                      )}
                                       <span>
-                                        {isAr
-                                          ? FULFILLMENT_STATUSES.find((f) => f.id === order.fulfillmentStatus)?.labelAr || order.fulfillmentStatus
-                                          : FULFILLMENT_STATUSES.find((f) => f.id === order.fulfillmentStatus)?.labelEn || order.fulfillmentStatus}
+                                        {currentFulfillmentStatus === 'paid'
+                                          ? (isAr ? 'مدفوع ومحصل' : 'Paid')
+                                          : (isAr ? currentStepConfig.labelAr : currentStepConfig.labelEn)}
                                       </span>
                                     </span>
                                   )}
@@ -1874,7 +2173,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               )}
                             </div>
 
-                            {/* COMPACT 2X2 SUMMARY GRID STRIP (20% width) */}
+                            {/* COMPACT 2X2 SUMMARY GRID STRIP (20% width) - Inherits fulfillment status icon & color */}
                             <div
                               onClick={() => {
                                 if (isOrderLocked) return;
@@ -1883,7 +2182,13 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               className={`w-full md:w-[20%] p-3 border-t md:border-t-0 md:border-s flex flex-col justify-between transition-all duration-300 shrink-0 select-none text-start ${
                                 isOrderLocked
                                   ? 'bg-slate-100/70 border-slate-200 cursor-not-allowed opacity-75'
-                                  : 'bg-emerald-50/40 hover:bg-emerald-50/70 border-emerald-100 cursor-pointer group'
+                                  : currentStepConfig.color === 'indigo'
+                                  ? 'bg-indigo-50/40 hover:bg-indigo-50/70 border-indigo-200 cursor-pointer group'
+                                  : currentStepConfig.color === 'purple'
+                                  ? 'bg-purple-50/40 hover:bg-purple-50/70 border-purple-200 cursor-pointer group'
+                                  : currentStepConfig.color === 'emerald'
+                                  ? 'bg-emerald-50/40 hover:bg-emerald-50/70 border-emerald-200 cursor-pointer group'
+                                  : 'bg-slate-50/60 hover:bg-slate-100/70 border-slate-200 cursor-pointer group'
                               }`}
                               title={
                                 isOrderLocked
@@ -1894,7 +2199,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               <div className="space-y-2">
                                 <div className="flex items-center justify-between">
                                   <span className={`text-[10px] font-black uppercase flex items-center gap-1 ${
-                                    isOrderLocked ? 'text-slate-500' : 'text-emerald-800'
+                                    isOrderLocked
+                                      ? 'text-slate-500'
+                                      : currentStepConfig.color === 'indigo'
+                                      ? 'text-indigo-800'
+                                      : currentStepConfig.color === 'purple'
+                                      ? 'text-purple-800'
+                                      : currentStepConfig.color === 'emerald'
+                                      ? 'text-emerald-800'
+                                      : 'text-slate-700'
                                   }`}>
                                     <Truck className="w-3.5 h-3.5" />
                                     <span>{isAr ? 'بيانات الشاحنة' : 'Assigned Truck'}</span>
@@ -1905,17 +2218,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       <span>{isAr ? 'مغلق' : 'Locked'}</span>
                                     </span>
                                   ) : (
-                                    <span className="text-[10px] font-bold text-emerald-700 group-hover:underline flex items-center gap-0.5">
+                                    <span className="text-[10px] font-bold text-slate-600 group-hover:text-emerald-700 group-hover:underline flex items-center gap-0.5">
                                       <Edit2 className="w-2.5 h-2.5" />
                                       <span>{isAr ? 'تعديل' : 'Edit'}</span>
                                     </span>
                                   )}
                                 </div>
 
+                                {/* Status Mini-Pill on 20% Strip */}
+                                <div className="flex items-center justify-between">
+                                  <span className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-md font-bold border ${currentStepConfig.badgeClasses}`}>
+                                    <CurrentStatusIcon className="w-2.5 h-2.5 shrink-0" />
+                                    <span>{isAr ? currentStepConfig.labelAr : currentStepConfig.labelEn}</span>
+                                  </span>
+                                </div>
+
                                 {/* 2x2 Cell Badge Box */}
                                 <div className="grid grid-cols-2 gap-1.5 text-start">
                                   {/* Cell 1: LO Number */}
-                                  <div className="bg-white p-1.5 rounded-xl border border-emerald-200 shadow-2xs font-mono font-black text-xs text-emerald-800 flex items-center gap-1 truncate">
+                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs font-mono font-black text-xs text-slate-800 flex items-center gap-1 truncate">
                                     <Truck className="w-3 h-3 text-emerald-600 shrink-0" />
                                     <span>#{eff.loadingOrderNumber}</span>
                                   </div>
@@ -1938,8 +2259,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                 </div>
                               </div>
 
-                              <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between text-[10px] font-mono text-emerald-800">
-                                <span>📅 {eff.loadingDate}</span>
+                              <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[10px] font-mono text-slate-700">
+                                <span className="flex items-center gap-1">
+                                  <Calendar className="w-3 h-3 text-slate-500 inline shrink-0" />
+                                  <span>{eff.loadingDate}</span>
+                                </span>
                                 {isStaged && (
                                   <span className="text-[9px] font-bold px-1 rounded bg-amber-100 text-amber-900 border border-amber-200">
                                     {isAr ? 'معلق' : 'staged'}
@@ -1967,23 +2291,21 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
 
                                   {/* Fulfillment Status Badge */}
-                                  {order.fulfillmentStatus && (
+                                  {currentFulfillmentStatus && (
                                     <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border ${
-                                      order.fulfillmentStatus === 'paid'
+                                      currentFulfillmentStatus === 'paid'
                                         ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                                        : order.fulfillmentStatus === 'delivered'
-                                        ? 'bg-blue-50 text-blue-800 border-blue-300'
-                                        : order.fulfillmentStatus === 'prepare'
-                                        ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                        : order.fulfillmentStatus === 'shipped'
-                                        ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                        : 'bg-amber-50 text-amber-700 border-amber-200'
+                                        : currentStepConfig.badgeClasses
                                     }`}>
-                                      {isClosedOrder && <Lock className="w-3 h-3 shrink-0" />}
+                                      {isClosedOrder ? (
+                                        <Lock className="w-3 h-3 shrink-0" />
+                                      ) : (
+                                        <CurrentStatusIcon className="w-3 h-3 shrink-0" />
+                                      )}
                                       <span>
-                                        {isAr
-                                          ? FULFILLMENT_STATUSES.find((f) => f.id === order.fulfillmentStatus)?.labelAr || order.fulfillmentStatus
-                                          : FULFILLMENT_STATUSES.find((f) => f.id === order.fulfillmentStatus)?.labelEn || order.fulfillmentStatus}
+                                        {currentFulfillmentStatus === 'paid'
+                                          ? (isAr ? 'مدفوع ومحصل' : 'Paid')
+                                          : (isAr ? currentStepConfig.labelAr : currentStepConfig.labelEn)}
                                       </span>
                                     </span>
                                   )}
@@ -2257,7 +2579,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               </span>
                             </div>
                             <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
-                              <span>📅 {tm.loadingDate}</span>
+                              <span className="flex items-center gap-1">
+                                <Calendar className="w-3 h-3 text-slate-400 inline shrink-0" />
+                                <span>{tm.loadingDate}</span>
+                              </span>
                               <span>•</span>
                               <span>{isAr ? 'إذن صرف:' : 'Dismiss #:'} {tm.dismissNumber}</span>
                             </div>
@@ -2269,7 +2594,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                         </div>
 
                         {/* Driver & Rep */}
-                        <div className="text-[11px] text-slate-300 space-y-0.5 mb-2.5">
+                        <div className="text-[11px] text-slate-300 space-y-0.5 mb-2">
                           <div className="flex items-center gap-1">
                             <User className="w-3 h-3 text-slate-400 shrink-0" />
                             <span className="truncate">{tm.primaryDriverName || (isAr ? 'غير محدد' : 'Unassigned')}</span>
@@ -2281,6 +2606,33 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             </div>
                           )}
                         </div>
+
+                        {/* Assigned Orders Chips with Order Serial & Client Name */}
+                        {Array.isArray(tm.assignedOrders) && tm.assignedOrders.length > 0 && (
+                          <div className="pt-2 border-t border-slate-700/60 mb-2">
+                            <div className="text-[10px] font-bold text-slate-400 mb-1 flex items-center justify-between">
+                              <span>{isAr ? 'الطلبات المحملة:' : 'Loaded Orders:'}</span>
+                              <span className="font-mono text-[9px] text-slate-500">
+                                {tm.assignedOrders.length} {isAr ? 'أمر' : 'orders'}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                              {tm.assignedOrders.map((ord) => {
+                                const oSerial = resolveOrderSerial(ord, orders);
+                                return (
+                                  <span
+                                    key={ord.id}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-slate-900/90 text-slate-200 border border-slate-700 truncate max-w-full"
+                                    title={`#${oSerial} — ${ord.clientName || '—'}`}
+                                  >
+                                    <span className="font-mono text-amber-400 font-black shrink-0">#{oSerial}</span>
+                                    <span className="truncate">{ord.clientName || (isAr ? 'عميل' : 'Client')}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
 
                         {/* Weight Capacity Gauge */}
                         <div className="space-y-1 pt-2 border-t border-slate-700/60 text-xs">
@@ -2408,21 +2760,23 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   <span>{isAr ? 'تراجع' : 'Discard'}</span>
                 </button>
 
-                {/* Save Plan Button */}
+                {/* Save Plan Button (Enabled when mandatory fields complete; prompts if misaligned) */}
                 <button
                   type="button"
                   onClick={handleOpenSaveModal}
-                  disabled={totalMisalignments > 0 || hasIncompleteStagedOrder}
+                  disabled={hasIncompleteStagedOrder}
                   className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition shadow-sm ${
-                    totalMisalignments > 0 || hasIncompleteStagedOrder
+                    hasIncompleteStagedOrder
                       ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                      : totalMisalignments > 0
+                      ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-900/30 cursor-pointer'
                       : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/30 cursor-pointer'
                   }`}
                   title={
                     hasIncompleteStagedOrder
                       ? (isAr ? 'يوجد طلبات ببيانات غير مكتملة (رقم التحميل، السيارة، أو السائق)' : 'Some orders have incomplete mandatory fields')
                       : totalMisalignments > 0
-                      ? (isAr ? 'يوجد تعارض في التعيين يتطلب المطابقة' : 'Resolve truck conflicts first')
+                      ? (isAr ? 'يوجد تعارض في التسكين — انقر للتحقق والتأكيد المتعمد' : 'Conflicts detected — Click to verify and confirm intentional discrepancy')
                       : (isAr ? 'حفظ الخطة' : 'Save Plan')
                   }
                 >
@@ -2523,10 +2877,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         </div>
       )}
 
-      {/* DATE MISMATCH PROMPT MODAL */}
+      {/* EXTENDED MULTI-DATE MISMATCH PROMPT MODAL (Loading Date + Invoice Date) */}
       {dateMismatchModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden text-start">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden text-start">
             {/* Modal Header */}
             <div className="px-6 py-4 border-b border-slate-200 bg-amber-50/70 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
@@ -2535,7 +2889,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 </div>
                 <div>
                   <h3 className="font-extrabold text-slate-900 text-sm">
-                    {isAr ? 'عدم تطابق تاريخ التحميل' : 'Loading Date Mismatch'}
+                    {isAr ? 'التحقق من تواريخ الطلب (التحميل والفاتورة)' : 'Verify Order Dates (Loading & Invoice)'}
                   </h3>
                   <p className="text-[11px] font-bold text-amber-800">
                     #{resolveOrderSerial(dateMismatchModal.order, orders)} — {dateMismatchModal.order?.clientName || '—'}
@@ -2553,47 +2907,325 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
             {/* Modal Body */}
             <div className="p-6 space-y-4 text-xs">
-              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-semibold">
-                    {isAr ? 'تاريخ التحميل المسجل للطلب:' : 'Order Loading Date:'}
-                  </span>
-                  <span className="font-mono font-bold text-amber-900 bg-amber-100/80 px-2 py-0.5 rounded border border-amber-200">
-                    {dateMismatchModal.existingDate}
+              <p className="text-xs text-slate-600 leading-relaxed">
+                {isAr
+                  ? 'تم رصد اختلاف بين تاريخ التحميل المستهدف المعتمد للخطة وبين تواريخ هذا الطلب المسجلة. يمكنك اختيار تحديث تاريخ التحميل، أو تاريخ الفاتورة، أو المتابعة بالتاريخ الحالي دون تعديل.'
+                  : 'A mismatch was detected between the plan target loading date and this order dates. You can choose to update the loading date, invoice date, or proceed with current dates.'}
+              </p>
+
+              {/* Date Comparison & Options Box */}
+              <div className="space-y-3 bg-slate-50 border border-slate-200 p-3.5 rounded-2xl">
+                {/* 1. Loading Date Section */}
+                <div className="p-2.5 bg-white rounded-xl border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-700 flex items-center gap-1">
+                      <Truck className="w-3.5 h-3.5 text-slate-400" />
+                      <span>{isAr ? 'تاريخ التحميل:' : 'Loading Date:'}</span>
+                    </span>
+                    <div className="flex items-center gap-2 font-mono text-[11px]">
+                      <span className="text-slate-500">{dateMismatchModal.existingLoadingDate || (isAr ? 'غير محدد' : 'Unset')}</span>
+                      <span className="text-slate-400">→</span>
+                      <span className="font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                        {dateMismatchModal.targetLoadingDate}
+                      </span>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-2 pt-1 border-t border-slate-100 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(dateMismatchModal.updateLoadingDate)}
+                      onChange={(e) =>
+                        setDateMismatchModal((prev) => ({
+                          ...prev,
+                          updateLoadingDate: e.target.checked
+                        }))
+                      }
+                      className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                    />
+                    <span className="text-[11px] font-bold text-slate-800">
+                      {isAr
+                        ? `تحديث تاريخ التحميل إلى (${dateMismatchModal.targetLoadingDate})`
+                        : `Update Loading Date to (${dateMismatchModal.targetLoadingDate})`}
+                    </span>
+                  </label>
+                </div>
+
+                {/* 2. Invoice Date Section */}
+                <div className="p-2.5 bg-white rounded-xl border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-700 flex items-center gap-1">
+                      <FileText className="w-3.5 h-3.5 text-slate-400" />
+                      <span>{isAr ? 'تاريخ الفاتورة:' : 'Invoice Date:'}</span>
+                    </span>
+                    <span className="font-mono text-[11px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                      {dateMismatchModal.existingInvoiceDate || (isAr ? 'غير محدد' : 'Unset')}
+                    </span>
+                  </div>
+
+                  <label className="flex items-center gap-2 pt-1 border-t border-slate-100 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(dateMismatchModal.updateInvoiceDate)}
+                      onChange={(e) =>
+                        setDateMismatchModal((prev) => ({
+                          ...prev,
+                          updateInvoiceDate: e.target.checked
+                        }))
+                      }
+                      className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                    />
+                    <span className="text-[11px] font-bold text-slate-800">
+                      {isAr ? 'تعديل تاريخ الفاتورة أيضاً' : 'Update Invoice Date as well'}
+                    </span>
+                  </label>
+
+                  {dateMismatchModal.updateInvoiceDate && (
+                    <div className="pt-2 ps-6">
+                      <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                        {isAr ? 'تاريخ الفاتورة الجديد:' : 'New Invoice Date:'}
+                      </label>
+                      <input
+                        type="date"
+                        value={dateMismatchModal.customInvoiceDate}
+                        onChange={(e) =>
+                          setDateMismatchModal((prev) => ({
+                            ...prev,
+                            customInvoiceDate: e.target.value
+                          }))
+                        }
+                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl font-mono text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Modal Actions */}
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleCancelDateMismatch}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer"
+                >
+                  {isAr ? 'إلغاء' : 'Cancel'}
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleContinueWithoutDateChange}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer"
+                    title={isAr ? 'المتابعة بالتاريخ الأصلي دون تعديل' : 'Keep original dates'}
+                  >
+                    {isAr ? 'المتابعة بالتاريخ الأصلي' : 'Keep Original'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleConfirmDateMismatchUpdate({
+                        updateLoading: dateMismatchModal.updateLoadingDate,
+                        updateInvoice: dateMismatchModal.updateInvoiceDate,
+                        newInvoiceDate: dateMismatchModal.customInvoiceDate
+                      })
+                    }
+                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-xs transition cursor-pointer"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>{isAr ? 'تطبيق التحديثات والمتابعة' : 'Apply & Continue'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* INTENTIONAL ALIGNMENT DISCREPANCY CONFIRMATION MODAL */}
+      {isIntentionalDiscrepancyModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden text-start">
+            <div className="px-6 py-4 border-b border-slate-200 bg-amber-50/70 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-amber-500 text-white shadow-xs">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-sm">
+                    {isAr ? 'تأكيد تعارض التسكين المتعمد' : 'Confirm Intentional Dispatch Conflict'}
+                  </h3>
+                  <p className="text-[11px] font-bold text-amber-800">
+                    {totalMisalignments} {isAr ? 'تعارض في بيانات الشاحنات أو السائقين' : 'conflict(s) detected'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsIntentionalDiscrepancyModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-950 text-xs leading-relaxed">
+                <span className="font-bold block mb-1">
+                  {isAr ? 'تنبيه تدقيق المطابقة والتحميل:' : 'Alignment Verification Alert:'}
+                </span>
+                {isAr
+                  ? 'تم رصد تعارض في تعيين الشاحنة أو السائق لأوامر تشترك في نفس رقم أمر التحميل لنفس اليوم. هل تؤكد أن هذا الاختلاف تم بشكل متعمد ومقصود وترغب في اعتماد الخطة بهذه الصورة؟'
+                  : 'Different orders sharing the same Loading Order Number on the same date have conflicting trucks or drivers assigned. Do you confirm this discrepancy was made intentionally and wish to proceed with saving the plan?'}
+              </div>
+
+              {/* Conflicting Trucks List */}
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {truckManifest
+                  .filter((t) => t.isMisaligned)
+                  .map((t) => (
+                    <div
+                      key={t.compoundKey}
+                      className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between font-bold text-slate-900">
+                        <span className="font-mono text-amber-700">
+                          {isAr ? 'أمر تحميل #' : 'LO #'}{t.loadingOrderNumber}
+                        </span>
+                        <span className="text-[10px] font-mono text-slate-500">
+                          {t.loadingDate}
+                        </span>
+                        <span className="text-[10px] bg-slate-200 px-1.5 py-0.5 rounded font-mono">
+                          {t.assignedOrders.length} {isAr ? 'أمر' : 'orders'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-rose-700 space-y-0.5 font-medium">
+                        {t.hasVehicleMismatch && (
+                          <div>• {isAr ? 'شاحنات مختلفة مسندة لنفس أمر التحميل' : 'Multiple conflicting trucks assigned'}</div>
+                        )}
+                        {t.hasDriverMismatch && (
+                          <div>• {isAr ? 'سائقون مختلفون مسندون لنفس أمر التحميل' : 'Multiple conflicting drivers assigned'}</div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsIntentionalDiscrepancyModalOpen(false);
+                    setIsManifestExpanded(true);
+                  }}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <Truck className="w-3.5 h-3.5 text-amber-600" />
+                  <span>{isAr ? 'مراجعة وتوحيد بالبيان' : 'Review & Align'}</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsIntentionalDiscrepancyModalOpen(false)}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer"
+                  >
+                    {isAr ? 'إلغاء' : 'Cancel'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsIntentionalDiscrepancyModalOpen(false);
+                      setIsSaveModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold shadow-xs transition cursor-pointer"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>{isAr ? 'نعم، التعارض مقصود (متابعة الحفظ)' : 'Confirm Intentional (Proceed)'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STATUS JUMP / REVERT CONFIRMATION MODAL */}
+      {statusJumpConfirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden text-start">
+            <div className="px-6 py-4 border-b border-slate-200 bg-indigo-50/70 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-600 text-white shadow-xs">
+                  <Layers className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-sm">
+                    {isAr ? 'تأكيد تغيير حالة التنفيذ' : 'Confirm Fulfillment Status Change'}
+                  </h3>
+                  <p className="text-[11px] font-bold text-indigo-800">
+                    #{resolveOrderSerial(statusJumpConfirmModal.order, orders)} — {statusJumpConfirmModal.order?.clientName || '—'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setStatusJumpConfirmModal(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-bold">{isAr ? 'الحالة الحالية:' : 'Current Status:'}</span>
+                  <span className="font-bold text-slate-800 bg-white px-2 py-0.5 rounded border border-slate-200">
+                    {statusJumpConfirmModal.currentStepLabel}
                   </span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-semibold">
-                    {isAr ? 'تاريخ التحميل المستهدف المعتمد:' : 'Target Loading Date:'}
-                  </span>
-                  <span className="font-mono font-bold text-emerald-900 bg-emerald-100/80 px-2 py-0.5 rounded border border-emerald-200">
-                    {dateMismatchModal.targetDate}
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-bold">{isAr ? 'الحالة المستهدفة:' : 'Target Status:'}</span>
+                  <span className="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                    {statusJumpConfirmModal.targetStepLabel}
                   </span>
                 </div>
               </div>
 
-              <p className="text-xs text-slate-600 leading-relaxed">
-                {isAr
-                  ? 'تاريخ تحميل هذا الطلب يختلف عن تاريخ التحميل المستهدف المحدد في خطة التحميل. هل ترغب في تحديث تاريخ تحميل الطلب ليتطابق مع التاريخ المستهدف، أم إلغاء العملية؟'
-                  : 'The scheduled loading date on this order differs from the active target loading date. Would you like to update the order loading date to match the target date, or cancel?'}
-              </p>
+              <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-2xl text-amber-900 text-xs leading-relaxed">
+                <div className="flex items-center gap-1.5 font-bold mb-1">
+                  <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>{isAr ? 'تنبيه بصلاحية الإدارة:' : 'Admin Authorization Notice:'}</span>
+                </div>
+                <p>
+                  {statusJumpConfirmModal.currentStepId === 'delivered'
+                    ? (isAr
+                        ? 'تنبيه: هذا الطلب مكتمل (تم التسليم). الرجوع في الحالة يتطلب صلاحية إدارة خاصة لتعديل أوامر البيع المقفلة. هل ترغب بالتأكيد في التراجع عن التسليم؟'
+                        : 'Warning: This order has already been completed/delivered. Reverting requires special admin permission. Are you sure you want to revert delivered status?')
+                    : (isAr
+                        ? 'أنت على وشك تجاوز الترتيب التسلسلي الطبيعي لمراحل التنفيذ بصلاحية الإدارة العامة. هل ترغب في اعتماد هذا التغيير؟'
+                        : 'You are about to change the fulfillment status non-sequentially using admin privileges. Do you wish to confirm this change?')}
+                </p>
+              </div>
 
-              {/* Modal Actions */}
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={handleCancelDateMismatch}
+                  onClick={() => setStatusJumpConfirmModal(null)}
                   className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer"
                 >
                   {isAr ? 'إلغاء' : 'Cancel'}
                 </button>
                 <button
                   type="button"
-                  onClick={handleConfirmDateMismatchUpdate}
-                  className="inline-flex items-center gap-1.5 px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold shadow-xs transition cursor-pointer"
+                  onClick={handleConfirmStatusJump}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-xs transition cursor-pointer"
                 >
-                  <Calendar className="w-4 h-4" />
-                  <span>{isAr ? 'تحديث تاريخ الطلب والمتابعة' : 'Update Date & Continue'}</span>
+                  <Check className="w-4 h-4" />
+                  <span>{isAr ? 'تأكيد التغيير' : 'Confirm Change'}</span>
                 </button>
               </div>
             </div>
