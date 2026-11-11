@@ -49,15 +49,7 @@ import SearchableSelect from './SearchableSelect.jsx';
 import PeacockLoader from './PeacockLoader.jsx';
 import { canAccessAction } from '../config/appArchitecture.js';
 import { resolveLocationInfo, normalizeLocationUrl } from '../utils/locationUtils.js';
-
-// Segment Icon Mapping
-const SEGMENT_ICON_MAP = {
-  Building2,
-  Boxes,
-  Truck,
-  Users,
-  Tag
-};
+import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
 
 const ORDER_TYPES = [
   { id: 'supply', labelAr: 'أمر توريد بيع', labelEn: 'Supply Order' },
@@ -334,7 +326,7 @@ function getContrastTextColor(hexColor) {
 }
 
 // Non-Intrusive Order Products & Prices Breakdown Modal
-function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segments = [], isAr = true }) {
+function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segments = [], products = [], isAr = true }) {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') onClose();
@@ -348,7 +340,10 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
   if (!isOpen || !order) return null;
 
   const clientObj = clients.find((c) => c.id === order.clientId) || null;
-  const segObj = clientObj?.segmentId ? segments.find((s) => s.id === clientObj.segmentId) : null;
+  const rawSegKey = clientObj?.segmentId || clientObj?.segment || order?.clientSegmentId || order?.segmentId || order?.segment || null;
+  const segObj = rawSegKey
+    ? (segments.find((s) => s.id === rawSegKey || s.nameAr === rawSegKey || s.nameEn === rawSegKey || s.code === rawSegKey))
+    : null;
   const segColor = segObj?.color || '#2563eb';
   const SegIcon = (segObj?.icon && SEGMENT_ICON_MAP[segObj.icon]) ? SEGMENT_ICON_MAP[segObj.icon] : Building2;
 
@@ -473,7 +468,9 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                     const lineBonus = Number(l.bonus) || 0;
                     const linePrice = Number(l.detectedUnitPrice || l.unitPrice || l.price) || 0;
                     const lineTotal = Number(l.lineTotal || (lineQty * linePrice)) || 0;
-                    const lineWeight = Number(l.totalWeightKg || l.weightKg || (lineQty * (Number(l.weightPerCarton) || 0))) || 0;
+                    const matchedProd = products.find((p) => p.id === (l.productId || l.id) || (l.itemCode && p.itemCode === l.itemCode) || (l.productCode && (p.itemCode === l.productCode || p.code === l.productCode)));
+                    const unitWeight = Number(l.largeUnitWeightKg || matchedProd?.largeUnitWeightKg || matchedProd?.grossWeightKg || matchedProd?.weightKg || l.unitWeightKg || l.weightPerCarton || 0);
+                    const lineWeight = Number(l.lineWeightKg || l.totalWeightKg || l.weightKg) || ((lineQty + lineBonus) * unitWeight);
                     const prodName = isAr ? (l.productNameAr || l.productNameEn || l.productName || l.productId) : (l.productNameEn || l.productNameAr || l.productName || l.productId);
 
                     return (
@@ -503,8 +500,8 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                         <td className="py-2 px-3 text-end font-semibold text-slate-700">
                           {linePrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
-                        <td className="py-2 px-3 text-end text-slate-500 font-medium">
-                          {lineWeight > 0 ? `${lineWeight.toFixed(1)} kg` : '—'}
+                        <td className="py-2 px-3 text-end text-slate-600 font-mono font-bold">
+                          {lineWeight > 0 ? `${lineWeight.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 })} ${isAr ? 'كجم' : 'kg'}` : '—'}
                         </td>
                         <td className="py-2 px-3 text-end font-black text-slate-900">
                           {lineTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -536,14 +533,14 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
 export default function SalesLoadingPlanMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
-  const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
+  const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin' || currentUser?.role === 'admin';
   const canManageLoadingPlan = canAccessAction(
     permissions,
     'loading_plan',
     'canManageLoadingPlan',
     currentUser
   );
-  const canModifyClosedOrders = canAccessAction(
+  const canModifyClosedOrders = isGeneralAdmin || Boolean(currentUser?.permissions?.canModifyClosedOrders) || canAccessAction(
     permissions,
     'loading_plan',
     'canModifyClosedOrders',
@@ -743,7 +740,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const segmentMap = useMemo(() => {
     const map = {};
     segments.forEach((s) => {
-      map[s.id] = s;
+      if (s.id) map[s.id] = s;
+      if (s.code) map[s.code] = s;
       if (s.nameAr) map[s.nameAr] = s;
       if (s.nameEn) map[s.nameEn] = s;
     });
@@ -908,7 +906,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     });
   };
 
-  // Helper to clear assignment for an order
+  // Helper to clear assignment for an order (keeps assignment panel open for re-assignment)
   const handleClearAssignment = (orderId) => {
     const original = orders.find((o) => o.id === orderId) || {};
     setStagedAssignments((prev) => ({
@@ -924,10 +922,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         assignedDeliveryRepName: '',
         loadingDate: '',
         invoiceDate: original.invoiceDate || '',
-        fulfillmentStatus: original.fulfillmentStatus || 'not_yet'
+        fulfillmentStatus: 'not_yet'
       }
     }));
-    setActiveEditingOrderId(null);
   };
 
   // Cancel editing an order and discard its uncommitted changes
@@ -988,10 +985,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     setActiveEditingOrderId(order.id);
   };
 
-  // Card-level save check: validate mandatory fields and verify date match with targetPlanningDate
+  // Card-level save check: validate mandatory fields only if advancing from pending; pending status or unplanned bypasses mandatory assignment fields
   const handleSaveCardAssignment = (order) => {
     const eff = getEffectiveAssignment(order);
-    const isMandatoryFilled = Boolean(
+    const targetStatus = eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet';
+    const isPending = targetStatus === 'not_yet';
+    const isMandatoryFilled = isPending || Boolean(
       eff.loadingOrderNumber &&
       Number(eff.loadingOrderNumber) > 0 &&
       eff.assignedVehicleId &&
@@ -1069,7 +1068,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     // Clicking current status -> do nothing
     if (targetIndex === currentIndex) return;
 
-    // 1. GOING STEPS BACKWARD: BYPASS ALL VERIFICATIONS!
+    // 1. GOING STEPS BACKWARD: BYPASS ALL VERIFICATIONS! (Reverting to Pending or any previous step)
     if (targetIndex < currentIndex) {
       handleStageChange(order.id, 'fulfillmentStatus', step.id);
       showToast(
@@ -1091,6 +1090,26 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         'info'
       );
       return;
+    }
+
+    // MANDATORY CHECK: Moving forward from 'pending' status requires mandatory assignment fields!
+    const eff = getEffectiveAssignment(order);
+    if (currentIndex === 0) {
+      const isAssigned = Boolean(
+        eff.loadingOrderNumber &&
+        Number(eff.loadingOrderNumber) > 0 &&
+        eff.assignedVehicleId &&
+        eff.assignedDriverId
+      );
+      if (!isAssigned) {
+        showToast(
+          isAr
+            ? 'يرجى إكمال بيانات التسكين الإلزامية (رقم أمر التحميل، السيارة، والسائق) أولاً قبل بدء التجهيز والتنفيذ'
+            : 'Please complete mandatory assignment fields (LO #, Truck, Driver) before advancing from Pending.',
+          'error'
+        );
+        return;
+      }
     }
 
     // Standard 1-step forward (Clickable Next)
@@ -1409,8 +1428,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   }, [truckManifest]);
 
   // Check if any staged assignment has missing mandatory fields (LO #, Vehicle, or Driver)
+  // Note: Orders at pending/unplanned status or stepped backward to pending bypass mandatory fields
   const hasIncompleteStagedOrder = useMemo(() => {
     return Object.entries(stagedAssignments).some(([orderId, eff]) => {
+      const originalOrder = orders.find((o) => o.id === orderId);
+      const targetStatus = eff.fulfillmentStatus || originalOrder?.fulfillmentStatus || 'not_yet';
+      // Orders at pending/unplanned status don't require mandatory truck/driver fields
+      if (targetStatus === 'not_yet') {
+        return false;
+      }
       // If order is completely cleared (no LO #, vehicle, or driver), it's a valid clear
       if (!eff.loadingOrderNumber && !eff.assignedVehicleId && !eff.assignedDriverId) {
         return false;
@@ -1422,7 +1448,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         !eff.assignedDriverId
       );
     });
-  }, [stagedAssignments]);
+  }, [stagedAssignments, orders]);
 
   // 1-Click Alignment Handler: Unifies all orders in an LO # on a specific date to the chosen vehicle and driver
   const handleAlignTruckOrders = (compoundKey, loNumber, targetLoadingDate, targetVehicleId, targetDriverId) => {
@@ -1477,10 +1503,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return;
     }
 
-    // Check if any scheduled order is missing a vehicle or driver
+    // Check if any scheduled order (non-pending) is missing a vehicle or driver
     const stagedList = Object.entries(stagedAssignments);
     for (const [orderId, eff] of stagedList) {
-      if (eff.loadingOrderNumber) {
+      const originalOrder = orders.find((o) => o.id === orderId);
+      const targetStatus = eff.fulfillmentStatus || originalOrder?.fulfillmentStatus || 'not_yet';
+      if (targetStatus !== 'not_yet' && eff.loadingOrderNumber) {
         if (!eff.assignedVehicleId) {
           alert(isAr ? `أمر التحميل #${eff.loadingOrderNumber} ينقصه اختيار السيارة!` : `LO #${eff.loadingOrderNumber} is missing a selected truck!`);
           return;
@@ -1523,7 +1551,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           assignedDriverName: staged.assignedDriverName || '',
           assignedDeliveryRepId: staged.assignedDeliveryRepId || '',
           assignedDeliveryRepName: staged.assignedDeliveryRepName || '',
-          loadingDate: staged.loadingDate || targetPlanningDate || '',
+          loadingDate: staged.loadingDate !== undefined ? staged.loadingDate : (targetPlanningDate || ''),
           updatedAt: nowIso,
           updatedBy: currentUserName
         };
@@ -1942,10 +1970,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   const holidaysDisplay = opProfile.holidaysDisplay;
                   const clientNotes = opProfile.combinedNotes;
 
-                  // Segment
-                  const segObj = clientObj?.segmentId ? segmentMap[clientObj.segmentId] : null;
+                  // Segment resolution
+                  const rawSegKey = clientObj?.segmentId || clientObj?.segment || order?.clientSegmentId || order?.segmentId || order?.segment || null;
+                  const segObj = rawSegKey ? (segmentMap[rawSegKey] || segments.find((s) => s.id === rawSegKey || s.nameAr === rawSegKey || s.nameEn === rawSegKey || s.code === rawSegKey)) : null;
                   const SegIcon = (segObj?.icon && SEGMENT_ICON_MAP[segObj.icon]) ? SEGMENT_ICON_MAP[segObj.icon] : Building2;
-                  const segColor = segObj?.color || '#64748b';
+                  const segColor = segObj?.color || '#2563eb';
 
                   // Driver match indicator
                   const selectedVehicle = vehicles.find((v) => v.id === eff.assignedVehicleId);
@@ -1956,19 +1985,20 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   const isClosedOrder = order.fulfillmentStatus === 'delivered' || order.fulfillmentStatus === 'paid';
                   const isOrderLocked = isClosedOrder && !canModifyClosedOrders;
 
-                  // Mandatory fields check for assignment
-                  const isMandatoryFilled = Boolean(
+                  // Fulfillment Status resolution & configuration matching SalesOrdersMaster
+                  const currentFulfillmentStatus = eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet';
+                  const isPendingStatus = currentFulfillmentStatus === 'not_yet';
+                  const currentStatusConfig = FULFILLMENT_CONFIG_MAP[currentFulfillmentStatus] || FULFILLMENT_CONFIG_MAP.not_yet;
+                  const currentStepConfig = currentStatusConfig;
+                  const CurrentStatusIcon = currentStatusConfig.icon;
+
+                  // Mandatory fields check for assignment: only required if moving forward from Pending; pending status itself is unplanned
+                  const isMandatoryFilled = isPendingStatus || Boolean(
                     eff.loadingOrderNumber &&
                     Number(eff.loadingOrderNumber) > 0 &&
                     eff.assignedVehicleId &&
                     eff.assignedDriverId
                   );
-
-                  // Fulfillment Status resolution & configuration matching SalesOrdersMaster
-                  const currentFulfillmentStatus = eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet';
-                  const currentStatusConfig = FULFILLMENT_CONFIG_MAP[currentFulfillmentStatus] || FULFILLMENT_CONFIG_MAP.not_yet;
-                  const currentStepConfig = currentStatusConfig;
-                  const CurrentStatusIcon = currentStatusConfig.icon;
 
                   return (
                     <div
@@ -2061,7 +2091,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                 )}
                               </div>
 
-                              <div className="pt-2 border-t border-slate-200/70 space-y-1">
+                              <div className="pt-2 border-t border-slate-200/70">
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -2074,10 +2104,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
                                   <span>{(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
                                 </button>
-                                <div className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
-                                  <Weight className="w-2.5 h-2.5 text-emerald-600" />
-                                  <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
-                                </div>
                               </div>
                             </div>
 
@@ -2433,7 +2459,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
                                 </div>
 
-                                {/* Cartons & Weight Summary Badge */}
+                                {/* Cartons Summary Badge */}
                                 <div className="flex items-center gap-2">
                                   <button
                                     type="button"
@@ -2441,7 +2467,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       e.stopPropagation();
                                       setSelectedOrderForProducts(order);
                                     }}
-                                    className="font-bold text-slate-900 text-xs font-mono inline-flex items-center gap-1 hover:text-indigo-600 px-2 py-0.5 rounded-lg bg-amber-50 hover:bg-amber-100/80 border border-amber-200 transition cursor-pointer group/ctn"
+                                    className="font-bold text-slate-900 text-xs font-mono inline-flex items-center gap-1 hover:text-indigo-600 px-2.5 py-1 rounded-xl bg-amber-50 hover:bg-amber-100/80 border border-amber-200 transition cursor-pointer group/ctn shadow-2xs"
                                     title={isAr ? 'انقر لعرض تفاصيل المنتجات والكميات والأسعار' : 'Click to view products, quantities and prices breakdown'}
                                   >
                                     <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
@@ -2450,10 +2476,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       <span className="text-emerald-700 text-[10px] font-bold ms-0.5">+{order.totalBonus}</span>
                                     ) : null}
                                   </button>
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                                    <Weight className="w-3 h-3 text-slate-500" />
-                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
-                                  </span>
                                 </div>
                               </div>
 
@@ -2768,7 +2790,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
                                 </div>
 
-                                {/* Cartons & Weight Summary Badge */}
+                                {/* Cartons Summary Badge */}
                                 <div className="flex items-center gap-2">
                                   <button
                                     type="button"
@@ -2776,7 +2798,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       e.stopPropagation();
                                       setSelectedOrderForProducts(order);
                                     }}
-                                    className="font-bold text-slate-900 text-xs font-mono inline-flex items-center gap-1 hover:text-indigo-600 px-2 py-0.5 rounded-lg bg-amber-50 hover:bg-amber-100/80 border border-amber-200 transition cursor-pointer group/ctn"
+                                    className="font-bold text-slate-900 text-xs font-mono inline-flex items-center gap-1 hover:text-indigo-600 px-2.5 py-1 rounded-xl bg-amber-50 hover:bg-amber-100/80 border border-amber-200 transition cursor-pointer group/ctn shadow-2xs"
                                     title={isAr ? 'انقر لعرض تفاصيل المنتجات والكميات والأسعار' : 'Click to view products, quantities and prices breakdown'}
                                   >
                                     <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
@@ -2785,10 +2807,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       <span className="text-emerald-700 text-[10px] font-bold ms-0.5">+{order.totalBonus}</span>
                                     ) : null}
                                   </button>
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                                    <Weight className="w-3 h-3 text-slate-500" />
-                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
-                                  </span>
                                 </div>
                               </div>
 
@@ -3258,6 +3276,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           order={selectedOrderForProducts}
           clients={clients}
           segments={segments}
+          products={products}
           isAr={isAr}
         />
       )}

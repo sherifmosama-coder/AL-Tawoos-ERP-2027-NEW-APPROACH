@@ -597,7 +597,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const segmentMap = useMemo(() => {
     const map = {};
     (segments.length > 0 ? segments : PRESET_DEFAULT_SEGMENTS).forEach((s) => {
-      map[s.id] = s;
+      if (s.id) map[s.id] = s;
+      if (s.code) map[s.code] = s;
       if (s.nameAr) map[s.nameAr] = s;
       if (s.nameEn) map[s.nameEn] = s;
     });
@@ -1563,7 +1564,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       const profile = resolveOrderOperationalProfile(order, clientObj, isAr);
 
                       // Segment resolution
-                      const segObj = clientObj?.segmentId ? segmentMap[clientObj.segmentId] : null;
+                      const rawSegKey = clientObj?.segmentId || clientObj?.segment || order?.clientSegmentId || order?.segmentId || order?.segment || null;
+                      const segObj = rawSegKey ? (segmentMap[rawSegKey] || (segments.length > 0 ? segments : PRESET_DEFAULT_SEGMENTS).find((s) => s.id === rawSegKey || s.nameAr === rawSegKey || s.nameEn === rawSegKey || s.code === rawSegKey)) : null;
                       const SegIcon = (segObj?.icon && SEGMENT_ICON_MAP[segObj.icon]) ? SEGMENT_ICON_MAP[segObj.icon] : Building2;
                       const segColor = segObj?.color || '#64748b';
 
