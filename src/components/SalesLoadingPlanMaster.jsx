@@ -35,7 +35,8 @@ import {
   Layers,
   Tag,
   Edit2,
-  Banknote
+  Banknote,
+  ExternalLink
 } from 'lucide-react';
 import {
   collection,
@@ -550,6 +551,84 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     if (dateScope === 'week') return isAr ? `خلال 7 أيام (${todayStr} إلى ${weekEndStr})` : `Next 7 Days (${todayStr} to ${weekEndStr})`;
     return isAr ? `تاريخ مخصص (${customDate})` : `Custom Date (${customDate})`;
   }, [dateScope, todayStr, tomorrowStr, weekEndStr, customDate, isAr]);
+
+  // Handle Bidirectional Deep-Linking: jump to Sales Orders Master focusing on that order
+  const handleNavigateToSalesOrder = (order) => {
+    const serial = resolveOrderSerial(order, orders);
+    if (typeof window !== 'undefined') {
+      window.location.hash = `#sales_orders?module=sales&focusOrder=${encodeURIComponent(serial)}`;
+      window.dispatchEvent(
+        new CustomEvent('app-navigate', {
+          detail: { tab: 'sales_orders', module: 'sales', focusOrder: serial, orderId: order.id }
+        })
+      );
+    }
+  };
+
+  // Listen for Incoming Deep-Link Focus from Sales Orders Master
+  useEffect(() => {
+    const checkHashFocus = () => {
+      if (typeof window === 'undefined') return;
+      const rawHash = window.location.hash || '';
+      if (!rawHash.includes('loading_plan')) return;
+      const queryPart = rawHash.split('?')[1];
+      if (!queryPart) return;
+      const params = new URLSearchParams(queryPart);
+      const targetOrderId = params.get('orderId');
+      const targetDate = params.get('date');
+
+      if (targetDate) {
+        setTargetPlanningDate(targetDate);
+        setCustomDate(targetDate);
+        setDateScope('custom');
+      }
+
+      if (targetOrderId) {
+        setTimeout(() => {
+          const el = document.getElementById(`loading-plan-card-${targetOrderId}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('ring-4', 'ring-indigo-500', 'shadow-2xl');
+            setTimeout(() => {
+              el.classList.remove('ring-4', 'ring-indigo-500', 'shadow-2xl');
+            }, 3000);
+          }
+        }, 500);
+      }
+    };
+
+    checkHashFocus();
+    window.addEventListener('hashchange', checkHashFocus);
+
+    const handleCustomNav = (e) => {
+      const { tab, orderId, date } = e.detail || {};
+      if (tab === 'loading_plan') {
+        if (date) {
+          setTargetPlanningDate(date);
+          setCustomDate(date);
+          setDateScope('custom');
+        }
+        if (orderId) {
+          setTimeout(() => {
+            const el = document.getElementById(`loading-plan-card-${orderId}`);
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              el.classList.add('ring-4', 'ring-indigo-500', 'shadow-2xl');
+              setTimeout(() => {
+                el.classList.remove('ring-4', 'ring-indigo-500', 'shadow-2xl');
+              }, 3000);
+            }
+          }, 500);
+        }
+      }
+    };
+    window.addEventListener('app-navigate', handleCustomNav);
+
+    return () => {
+      window.removeEventListener('hashchange', checkHashFocus);
+      window.removeEventListener('app-navigate', handleCustomNav);
+    };
+  }, []);
 
   // Helper to resolve effective assignment (staged overrides saved order)
   const getEffectiveAssignment = (order) => {
@@ -1253,19 +1332,65 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           updatePayload.fulfillmentStatus = 'prepare';
         }
 
+        // Build rich metadata diffs for Sales Orders Master audit trail
+        const metaDiffs = [];
+        const oldLo = originalOrder?.loadingOrderNumber ? `#${originalOrder.loadingOrderNumber}` : '—';
+        const newLo = staged.loadingOrderNumber ? `#${staged.loadingOrderNumber}` : '—';
+        if (oldLo !== newLo) {
+          metaDiffs.push({ labelAr: 'أمر التحميل', labelEn: 'Loading Order #', oldValue: oldLo, newValue: newLo });
+        }
+
+        const oldTruck = originalOrder?.assignedVehicleName || originalOrder?.assignedVehiclePlate || '—';
+        const newTruck = staged.assignedVehicleName || staged.assignedVehiclePlate || '—';
+        if (oldTruck !== newTruck) {
+          metaDiffs.push({ labelAr: 'الشاحنة المخصصة', labelEn: 'Assigned Truck', oldValue: oldTruck, newValue: newTruck });
+        }
+
+        const oldDriver = originalOrder?.assignedDriverName || '—';
+        const newDriver = staged.assignedDriverName || '—';
+        if (oldDriver !== newDriver) {
+          metaDiffs.push({ labelAr: 'السائق المخصص', labelEn: 'Assigned Driver', oldValue: oldDriver, newValue: newDriver });
+        }
+
+        const oldRep = originalOrder?.assignedDeliveryRepName || '—';
+        const newRep = staged.assignedDeliveryRepName || '—';
+        if (oldRep !== newRep) {
+          metaDiffs.push({ labelAr: 'مندوب التسليم', labelEn: 'Delivery Rep', oldValue: oldRep, newValue: newRep });
+        }
+
+        const oldDate = originalOrder?.loadingDate || '—';
+        const newDate = staged.loadingDate || targetPlanningDate || '—';
+        if (oldDate !== newDate) {
+          metaDiffs.push({ labelAr: 'تاريخ التحميل', labelEn: 'Loading Date', oldValue: oldDate, newValue: newDate });
+        }
+
+        const finalStatus = updatePayload.fulfillmentStatus || originalOrder?.fulfillmentStatus || 'not_yet';
+        if ((originalOrder?.fulfillmentStatus || 'not_yet') !== finalStatus) {
+          metaDiffs.push({ labelAr: 'حالة التنفيذ', labelEn: 'Fulfillment Status', oldValue: originalOrder?.fulfillmentStatus || 'not_yet', newValue: finalStatus });
+        }
+        if (updatePayload.invoiceDate && updatePayload.invoiceDate !== originalOrder?.invoiceDate) {
+          metaDiffs.push({ labelAr: 'تاريخ الفاتورة', labelEn: 'Invoice Date', oldValue: originalOrder?.invoiceDate || '—', newValue: updatePayload.invoiceDate });
+        }
+
         // Add audit trail entry
         const existingAudit = Array.isArray(originalOrder?.auditTrail) ? originalOrder.auditTrail : [];
         const auditEntry = {
+          id: `AUD-${Date.now()}-${existingAudit.length + 1}`,
           timestamp: nowIso,
           userId: currentUserId,
           userName: currentUserName,
+          performedBy: currentUserName,
+          performedById: currentUserId,
           action: 'dispatch_plan_update',
           summaryAr: staged.loadingOrderNumber
-            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}${staged.fulfillmentStatus ? ` — حالة التنفيذ: ${staged.fulfillmentStatus}` : ''}${staged.invoiceDate ? ` — تاريخ الفاتورة: ${staged.invoiceDate}` : ''}`
+            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}${updatePayload.fulfillmentStatus ? ` — حالة التنفيذ: ${updatePayload.fulfillmentStatus}` : ''}${updatePayload.invoiceDate ? ` — تاريخ الفاتورة: ${updatePayload.invoiceDate}` : ''}`
             : 'إلغاء تسكين الشاحنة وأمر التحميل',
           summaryEn: staged.loadingOrderNumber
-            ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}${staged.fulfillmentStatus ? ` — Status: ${staged.fulfillmentStatus}` : ''}${staged.invoiceDate ? ` — Invoice Date: ${staged.invoiceDate}` : ''}`
-            : 'Unassigned from truck'
+            ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}${updatePayload.fulfillmentStatus ? ` — Status: ${updatePayload.fulfillmentStatus}` : ''}${updatePayload.invoiceDate ? ` — Invoice Date: ${updatePayload.invoiceDate}` : ''}`
+            : 'Unassigned from truck',
+          changes: {
+            metadata: metaDiffs
+          }
         };
 
         updatePayload.auditTrail = [auditEntry, ...existingAudit];
@@ -1643,6 +1768,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   return (
                     <div
                       key={order.id}
+                      id={`loading-plan-card-${order.id}`}
                       className={`bg-white rounded-3xl border transition-all duration-300 shadow-xs overflow-hidden ${
                         isOrderLocked
                           ? 'border-slate-200/80 bg-slate-50/50 opacity-80'
@@ -1668,9 +1794,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             <div className="w-full md:w-[20%] p-3.5 bg-slate-50/90 border-e border-slate-200/80 flex flex-col justify-between space-y-2 shrink-0 text-start select-none transition-all duration-700 ease-in-out">
                               <div className="space-y-1.5">
                                 <div className="flex items-center justify-between">
-                                  <span className="font-mono text-xs font-black text-slate-800">
-                                    #{orderSerial}
-                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleNavigateToSalesOrder(order);
+                                    }}
+                                    className="font-mono text-xs font-black text-slate-800 hover:text-indigo-600 hover:underline inline-flex items-center gap-1 cursor-pointer transition"
+                                    title={isAr ? 'عرض تفاصيل أمر البيع في تبويب أوامر البيع' : 'View order details in Sales Orders'}
+                                  >
+                                    <span>#{orderSerial}</span>
+                                    <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                  </button>
                                   <span className="text-[10px] font-bold text-slate-400 font-mono">
                                     {order.invoiceDate || '—'}
                                   </span>
@@ -2041,9 +2176,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <span>{isAr ? orderTypeObj.labelAr : orderTypeObj.labelEn}</span>
                                   </span>
 
-                                  <span className="font-mono text-xs font-black text-slate-800">
-                                    #{orderSerial}
-                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleNavigateToSalesOrder(order);
+                                    }}
+                                    className="font-mono text-xs font-black text-slate-800 hover:text-indigo-600 hover:underline inline-flex items-center gap-1 cursor-pointer transition px-1 py-0.5 rounded-md hover:bg-slate-100"
+                                    title={isAr ? 'عرض تفاصيل أمر البيع في تبويب أوامر البيع' : 'View order details in Sales Orders'}
+                                  >
+                                    <span>#{orderSerial}</span>
+                                    <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                  </button>
 
                                   {/* Fulfillment Status Badge - Styled matching SalesOrdersMaster */}
                                   {currentFulfillmentStatus && (
@@ -2371,9 +2515,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <span>{isAr ? orderTypeObj.labelAr : orderTypeObj.labelEn}</span>
                                   </span>
 
-                                  <span className="font-mono text-xs font-black text-slate-800">
-                                    #{orderSerial}
-                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleNavigateToSalesOrder(order);
+                                    }}
+                                    className="font-mono text-xs font-black text-slate-800 hover:text-indigo-600 hover:underline inline-flex items-center gap-1 cursor-pointer transition px-1 py-0.5 rounded-md hover:bg-slate-100"
+                                    title={isAr ? 'عرض تفاصيل أمر البيع في تبويب أوامر البيع' : 'View order details in Sales Orders'}
+                                  >
+                                    <span>#{orderSerial}</span>
+                                    <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                  </button>
 
                                   {/* Fulfillment Status Badge - Styled matching SalesOrdersMaster */}
                                   {currentFulfillmentStatus && (

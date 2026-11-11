@@ -17,7 +17,8 @@ import {
   Receipt,
   FileCheck,
   XCircle,
-  RotateCcw
+  RotateCcw,
+  Truck
 } from 'lucide-react';
 
 export default function SalesOrderAuditModal({
@@ -39,13 +40,16 @@ export default function SalesOrderAuditModal({
     return list.filter((entry) => {
       if (actionFilter !== 'all') {
         if (actionFilter === 'create' && entry.action !== 'create') return false;
+        if (actionFilter === 'dispatch' && entry.action !== 'dispatch_plan_update' && entry.action !== 'dispatch_assignment') return false;
         if (
           actionFilter === 'edit' &&
           entry.action !== 'edit' &&
           entry.action !== 'status_change' &&
           entry.action !== 'toggle_revised' &&
           entry.action !== 'cancel_order' &&
-          entry.action !== 'restore_order'
+          entry.action !== 'restore_order' &&
+          entry.action !== 'dispatch_plan_update' &&
+          entry.action !== 'dispatch_assignment'
         ) {
           return false;
         }
@@ -135,6 +139,13 @@ export default function SalesOrderAuditModal({
           bg: 'bg-emerald-50 text-emerald-800 border-emerald-200',
           icon: RotateCcw,
           label: isAr ? 'استعادة وتفعيل الأمر' : 'Order Restored'
+        };
+      case 'dispatch_plan_update':
+      case 'dispatch_assignment':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: Truck,
+          label: isAr ? 'خطة التحميل والتوزيع' : 'Loading Plan & Dispatch'
         };
       case 'edit':
       default:
@@ -252,7 +263,8 @@ export default function SalesOrderAuditModal({
             {[
               { id: 'all', labelAr: 'الكل', labelEn: 'All' },
               { id: 'create', labelAr: 'الإنشاء', labelEn: 'Creation' },
-              { id: 'edit', labelAr: 'التعديلات', labelEn: 'Edits' }
+              { id: 'edit', labelAr: 'التعديلات', labelEn: 'Edits' },
+              { id: 'dispatch', labelAr: 'التحميل والتوزيع', labelEn: 'Dispatch' }
             ].map((tab) => (
               <button
                 key={tab.id}

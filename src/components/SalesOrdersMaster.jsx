@@ -60,7 +60,9 @@ import {
   Banknote,
   MessageSquare,
   Lock,
-  StickyNote
+  StickyNote,
+  Users,
+  PackageCheck
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
@@ -471,6 +473,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [clients, setClients] = useState([]);
   const [segments, setSegments] = useState([]);
   const [products, setProducts] = useState([]);
+  const [vehicles, setVehicles] = useState([]);
   const [productCategories, setProductCategories] = useState([]);
   const [priceLists, setPriceLists] = useState([]);
   const [strategies, setStrategies] = useState(DEFAULT_PRICING_STRATEGIES);
@@ -482,6 +485,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [orderTypeFilter, setOrderTypeFilter] = useState('all');
   const [confirmationFilter, setConfirmationFilter] = useState('all');
   const [fulfillmentFilter, setFulfillmentFilter] = useState('all');
+  const [assignmentFilter, setAssignmentFilter] = useState('all'); // 'all' | 'assigned' | 'unassigned' | vehicleId
   const [vatModeFilter, setVatModeFilter] = useState('all');
   const [dateFilterType, setDateFilterType] = useState('invoiceDate'); // 'invoiceDate' | 'loadingDate'
   const [startDateFilter, setStartDateFilter] = useState('');
@@ -599,6 +603,89 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     });
     return map;
   }, [segments]);
+
+  // 8. Subscribe to Fleet Vehicles
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'vehicles'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      loaded.sort((a, b) => (a.plateNumber || a.code || '').localeCompare(b.plateNumber || b.code || '', 'ar'));
+      setVehicles(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // One-Click Navigation to Loading Plan focusing on that order
+  const handleNavigateToLoadingPlan = (order) => {
+    const date = order.loadingDate || order.invoiceDate || formatDateKey(new Date());
+    if (typeof window !== 'undefined') {
+      window.location.hash = `#loading_plan?module=sales&orderId=${order.id}&date=${date}`;
+      window.dispatchEvent(
+        new CustomEvent('app-navigate', {
+          detail: { tab: 'loading_plan', module: 'sales', orderId: order.id, date }
+        })
+      );
+    }
+  };
+
+  // Listen for Incoming Deep-Link Focus from Loading Plan
+  useEffect(() => {
+    const checkHashFocus = () => {
+      if (typeof window === 'undefined') return;
+      const rawHash = window.location.hash || '';
+      if (!rawHash.includes('sales_orders')) return;
+      const queryPart = rawHash.split('?')[1];
+      if (!queryPart) return;
+      const params = new URLSearchParams(queryPart);
+      const targetSerial = params.get('focusOrder');
+      if (targetSerial && orders.length > 0) {
+        setSearchTerm(targetSerial);
+        const found = orders.find((o) => resolveOrderSerial(o, orders) === targetSerial || o.id === targetSerial);
+        if (found) {
+          setExpandedOrderIds((prev) => new Set([...prev, found.id]));
+          setTimeout(() => {
+            const el = document.getElementById(`sales-order-row-${found.id}`);
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              el.classList.add('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
+              setTimeout(() => {
+                el.classList.remove('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
+              }, 3000);
+            }
+          }, 400);
+        }
+      }
+    };
+
+    checkHashFocus();
+    window.addEventListener('hashchange', checkHashFocus);
+
+    const handleCustomNav = (e) => {
+      const { tab, focusOrder, orderId } = e.detail || {};
+      if (tab === 'sales_orders') {
+        if (focusOrder) setSearchTerm(focusOrder);
+        const targetId = orderId || (focusOrder ? orders.find((o) => resolveOrderSerial(o, orders) === focusOrder)?.id : null);
+        if (targetId) {
+          setExpandedOrderIds((prev) => new Set([...prev, targetId]));
+          setTimeout(() => {
+            const el = document.getElementById(`sales-order-row-${targetId}`);
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              el.classList.add('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
+              setTimeout(() => {
+                el.classList.remove('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
+              }, 3000);
+            }
+          }, 400);
+        }
+      }
+    };
+    window.addEventListener('app-navigate', handleCustomNav);
+
+    return () => {
+      window.removeEventListener('hashchange', checkHashFocus);
+      window.removeEventListener('app-navigate', handleCustomNav);
+    };
+  }, [orders]);
 
   // Close 3-dots actions menu on outside click or scroll
   useEffect(() => {
@@ -895,6 +982,21 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         return false;
       }
 
+      // 9. Assignment / Truck filter
+      if (assignmentFilter === 'assigned') {
+        if (!order.assignedVehicleId && !order.loadingOrderNumber) {
+          return false;
+        }
+      } else if (assignmentFilter === 'unassigned') {
+        if (order.assignedVehicleId || order.loadingOrderNumber) {
+          return false;
+        }
+      } else if (assignmentFilter !== 'all') {
+        if (order.assignedVehicleId !== assignmentFilter) {
+          return false;
+        }
+      }
+
       return true;
     });
   }, [
@@ -905,6 +1007,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     confirmationFilter,
     fulfillmentFilter,
     vatModeFilter,
+    assignmentFilter,
     dateFilterType,
     startDateFilter,
     endDateFilter,
@@ -945,6 +1048,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         key = o.orderType || 'supply';
         const item = ORDER_TYPES.find((t) => t.id === key);
         label = item ? (isAr ? item.labelAr : item.labelEn) : key;
+      } else if (groupBy === 'assignedVehicle') {
+        key = o.assignedVehicleId || 'unassigned';
+        label = o.assignedVehicleName
+          ? `${o.assignedVehicleName}${o.assignedVehiclePlate ? ` (${o.assignedVehiclePlate})` : ''}`
+          : (isAr ? 'أوامر غير مسكنة بشاحنة' : 'Unassigned Orders');
       }
 
       if (!groupsMap[key]) {
@@ -1200,7 +1308,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         </div>
 
         {/* Dropdown Filters Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 pt-2 border-t border-slate-100 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 xl:grid-cols-8 gap-2 pt-2 border-t border-slate-100 text-xs">
           {/* 1. Client SearchableSelect */}
           <div className="lg:col-span-2">
             <SearchableSelect
@@ -1277,7 +1385,25 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             </select>
           </div>
 
-          {/* 6. Group By */}
+          {/* 6. Assignment / Truck Filter */}
+          <div>
+            <select
+              value={assignmentFilter}
+              onChange={(e) => setAssignmentFilter(e.target.value)}
+              className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="all">{isAr ? 'شاحنة التوزيع: الكل' : 'Truck: All'}</option>
+              <option value="assigned">{isAr ? 'تم التسكين بشاحنة' : 'Assigned Only'}</option>
+              <option value="unassigned">{isAr ? 'غير مسكن بشاحنة' : 'Unassigned Only'}</option>
+              {vehicles.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.vehicleModel || v.name || v.nameAr || v.code || (isAr ? 'شاحنة' : 'Truck')} {v.plateNumber ? `(${v.plateNumber})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 7. Group By */}
           <div>
             <select
               value={groupBy}
@@ -1285,6 +1411,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
             >
               <option value="none">{isAr ? 'تجميع: بدون تجميع' : 'Group: None'}</option>
+              <option value="assignedVehicle">{isAr ? 'تجميع: الشاحنة المخصصة' : 'Group: Assigned Truck'}</option>
               <option value="fulfillmentStatus">{isAr ? 'تجميع: حالة التنفيذ' : 'Group: Fulfillment'}</option>
               <option value="confirmationStatus">{isAr ? 'تجميع: حالة التأكيد' : 'Group: Confirmation'}</option>
               <option value="client">{isAr ? 'تجميع: العميل' : 'Group: Client'}</option>
@@ -1443,6 +1570,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       return (
                         <React.Fragment key={order.id}>
                           <tr
+                            id={`sales-order-row-${order.id}`}
                             onClick={() => toggleRowExpand(order.id)}
                             className={`transition cursor-pointer select-none ${resolveRowBackground(order, isExpanded)}`}
                           >
@@ -1570,19 +1698,56 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 3. Dates */}
-                            <td className="py-3 px-3 whitespace-nowrap font-mono text-[11px]">
-                              <div className="flex flex-col gap-0.5">
-                                <div className="flex items-center gap-1 text-slate-700 font-bold">
+                            {/* 3. Dates & Preserved Truck Assignment */}
+                            <td className="py-3 px-3 whitespace-nowrap text-[11px]">
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-1 text-slate-700 font-bold font-mono">
                                   <Receipt className="w-3 h-3 text-emerald-600 shrink-0" />
                                   <span>{order.invoiceDate || '—'}</span>
                                 </div>
                                 {!['admin', 'collection'].includes(order.orderType) && (
-                                  <div className="flex items-center gap-1 text-slate-500 font-medium">
-                                    <Truck className="w-3 h-3 text-amber-500 shrink-0" />
+                                  <div className="flex items-center gap-1 text-slate-500 font-medium font-mono">
+                                    <Calendar className="w-3 h-3 text-amber-500 shrink-0" />
                                     <span>{order.loadingDate || order.invoiceDate || '—'}</span>
                                   </div>
                                 )}
+                                {/* Preserved Truck / Dispatch Badge */}
+                                {(order.assignedVehicleName || order.loadingOrderNumber) ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleNavigateToLoadingPlan(order);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 hover:text-indigo-900 border border-indigo-200/80 shadow-2xs transition cursor-pointer max-w-[170px] truncate"
+                                    title={
+                                      isAr
+                                        ? `مُسكن في أمر تحميل #${order.loadingOrderNumber || '—'} — سيارة: ${order.assignedVehicleName || ''} (${order.assignedVehiclePlate || ''}) — سائق: ${order.assignedDriverName || '—'} — انقر لفتح وتعديل خطة التحميل والتوزيع`
+                                        : `Assigned to LO #${order.loadingOrderNumber || '—'} — Truck: ${order.assignedVehicleName || ''} (${order.assignedVehiclePlate || ''}) — Driver: ${order.assignedDriverName || '—'} — Click to open in Loading Plan`
+                                    }
+                                  >
+                                    <Truck className="w-3 h-3 text-indigo-600 shrink-0" />
+                                    <span className="truncate">{order.assignedVehicleName || order.assignedVehiclePlate || (isAr ? 'شاحنة' : 'Truck')}</span>
+                                    {order.loadingOrderNumber && (
+                                      <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-200/70 text-indigo-900 font-mono font-black">
+                                        #{order.loadingOrderNumber}
+                                      </span>
+                                    )}
+                                  </button>
+                                ) : !['admin', 'collection'].includes(order.orderType) ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleNavigateToLoadingPlan(order);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-indigo-600 hover:bg-slate-100 px-1 py-0.5 rounded transition cursor-pointer"
+                                    title={isAr ? 'الطلب غير مسكن بشاحنة — انقر للتسكين في خطة التحميل' : 'Unassigned — Click to assign in Loading Plan'}
+                                  >
+                                    <Truck className="w-2.5 h-2.5 text-slate-300" />
+                                    <span className="italic">{isAr ? 'غير مسكن' : 'Unassigned'}</span>
+                                  </button>
+                                ) : null}
                               </div>
                             </td>
 
@@ -1936,6 +2101,88 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   ) : (
                                     /* Sales Order / Invoice Only Display */
                                     <div className="space-y-3">
+                                      {/* Dedicated Dispatch & Loading Assignment Panel */}
+                                      {!['admin', 'collection'].includes(order.orderType) && (
+                                        <div className="p-3 bg-gradient-to-r from-indigo-50/80 via-blue-50/50 to-indigo-50/80 border border-indigo-200/80 rounded-xl space-y-2.5 shadow-2xs">
+                                          <div className="flex items-center justify-between border-b border-indigo-200/70 pb-2">
+                                            <div className="flex items-center gap-2">
+                                              <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                                                <Truck className="w-4 h-4" />
+                                              </div>
+                                              <div>
+                                                <h5 className="font-extrabold text-xs text-indigo-950">
+                                                  {isAr ? 'بيانات شاحنة التوزيع وأمر التحميل المعتمد' : 'Dispatch Vehicle & Loading Order Details'}
+                                                </h5>
+                                                <span className="text-[10px] text-indigo-600 font-medium">
+                                                  {order.assignedVehicleName || order.loadingOrderNumber
+                                                    ? (isAr ? 'بيانات التسكين معتمدة وتُدار حصرياً من تبويب خطة التحميل' : 'Assignment is confirmed & managed in Loading Plan')
+                                                    : (isAr ? 'الطلب غير مسكن على شاحنة بعد' : 'Order is currently unassigned')}
+                                                </span>
+                                              </div>
+                                            </div>
+
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleNavigateToLoadingPlan(order);
+                                              }}
+                                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-indigo-600 hover:text-white border border-indigo-300 text-indigo-700 text-xs font-bold rounded-lg transition shadow-2xs cursor-pointer group"
+                                            >
+                                              <span>{order.assignedVehicleName || order.loadingOrderNumber ? (isAr ? 'فتح في خطة التحميل' : 'Open in Loading Plan') : (isAr ? 'تسكين في خطة التحميل' : 'Assign in Loading Plan')}</span>
+                                              <ExternalLink className="w-3 h-3 text-indigo-400 group-hover:text-white" />
+                                            </button>
+                                          </div>
+
+                                          {/* 4-Grid of Preserved Assignment Info */}
+                                          {(order.assignedVehicleName || order.loadingOrderNumber) ? (
+                                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                                              <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'الشاحنة المخصصة:' : 'Assigned Truck:'}</span>
+                                                <span className="font-bold text-slate-800 flex items-center gap-1 mt-0.5">
+                                                  <Truck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                                                  <span className="truncate">{order.assignedVehicleName || (isAr ? 'غير محدد' : 'Unknown')}</span>
+                                                </span>
+                                                {order.assignedVehiclePlate && (
+                                                  <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{order.assignedVehiclePlate}</span>
+                                                )}
+                                              </div>
+
+                                              <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'السائق المعتمد:' : 'Assigned Driver:'}</span>
+                                                <span className="font-bold text-slate-800 flex items-center gap-1 mt-0.5">
+                                                  <User className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                                  <span className="truncate">{order.assignedDriverName || (isAr ? '—' : '—')}</span>
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'مندوب التسليم:' : 'Delivery Rep:'}</span>
+                                                <span className="font-bold text-slate-800 flex items-center gap-1 mt-0.5">
+                                                  <Users className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                                                  <span className="truncate">{order.assignedDeliveryRepName || (isAr ? '—' : '—')}</span>
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'رقم وتاريخ أمر التحميل:' : 'LO # & Loading Date:'}</span>
+                                                <span className="font-mono font-black text-indigo-700 text-xs flex items-center gap-1 mt-0.5">
+                                                  <PackageCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                                                  <span>#{order.loadingOrderNumber || '—'}</span>
+                                                </span>
+                                                <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{order.loadingDate || order.invoiceDate || '—'}</span>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="p-3 bg-white rounded-lg border border-indigo-100 text-center text-xs text-slate-500 font-medium">
+                                              {isAr
+                                                ? 'لم يتم ربط هذا الطلب بشاحنة أو أمر تحميل بعد. يمكنك التسكين مباشرة عبر الانتقال لخطة التحميل.'
+                                                : 'No truck or loading order assigned yet. You can assign it via the Loading Plan tab.'}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+
                                       {/* Full Operating Schedule Card (Hiding Empty Fields) */}
                                       {(profile.hasHours || profile.hasHolidays || profile.hasAddress || profile.hasContact || locationUrl || profile.hasClientNotes || profile.hasBranchNotes || profile.hasNotes) && (
                                         <div className="p-3 bg-slate-50/90 border border-slate-200 rounded-xl space-y-2">
@@ -2495,6 +2742,14 @@ function SalesOrderEditorModal({
     invoiceDate: editingOrder?.invoiceDate || todayStr,
     loadingDate: editingOrder?.loadingDate || todayStr,
     isDatesLinked: editingOrder ? Boolean(editingOrder.invoiceDate === editingOrder.loadingDate) : true,
+    loadingOrderNumber: editingOrder?.loadingOrderNumber ?? null,
+    assignedVehicleId: editingOrder?.assignedVehicleId || '',
+    assignedVehicleName: editingOrder?.assignedVehicleName || '',
+    assignedVehiclePlate: editingOrder?.assignedVehiclePlate || '',
+    assignedDriverId: editingOrder?.assignedDriverId || '',
+    assignedDriverName: editingOrder?.assignedDriverName || '',
+    assignedDeliveryRepId: editingOrder?.assignedDeliveryRepId || '',
+    assignedDeliveryRepName: editingOrder?.assignedDeliveryRepName || '',
     orderType: initialOrderType,
     isAdministrative: Boolean(editingOrder?.isAdministrative || isAdminModal),
     adminNotes: editingOrder?.adminNotes || editingOrder?.notes || '',
@@ -2903,10 +3158,13 @@ function SalesOrderEditorModal({
     });
   };
 
-  // Handle invoice date change (auto-inherits to loadingDate if linked)
+  const hasActiveAssignment = Boolean(formData.assignedVehicleId || formData.loadingOrderNumber);
+
+  // Handle invoice date change (auto-inherits to loadingDate if linked and not assigned to truck)
   const handleInvoiceDateChange = (newDate) => {
     setFormData((prev) => {
-      const loadingDate = prev.isDatesLinked ? newDate : prev.loadingDate;
+      const hasAssignment = Boolean(prev.assignedVehicleId || prev.loadingOrderNumber);
+      const loadingDate = (prev.isDatesLinked && !hasAssignment) ? newDate : prev.loadingDate;
       const updatedLines = prev.lines.map((line) => {
         const resolved = detectProductPrice({
           clientId: prev.clientId,
@@ -3438,6 +3696,15 @@ function SalesOrderEditorModal({
 
       const payload = {
         ...formData,
+        loadingOrderNumber: formData.loadingOrderNumber ?? null,
+        assignedVehicleId: formData.assignedVehicleId || '',
+        assignedVehicleName: formData.assignedVehicleName || '',
+        assignedVehiclePlate: formData.assignedVehiclePlate || '',
+        assignedDriverId: formData.assignedDriverId || '',
+        assignedDriverName: formData.assignedDriverName || '',
+        assignedDeliveryRepId: formData.assignedDeliveryRepId || '',
+        assignedDeliveryRepName: formData.assignedDeliveryRepName || '',
+        loadingDate: formData.loadingDate || '',
         ...financials,
         isAdministrative: Boolean(isAdminModal || ADMIN_ORDER_TYPES.some((t) => t.id === formData.orderType)),
         auditTrail: updatedAuditTrail,
@@ -3613,38 +3880,57 @@ function SalesOrderEditorModal({
               {!isAdminModal && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="block text-[11px] font-bold text-slate-700">
-                      {isAr ? 'تاريخ التحميل *' : 'Loading Date *'}
+                    <label className="block text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                      <span>{isAr ? 'تاريخ التحميل *' : 'Loading Date *'}</span>
+                      {hasActiveAssignment && (
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded" title={isAr ? 'مُقيد بالشاحنة المخصصة' : 'Locked to truck'}>
+                          <Lock className="w-2.5 h-2.5" />
+                          <span>{isAr ? 'مثبت بالشاحنة' : 'Locked'}</span>
+                        </span>
+                      )}
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData((prev) => ({
-                          ...prev,
-                          isDatesLinked: true,
-                          loadingDate: prev.invoiceDate
-                        }));
-                      }}
-                      className="text-[10px] font-bold text-emerald-600 hover:underline cursor-pointer flex items-center gap-0.5"
-                      title={isAr ? 'مطابقة ومزامنة تاريخ التحميل مع تاريخ الفاتورة' : 'Sync with Invoice Date'}
-                    >
-                      <RefreshCw className="w-2.5 h-2.5" />
-                      <span>{isAr ? 'مطابقة الفاتورة' : 'Sync'}</span>
-                    </button>
+                    {!hasActiveAssignment && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormData((prev) => ({
+                            ...prev,
+                            isDatesLinked: true,
+                            loadingDate: prev.invoiceDate
+                          }));
+                        }}
+                        className="text-[10px] font-bold text-emerald-600 hover:underline cursor-pointer flex items-center gap-0.5"
+                        title={isAr ? 'مطابقة ومزامنة تاريخ التحميل مع تاريخ الفاتورة' : 'Sync with Invoice Date'}
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        <span>{isAr ? 'مطابقة الفاتورة' : 'Sync'}</span>
+                      </button>
+                    )}
                   </div>
                   <input
                     type="date"
                     required
+                    disabled={hasActiveAssignment}
                     value={formData.loadingDate}
                     onChange={(e) => {
+                      if (hasActiveAssignment) return;
                       setFormData({
                         ...formData,
                         loadingDate: e.target.value,
                         isDatesLinked: Boolean(e.target.value === formData.invoiceDate)
                       });
                     }}
-                    className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-mono font-bold text-slate-800 focus:outline-none"
+                    className={`w-full py-2 px-3 border rounded-xl font-mono font-bold text-slate-800 focus:outline-none ${
+                      hasActiveAssignment ? 'bg-slate-100/90 border-amber-300 text-slate-600 cursor-not-allowed' : 'bg-white border-slate-300'
+                    }`}
                   />
+                  {hasActiveAssignment && (
+                    <span className="text-[10px] text-amber-700 font-medium block mt-1 leading-tight">
+                      {isAr
+                        ? `الطلب مُسكن بشاحنة (${formData.assignedVehicleName || formData.assignedVehiclePlate || ''}) وأمر تحميل #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
+                        : `Order assigned to ${formData.assignedVehicleName || ''} (LO #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -3668,6 +3954,44 @@ function SalesOrderEditorModal({
                 </select>
               </div>
             </div>
+
+            {/* Read-Only Dispatch Assignment Card (if order is assigned) */}
+            {hasActiveAssignment && (
+              <div className="p-3 bg-gradient-to-r from-amber-50/90 via-indigo-50/60 to-amber-50/90 border border-amber-300/80 rounded-2xl flex items-center justify-between gap-3 shadow-2xs">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-400 text-amber-900 flex items-center justify-center shrink-0 shadow-2xs">
+                    <Truck className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-black text-slate-900">
+                        {formData.assignedVehicleName || (isAr ? 'شاحنة معتمدة' : 'Assigned Truck')}
+                      </span>
+                      {formData.assignedVehiclePlate && (
+                        <span className="text-[11px] font-mono text-slate-500 font-bold">
+                          ({formData.assignedVehiclePlate})
+                        </span>
+                      )}
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 border border-indigo-200 font-mono">
+                        LO #{formData.loadingOrderNumber}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-600 font-medium flex items-center gap-2 mt-0.5 flex-wrap">
+                      {formData.assignedDriverName && (
+                        <span>{isAr ? 'السائق:' : 'Driver:'} <strong className="text-slate-800">{formData.assignedDriverName}</strong></span>
+                      )}
+                      {formData.assignedDeliveryRepName && (
+                        <span>{isAr ? 'المندوب:' : 'Rep:'} <strong className="text-slate-800">{formData.assignedDeliveryRepName}</strong></span>
+                      )}
+                      <span>{isAr ? 'تاريخ التحميل:' : 'Loading Date:'} <strong className="text-slate-800 font-mono">{formData.loadingDate}</strong></span>
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold text-amber-800 bg-amber-100/90 px-2.5 py-1 rounded-lg border border-amber-200 shrink-0">
+                  {isAr ? 'بيانات معتمدة للقراءة فقط' : 'Read-Only Assignment'}
+                </span>
+              </div>
+            )}
 
             {/* Row 2: Client Name and Branch on next row */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-200/60">
