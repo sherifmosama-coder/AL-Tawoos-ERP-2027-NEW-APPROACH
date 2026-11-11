@@ -1506,7 +1506,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     </span>
                                   ) : (
                                     <span
-                                      className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs"
+                                      className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
                                       style={{
                                         backgroundColor: `${segColor}18`,
                                         color: segColor,
@@ -1514,7 +1514,15 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       }}
                                       title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
                                     >
-                                      <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                      {clientObj?.logo ? (
+                                        <img
+                                          src={clientObj.logo}
+                                          alt=""
+                                          className="w-full h-full object-contain p-0.5 rounded-md"
+                                        />
+                                      ) : (
+                                        <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                      )}
                                     </span>
                                   )}
                                   <span className="truncate max-w-[200px]">

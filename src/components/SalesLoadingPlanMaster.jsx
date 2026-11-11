@@ -34,7 +34,8 @@ import {
   Sparkles,
   Layers,
   Tag,
-  Edit2
+  Edit2,
+  Banknote
 } from 'lucide-react';
 import {
   collection,
@@ -68,47 +69,104 @@ const ORDER_TYPES = [
 ];
 
 const FULFILLMENT_STATUSES = [
-  { id: 'not_yet', labelAr: 'معلق (لم يُنفذ)', labelEn: 'Pending' },
-  { id: 'prepare', labelAr: 'جاري التجهيز', labelEn: 'Preparing' },
-  { id: 'shipped', labelAr: 'جاري التوصيل', labelEn: 'Out for Delivery' },
-  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered' },
-  { id: 'paid', labelAr: 'مدفوع ومحصل', labelEn: 'Paid' }
+  { id: 'not_yet', labelAr: 'قيد الانتظار', labelEn: 'Pending', color: 'slate', icon: Clock },
+  { id: 'prepare', labelAr: 'جاري التجهيز', labelEn: 'Preparing', color: 'amber', icon: PackageCheck },
+  { id: 'shipped', labelAr: 'جاري التوصيل', labelEn: 'Out for Delivery', color: 'emerald', icon: Truck },
+  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered', color: 'teal', icon: CheckCircle2 },
+  { id: 'paid', labelAr: 'مدفوع', labelEn: 'Paid', color: 'blue', icon: Banknote }
 ];
 
 const SEQUENTIAL_FULFILLMENT_STEPS = [
   {
     id: 'not_yet',
-    labelAr: 'معلق',
+    labelAr: 'قيد الانتظار',
     labelEn: 'Pending',
     icon: Clock,
     color: 'slate',
-    badgeClasses: 'bg-slate-100 text-slate-700 border-slate-300'
+    badgeClasses: 'bg-slate-100 text-slate-700 border-slate-300',
+    activeClasses: 'bg-slate-700 text-white border-slate-800 ring-2 ring-slate-500/30'
   },
   {
     id: 'prepare',
     labelAr: 'جاري التجهيز',
     labelEn: 'Preparing',
     icon: PackageCheck,
-    color: 'indigo',
-    badgeClasses: 'bg-indigo-50 text-indigo-700 border-indigo-200'
+    color: 'amber',
+    badgeClasses: 'bg-amber-50 text-amber-800 border-amber-200',
+    activeClasses: 'bg-amber-500 text-white border-amber-600 ring-2 ring-amber-400/30'
   },
   {
     id: 'shipped',
     labelAr: 'جاري التوصيل',
     labelEn: 'Out for Delivery',
     icon: Truck,
-    color: 'purple',
-    badgeClasses: 'bg-purple-50 text-purple-700 border-purple-200'
+    color: 'emerald',
+    badgeClasses: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+    activeClasses: 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/30'
   },
   {
     id: 'delivered',
     labelAr: 'تم التسليم',
     labelEn: 'Delivered',
     icon: CheckCircle2,
-    color: 'emerald',
-    badgeClasses: 'bg-emerald-50 text-emerald-800 border-emerald-300'
+    color: 'teal',
+    badgeClasses: 'bg-teal-50 text-teal-800 border-teal-200',
+    activeClasses: 'bg-teal-600 text-white border-teal-700 ring-2 ring-teal-500/30'
   }
 ];
+
+const FULFILLMENT_CONFIG_MAP = {
+  not_yet: {
+    id: 'not_yet',
+    labelAr: 'قيد الانتظار',
+    labelEn: 'Pending',
+    icon: Clock,
+    color: 'slate',
+    badgeClasses: 'bg-slate-100 text-slate-700 border-slate-300',
+    stripClasses: 'bg-slate-50/60 hover:bg-slate-100/70 border-slate-200',
+    textColor: 'text-slate-700'
+  },
+  prepare: {
+    id: 'prepare',
+    labelAr: 'جاري التجهيز',
+    labelEn: 'Preparing',
+    icon: PackageCheck,
+    color: 'amber',
+    badgeClasses: 'bg-amber-50 text-amber-800 border-amber-200',
+    stripClasses: 'bg-amber-50/40 hover:bg-amber-50/70 border-amber-200',
+    textColor: 'text-amber-800'
+  },
+  shipped: {
+    id: 'shipped',
+    labelAr: 'جاري التوصيل',
+    labelEn: 'Out for Delivery',
+    icon: Truck,
+    color: 'emerald',
+    badgeClasses: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+    stripClasses: 'bg-emerald-50/40 hover:bg-emerald-50/70 border-emerald-200',
+    textColor: 'text-emerald-800'
+  },
+  delivered: {
+    id: 'delivered',
+    labelAr: 'تم التسليم',
+    labelEn: 'Delivered',
+    icon: CheckCircle2,
+    color: 'teal',
+    badgeClasses: 'bg-teal-50 text-teal-800 border-teal-200',
+    stripClasses: 'bg-teal-50/40 hover:bg-teal-50/70 border-teal-200',
+    textColor: 'text-teal-800'
+  },
+  paid: {
+    id: 'paid',
+    labelAr: 'مدفوع',
+    labelEn: 'Paid',
+    icon: Banknote,
+    color: 'blue',
+    badgeClasses: 'bg-blue-50 text-blue-800 border-blue-200',
+    stripClasses: 'bg-blue-50/40 hover:bg-blue-50/70 border-blue-200',
+    textColor: 'text-blue-800'
+  }
+};
 
 const WORKER_ROLE_LABELS = {
   operator: { ar: 'فني تشغيل ماكينات', en: 'Machine Operator' },
@@ -609,19 +667,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     setActiveEditingOrderId(null);
   };
 
-  // Open card for assignment/edit with lock check & date mismatch validation
+  // Open card for assignment/edit with date mismatch validation
   const handleInitiateEdit = (order) => {
-    const isClosed = order.fulfillmentStatus === 'delivered' || order.fulfillmentStatus === 'paid';
-    if (isClosed && !canModifyClosedOrders) {
-      showToast(
-        isAr
-          ? 'عذراً، هذا الطلب مكتمل (تم التسليم أو السداد) ومغلق للتعديل إلا بصلاحية الإدارة العامة'
-          : 'This order is closed (delivered/paid) and locked for editing without admin permission',
-        'info'
-      );
-      return;
-    }
-
     const eff = getEffectiveAssignment(order);
     const existingLoadingDate = eff.loadingDate || order.loadingDate || '';
     const existingInvoiceDate = eff.invoiceDate || order.invoiceDate || '';
@@ -727,8 +774,23 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     setDateMismatchModal(null);
   };
 
-  // Stepper status change handler
+  // Stepper status change handler - GOING BACKWARD BYPASSES VERIFICATIONS!
   const handleStepStatusClick = (order, step, currentIndex, targetIndex) => {
+    // Clicking current status -> do nothing
+    if (targetIndex === currentIndex) return;
+
+    // 1. GOING STEPS BACKWARD: BYPASS ALL VERIFICATIONS!
+    if (targetIndex < currentIndex) {
+      handleStageChange(order.id, 'fulfillmentStatus', step.id);
+      showToast(
+        isAr
+          ? `تم التراجع إلى حالة (${step.labelAr}) بنجاح`
+          : `Reverted back to (${step.labelEn})`
+      );
+      return;
+    }
+
+    // 2. FORWARD MOVEMENT:
     const isClosedOrder = order.fulfillmentStatus === 'delivered' || order.fulfillmentStatus === 'paid';
     const isOrderLocked = isClosedOrder && !canModifyClosedOrders;
     if (isOrderLocked) {
@@ -741,46 +803,27 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return;
     }
 
-    // Clicking current status -> do nothing
-    if (targetIndex === currentIndex) return;
-
     // Standard 1-step forward (Clickable Next)
     if (targetIndex === currentIndex + 1) {
       handleStageChange(order.id, 'fulfillmentStatus', step.id);
       return;
     }
 
-    // Reverting back 1 step
-    if (targetIndex === currentIndex - 1) {
-      // If current is delivered (index 3), reverting requires admin permission or confirmation
-      if (currentIndex === 3 && !canModifyClosedOrders) {
-        showToast(
-          isAr
-            ? 'تعديل الطلبات بعد التسليم يتطلب صلاحية الإدارة العامة'
-            : 'Reverting delivered orders requires admin permission',
-          'info'
-        );
-        return;
-      }
-      handleStageChange(order.id, 'fulfillmentStatus', step.id);
-      return;
-    }
-
-    // Non-sequential jump (jumping forward or backward multiple steps)
+    // Non-sequential forward jump for admin
     if (canModifyClosedOrders || isGeneralAdmin) {
       setStatusJumpConfirmModal({
         order,
         targetStep: step,
         currentStepId: SEQUENTIAL_FULFILLMENT_STEPS[currentIndex]?.id || 'not_yet',
         currentStepLabel: isAr
-          ? SEQUENTIAL_FULFILLMENT_STEPS[currentIndex]?.labelAr || 'معلق'
+          ? SEQUENTIAL_FULFILLMENT_STEPS[currentIndex]?.labelAr || 'قيد الانتظار'
           : SEQUENTIAL_FULFILLMENT_STEPS[currentIndex]?.labelEn || 'Pending',
         targetStepLabel: isAr ? step.labelAr : step.labelEn
       });
       return;
     }
 
-    // Normal user attempting jump
+    // Normal user attempting forward jump
     showToast(
       isAr
         ? 'يجب التدرج في حالات التنفيذ خطوة بخطوة بالترتيب'
@@ -1591,11 +1634,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     eff.assignedDriverId
                   );
 
-                  // Fulfillment Status resolution & configuration
+                  // Fulfillment Status resolution & configuration matching SalesOrdersMaster
                   const currentFulfillmentStatus = eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet';
-                  const currentStepConfig = SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === currentFulfillmentStatus) ||
-                    (currentFulfillmentStatus === 'paid' ? SEQUENTIAL_FULFILLMENT_STEPS[3] : SEQUENTIAL_FULFILLMENT_STEPS[0]);
-                  const CurrentStatusIcon = currentStepConfig.icon;
+                  const currentStatusConfig = FULFILLMENT_CONFIG_MAP[currentFulfillmentStatus] || FULFILLMENT_CONFIG_MAP.not_yet;
+                  const currentStepConfig = currentStatusConfig;
+                  const CurrentStatusIcon = currentStatusConfig.icon;
 
                   return (
                     <div
@@ -1609,6 +1652,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                           ? 'border-emerald-400 ring-2 ring-emerald-500/20 shadow-md'
                           : 'border-slate-200/90 hover:border-slate-300'
                       }`}
+                      style={{
+                        borderInlineStartColor: segColor,
+                        borderInlineStartWidth: '5px'
+                      }}
                     >
                       {/* Flex Container with Animated 80/20 Width Transitions */}
                       <div className="flex flex-col md:flex-row items-stretch transition-all duration-700 ease-in-out">
@@ -1629,8 +1676,29 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
                                 </div>
 
-                                <div className="font-extrabold text-xs text-slate-900 leading-tight truncate" title={order.clientName}>
-                                  {order.clientName || '—'}
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span
+                                    className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
+                                    style={{
+                                      backgroundColor: `${segColor}18`,
+                                      color: segColor,
+                                      border: `1px solid ${segColor}35`
+                                    }}
+                                    title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
+                                  >
+                                    {clientObj?.logo ? (
+                                      <img
+                                        src={clientObj.logo}
+                                        alt=""
+                                        className="w-full h-full object-contain p-0.5 rounded-md"
+                                      />
+                                    ) : (
+                                      <SegIcon className="w-3 h-3 shrink-0" />
+                                    )}
+                                  </span>
+                                  <div className="font-extrabold text-xs text-slate-900 leading-tight truncate" title={order.clientName}>
+                                    {order.clientName || '—'}
+                                  </div>
                                 </div>
 
                                 {showBranchName && (
@@ -1700,24 +1768,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     let badgeText = '';
 
                                     if (isCurrent) {
-                                      btnStyle = 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/30 shadow-xs cursor-default';
+                                      btnStyle = `${step.activeClasses} shadow-xs cursor-default`;
                                       iconColor = 'text-white';
                                       badgeText = isAr ? 'الحالية' : 'Current';
                                     } else if (isPast) {
-                                      btnStyle = isImmediatePrev
-                                        ? 'bg-emerald-50 hover:bg-amber-50 text-emerald-800 hover:text-amber-800 border-emerald-300 hover:border-amber-300 cursor-pointer shadow-2xs group/prev'
-                                        : canModifyClosedOrders || isGeneralAdmin
-                                        ? 'bg-emerald-50/80 text-emerald-700 border-emerald-200 cursor-pointer hover:bg-amber-50 hover:border-amber-300'
-                                        : 'bg-emerald-50/60 text-emerald-700 border-emerald-200 cursor-default opacity-90';
-                                      iconColor = 'text-emerald-600';
-                                      badgeText = isImmediatePrev ? (isAr ? 'تراجع' : 'Revert') : (isAr ? 'مكتمل' : 'Done');
+                                      // GOING BACKWARD BYPASSES VERIFICATIONS! All past steps directly clickable to revert!
+                                      btnStyle = 'bg-slate-50 hover:bg-amber-50 text-slate-700 hover:text-amber-800 border-slate-200 hover:border-amber-300 cursor-pointer shadow-2xs group/prev';
+                                      iconColor = step.color === 'amber' ? 'text-amber-600' : step.color === 'emerald' ? 'text-emerald-600' : step.color === 'teal' ? 'text-teal-600' : 'text-slate-500';
+                                      badgeText = isAr ? 'تراجع' : 'Revert';
                                     } else if (isNext) {
-                                      btnStyle = 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-300 ring-1 ring-indigo-400/40 cursor-pointer shadow-2xs animate-pulse';
-                                      iconColor = 'text-indigo-600';
+                                      btnStyle = step.color === 'amber'
+                                        ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 ring-1 ring-amber-400/40 cursor-pointer shadow-2xs animate-pulse'
+                                        : step.color === 'emerald'
+                                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300 ring-1 ring-emerald-400/40 cursor-pointer shadow-2xs animate-pulse'
+                                        : 'bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-300 ring-1 ring-teal-400/40 cursor-pointer shadow-2xs animate-pulse';
+                                      iconColor = step.color === 'amber' ? 'text-amber-600' : step.color === 'emerald' ? 'text-emerald-600' : 'text-teal-600';
                                       badgeText = isAr ? 'التالي' : 'Next';
                                     } else {
                                       btnStyle = canModifyClosedOrders || isGeneralAdmin
-                                        ? 'bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 border-slate-200 cursor-pointer'
+                                        ? 'bg-slate-50 hover:bg-slate-100 text-slate-400 hover:text-slate-700 border-slate-200 cursor-pointer'
                                         : 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed opacity-50';
                                       iconColor = 'text-slate-300';
                                       badgeText = '';
@@ -1976,22 +2045,26 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     #{orderSerial}
                                   </span>
 
-                                  {/* Fulfillment Status Badge */}
+                                  {/* Fulfillment Status Badge - Styled matching SalesOrdersMaster */}
                                   {currentFulfillmentStatus && (
-                                    <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border ${
-                                      currentFulfillmentStatus === 'paid'
-                                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                                        : currentStepConfig.badgeClasses
-                                    }`}>
+                                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border shadow-2xs ${currentStatusConfig.badgeClasses}`}>
                                       {isClosedOrder ? (
                                         <Lock className="w-3 h-3 shrink-0" />
+                                      ) : currentStatusConfig.color === 'amber' ? (
+                                        <span className="relative flex h-2 w-2">
+                                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                        </span>
                                       ) : (
-                                        <CurrentStatusIcon className="w-3 h-3 shrink-0" />
+                                        <CurrentStatusIcon className={`w-3 h-3 shrink-0 ${
+                                          currentStatusConfig.color === 'emerald' ? 'animate-pulse text-emerald-600' :
+                                          currentStatusConfig.color === 'teal' ? 'text-teal-600' :
+                                          currentStatusConfig.color === 'blue' ? 'text-blue-600' :
+                                          'text-slate-600'
+                                        }`} />
                                       )}
                                       <span>
-                                        {currentFulfillmentStatus === 'paid'
-                                          ? (isAr ? 'مدفوع ومحصل' : 'Paid')
-                                          : (isAr ? currentStepConfig.labelAr : currentStepConfig.labelEn)}
+                                        {isAr ? currentStatusConfig.labelAr : currentStatusConfig.labelEn}
                                       </span>
                                     </span>
                                   )}
@@ -2026,20 +2099,41 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
                               {/* Client & Branch & Region & Maps */}
                               <div className="space-y-1">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <span
-                                    className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs"
+                                    className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
                                     style={{
                                       backgroundColor: `${segColor}18`,
                                       color: segColor,
                                       border: `1px solid ${segColor}35`
                                     }}
+                                    title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
                                   >
-                                    <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                    {clientObj?.logo ? (
+                                      <img
+                                        src={clientObj.logo}
+                                        alt=""
+                                        className="w-full h-full object-contain p-0.5 rounded-lg"
+                                      />
+                                    ) : (
+                                      <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                    )}
                                   </span>
                                   <span className="font-extrabold text-slate-900 text-sm">
                                     {order.clientName || order.clientId || '—'}
                                   </span>
+                                  {segObj && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.2 rounded-md shadow-2xs"
+                                      style={{
+                                        backgroundColor: `${segColor}15`,
+                                        color: segColor,
+                                        border: `1px solid ${segColor}30`
+                                      }}
+                                    >
+                                      <span>{isAr ? segObj.nameAr : segObj.nameEn}</span>
+                                    </span>
+                                  )}
                                   {showBranchName && (
                                     <span className="text-xs font-bold text-slate-500">
                                       ({order.branchName})
@@ -2176,46 +2270,31 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             {/* COMPACT 2X2 SUMMARY GRID STRIP (20% width) - Inherits fulfillment status icon & color */}
                             <div
                               onClick={() => {
-                                if (isOrderLocked) return;
                                 handleInitiateEdit(order);
                               }}
                               className={`w-full md:w-[20%] p-3 border-t md:border-t-0 md:border-s flex flex-col justify-between transition-all duration-300 shrink-0 select-none text-start ${
                                 isOrderLocked
-                                  ? 'bg-slate-100/70 border-slate-200 cursor-not-allowed opacity-75'
-                                  : currentStepConfig.color === 'indigo'
-                                  ? 'bg-indigo-50/40 hover:bg-indigo-50/70 border-indigo-200 cursor-pointer group'
-                                  : currentStepConfig.color === 'purple'
-                                  ? 'bg-purple-50/40 hover:bg-purple-50/70 border-purple-200 cursor-pointer group'
-                                  : currentStepConfig.color === 'emerald'
-                                  ? 'bg-emerald-50/40 hover:bg-emerald-50/70 border-emerald-200 cursor-pointer group'
-                                  : 'bg-slate-50/60 hover:bg-slate-100/70 border-slate-200 cursor-pointer group'
+                                  ? 'bg-slate-100/70 border-slate-200 cursor-pointer opacity-90'
+                                  : `${currentStatusConfig.stripClasses} cursor-pointer group`
                               }`}
                               title={
                                 isOrderLocked
-                                  ? (isAr ? 'الطلب مكتمل ومغلق للتعديل (تم التسليم أو السداد)' : 'Order is delivered/paid and locked for editing')
+                                  ? (isAr ? 'الطلب مكتمل (تم التسليم أو السداد) — انقر للتعديل أو التراجع' : 'Order is delivered/paid — Click to edit or revert')
                                   : (isAr ? 'انقر لتعديل بيانات التسكين' : 'Click to edit dispatch assignment')
                               }
                             >
                               <div className="space-y-2">
                                 <div className="flex items-center justify-between">
                                   <span className={`text-[10px] font-black uppercase flex items-center gap-1 ${
-                                    isOrderLocked
-                                      ? 'text-slate-500'
-                                      : currentStepConfig.color === 'indigo'
-                                      ? 'text-indigo-800'
-                                      : currentStepConfig.color === 'purple'
-                                      ? 'text-purple-800'
-                                      : currentStepConfig.color === 'emerald'
-                                      ? 'text-emerald-800'
-                                      : 'text-slate-700'
+                                    isOrderLocked ? 'text-slate-500' : currentStatusConfig.textColor
                                   }`}>
                                     <Truck className="w-3.5 h-3.5" />
                                     <span>{isAr ? 'بيانات الشاحنة' : 'Assigned Truck'}</span>
                                   </span>
                                   {isOrderLocked ? (
-                                    <span className="text-[10px] font-bold text-slate-500 flex items-center gap-0.5 bg-slate-200/80 px-1.5 py-0.5 rounded">
+                                    <span className="text-[10px] font-bold text-slate-600 flex items-center gap-0.5 bg-slate-200/80 px-1.5 py-0.5 rounded">
                                       <Lock className="w-2.5 h-2.5" />
-                                      <span>{isAr ? 'مغلق' : 'Locked'}</span>
+                                      <span>{isAr ? 'مكتمل' : 'Closed'}</span>
                                     </span>
                                   ) : (
                                     <span className="text-[10px] font-bold text-slate-600 group-hover:text-emerald-700 group-hover:underline flex items-center gap-0.5">
@@ -2227,9 +2306,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
                                 {/* Status Mini-Pill on 20% Strip */}
                                 <div className="flex items-center justify-between">
-                                  <span className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-md font-bold border ${currentStepConfig.badgeClasses}`}>
-                                    <CurrentStatusIcon className="w-2.5 h-2.5 shrink-0" />
-                                    <span>{isAr ? currentStepConfig.labelAr : currentStepConfig.labelEn}</span>
+                                  <span className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-md font-bold border ${currentStatusConfig.badgeClasses}`}>
+                                    <CurrentStatusIcon className={`w-2.5 h-2.5 shrink-0 ${
+                                      currentStatusConfig.color === 'amber' ? 'text-amber-600' :
+                                      currentStatusConfig.color === 'emerald' ? 'text-emerald-600' :
+                                      currentStatusConfig.color === 'teal' ? 'text-teal-600' :
+                                      currentStatusConfig.color === 'blue' ? 'text-blue-600' :
+                                      'text-slate-500'
+                                    }`} />
+                                    <span>{isAr ? currentStatusConfig.labelAr : currentStatusConfig.labelEn}</span>
                                   </span>
                                 </div>
 
@@ -2290,22 +2375,26 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     #{orderSerial}
                                   </span>
 
-                                  {/* Fulfillment Status Badge */}
+                                  {/* Fulfillment Status Badge - Styled matching SalesOrdersMaster */}
                                   {currentFulfillmentStatus && (
-                                    <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border ${
-                                      currentFulfillmentStatus === 'paid'
-                                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                                        : currentStepConfig.badgeClasses
-                                    }`}>
+                                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border shadow-2xs ${currentStatusConfig.badgeClasses}`}>
                                       {isClosedOrder ? (
                                         <Lock className="w-3 h-3 shrink-0" />
+                                      ) : currentStatusConfig.color === 'amber' ? (
+                                        <span className="relative flex h-2 w-2">
+                                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                        </span>
                                       ) : (
-                                        <CurrentStatusIcon className="w-3 h-3 shrink-0" />
+                                        <CurrentStatusIcon className={`w-3 h-3 shrink-0 ${
+                                          currentStatusConfig.color === 'emerald' ? 'animate-pulse text-emerald-600' :
+                                          currentStatusConfig.color === 'teal' ? 'text-teal-600' :
+                                          currentStatusConfig.color === 'blue' ? 'text-blue-600' :
+                                          'text-slate-600'
+                                        }`} />
                                       )}
                                       <span>
-                                        {currentFulfillmentStatus === 'paid'
-                                          ? (isAr ? 'مدفوع ومحصل' : 'Paid')
-                                          : (isAr ? currentStepConfig.labelAr : currentStepConfig.labelEn)}
+                                        {isAr ? currentStatusConfig.labelAr : currentStatusConfig.labelEn}
                                       </span>
                                     </span>
                                   )}
@@ -2340,20 +2429,41 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
                               {/* Client & Branch & Region & Maps */}
                               <div className="space-y-1">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <span
-                                    className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs"
+                                    className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
                                     style={{
                                       backgroundColor: `${segColor}18`,
                                       color: segColor,
                                       border: `1px solid ${segColor}35`
                                     }}
+                                    title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
                                   >
-                                    <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                    {clientObj?.logo ? (
+                                      <img
+                                        src={clientObj.logo}
+                                        alt=""
+                                        className="w-full h-full object-contain p-0.5 rounded-lg"
+                                      />
+                                    ) : (
+                                      <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                    )}
                                   </span>
                                   <span className="font-extrabold text-slate-900 text-sm">
                                     {order.clientName || order.clientId || '—'}
                                   </span>
+                                  {segObj && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.2 rounded-md shadow-2xs"
+                                      style={{
+                                        backgroundColor: `${segColor}15`,
+                                        color: segColor,
+                                        border: `1px solid ${segColor}30`
+                                      }}
+                                    >
+                                      <span>{isAr ? segObj.nameAr : segObj.nameEn}</span>
+                                    </span>
+                                  )}
                                   {showBranchName && (
                                     <span className="text-xs font-bold text-slate-500">
                                       ({order.branchName})
@@ -2490,27 +2600,26 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             {/* COMPACT STRIP WITH TRUCK ICON (+ تسكين or LOCKED) */}
                             <div
                               onClick={() => {
-                                if (isOrderLocked) return;
                                 handleInitiateEdit(order);
                               }}
-                              className={`w-14 sm:w-16 border-t md:border-t-0 md:border-s flex flex-col items-center justify-center p-2 transition select-none shrink-0 ${
+                              className={`w-14 sm:w-16 border-t md:border-t-0 md:border-s flex flex-col items-center justify-center p-2 transition select-none shrink-0 cursor-pointer group ${
                                 isOrderLocked
-                                  ? 'bg-slate-100/70 border-slate-200 cursor-not-allowed opacity-70'
-                                  : 'bg-slate-50 hover:bg-emerald-50/70 border-slate-100 cursor-pointer group'
+                                  ? 'bg-slate-100/70 hover:bg-slate-200/70 border-slate-200'
+                                  : 'bg-slate-50 hover:bg-emerald-50/70 border-slate-100'
                               }`}
                               title={
                                 isOrderLocked
-                                  ? (isAr ? 'الطلب مكتمل ومغلق للتعديل (تم التسليم أو السداد)' : 'Order is delivered/paid and locked')
+                                  ? (isAr ? 'الطلب مكتمل (تم التسليم أو السداد) — انقر للتعديل أو التراجع' : 'Order is delivered/paid — Click to edit or revert')
                                   : (isAr ? 'انقر لتسكين الطلب في شاحنة وأمر تحميل' : 'Click to assign order to truck')
                               }
                             >
                               {isOrderLocked ? (
                                 <>
-                                  <div className="w-9 h-9 rounded-2xl bg-slate-200 text-slate-400 border border-slate-300 flex items-center justify-center shadow-2xs">
-                                    <Lock className="w-4 h-4 text-slate-500" />
+                                  <div className="w-9 h-9 rounded-2xl bg-slate-200 group-hover:bg-slate-300 text-slate-500 border border-slate-300 flex items-center justify-center shadow-2xs transition">
+                                    <Lock className="w-4 h-4 text-slate-600" />
                                   </div>
-                                  <span className="text-[9px] font-black text-slate-500 mt-1.5 text-center leading-tight">
-                                    {isAr ? 'مغلق' : 'Locked'}
+                                  <span className="text-[9px] font-black text-slate-600 mt-1.5 text-center leading-tight">
+                                    {isAr ? 'مكتمل' : 'Closed'}
                                   </span>
                                 </>
                               ) : (
