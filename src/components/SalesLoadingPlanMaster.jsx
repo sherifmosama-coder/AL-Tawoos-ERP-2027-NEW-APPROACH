@@ -321,6 +321,218 @@ function resolveOrderSerial(order, allOrders = []) {
   return String(order.id || '').slice(-4).toUpperCase();
 }
 
+// Fast contrast color calculator for segment-colored chips
+function getContrastTextColor(hexColor) {
+  if (!hexColor || typeof hexColor !== 'string' || !hexColor.startsWith('#')) return '#ffffff';
+  const hex = hexColor.replace('#', '');
+  if (hex.length !== 6) return '#ffffff';
+  const r = parseInt(hex.substring(0, 2), 16) || 0;
+  const g = parseInt(hex.substring(2, 4), 16) || 0;
+  const b = parseInt(hex.substring(4, 6), 16) || 0;
+  const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+  return yiq >= 165 ? '#0f172a' : '#ffffff';
+}
+
+// Non-Intrusive Order Products & Prices Breakdown Modal
+function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segments = [], isAr = true }) {
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    if (isOpen) {
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen || !order) return null;
+
+  const clientObj = clients.find((c) => c.id === order.clientId) || null;
+  const segObj = clientObj?.segmentId ? segments.find((s) => s.id === clientObj.segmentId) : null;
+  const segColor = segObj?.color || '#2563eb';
+  const SegIcon = (segObj?.icon && SEGMENT_ICON_MAP[segObj.icon]) ? SEGMENT_ICON_MAP[segObj.icon] : Building2;
+
+  const lines = Array.isArray(order.lines) ? order.lines : [];
+  const totalCartons = Number(order.totalCartons || order.totalQty) || 0;
+  const totalBonus = Number(order.totalBonus) || 0;
+  const totalWeightKg = Number(order.totalWeightKg) || 0;
+  const grandTotal = Number(order.grandTotal) || 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden text-start animate-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-2 rounded-xl bg-amber-500/20 text-amber-900 border border-amber-300 shadow-2xs shrink-0">
+              <Boxes className="w-5 h-5 text-amber-700" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-mono text-sm font-black text-slate-900">
+                  #{order.serial || String(order.id || '').replace(/^SO-/, '')}
+                </span>
+                <span
+                  className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[11px] font-black shadow-2xs max-w-[220px] truncate"
+                  style={{
+                    backgroundColor: segColor,
+                    color: getContrastTextColor(segColor)
+                  }}
+                >
+                  <span className="w-4 h-4 rounded flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
+                    {clientObj?.logo ? (
+                      <img src={clientObj.logo} alt="" className="w-full h-full object-contain p-0.2 rounded" />
+                    ) : (
+                      <SegIcon className="w-2.5 h-2.5" style={{ color: segColor }} />
+                    )}
+                  </span>
+                  <span className="truncate">{order.clientName || '—'}</span>
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-slate-500 font-medium mt-0.5">
+                {order.invoiceDate && (
+                  <span>{isAr ? 'تاريخ الفاتورة:' : 'Invoice Date:'} <strong className="font-mono text-slate-700">{order.invoiceDate}</strong></span>
+                )}
+                {order.loadingDate && (
+                  <>
+                    <span className="text-slate-300">•</span>
+                    <span>{isAr ? 'التحميل:' : 'Loading:'} <strong className="font-mono text-slate-700">{order.loadingDate}</strong></span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-xl transition cursor-pointer shrink-0"
+            title={isAr ? 'إغلاق' : 'Close'}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Quick Stats Strip */}
+        <div className="px-5 py-2.5 bg-amber-50/50 border-b border-amber-200/60 grid grid-cols-3 gap-2 text-center text-xs shrink-0">
+          <div className="bg-white p-2 rounded-xl border border-amber-100 shadow-2xs">
+            <span className="text-[10px] text-slate-400 font-bold block">{isAr ? 'إجمالي الكراتين:' : 'Total Cartons:'}</span>
+            <span className="font-mono font-black text-slate-800 text-sm">
+              {totalCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+              {totalBonus > 0 && (
+                <span className="text-emerald-700 text-xs font-black ms-1">+{totalBonus} {isAr ? 'بونص' : 'bonus'}</span>
+              )}
+            </span>
+          </div>
+
+          <div className="bg-white p-2 rounded-xl border border-amber-100 shadow-2xs">
+            <span className="text-[10px] text-slate-400 font-bold block">{isAr ? 'إجمالي الوزن:' : 'Total Weight:'}</span>
+            <span className="font-mono font-black text-emerald-700 text-sm">
+              {(totalWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 't'}
+              <span className="text-[10px] text-slate-400 font-normal ms-1">({totalWeightKg.toLocaleString()} kg)</span>
+            </span>
+          </div>
+
+          <div className="bg-white p-2 rounded-xl border border-amber-100 shadow-2xs">
+            <span className="text-[10px] text-slate-400 font-bold block">{isAr ? 'القيمة الإجمالية:' : 'Grand Total:'}</span>
+            <span className="font-mono font-black text-indigo-700 text-sm">
+              {grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-[10px] font-normal">EGP</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Products Table Content */}
+        <div className="p-4 overflow-y-auto flex-1 text-xs">
+          {lines.length === 0 ? (
+            <div className="p-8 text-center text-slate-400">
+              <Boxes className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+              <p className="font-bold">{isAr ? 'لا توجد أصناف مسجلة في هذا الطلب' : 'No items recorded in this order'}</p>
+            </div>
+          ) : (
+            <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
+              <table className="w-full text-start border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200 text-[11px]">
+                    <th className="py-2.5 px-3 text-start">{isAr ? 'الصنف' : 'Product'}</th>
+                    <th className="py-2.5 px-3 text-center">{isAr ? 'الكمية' : 'Qty'}</th>
+                    <th className="py-2.5 px-3 text-center">{isAr ? 'البونص' : 'Bonus'}</th>
+                    <th className="py-2.5 px-3 text-end">{isAr ? 'سعر الوحدة' : 'Unit Price'}</th>
+                    <th className="py-2.5 px-3 text-end">{isAr ? 'الوزن' : 'Weight'}</th>
+                    <th className="py-2.5 px-3 text-end">{isAr ? 'الإجمالي (EGP)' : 'Total (EGP)'}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-mono">
+                  {lines.map((l, idx) => {
+                    const lineQty = Number(l.qty) || 0;
+                    const lineBonus = Number(l.bonus) || 0;
+                    const linePrice = Number(l.detectedUnitPrice || l.unitPrice || l.price) || 0;
+                    const lineTotal = Number(l.lineTotal || (lineQty * linePrice)) || 0;
+                    const lineWeight = Number(l.totalWeightKg || l.weightKg || (lineQty * (Number(l.weightPerCarton) || 0))) || 0;
+                    const prodName = isAr ? (l.productNameAr || l.productNameEn || l.productName || l.productId) : (l.productNameEn || l.productNameAr || l.productName || l.productId);
+
+                    return (
+                      <tr key={idx} className="hover:bg-slate-50/80 transition">
+                        <td className="py-2 px-3 text-start">
+                          <div className="font-sans font-extrabold text-slate-800 text-xs">
+                            {prodName}
+                          </div>
+                          {l.productCode && (
+                            <span className="text-[10px] text-slate-400 font-mono font-semibold block">
+                              [{l.productCode}]
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-center font-bold text-slate-900">
+                          {lineQty.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          {lineBonus > 0 ? (
+                            <span className="inline-flex items-center px-1.5 py-0.2 rounded-md text-[10px] font-black bg-emerald-100 text-emerald-800">
+                              +{lineBonus}
+                            </span>
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-end font-semibold text-slate-700">
+                          {linePrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="py-2 px-3 text-end text-slate-500 font-medium">
+                          {lineWeight > 0 ? `${lineWeight.toFixed(1)} kg` : '—'}
+                        </td>
+                        <td className="py-2 px-3 text-end font-black text-slate-900">
+                          {lineTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 flex items-center justify-end shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-xl transition cursor-pointer"
+          >
+            {isAr ? 'إغلاق' : 'Close'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SalesLoadingPlanMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
@@ -376,9 +588,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // Floating Dock Expanded State
   const [isManifestExpanded, setIsManifestExpanded] = useState(false);
 
-  // Save Modal Confirmation
-  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
-  const [advancePendingToPreparing, setAdvancePendingToPreparing] = useState(true);
+  // Non-Intrusive Order Products & Prices Modal
+  const [selectedOrderForProducts, setSelectedOrderForProducts] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
 
   // Intentional Alignment Discrepancy Modal Confirmation
@@ -1287,7 +1498,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return;
     }
 
-    setIsSaveModalOpen(true);
+    // Directly commit changes — confirmation modal is no longer needed
+    handleCommitSavePlan();
   };
 
   // Commit Save to Firestore via writeBatch
@@ -1321,15 +1533,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           updatePayload.invoiceDate = staged.invoiceDate;
         }
 
-        // Custom fulfillment status if staged
+        // Custom fulfillment status if staged (managed directly at card level)
         if (staged.fulfillmentStatus) {
           updatePayload.fulfillmentStatus = staged.fulfillmentStatus;
-        } else if (
-          advancePendingToPreparing &&
-          staged.loadingOrderNumber &&
-          originalOrder?.fulfillmentStatus === 'not_yet'
-        ) {
-          updatePayload.fulfillmentStatus = 'prepare';
         }
 
         // Build rich metadata diffs for Sales Orders Master audit trail
@@ -1402,7 +1608,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       await batch.commit();
 
       setStagedAssignments({});
-      setIsSaveModalOpen(false);
       setIsIntentionalDiscrepancyModalOpen(false);
       setIsManifestExpanded(false);
       setActiveEditingOrderId(null);
@@ -1778,10 +1983,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                           ? 'border-emerald-400 ring-2 ring-emerald-500/20 shadow-md'
                           : 'border-slate-200/90 hover:border-slate-300'
                       }`}
-                      style={{
-                        borderInlineStartColor: segColor,
-                        borderInlineStartWidth: '5px'
-                      }}
                     >
                       {/* Flex Container with Animated 80/20 Width Transitions */}
                       <div className="flex flex-col md:flex-row items-stretch transition-all duration-700 ease-in-out">
@@ -1811,16 +2012,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
                                 </div>
 
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <span
-                                    className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
-                                    style={{
-                                      backgroundColor: `${segColor}18`,
-                                      color: segColor,
-                                      border: `1px solid ${segColor}35`
-                                    }}
-                                    title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
-                                  >
+                                <div
+                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl text-xs font-black shadow-2xs max-w-full truncate"
+                                  style={{
+                                    backgroundColor: segColor,
+                                    color: getContrastTextColor(segColor)
+                                  }}
+                                  title={order.clientName || '—'}
+                                >
+                                  <span className="w-4 h-4 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
                                     {clientObj?.logo ? (
                                       <img
                                         src={clientObj.logo}
@@ -1828,12 +2028,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                         className="w-full h-full object-contain p-0.5 rounded-md"
                                       />
                                     ) : (
-                                      <SegIcon className="w-3 h-3 shrink-0" />
+                                      <SegIcon className="w-2.5 h-2.5 shrink-0" style={{ color: segColor }} />
                                     )}
                                   </span>
-                                  <div className="font-extrabold text-xs text-slate-900 leading-tight truncate" title={order.clientName}>
-                                    {order.clientName || '—'}
-                                  </div>
+                                  <span className="truncate leading-tight">{order.clientName || '—'}</span>
                                 </div>
 
                                 {showBranchName && (
@@ -1864,9 +2062,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               </div>
 
                               <div className="pt-2 border-t border-slate-200/70 space-y-1">
-                                <div className="text-xs font-mono font-black text-slate-900">
-                                  {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
-                                </div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedOrderForProducts(order);
+                                  }}
+                                  className="text-xs font-mono font-black text-slate-900 hover:text-indigo-600 inline-flex items-center gap-1 cursor-pointer transition group/ctn"
+                                  title={isAr ? 'عرض تفاصيل المنتجات والكميات والأسعار' : 'View products, quantities and prices breakdown'}
+                                >
+                                  <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
+                                  <span>{(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
+                                </button>
                                 <div className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
                                   <Weight className="w-2.5 h-2.5 text-emerald-600" />
                                   <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
@@ -2228,12 +2435,21 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
                                 {/* Cartons & Weight Summary Badge */}
                                 <div className="flex items-center gap-2">
-                                  <span className="font-bold text-slate-900 text-xs font-mono">
-                                    {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedOrderForProducts(order);
+                                    }}
+                                    className="font-bold text-slate-900 text-xs font-mono inline-flex items-center gap-1 hover:text-indigo-600 px-2 py-0.5 rounded-lg bg-amber-50 hover:bg-amber-100/80 border border-amber-200 transition cursor-pointer group/ctn"
+                                    title={isAr ? 'انقر لعرض تفاصيل المنتجات والكميات والأسعار' : 'Click to view products, quantities and prices breakdown'}
+                                  >
+                                    <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
+                                    <span>{(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
                                     {order.totalBonus > 0 ? (
-                                      <span className="text-emerald-600 text-[10px] font-bold ms-1">+{order.totalBonus}</span>
+                                      <span className="text-emerald-700 text-[10px] font-bold ms-0.5">+{order.totalBonus}</span>
                                     ) : null}
-                                  </span>
+                                  </button>
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
                                     <Weight className="w-3 h-3 text-slate-500" />
                                     <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
@@ -2244,40 +2460,27 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {/* Client & Branch & Region & Maps */}
                               <div className="space-y-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span
-                                    className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
+                                  <div
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate"
                                     style={{
-                                      backgroundColor: `${segColor}18`,
-                                      color: segColor,
-                                      border: `1px solid ${segColor}35`
+                                      backgroundColor: segColor,
+                                      color: getContrastTextColor(segColor)
                                     }}
-                                    title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
+                                    title={order.clientName || order.clientId || '—'}
                                   >
-                                    {clientObj?.logo ? (
-                                      <img
-                                        src={clientObj.logo}
-                                        alt=""
-                                        className="w-full h-full object-contain p-0.5 rounded-lg"
-                                      />
-                                    ) : (
-                                      <SegIcon className="w-3.5 h-3.5 shrink-0" />
-                                    )}
-                                  </span>
-                                  <span className="font-extrabold text-slate-900 text-sm">
-                                    {order.clientName || order.clientId || '—'}
-                                  </span>
-                                  {segObj && (
-                                    <span
-                                      className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.2 rounded-md shadow-2xs"
-                                      style={{
-                                        backgroundColor: `${segColor}15`,
-                                        color: segColor,
-                                        border: `1px solid ${segColor}30`
-                                      }}
-                                    >
-                                      <span>{isAr ? segObj.nameAr : segObj.nameEn}</span>
+                                    <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
+                                      {clientObj?.logo ? (
+                                        <img
+                                          src={clientObj.logo}
+                                          alt=""
+                                          className="w-full h-full object-contain p-0.5 rounded-md"
+                                        />
+                                      ) : (
+                                        <SegIcon className="w-3 h-3 shrink-0" style={{ color: segColor }} />
+                                      )}
                                     </span>
-                                  )}
+                                    <span className="truncate">{order.clientName || order.clientId || '—'}</span>
+                                  </div>
                                   {showBranchName && (
                                     <span className="text-xs font-bold text-slate-500">
                                       ({order.branchName})
@@ -2567,12 +2770,21 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
                                 {/* Cartons & Weight Summary Badge */}
                                 <div className="flex items-center gap-2">
-                                  <span className="font-bold text-slate-900 text-xs font-mono">
-                                    {(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedOrderForProducts(order);
+                                    }}
+                                    className="font-bold text-slate-900 text-xs font-mono inline-flex items-center gap-1 hover:text-indigo-600 px-2 py-0.5 rounded-lg bg-amber-50 hover:bg-amber-100/80 border border-amber-200 transition cursor-pointer group/ctn"
+                                    title={isAr ? 'انقر لعرض تفاصيل المنتجات والكميات والأسعار' : 'Click to view products, quantities and prices breakdown'}
+                                  >
+                                    <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
+                                    <span>{(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
                                     {order.totalBonus > 0 ? (
-                                      <span className="text-emerald-600 text-[10px] font-bold ms-1">+{order.totalBonus}</span>
+                                      <span className="text-emerald-700 text-[10px] font-bold ms-0.5">+{order.totalBonus}</span>
                                     ) : null}
-                                  </span>
+                                  </button>
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
                                     <Weight className="w-3 h-3 text-slate-500" />
                                     <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
@@ -2583,40 +2795,27 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {/* Client & Branch & Region & Maps */}
                               <div className="space-y-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span
-                                    className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
+                                  <div
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate"
                                     style={{
-                                      backgroundColor: `${segColor}18`,
-                                      color: segColor,
-                                      border: `1px solid ${segColor}35`
+                                      backgroundColor: segColor,
+                                      color: getContrastTextColor(segColor)
                                     }}
-                                    title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
+                                    title={order.clientName || order.clientId || '—'}
                                   >
-                                    {clientObj?.logo ? (
-                                      <img
-                                        src={clientObj.logo}
-                                        alt=""
-                                        className="w-full h-full object-contain p-0.5 rounded-lg"
-                                      />
-                                    ) : (
-                                      <SegIcon className="w-3.5 h-3.5 shrink-0" />
-                                    )}
-                                  </span>
-                                  <span className="font-extrabold text-slate-900 text-sm">
-                                    {order.clientName || order.clientId || '—'}
-                                  </span>
-                                  {segObj && (
-                                    <span
-                                      className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.2 rounded-md shadow-2xs"
-                                      style={{
-                                        backgroundColor: `${segColor}15`,
-                                        color: segColor,
-                                        border: `1px solid ${segColor}30`
-                                      }}
-                                    >
-                                      <span>{isAr ? segObj.nameAr : segObj.nameEn}</span>
+                                    <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
+                                      {clientObj?.logo ? (
+                                        <img
+                                          src={clientObj.logo}
+                                          alt=""
+                                          className="w-full h-full object-contain p-0.5 rounded-md"
+                                        />
+                                      ) : (
+                                        <SegIcon className="w-3 h-3 shrink-0" style={{ color: segColor }} />
+                                      )}
                                     </span>
-                                  )}
+                                    <span className="truncate">{order.clientName || order.clientId || '—'}</span>
+                                  </div>
                                   {showBranchName && (
                                     <span className="text-xs font-bold text-slate-500">
                                       ({order.branchName})
@@ -3051,92 +3250,16 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         </div>
       )}
 
-      {/* SAVE CONFIRMATION MODAL */}
-      {isSaveModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden text-start">
-            <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-xl bg-emerald-600 text-white shadow-xs">
-                  <Save className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-slate-900 text-sm">
-                    {isAr ? 'تأكيد واعتماد خطة التحميل' : 'Confirm & Save Loading Plan'}
-                  </h3>
-                  <span className="text-xs text-slate-400 font-bold">
-                    {stagedOrdersCount} {isAr ? 'أمر بيع مستهدف' : 'orders to update'}
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsSaveModalOpen(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-xl transition cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4 text-xs">
-              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-2xl space-y-1.5">
-                <span className="font-bold text-emerald-900 block">
-                  {isAr ? 'ملخص بيانات الخطة المستهدفة:' : 'Plan Summary:'}
-                </span>
-                <ul className="text-[11px] text-emerald-800 space-y-1 list-disc list-inside">
-                  <li>{stagedOrdersCount} {isAr ? 'أوامر بيع يتم تحديث تسكينها' : 'orders will have dispatch updated'}</li>
-                  <li>{truckManifest.length} {isAr ? 'شاحنات مشمولة بأوامر تحميل' : 'trucks configured in manifest'}</li>
-                </ul>
-              </div>
-
-              {/* Advance Pending to Preparing Checkbox */}
-              <label className="flex items-start gap-2.5 p-3 rounded-2xl bg-slate-50 border border-slate-200 cursor-pointer hover:bg-slate-100 transition select-none">
-                <input
-                  type="checkbox"
-                  checked={advancePendingToPreparing}
-                  onChange={(e) => setAdvancePendingToPreparing(e.target.checked)}
-                  className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
-                />
-                <div>
-                  <span className="font-bold text-slate-900 block">
-                    {isAr ? 'ترقية الأوامر المعلقة تلقائياً إلى "جاري التجهيز"' : 'Advance Pending orders to "Preparing"'}
-                  </span>
-                  <span className="text-[11px] text-slate-500 leading-relaxed block mt-0.5">
-                    {isAr
-                      ? 'تغيير حالة التنفيذ للأوامر المجدولة من (معلق) إلى (جاري التجهيز) وإشعار مستودع المنتج التام.'
-                      : 'Automatically updates fulfillment status of newly scheduled orders from Pending to Preparing.'}
-                  </span>
-                </div>
-              </label>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setIsSaveModalOpen(false)}
-                  disabled={isSaving}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer"
-                >
-                  {isAr ? 'إلغاء' : 'Cancel'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCommitSavePlan}
-                  disabled={isSaving}
-                  className="inline-flex items-center gap-1.5 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-xs transition cursor-pointer"
-                >
-                  {isSaving ? (
-                    <span>{isAr ? 'جاري الحفظ...' : 'Saving...'}</span>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>{isAr ? 'اعتماد وحفظ الخطة' : 'Confirm & Commit'}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Non-Intrusive Order Products & Prices Modal */}
+      {selectedOrderForProducts && (
+        <OrderProductsDetailsModal
+          isOpen={Boolean(selectedOrderForProducts)}
+          onClose={() => setSelectedOrderForProducts(null)}
+          order={selectedOrderForProducts}
+          clients={clients}
+          segments={segments}
+          isAr={isAr}
+        />
       )}
 
       {/* EXTENDED MULTI-DATE MISMATCH PROMPT MODAL (Loading Date + Invoice Date) */}
