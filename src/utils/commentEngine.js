@@ -29,7 +29,10 @@ const TAB_TO_PERMISSION_KEY_MAP = {
   stock_count: 'stock_count',
   spare_parts: 'spare_parts_issue',
   cash_safes_hub: 'cash_safes',
-  custodies_advances: 'cash_safes'
+  custodies_advances: 'cash_safes',
+  sales_orders: 'sales_orders',
+  loading_plan: 'loading_plan',
+  fg_inward: 'fg_inward'
 };
 
 /**

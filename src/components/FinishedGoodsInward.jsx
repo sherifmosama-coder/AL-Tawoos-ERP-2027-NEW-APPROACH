@@ -45,6 +45,7 @@ import {
   completeActionRequired,
   createNotification
 } from '../utils/notificationEngine';
+import { RowCommentButton } from './comments';
 
 export default function FinishedGoodsInward({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
@@ -1554,6 +1555,7 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
               return (
                 <div
                   key={item.uniqueKey}
+                  data-comment-doc={item.palletId || item.uniqueKey}
                   className="p-3 bg-white border border-amber-200/90 hover:border-indigo-500 rounded-2xl shadow-2xs hover:shadow-xs transition-all flex flex-col justify-between space-y-2 group"
                 >
                   {/* Top: Product Name (Prominent) & Packaging Option (Less Prominent) */}
@@ -1682,6 +1684,13 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                     >
                       <Printer className="h-4 w-4" />
                     </button>
+
+                    <RowCommentButton
+                      docId={item.palletId || item.uniqueKey}
+                      docNumber={item.palletId ? `Pallet #${item.palletId}` : (item.uniqueKey || 'Pallet')}
+                      tab="fg_inward"
+                      module="production"
+                    />
                   </div>
                 </div>
               );
@@ -1947,6 +1956,7 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                                             return (
                                               <tr
                                                 key={pallet.id || pallet.palletId}
+                                                data-comment-doc={pallet.id || pallet.palletId}
                                                 onClick={() => setSelectedPalletPassport(pallet)}
                                                 className="hover:bg-indigo-50/60 cursor-pointer transition-colors group"
                                               >
@@ -2018,6 +2028,12 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                                                 </td>
                                                 <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                                                   <div className="flex items-center justify-center gap-1">
+                                                    <RowCommentButton
+                                                      docId={pallet.id || pallet.palletId}
+                                                      docNumber={pallet.palletId ? `Pallet #${pallet.palletId}` : (pallet.id || 'Pallet')}
+                                                      tab="fg_inward"
+                                                      module="production"
+                                                    />
                                                     <button
                                                       type="button"
                                                       onClick={() => handleOpenThermalLabel(pallet)}
@@ -2094,13 +2110,21 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setRespondingPallet(null)}
-                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
-                >
-                  <X className="h-5 w-5" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <RowCommentButton
+                    docId={respondingPallet.id || respondingPallet.palletId}
+                    docNumber={respondingPallet.palletId ? `Pallet #${respondingPallet.palletId}` : (respondingPallet.id || 'Pallet')}
+                    tab="fg_inward"
+                    module="production"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setRespondingPallet(null)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
               </div>
 
               {/* Subtle Identification Chips with Click-to-Copy */}
@@ -2612,13 +2636,21 @@ export default function FinishedGoodsInward({ currentUser = {}, permissions = nu
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setSelectedPalletPassport(null)}
-                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
-                >
-                  <X className="h-5 w-5" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <RowCommentButton
+                    docId={selectedPalletPassport.id || selectedPalletPassport.palletId}
+                    docNumber={selectedPalletPassport.palletId ? `Pallet #${selectedPalletPassport.palletId}` : (selectedPalletPassport.id || 'Pallet')}
+                    tab="fg_inward"
+                    module="production"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPalletPassport(null)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
               </div>
 
               {/* Key Passport Specs Grid */}

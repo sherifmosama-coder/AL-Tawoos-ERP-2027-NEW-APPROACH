@@ -67,6 +67,7 @@ import {
   completeActionRequired,
   createNotification
 } from '../utils/notificationEngine';
+import { RowCommentButton } from './comments';
 
 export default function StockTransfers({ currentUser = {}, permissions = null }) {
   const { companyProfile } = useCompanyProfile();
@@ -1452,7 +1453,11 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                   ));
 
                 return (
-                  <tr key={trn.id} className="hover:bg-slate-50/70 transition">
+                  <tr
+                    key={trn.id}
+                    data-comment-doc={trn.id}
+                    className="hover:bg-slate-50/70 transition"
+                  >
                     <td className="p-3 align-top">
                       <span className="font-mono font-extrabold text-indigo-700 block text-xs">{trn.id}</span>
                       <span className="text-[11px] text-slate-500 font-medium">{trn.transferDate}</span>
@@ -1617,6 +1622,13 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                             <ShieldAlert className="h-4 w-4" />
                           </button>
                         )}
+
+                        <RowCommentButton
+                          docId={trn.id}
+                          docNumber={trn.id}
+                          tab="transfers"
+                          module="materials"
+                        />
 
                         <button
                           onClick={() => setViewingTransfer(trn)}
@@ -2212,12 +2224,20 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
                 </h3>
                 <span className="text-xs text-slate-500">{viewingTransfer.transferDate}</span>
               </div>
-              <button
-                onClick={() => setViewingTransfer(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <RowCommentButton
+                  docId={viewingTransfer.id}
+                  docNumber={viewingTransfer.id}
+                  tab="transfers"
+                  module="materials"
+                />
+                <button
+                  onClick={() => setViewingTransfer(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-200 text-xs">

@@ -69,6 +69,7 @@ import SalesOrderAuditModal from './SalesOrderAuditModal';
 import PeacockLoader from './PeacockLoader';
 import { normalizeLocationUrl } from '../utils/locationUtils';
 import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from './ClientSegmentsMaster';
+import { RowCommentButton, RowCommentMenuItem, useRecordComments } from './comments';
 import {
   DEFAULT_PRICING_STRATEGIES,
   formatDateKey,
@@ -1573,6 +1574,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                         <React.Fragment key={order.id}>
                           <tr
                             id={`sales-order-row-${order.id}`}
+                            data-comment-doc={order.id}
                             onClick={() => toggleRowExpand(order.id)}
                             className={`transition cursor-pointer select-none ${resolveRowBackground(order, isExpanded)}`}
                           >
@@ -1957,31 +1959,40 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 10. Actions Button (3-dots with Portal Menu) */}
+                            {/* 10. Actions Button (3-dots with Portal Menu + Dynamic Row Comment) */}
                             <td className="py-3 px-3 text-center whitespace-nowrap">
-                              <button
-                                type="button"
-                                data-order-menu
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (activeActionsMenuOrderId === order.id) {
-                                    setActiveActionsMenuOrderId(null);
-                                    setActionsMenuAnchor(null);
-                                  } else {
-                                    const rect = e.currentTarget.getBoundingClientRect();
-                                    setActionsMenuAnchor({
-                                      top: rect.bottom + 4,
-                                      left: rect.left,
-                                      right: rect.right
-                                    });
-                                    setActiveActionsMenuOrderId(order.id);
-                                  }
-                                }}
-                                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
-                                title={isAr ? 'إجراءات الطلب' : 'Order Actions'}
-                              >
-                                <MoreVertical className="w-4 h-4" />
-                              </button>
+                              <div className="flex items-center justify-center gap-1">
+                                <RowCommentButton
+                                  docId={order.id}
+                                  docNumber={order.serial ? `SO-${order.serial}` : (order.id || 'Order')}
+                                  tab="sales_orders"
+                                  module="sales"
+                                  hideIfEmpty
+                                />
+                                <button
+                                  type="button"
+                                  data-order-menu
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (activeActionsMenuOrderId === order.id) {
+                                      setActiveActionsMenuOrderId(null);
+                                      setActionsMenuAnchor(null);
+                                    } else {
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      setActionsMenuAnchor({
+                                        top: rect.bottom + 4,
+                                        left: rect.left,
+                                        right: rect.right
+                                      });
+                                      setActiveActionsMenuOrderId(order.id);
+                                    }
+                                  }}
+                                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                                  title={isAr ? 'إجراءات الطلب' : 'Order Actions'}
+                                >
+                                  <MoreVertical className="w-4 h-4" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
 
@@ -2466,6 +2477,18 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           }}
           className="w-48 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
         >
+          {/* Quick Comment Trigger inside 3-dots (Grouped here when no comments yet) */}
+          <RowCommentMenuItem
+            docId={activeOrderForMenu.id}
+            docNumber={activeOrderForMenu.serial ? `SO-${activeOrderForMenu.serial}` : (activeOrderForMenu.id || 'Order')}
+            tab="sales_orders"
+            module="sales"
+            onAction={() => {
+              setActiveActionsMenuOrderId(null);
+              setActionsMenuAnchor(null);
+            }}
+          />
+
           <button
             type="button"
             onClick={() => {

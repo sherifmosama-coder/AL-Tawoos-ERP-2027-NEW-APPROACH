@@ -48,6 +48,7 @@ import { db } from '../firebase.js';
 import SearchableSelect from './SearchableSelect.jsx';
 import PeacockLoader from './PeacockLoader.jsx';
 import { canAccessAction } from '../config/appArchitecture.js';
+import { RowCommentButton } from './comments';
 import { resolveLocationInfo, normalizeLocationUrl } from '../utils/locationUtils.js';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
 
@@ -2004,6 +2005,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     <div
                       key={order.id}
                       id={`loading-plan-card-${order.id}`}
+                      data-comment-doc={order.id}
                       className={`bg-white rounded-3xl border transition-all duration-300 shadow-xs overflow-hidden ${
                         isOrderLocked
                           ? 'border-slate-200/80 bg-slate-50/50 opacity-80'
@@ -2024,19 +2026,27 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             {/* Compressed Order Details (20% width) */}
                             <div className="w-full md:w-[20%] p-3.5 bg-slate-50/90 border-e border-slate-200/80 flex flex-col justify-between space-y-2 shrink-0 text-start select-none transition-all duration-700 ease-in-out">
                               <div className="space-y-1.5">
-                                <div className="flex items-center justify-between">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleNavigateToSalesOrder(order);
-                                    }}
-                                    className="font-mono text-xs font-black text-slate-800 hover:text-indigo-600 hover:underline inline-flex items-center gap-1 cursor-pointer transition"
-                                    title={isAr ? 'عرض تفاصيل أمر البيع في تبويب أوامر البيع' : 'View order details in Sales Orders'}
-                                  >
-                                    <span>#{orderSerial}</span>
-                                    <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
-                                  </button>
+                                <div className="flex items-center justify-between gap-1">
+                                  <div className="flex items-center gap-1 min-w-0">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleNavigateToSalesOrder(order);
+                                      }}
+                                      className="font-mono text-xs font-black text-slate-800 hover:text-indigo-600 hover:underline inline-flex items-center gap-1 cursor-pointer transition"
+                                      title={isAr ? 'عرض تفاصيل أمر البيع في تبويب أوامر البيع' : 'View order details in Sales Orders'}
+                                    >
+                                      <span>#{orderSerial}</span>
+                                      <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                    </button>
+                                    <RowCommentButton
+                                      docId={order.id}
+                                      docNumber={orderSerial ? `SO-${orderSerial}` : (order.id || 'Order')}
+                                      tab="loading_plan"
+                                      module="sales"
+                                    />
+                                  </div>
                                   <span className="text-[10px] font-bold text-slate-400 font-mono">
                                     {order.invoiceDate || '—'}
                                   </span>
@@ -2422,6 +2432,13 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
                                   </button>
 
+                                  <RowCommentButton
+                                    docId={order.id}
+                                    docNumber={orderSerial ? `SO-${orderSerial}` : (order.id || 'Order')}
+                                    tab="loading_plan"
+                                    module="sales"
+                                  />
+
                                   {/* Fulfillment Status Badge - Styled matching SalesOrdersMaster */}
                                   {currentFulfillmentStatus && (
                                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border shadow-2xs ${currentStatusConfig.badgeClasses}`}>
@@ -2753,6 +2770,13 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
                                   </button>
 
+                                  <RowCommentButton
+                                    docId={order.id}
+                                    docNumber={orderSerial ? `SO-${orderSerial}` : (order.id || 'Order')}
+                                    tab="loading_plan"
+                                    module="sales"
+                                  />
+
                                   {/* Fulfillment Status Badge - Styled matching SalesOrdersMaster */}
                                   {currentFulfillmentStatus && (
                                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border shadow-2xs ${currentStatusConfig.badgeClasses}`}>
@@ -3040,6 +3064,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     return (
                       <div
                         key={tm.compoundKey}
+                        data-comment-doc={tm.compoundKey}
                         className={`rounded-2xl p-4 border transition ${
                           tm.isMisaligned
                             ? 'bg-rose-950/60 border-rose-500/80'
@@ -3067,9 +3092,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             </div>
                           </div>
 
-                          <span className="text-[10px] font-mono font-bold bg-slate-900 text-slate-300 px-2 py-0.5 rounded-lg border border-slate-700">
-                            {tm.assignedOrders.length} {isAr ? 'أمر' : 'orders'}
-                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <RowCommentButton
+                              docId={tm.compoundKey}
+                              docNumber={isAr ? `إذن تحميل #${tm.loadingOrderNumber}` : `Loading #${tm.loadingOrderNumber}`}
+                              tab="loading_plan"
+                              module="sales"
+                              className="bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700"
+                            />
+                            <span className="text-[10px] font-mono font-bold bg-slate-900 text-slate-300 px-2 py-0.5 rounded-lg border border-slate-700">
+                              {tm.assignedOrders.length} {isAr ? 'أمر' : 'orders'}
+                            </span>
+                          </div>
                         </div>
 
                         {/* Driver & Rep */}
