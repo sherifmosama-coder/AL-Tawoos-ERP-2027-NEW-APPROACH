@@ -19,7 +19,9 @@ import {
   Clock,
   Wrench,
   Activity,
-  Weight
+  Weight,
+  Copy,
+  Check
 } from 'lucide-react';
 import {
   collection,
@@ -45,6 +47,31 @@ const FUEL_TYPES = [
   { id: 'diesel', labelAr: 'سولار (ديزل)', labelEn: 'Diesel' },
   { id: 'natural_gas', labelAr: 'غاز طبيعي', labelEn: 'Natural Gas' }
 ];
+
+function CopyButton({ text, title, isAr = true, className = '' }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    if (!text) return;
+    navigator.clipboard.writeText(String(text).trim());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className={`inline-flex items-center justify-center p-0.5 rounded transition cursor-pointer text-slate-400 hover:text-indigo-600 hover:bg-slate-200/60 ${
+        copied ? 'text-emerald-600 hover:text-emerald-600 bg-emerald-50' : ''
+      } ${className}`}
+      title={copied ? (isAr ? 'تم النسخ!' : 'Copied!') : (title || (isAr ? 'نسخ' : 'Copy'))}
+    >
+      {copied ? <Check className="w-3 h-3 text-emerald-600 stroke-[3]" /> : <Copy className="w-3 h-3" />}
+    </button>
+  );
+}
 
 export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
   const { i18n } = useTranslation();
@@ -401,8 +428,9 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
                         <div className="bg-sky-600 px-2 py-0.5 text-[9px] font-black text-white uppercase tracking-wider">
                           مصر
                         </div>
-                        <div className="px-2.5 py-0.5 font-black text-sm font-sans tracking-wide text-slate-900">
-                          {veh.plateNumber}
+                        <div className="px-2.5 py-0.5 font-black text-sm font-sans tracking-wide text-slate-900 flex items-center gap-1.5">
+                          <span>{veh.plateNumber}</span>
+                          <CopyButton text={veh.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
                         </div>
                       </div>
                       <div className="font-extrabold text-sm text-slate-900 mt-2 leading-tight">

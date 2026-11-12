@@ -40,7 +40,8 @@ import {
   ShieldAlert,
   Wrench,
   ArrowLeft,
-  ArrowRight
+  ArrowRight,
+  Copy
 } from 'lucide-react';
 import {
   collection,
@@ -331,6 +332,31 @@ function getContrastTextColor(hexColor) {
   return yiq >= 165 ? '#0f172a' : '#ffffff';
 }
 
+function CopyButton({ text, title, isAr = true, className = '' }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    if (!text) return;
+    navigator.clipboard.writeText(String(text).trim());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className={`inline-flex items-center justify-center p-0.5 rounded transition cursor-pointer text-slate-400 hover:text-indigo-600 hover:bg-slate-200/60 ${
+        copied ? 'text-emerald-600 hover:text-emerald-600 bg-emerald-50' : ''
+      } ${className}`}
+      title={copied ? (isAr ? 'تم النسخ!' : 'Copied!') : (title || (isAr ? 'نسخ' : 'Copy'))}
+    >
+      {copied ? <Check className="w-2.5 h-2.5 text-emerald-600 stroke-[3]" /> : <Copy className="w-2.5 h-2.5" />}
+    </button>
+  );
+}
+
 // Non-Intrusive Order Products & Prices Breakdown Modal
 function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segments = [], products = [], isAr = true }) {
   useEffect(() => {
@@ -396,7 +422,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                   <span className="truncate">{order.clientName || '—'}</span>
                 </span>
               </div>
-              <div className="flex items-center gap-2 text-[11px] text-slate-500 font-medium mt-0.5">
+              <div className="flex items-center gap-2 text-[11px] text-slate-500 font-medium mt-0.5 flex-wrap">
                 {order.invoiceDate && (
                   <span>{isAr ? 'تاريخ الفاتورة:' : 'Invoice Date:'} <strong className="font-mono text-slate-700">{order.invoiceDate}</strong></span>
                 )}
@@ -404,6 +430,26 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                   <>
                     <span className="text-slate-300">•</span>
                     <span>{isAr ? 'التحميل:' : 'Loading:'} <strong className="font-mono text-slate-700">{order.loadingDate}</strong></span>
+                  </>
+                )}
+                {order.poTawoos && (
+                  <>
+                    <span className="text-slate-300">•</span>
+                    <span className="inline-flex items-center gap-1 font-mono text-slate-700 bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200">
+                      <span className="text-[10px] text-slate-400 font-sans">{isAr ? 'طاووس:' : 'TW:'}</span>
+                      <strong className="text-slate-800">{order.poTawoos}</strong>
+                      <CopyButton text={order.poTawoos} title={isAr ? 'نسخ أمر شراء طاووس' : 'Copy Tawoos PO #'} isAr={isAr} />
+                    </span>
+                  </>
+                )}
+                {order.poPrivateLabel && (
+                  <>
+                    <span className="text-slate-300">•</span>
+                    <span className="inline-flex items-center gap-1 font-mono text-purple-700 bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200">
+                      <span className="text-[10px] text-purple-400 font-sans">{isAr ? 'علامة:' : 'PL:'}</span>
+                      <strong className="text-purple-900">{order.poPrivateLabel}</strong>
+                      <CopyButton text={order.poPrivateLabel} title={isAr ? 'نسخ أمر شراء العلامة' : 'Copy Private Label PO #'} isAr={isAr} />
+                    </span>
                   </>
                 )}
               </div>
@@ -601,8 +647,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // Status Jump Confirmation Modal (for admin jump or reverting delivered status)
   const [statusJumpConfirmModal, setStatusJumpConfirmModal] = useState(null);
 
-  // Trucks Fleet Dashboard Collapsed/Expanded State
-  const [isTrucksDashboardOpen, setIsTrucksDashboardOpen] = useState(true);
+  // Trucks Fleet Dashboard Collapsed/Expanded State (Default Collapsed)
+  const [isTrucksDashboardOpen, setIsTrucksDashboardOpen] = useState(false);
 
   // Truck Batch Fulfillment Status Transition Modal State: { isOpen, truck, targetStep, affectedOrders, isExecuting }
   const [truckStatusModal, setTruckStatusModal] = useState(null);
@@ -1358,7 +1404,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           totalWeightKg: 0,
           primaryVehicleId: eff.assignedVehicleId,
           primaryVehicleName: eff.assignedVehicleName || '',
-          primaryVehiclePlate: eff.assignedVehiclePlate,
+          primaryVehiclePlate: eff.assignedVehiclePlate || vehicles.find((v) => v.id === eff.assignedVehicleId)?.plateNumber || '',
           primaryDriverId: eff.assignedDriverId,
           primaryDriverName: eff.assignedDriverName,
           primaryRepId: eff.assignedDeliveryRepId,
@@ -1372,6 +1418,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         if (!g.primaryVehicleName) {
           const vObj = vehicles.find((v) => v.id === eff.assignedVehicleId);
           g.primaryVehicleName = eff.assignedVehicleName || vObj?.vehicleModel || vObj?.name || vObj?.code || '';
+        }
+        if (!g.primaryVehiclePlate) {
+          const vObj = vehicles.find((v) => v.id === eff.assignedVehicleId);
+          g.primaryVehiclePlate = eff.assignedVehiclePlate || vObj?.plateNumber || '';
         }
       }
       if (eff.assignedDriverId) g.driversAssigned.add(eff.assignedDriverId);
@@ -2156,9 +2206,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       {/* ========================================================================= */}
       {/* 3. NEW TRUCKS FLEET OPERATIONAL DASHBOARD                                 */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-4 sm:p-5 space-y-4">
+      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-4 sm:p-5">
         {/* Dashboard Header Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
+        <div
+          onClick={() => setIsTrucksDashboardOpen((prev) => !prev)}
+          className={`flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none transition ${
+            isTrucksDashboardOpen ? 'pb-3 border-b border-slate-100' : ''
+          }`}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setIsTrucksDashboardOpen((prev) => !prev);
+            }
+          }}
+        >
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-2xl bg-indigo-50 text-indigo-700 border border-indigo-200/80 flex items-center justify-center shrink-0 shadow-2xs">
               <Truck className="w-5 h-5" />
@@ -2223,7 +2286,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
             <button
               type="button"
-              onClick={() => setIsTrucksDashboardOpen((prev) => !prev)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsTrucksDashboardOpen((prev) => !prev);
+              }}
               className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition cursor-pointer ms-1"
               title={isTrucksDashboardOpen ? (isAr ? 'طي اللوحة' : 'Collapse') : (isAr ? 'توسيع اللوحة' : 'Expand')}
             >
@@ -2234,7 +2300,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
         {/* Scorecards Grid */}
         {isTrucksDashboardOpen && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 pt-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 pt-4">
             {truckFleetAnalysis.length === 0 ? (
               <div className="col-span-full p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-slate-200">
                 <Truck className="w-8 h-8 text-slate-300 mx-auto mb-1.5" />
@@ -2342,8 +2408,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                       {/* Plate Number & Vehicle Specs */}
                       <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-mono flex-wrap">
                         {veh.plateNumber && (
-                          <span className="px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-slate-700 font-bold">
-                            {veh.plateNumber}
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-slate-700 font-bold">
+                            <span>{veh.plateNumber}</span>
+                            <CopyButton text={veh.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
                           </span>
                         )}
                         <span>•</span>
@@ -2722,6 +2789,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   <div className="text-[10px] text-slate-600 font-mono flex items-center gap-1 truncate" title={workingHoursDisplay}>
                                     <Clock className="w-2.5 h-2.5 text-slate-400 shrink-0" />
                                     <span className="truncate">{workingHoursDisplay}</span>
+                                  </div>
+                                )}
+
+                                {/* Purchase Orders with Copy Buttons */}
+                                {order.poTawoos && (
+                                  <div className="inline-flex items-center gap-1 text-[9px] font-mono font-bold bg-slate-200/70 text-slate-800 px-1.5 py-0.5 rounded border border-slate-300">
+                                    <span className="text-[8px] text-slate-500 font-sans">{isAr ? 'طاووس:' : 'TW:'}</span>
+                                    <span>{order.poTawoos}</span>
+                                    <CopyButton text={order.poTawoos} title={isAr ? 'نسخ أمر شراء طاووس' : 'Copy Tawoos PO #'} isAr={isAr} />
+                                  </div>
+                                )}
+                                {order.poPrivateLabel && (
+                                  <div className="inline-flex items-center gap-1 text-[9px] font-mono font-bold bg-purple-100/70 text-purple-900 px-1.5 py-0.5 rounded border border-purple-200">
+                                    <span className="text-[8px] text-purple-600 font-sans">{isAr ? 'علامة:' : 'PL:'}</span>
+                                    <span>{order.poPrivateLabel}</span>
+                                    <CopyButton text={order.poPrivateLabel} title={isAr ? 'نسخ أمر شراء العلامة' : 'Copy Private Label PO #'} isAr={isAr} />
                                   </div>
                                 )}
 
@@ -3223,6 +3306,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       </span>
                                     </span>
                                   )}
+
+                                  {/* Purchase Orders with Copy Buttons */}
+                                  {order.poTawoos && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold bg-slate-100 text-slate-800 px-2 py-0.5 rounded-md border border-slate-200 shadow-2xs" title={isAr ? 'أمر شراء طاووس' : 'Tawoos PO'}>
+                                      <span className="text-[9px] text-slate-400 font-sans">{isAr ? 'طاووس:' : 'TW:'}</span>
+                                      <span>{order.poTawoos}</span>
+                                      <CopyButton text={order.poTawoos} title={isAr ? 'نسخ أمر شراء طاووس' : 'Copy Tawoos PO #'} isAr={isAr} />
+                                    </span>
+                                  )}
+                                  {order.poPrivateLabel && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold bg-purple-50 text-purple-900 px-2 py-0.5 rounded-md border border-purple-200 shadow-2xs" title={isAr ? 'أمر شراء علامة خاصة' : 'Private Label PO'}>
+                                      <span className="text-[9px] text-purple-500 font-sans">{isAr ? 'علامة:' : 'PL:'}</span>
+                                      <span>{order.poPrivateLabel}</span>
+                                      <CopyButton text={order.poPrivateLabel} title={isAr ? 'نسخ أمر شراء العلامة الخاصة' : 'Copy Private Label PO #'} isAr={isAr} />
+                                    </span>
+                                  )}
                                 </div>
                               </div>
 
@@ -3343,9 +3442,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <span>#{eff.loadingOrderNumber}</span>
                                   </div>
 
-                                  {/* Cell 2: Vehicle Truck Name (Only Truck Name, no plate) */}
-                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 truncate" title={truckDisplayName || eff.assignedVehiclePlate}>
-                                    {truckDisplayName || eff.assignedVehiclePlate || '—'}
+                                  {/* Cell 2: Vehicle Truck Name (Truck Name + copyable Plate) */}
+                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 flex items-center justify-between gap-1" title={truckDisplayName || eff.assignedVehiclePlate}>
+                                    <span className="truncate">{truckDisplayName || eff.assignedVehiclePlate || '—'}</span>
+                                    {(eff.assignedVehiclePlate || matchedVeh?.plateNumber) && (
+                                      <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-100 border border-slate-200 font-mono text-[9px] text-slate-600 shrink-0">
+                                        <span>{eff.assignedVehiclePlate || matchedVeh?.plateNumber}</span>
+                                        <CopyButton text={eff.assignedVehiclePlate || matchedVeh?.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                                      </span>
+                                    )}
                                   </div>
 
                                   {/* Cell 3: Driver Name */}
@@ -3561,6 +3666,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       </span>
                                     </span>
                                   )}
+
+                                  {/* Purchase Orders with Copy Buttons */}
+                                  {order.poTawoos && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold bg-slate-100 text-slate-800 px-2 py-0.5 rounded-md border border-slate-200 shadow-2xs" title={isAr ? 'أمر شراء طاووس' : 'Tawoos PO'}>
+                                      <span className="text-[9px] text-slate-400 font-sans">{isAr ? 'طاووس:' : 'TW:'}</span>
+                                      <span>{order.poTawoos}</span>
+                                      <CopyButton text={order.poTawoos} title={isAr ? 'نسخ أمر شراء طاووس' : 'Copy Tawoos PO #'} isAr={isAr} />
+                                    </span>
+                                  )}
+                                  {order.poPrivateLabel && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold bg-purple-50 text-purple-900 px-2 py-0.5 rounded-md border border-purple-200 shadow-2xs" title={isAr ? 'أمر شراء علامة خاصة' : 'Private Label PO'}>
+                                      <span className="text-[9px] text-purple-500 font-sans">{isAr ? 'علامة:' : 'PL:'}</span>
+                                      <span>{order.poPrivateLabel}</span>
+                                      <CopyButton text={order.poPrivateLabel} title={isAr ? 'نسخ أمر شراء العلامة الخاصة' : 'Copy Private Label PO #'} isAr={isAr} />
+                                    </span>
+                                  )}
                                 </div>
                               </div>
 
@@ -3705,13 +3826,19 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                         {/* Truck Card Header */}
                         <div className="flex items-start justify-between gap-2 mb-2">
                           <div>
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="font-mono text-xs font-black text-amber-400">
                                 #{tm.loadingOrderNumber}
                               </span>
                               <span className="font-bold text-white text-xs truncate max-w-[140px]" title={tm.primaryVehicleName}>
                                 {tm.primaryVehicleName || (isAr ? 'شاحنة' : 'Truck')}
                               </span>
+                              {tm.primaryVehiclePlate && (
+                                <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-800 border border-slate-700 font-mono text-[9px] text-slate-300">
+                                  <span>{tm.primaryVehiclePlate}</span>
+                                  <CopyButton text={tm.primaryVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} className="text-slate-400 hover:text-white hover:bg-slate-700" />
+                                </span>
+                              )}
                             </div>
                             <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
                               <span className="flex items-center gap-1">
@@ -4315,8 +4442,17 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   <h4 className="font-extrabold text-sm text-slate-900">
                     {isAr ? 'تأكيد تحديث حالة شاحنة التحميل' : 'Confirm Truck Fulfillment Transition'}
                   </h4>
-                  <div className="text-xs text-slate-500 font-mono mt-0.5">
-                    {truckStatusModal.truck?.code || truckStatusModal.truck?.id} • {truckStatusModal.truck?.plateNumber || ''}
+                  <div className="text-xs text-slate-500 font-mono mt-0.5 flex items-center gap-1.5">
+                    <span>{truckStatusModal.truck?.code || truckStatusModal.truck?.id}</span>
+                    {truckStatusModal.truck?.plateNumber && (
+                      <>
+                        <span>•</span>
+                        <span className="inline-flex items-center gap-1 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 font-bold text-slate-700">
+                          <span>{truckStatusModal.truck.plateNumber}</span>
+                          <CopyButton text={truckStatusModal.truck.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

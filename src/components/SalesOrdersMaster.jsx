@@ -62,7 +62,8 @@ import {
   Lock,
   StickyNote,
   Users,
-  PackageCheck
+  PackageCheck,
+  Copy
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
@@ -461,6 +462,31 @@ const renderVatAbbrChip = (vatMode, orderType, isAr = true) => {
       );
   }
 };
+
+function CopyButton({ text, title, isAr = true, className = '' }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    if (!text) return;
+    navigator.clipboard.writeText(String(text).trim());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className={`inline-flex items-center justify-center p-0.5 rounded transition cursor-pointer text-slate-400 hover:text-indigo-600 hover:bg-slate-200/60 ${
+        copied ? 'text-emerald-600 hover:text-emerald-600 bg-emerald-50' : ''
+      } ${className}`}
+      title={copied ? (isAr ? 'تم النسخ!' : 'Copied!') : (title || (isAr ? 'نسخ' : 'Copy'))}
+    >
+      {copied ? <Check className="w-2.5 h-2.5 text-emerald-600 stroke-[3]" /> : <Copy className="w-2.5 h-2.5" />}
+    </button>
+  );
+}
 
 export default function SalesOrdersMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
@@ -1802,16 +1828,22 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                             <td className="py-3 px-3 whitespace-nowrap font-mono text-[11px]">
                               <div className="flex flex-col gap-0.5">
                                 {order.poTawoos && (
-                                  <span className="text-slate-800 font-bold" title={isAr ? 'أمر شراء طاووس' : 'Tawoos PO'}>
-                                    <span className="text-[9px] text-slate-400 font-sans me-0.5">{isAr ? 'طاووس:' : 'TW:'}</span>
-                                    {order.poTawoos}
-                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-slate-800 font-bold" title={isAr ? 'أمر شراء طاووس' : 'Tawoos PO'}>
+                                      <span className="text-[9px] text-slate-400 font-sans me-0.5">{isAr ? 'طاووس:' : 'TW:'}</span>
+                                      {order.poTawoos}
+                                    </span>
+                                    <CopyButton text={order.poTawoos} title={isAr ? 'نسخ أمر شراء طاووس' : 'Copy Tawoos PO #'} isAr={isAr} />
+                                  </div>
                                 )}
                                 {order.poPrivateLabel && (
-                                  <span className="text-purple-700 font-bold" title={isAr ? 'أمر شراء علامة خاصة' : 'PL PO'}>
-                                    <span className="text-[9px] text-purple-400 font-sans me-0.5">{isAr ? 'علامة:' : 'PL:'}</span>
-                                    {order.poPrivateLabel}
-                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-purple-700 font-bold" title={isAr ? 'أمر شراء علامة خاصة' : 'PL PO'}>
+                                      <span className="text-[9px] text-purple-400 font-sans me-0.5">{isAr ? 'علامة:' : 'PL:'}</span>
+                                      {order.poPrivateLabel}
+                                    </span>
+                                    <CopyButton text={order.poPrivateLabel} title={isAr ? 'نسخ أمر شراء العلامة الخاصة' : 'Copy Private Label PO #'} isAr={isAr} />
+                                  </div>
                                 )}
                                 {!order.poTawoos && !order.poPrivateLabel && (order.poAttachments || []).length === 0 && (
                                   <span className="text-slate-300 font-mono">—</span>
@@ -2156,7 +2188,10 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                                   <span className="truncate">{order.assignedVehicleName || (isAr ? 'غير محدد' : 'Unknown')}</span>
                                                 </span>
                                                 {order.assignedVehiclePlate && (
-                                                  <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{order.assignedVehiclePlate}</span>
+                                                  <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1 mt-0.5">
+                                                    <span>{order.assignedVehiclePlate}</span>
+                                                    <CopyButton text={order.assignedVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                                                  </span>
                                                 )}
                                               </div>
 
