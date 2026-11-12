@@ -69,7 +69,7 @@ import SalesOrderAuditModal from './SalesOrderAuditModal';
 import PeacockLoader from './PeacockLoader';
 import { normalizeLocationUrl } from '../utils/locationUtils';
 import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from './ClientSegmentsMaster';
-import { RowCommentButton, RowCommentMenuItem, useRecordComments } from './comments';
+import { RowCommentButton, useRecordComments } from './comments';
 import {
   DEFAULT_PRICING_STRATEGIES,
   formatDateKey,
@@ -1967,7 +1967,6 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   docNumber={order.serial ? `SO-${order.serial}` : (order.id || 'Order')}
                                   tab="sales_orders"
                                   module="sales"
-                                  hideIfEmpty
                                 />
                                 <button
                                   type="button"
@@ -2477,18 +2476,6 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           }}
           className="w-48 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
         >
-          {/* Quick Comment Trigger inside 3-dots (Grouped here when no comments yet) */}
-          <RowCommentMenuItem
-            docId={activeOrderForMenu.id}
-            docNumber={activeOrderForMenu.serial ? `SO-${activeOrderForMenu.serial}` : (activeOrderForMenu.id || 'Order')}
-            tab="sales_orders"
-            module="sales"
-            onAction={() => {
-              setActiveActionsMenuOrderId(null);
-              setActionsMenuAnchor(null);
-            }}
-          />
-
           <button
             type="button"
             onClick={() => {
