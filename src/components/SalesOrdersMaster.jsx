@@ -1787,7 +1787,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   </span>
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md text-[10px] font-mono font-bold bg-slate-100/90 text-slate-700 border border-slate-200 shadow-2xs">
                                     <Weight className="w-2.5 h-2.5 text-slate-500 shrink-0" />
-                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 'Ton'}</span>
                                   </span>
                                 </div>
                               )}
@@ -2405,8 +2405,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col justify-between">
                                           <span className="text-[10px] text-slate-500 font-semibold">{isAr ? 'إجمالي الوزن:' : 'Total Weight:'}</span>
                                           <span className="font-mono font-bold text-slate-900 text-xs">
-                                            {((order.totalWeightKg || 0) / 1000).toFixed(1)} <span className="text-[10px] text-slate-400 font-sans">{isAr ? 'طن' : 't'}</span>
-                                            <span className="text-[10px] text-slate-400 block font-normal">({Number(order.totalWeightKg || 0).toLocaleString()} kg)</span>
+                                            {((order.totalWeightKg || 0) / 1000).toFixed(1)} <span className="text-[10px] text-slate-400 font-sans">{isAr ? 'طن' : 'Ton'}</span>
+                                            <span className="text-[10px] text-slate-400 block font-normal">({Number(order.totalWeightKg || 0).toLocaleString()} {isAr ? 'كجم' : 'kg'})</span>
                                           </span>
                                         </div>
 

@@ -496,8 +496,8 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
                           <span>{isAr ? 'سعة الحمولة:' : 'Capacity:'}</span>
                         </span>
                         <span className="font-mono text-[11px] font-bold text-amber-900 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
-                          {veh.optimumCapacityKg ? `${(veh.optimumCapacityKg / 1000).toFixed(1)}t` : ''}
-                          {veh.maxCapacityKg ? ` (max ${(veh.maxCapacityKg / 1000).toFixed(1)}t)` : ''}
+                          {veh.optimumCapacityKg ? `${(veh.optimumCapacityKg / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : ''}
+                          {veh.maxCapacityKg ? ` (${isAr ? 'أقصى' : 'max'} ${(veh.maxCapacityKg / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'})` : ''}
                         </span>
                       </div>
                     )}

@@ -36,13 +36,18 @@ import {
   Tag,
   Edit2,
   Banknote,
-  ExternalLink
+  ExternalLink,
+  ShieldAlert,
+  Wrench,
+  ArrowLeft,
+  ArrowRight
 } from 'lucide-react';
 import {
   collection,
   doc,
   writeBatch,
-  onSnapshot
+  onSnapshot,
+  serverTimestamp
 } from 'firebase/firestore';
 import { db } from '../firebase.js';
 import SearchableSelect from './SearchableSelect.jsx';
@@ -430,8 +435,8 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
           <div className="bg-white p-2 rounded-xl border border-amber-100 shadow-2xs">
             <span className="text-[10px] text-slate-400 font-bold block">{isAr ? 'إجمالي الوزن:' : 'Total Weight:'}</span>
             <span className="font-mono font-black text-emerald-700 text-sm">
-              {(totalWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 't'}
-              <span className="text-[10px] text-slate-400 font-normal ms-1">({totalWeightKg.toLocaleString()} kg)</span>
+              {(totalWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'}
+              <span className="text-[10px] text-slate-400 font-normal ms-1">({totalWeightKg.toLocaleString()} {isAr ? 'كجم' : 'kg'})</span>
             </span>
           </div>
 
@@ -595,6 +600,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
   // Status Jump Confirmation Modal (for admin jump or reverting delivered status)
   const [statusJumpConfirmModal, setStatusJumpConfirmModal] = useState(null);
+
+  // Trucks Fleet Dashboard Collapsed/Expanded State
+  const [isTrucksDashboardOpen, setIsTrucksDashboardOpen] = useState(true);
+
+  // Truck Batch Fulfillment Status Transition Modal State: { isOpen, truck, targetStep, affectedOrders, isExecuting }
+  const [truckStatusModal, setTruckStatusModal] = useState(null);
 
   // Notification Toast
   const [toastMsg, setToastMsg] = useState(null);
@@ -1428,6 +1439,243 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return truckManifest.filter((t) => t.isMisaligned).length;
   }, [truckManifest]);
 
+  // Real-time Trucks Fleet Operational Analysis & Multi-tier Conflict Detection
+  const truckFleetAnalysis = useMemo(() => {
+    if (!Array.isArray(vehicles) || vehicles.length === 0) return [];
+
+    const analyzed = vehicles.map((veh) => {
+      // 1. Gather all active orders assigned to this vehicle
+      const allVehicleOrders = orders.filter((o) => {
+        if (o.confirmationStatus === 'canceled') return false;
+        const eff = getEffectiveAssignment(o);
+        const vehId = eff.assignedVehicleId || o.assignedVehicleId;
+        return vehId === veh.id;
+      });
+
+      // 2. Orders assigned on the targetPlanningDate
+      const targetOrders = allVehicleOrders.filter((o) => {
+        const eff = getEffectiveAssignment(o);
+        const lDate = eff.loadingDate || o.loadingDate || '';
+        return lDate === targetPlanningDate;
+      });
+
+      // 3. Orders from prior dates that are still out_for_delivery or preparing (uncompleted prior trips)
+      const priorOpenOrders = allVehicleOrders.filter((o) => {
+        const eff = getEffectiveAssignment(o);
+        const lDate = eff.loadingDate || o.loadingDate || '';
+        const status = eff.fulfillmentStatus || o.fulfillmentStatus || 'not_yet';
+        return lDate && lDate < targetPlanningDate && (status === 'out_for_delivery' || status === 'preparing');
+      });
+
+      // 4. Check for distinct Loading Orders on targetPlanningDate
+      const activeLoadingOrders = new Set();
+      targetOrders.forEach((o) => {
+        const eff = getEffectiveAssignment(o);
+        const lo = eff.loadingOrderNumber || o.loadingOrderNumber;
+        const status = eff.fulfillmentStatus || o.fulfillmentStatus || 'not_yet';
+        if (lo && Number(lo) > 0 && status !== 'delivered') {
+          activeLoadingOrders.add(Number(lo));
+        }
+      });
+
+      // 5. Weight & Cartons telemetry
+      const totalWeightKg = targetOrders.reduce((sum, o) => sum + (Number(o.totalWeightKg) || 0), 0);
+      const totalCartons = targetOrders.reduce((sum, o) => sum + (Number(o.totalCartons || o.totalQty) || 0), 0);
+      const totalBonus = targetOrders.reduce((sum, o) => sum + (Number(o.totalBonus) || 0), 0);
+      const maxCapKg = Number(veh.maxCapacityKg) || 0;
+      const isOverweight = maxCapKg > 0 && totalWeightKg > maxCapKg;
+
+      // 6. Fulfillment statuses distribution on targetPlanningDate
+      const statusCounts = { not_yet: 0, preparing: 0, out_for_delivery: 0, delivered: 0 };
+      targetOrders.forEach((o) => {
+        const eff = getEffectiveAssignment(o);
+        const st = eff.fulfillmentStatus || o.fulfillmentStatus || 'not_yet';
+        if (statusCounts[st] !== undefined) statusCounts[st]++;
+      });
+
+      const distinctActiveStatuses = Object.keys(statusCounts).filter((k) => statusCounts[k] > 0);
+      const hasMixedStatuses = targetOrders.length > 1 && distinctActiveStatuses.length > 1;
+
+      // 7. Compile conflicts
+      const conflicts = [];
+      if (activeLoadingOrders.size > 1) {
+        conflicts.push({
+          type: 'simultaneous_trips',
+          messageAr: `تعارض: الشاحنة مجدولة لأكثر من رحلة تحميل مختلفة في نفس اليوم (${Array.from(activeLoadingOrders).map((n) => `#${n}`).join(' و ')})`,
+          messageEn: `Conflict: Truck assigned to multiple distinct loading orders on the same day (${Array.from(activeLoadingOrders).map((n) => `#${n}`).join(' & ')})`
+        });
+      }
+
+      if (priorOpenOrders.length > 0) {
+        const priorDates = Array.from(new Set(priorOpenOrders.map((o) => o.loadingDate || '—'))).join(', ');
+        conflicts.push({
+          type: 'prior_trip_open',
+          messageAr: `تعارض: الشاحنة ما زالت في طريقها للتسليم من رحلة سابقة (${priorDates}) ولم تُسجّل كمكتملة بعد`,
+          messageEn: `Conflict: Truck is still out for delivery on an earlier trip (${priorDates})`
+        });
+      }
+
+      if (hasMixedStatuses) {
+        conflicts.push({
+          type: 'mixed_statuses',
+          messageAr: 'حالات تنفيذ متباينة: الأوامر المحملة على نفس الشاحنة تحمل حالات تنفيذ مختلفة',
+          messageEn: 'Mixed fulfillment statuses: Orders on this truck have varying statuses'
+        });
+      }
+
+      if (isOverweight) {
+        conflicts.push({
+          type: 'overweight',
+          messageAr: `حمولة زائدة: الوزن الإجمالي (${(totalWeightKg / 1000).toFixed(2)} طن) يتجاوز السعة القصوى للشاحنة (${(maxCapKg / 1000).toFixed(1)} طن)`,
+          messageEn: `Overweight: Total weight (${(totalWeightKg / 1000).toFixed(2)} Ton) exceeds truck max capacity (${(maxCapKg / 1000).toFixed(1)} Ton)`
+        });
+      }
+
+      // 8. Determine overall operational status
+      let operationalStatus = 'stand_by'; // 'stand_by' | 'upcoming_duty' | 'on_duty' | 'delivered' | 'conflict' | 'maintenance' | 'inactive'
+      if (veh.status === 'maintenance') {
+        operationalStatus = 'maintenance';
+      } else if (veh.status === 'inactive') {
+        operationalStatus = 'inactive';
+      } else if (conflicts.length > 0) {
+        operationalStatus = 'conflict';
+      } else if (targetOrders.length === 0) {
+        operationalStatus = 'stand_by';
+      } else if (statusCounts.delivered === targetOrders.length) {
+        operationalStatus = 'delivered';
+      } else if (statusCounts.not_yet === targetOrders.length) {
+        operationalStatus = 'upcoming_duty';
+      } else {
+        operationalStatus = 'on_duty';
+      }
+
+      // 9. Primary driver, rep & loading order #
+      const effFirst = targetOrders[0] ? getEffectiveAssignment(targetOrders[0]) : null;
+      const primaryDriverName = effFirst?.assignedDriverName || targetOrders[0]?.assignedDriverName || veh.driverName || '';
+      const primaryRepName = effFirst?.assignedDeliveryRepName || targetOrders[0]?.assignedDeliveryRepName || '';
+      const primaryLoadingOrderNumber = effFirst?.loadingOrderNumber || targetOrders[0]?.loadingOrderNumber || (activeLoadingOrders.size > 0 ? Array.from(activeLoadingOrders)[0] : null);
+
+      // 10. Sequential Stepper Resolution
+      let currentStepIndex = 0;
+      if (statusCounts.delivered === targetOrders.length && targetOrders.length > 0) {
+        currentStepIndex = 3;
+      } else if (statusCounts.out_for_delivery > 0) {
+        currentStepIndex = 2;
+      } else if (statusCounts.preparing > 0) {
+        currentStepIndex = 1;
+      } else {
+        currentStepIndex = 0;
+      }
+
+      return {
+        vehicle: veh,
+        operationalStatus,
+        conflicts,
+        targetOrders,
+        priorOpenOrders,
+        totalWeightKg,
+        totalCartons,
+        totalBonus,
+        isOverweight,
+        primaryDriverName,
+        primaryRepName,
+        primaryLoadingOrderNumber,
+        currentStepIndex,
+        currentStep: SEQUENTIAL_FULFILLMENT_STEPS[currentStepIndex]
+      };
+    });
+
+    // Sort order: conflicts first -> on_duty -> upcoming_duty -> stand_by -> delivered -> maintenance/inactive
+    const priorityMap = {
+      conflict: 0,
+      on_duty: 1,
+      upcoming_duty: 2,
+      stand_by: 3,
+      delivered: 4,
+      maintenance: 5,
+      inactive: 6
+    };
+
+    analyzed.sort((a, b) => {
+      const pDiff = (priorityMap[a.operationalStatus] ?? 9) - (priorityMap[b.operationalStatus] ?? 9);
+      if (pDiff !== 0) return pDiff;
+      return String(a.vehicle.code || a.vehicle.id).localeCompare(String(b.vehicle.code || b.vehicle.id));
+    });
+
+    return analyzed;
+  }, [vehicles, orders, stagedAssignments, targetPlanningDate]);
+
+  // Handler to execute atomic batch transition for all orders on a truck
+  const handleConfirmTruckFulfillmentTransition = async () => {
+    if (!truckStatusModal || !truckStatusModal.targetStep || !Array.isArray(truckStatusModal.affectedOrders) || truckStatusModal.affectedOrders.length === 0) return;
+
+    const { truck, targetStep, affectedOrders } = truckStatusModal;
+    setTruckStatusModal((prev) => ({ ...prev, isExecuting: true }));
+
+    try {
+      const batch = writeBatch(db);
+      const nowIso = new Date().toISOString();
+
+      affectedOrders.forEach((order) => {
+        const orderRef = doc(db, 'sales_orders', order.id);
+        const oldStatus = order.fulfillmentStatus || 'not_yet';
+        const newStatus = targetStep.id;
+
+        const existingAudit = Array.isArray(order.auditTrail) ? order.auditTrail : [];
+        const auditEntry = {
+          id: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          timestamp: nowIso,
+          userId: currentUserId,
+          userName: currentUserName,
+          performedBy: currentUserName,
+          performedById: currentUserId,
+          action: 'truck_bulk_fulfillment_transition',
+          summaryAr: `تحديث مجمّع لحالة تنفيذ الشاحنة (${truck.code || truck.plateNumber || 'شاحنة'}) إلى "${targetStep.labelAr}"`,
+          summaryEn: `Truck bulk fulfillment transition (${truck.code || truck.plateNumber || 'Truck'}) to "${targetStep.labelEn}"`,
+          changes: {
+            metadata: [
+              { labelAr: 'حالة التنفيذ', labelEn: 'Fulfillment Status', oldValue: oldStatus, newValue: newStatus }
+            ]
+          }
+        };
+
+        batch.update(orderRef, {
+          fulfillmentStatus: newStatus,
+          updatedAt: serverTimestamp(),
+          auditTrail: [auditEntry, ...existingAudit]
+        });
+      });
+
+      await batch.commit();
+
+      // Sync stagedAssignments in memory
+      setStagedAssignments((prev) => {
+        const updated = { ...prev };
+        affectedOrders.forEach((o) => {
+          if (updated[o.id]) {
+            updated[o.id] = {
+              ...updated[o.id],
+              fulfillmentStatus: targetStep.id
+            };
+          }
+        });
+        return updated;
+      });
+
+      showToast(
+        isAr
+          ? `تم تحديث حالة ${affectedOrders.length} أوامر للشاحنة ${truck.code || truck.plateNumber || ''} إلى "${targetStep.labelAr}" بنجاح`
+          : `Successfully updated ${affectedOrders.length} orders on ${truck.code || truck.plateNumber || ''} to "${targetStep.labelEn}"`
+      );
+
+      setTruckStatusModal(null);
+    } catch (err) {
+      console.error('Failed to update truck fulfillment status:', err);
+      showToast(isAr ? 'حدث خطأ أثناء تحديث حالة الأوامر' : 'Failed to update orders status', 'error');
+      setTruckStatusModal((prev) => ({ ...prev, isExecuting: false }));
+    }
+  };
+
   // Check if any staged assignment has missing mandatory fields (LO #, Vehicle, or Driver)
   // Note: Orders at pending/unplanned status or stepped backward to pending bypass mandatory fields
   const hasIncompleteStagedOrder = useMemo(() => {
@@ -1665,7 +1913,82 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         </div>
       )}
 
-      {/* TOP FILTER & GROUPING RIBBON */}
+      {/* ========================================================================= */}
+      {/* 1. TARGET LOADING DATE DEDICATED ANCHOR BAR (Top Container)               */}
+      {/* ========================================================================= */}
+      <div className="bg-gradient-to-r from-amber-50/90 via-amber-50/50 to-slate-50 border border-amber-200/90 rounded-3xl p-3.5 sm:px-5 sm:py-3 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-700 border border-amber-300/60 flex items-center justify-center shrink-0 shadow-2xs">
+              <Calendar className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black text-amber-950">
+                  {isAr ? 'تاريخ التحميل المستهدف' : 'Target Loading Date'}
+                </span>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-200/70 text-amber-900 border border-amber-300/80">
+                  {targetPlanningDate}
+                </span>
+              </div>
+              <span className="text-[10px] font-medium text-amber-800/80 block leading-tight">
+                {isAr ? 'التاريخ المرجعي لتسكين الشاحنات وترتيب التحميل اليومي' : 'Anchor date for truck assignments & daily loading order validation'}
+              </span>
+            </div>
+          </div>
+
+          {/* 2 Quick Assignment Buttons: Today & Tomorrow */}
+          <div className="flex items-center gap-1.5 ms-0 sm:ms-2">
+            <button
+              type="button"
+              onClick={() => setTargetPlanningDate(todayStr)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                targetPlanningDate === todayStr
+                  ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
+                  : 'bg-white text-slate-700 border-amber-200 hover:bg-amber-50'
+              }`}
+            >
+              {isAr ? 'اليوم' : 'Today'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTargetPlanningDate(tomorrowStr)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                targetPlanningDate === tomorrowStr
+                  ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
+                  : 'bg-white text-slate-700 border-amber-200 hover:bg-amber-50'
+              }`}
+            >
+              {isAr ? 'غداً' : 'Tomorrow'}
+            </button>
+
+            {/* Date Input */}
+            <input
+              type="date"
+              value={targetPlanningDate}
+              onChange={(e) => setTargetPlanningDate(e.target.value)}
+              className="py-1 px-2.5 bg-white border border-amber-300 rounded-xl font-mono text-xs font-bold text-amber-950 shadow-2xs focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+            />
+          </div>
+        </div>
+
+        {/* Current Active Date Badge */}
+        <div className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-amber-900 bg-amber-100/70 border border-amber-200/80 px-3 py-1 rounded-xl">
+          <Clock className="w-3.5 h-3.5 text-amber-600" />
+          <span>{targetPlanningDate}</span>
+          {targetPlanningDate === todayStr && (
+            <span className="text-[10px] font-sans font-extrabold text-amber-700">({isAr ? 'اليوم' : 'Today'})</span>
+          )}
+          {targetPlanningDate === tomorrowStr && (
+            <span className="text-[10px] font-sans font-extrabold text-amber-700">({isAr ? 'غداً' : 'Tomorrow'})</span>
+          )}
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* 2. ORDERS SCOPE & FILTERS RIBBON (Middle Container)                       */}
+      {/* ========================================================================= */}
       <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-4 sm:p-5 space-y-3.5">
         {/* Row 1: Date Scope Shortcuts & Overall Scope Stats */}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
@@ -1761,7 +2084,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               </span>
               <span className="text-slate-300">•</span>
               <span className="text-emerald-700 font-black">
-                {(filteredOrders.reduce((s, o) => s + (Number(o.totalWeightKg) || 0), 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}
+                {(filteredOrders.reduce((s, o) => s + (Number(o.totalWeightKg) || 0), 0) / 1000).toFixed(1)} {isAr ? 'طن' : 'Ton'}
               </span>
             </div>
           </div>
@@ -1830,75 +2153,383 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         </div>
       </div>
 
-      {/* TARGET LOADING DATE DEDICATED SUB-BAR (Below Filter Bar) */}
-      <div className="bg-gradient-to-r from-amber-50/90 via-amber-50/50 to-slate-50 border border-amber-200/90 rounded-3xl p-3.5 sm:px-5 sm:py-3 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-700 border border-amber-300/60 flex items-center justify-center shrink-0 shadow-2xs">
-              <Calendar className="w-4 h-4" />
+      {/* ========================================================================= */}
+      {/* 3. NEW TRUCKS FLEET OPERATIONAL DASHBOARD                                 */}
+      {/* ========================================================================= */}
+      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-4 sm:p-5 space-y-4">
+        {/* Dashboard Header Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-2xl bg-indigo-50 text-indigo-700 border border-indigo-200/80 flex items-center justify-center shrink-0 shadow-2xs">
+              <Truck className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-xs font-black text-amber-950">
-                  {isAr ? 'تاريخ التحميل المستهدف' : 'Target Loading Date'}
-                </span>
-                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-amber-200/70 text-amber-900 border border-amber-300/80">
-                  {targetPlanningDate}
+                <h3 className="text-sm font-black text-slate-900">
+                  {isAr ? 'لوحة شاحنات الأسطول وحالة التشغيل' : 'Trucks Fleet Operational Dashboard'}
+                </h3>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                  {truckFleetAnalysis.length} {isAr ? 'شاحنة' : 'trucks'}
                 </span>
               </div>
-              <span className="text-[10px] font-medium text-amber-800/80 block leading-tight">
-                {isAr ? 'التاريخ المرجعي لتسكين الشاحنات وترتيب التحميل اليومي' : 'Anchor date for truck assignments & daily loading order validation'}
-              </span>
+              <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                {isAr
+                  ? `متابعة حالة جاهزية الشاحنات وكشف التعارضات التشغيلية ليوم ${targetPlanningDate}`
+                  : `Monitor fleet readiness and detect dispatch conflicts for ${targetPlanningDate}`}
+              </p>
             </div>
           </div>
 
-          {/* 2 Quick Assignment Buttons: Today & Tomorrow */}
-          <div className="flex items-center gap-1.5 ms-0 sm:ms-2">
-            <button
-              type="button"
-              onClick={() => setTargetPlanningDate(todayStr)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
-                targetPlanningDate === todayStr
-                  ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
-                  : 'bg-white text-slate-700 border-amber-200 hover:bg-amber-50'
-              }`}
-            >
-              {isAr ? 'اليوم' : 'Today'}
-            </button>
+          {/* Quick Metrics Badges & Collapse Toggle */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* On Duty */}
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200/90 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span>{isAr ? 'في الخدمة:' : 'On Duty:'}</span>
+              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'on_duty').length}</span>
+            </span>
+
+            {/* Upcoming Duty */}
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-amber-50 text-amber-900 border border-amber-200/90 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+              <span>{isAr ? 'مهمة قادمة:' : 'Upcoming:'}</span>
+              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'upcoming_duty').length}</span>
+            </span>
+
+            {/* Stand-by */}
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+              <span>{isAr ? 'في الانتظار:' : 'Stand-by:'}</span>
+              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'stand_by').length}</span>
+            </span>
+
+            {/* Conflicts Alert Pill */}
+            {truckFleetAnalysis.filter((t) => t.operationalStatus === 'conflict').length > 0 && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-black bg-rose-50 text-rose-800 border border-rose-300 ring-2 ring-rose-500/20 shadow-2xs animate-pulse">
+                <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                <span>{isAr ? 'تعارض تشغيلي:' : 'Conflicts:'}</span>
+                <span className="font-mono">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'conflict').length}</span>
+              </span>
+            )}
+
+            {/* In Maintenance */}
+            {truckFleetAnalysis.filter((t) => t.operationalStatus === 'maintenance').length > 0 && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-purple-50 text-purple-800 border border-purple-200">
+                <Wrench className="w-3 h-3 text-purple-600" />
+                <span>{isAr ? 'صيانة:' : 'Maint:'}</span>
+                <span className="font-mono">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'maintenance').length}</span>
+              </span>
+            )}
 
             <button
               type="button"
-              onClick={() => setTargetPlanningDate(tomorrowStr)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
-                targetPlanningDate === tomorrowStr
-                  ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
-                  : 'bg-white text-slate-700 border-amber-200 hover:bg-amber-50'
-              }`}
+              onClick={() => setIsTrucksDashboardOpen((prev) => !prev)}
+              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition cursor-pointer ms-1"
+              title={isTrucksDashboardOpen ? (isAr ? 'طي اللوحة' : 'Collapse') : (isAr ? 'توسيع اللوحة' : 'Expand')}
             >
-              {isAr ? 'غداً' : 'Tomorrow'}
+              {isTrucksDashboardOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
-
-            {/* Date Input */}
-            <input
-              type="date"
-              value={targetPlanningDate}
-              onChange={(e) => setTargetPlanningDate(e.target.value)}
-              className="py-1 px-2.5 bg-white border border-amber-300 rounded-xl font-mono text-xs font-bold text-amber-950 shadow-2xs focus:outline-none focus:ring-2 focus:ring-amber-500/30"
-            />
           </div>
         </div>
 
-        {/* Current Active Date Badge */}
-        <div className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-amber-900 bg-amber-100/70 border border-amber-200/80 px-3 py-1 rounded-xl">
-          <Clock className="w-3.5 h-3.5 text-amber-600" />
-          <span>{targetPlanningDate}</span>
-          {targetPlanningDate === todayStr && (
-            <span className="text-[10px] font-sans font-extrabold text-amber-700">({isAr ? 'اليوم' : 'Today'})</span>
-          )}
-          {targetPlanningDate === tomorrowStr && (
-            <span className="text-[10px] font-sans font-extrabold text-amber-700">({isAr ? 'غداً' : 'Tomorrow'})</span>
-          )}
-        </div>
+        {/* Scorecards Grid */}
+        {isTrucksDashboardOpen && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 pt-1">
+            {truckFleetAnalysis.length === 0 ? (
+              <div className="col-span-full p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-slate-200">
+                <Truck className="w-8 h-8 text-slate-300 mx-auto mb-1.5" />
+                <p className="text-xs font-bold text-slate-600">{isAr ? 'لا توجد شاحنات مسجلة في شاشات المركبات' : 'No vehicles configured'}</p>
+              </div>
+            ) : (
+              truckFleetAnalysis.map((truckData) => {
+                const {
+                  vehicle: veh,
+                  operationalStatus,
+                  conflicts,
+                  targetOrders,
+                  totalWeightKg,
+                  totalCartons,
+                  totalBonus,
+                  isOverweight,
+                  primaryDriverName,
+                  primaryRepName,
+                  primaryLoadingOrderNumber,
+                  currentStepIndex,
+                  currentStep
+                } = truckData;
+
+                const maxCap = Number(veh.maxCapacityKg) || 0;
+                const weightPct = maxCap > 0 ? Math.min(100, Math.round((totalWeightKg / maxCap) * 100)) : 0;
+                const hasOrders = targetOrders.length > 0;
+                const precedingStep = currentStepIndex > 0 ? SEQUENTIAL_FULFILLMENT_STEPS[currentStepIndex - 1] : null;
+                const nextStep = currentStepIndex < 3 ? SEQUENTIAL_FULFILLMENT_STEPS[currentStepIndex + 1] : null;
+
+                return (
+                  <div
+                    key={veh.id}
+                    className={`rounded-3xl p-4 border transition-all duration-200 flex flex-col justify-between space-y-3 ${
+                      operationalStatus === 'conflict'
+                        ? 'bg-rose-50/40 border-rose-300 ring-2 ring-rose-500/20 shadow-xs'
+                        : operationalStatus === 'on_duty'
+                        ? 'bg-emerald-50/20 border-emerald-300 shadow-2xs hover:border-emerald-400'
+                        : operationalStatus === 'upcoming_duty'
+                        ? 'bg-amber-50/20 border-amber-300 shadow-2xs hover:border-amber-400'
+                        : operationalStatus === 'delivered'
+                        ? 'bg-blue-50/20 border-blue-200 shadow-2xs'
+                        : operationalStatus === 'maintenance' || operationalStatus === 'inactive'
+                        ? 'bg-slate-50 border-slate-200/80 opacity-75'
+                        : 'bg-white border-slate-200/90 shadow-2xs hover:border-slate-300'
+                    }`}
+                  >
+                    {/* Top: Header with Vehicle Info & Status Badge */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-start justify-between gap-1.5">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono text-xs font-black text-slate-900">
+                              {veh.code || veh.id}
+                            </span>
+                            {primaryLoadingOrderNumber && (
+                              <span className="font-mono text-[10px] font-black px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-200">
+                                LO #{primaryLoadingOrderNumber}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs font-bold text-slate-700 truncate" title={veh.vehicleModel || veh.vehicleType}>
+                            {veh.vehicleModel || veh.vehicleType || (isAr ? 'شاحنة نقل' : 'Delivery Truck')}
+                          </div>
+                        </div>
+
+                        {/* Operational Status Badge */}
+                        <div className="shrink-0">
+                          {operationalStatus === 'conflict' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-rose-100 text-rose-900 border border-rose-300 shadow-2xs animate-pulse">
+                              <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" />
+                              <span>{isAr ? 'تعارض تشغيلي' : 'Conflict'}</span>
+                            </span>
+                          ) : operationalStatus === 'on_duty' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-emerald-100 text-emerald-900 border border-emerald-300 shadow-2xs">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                              <span>{isAr ? 'في الخدمة' : 'On Duty'}</span>
+                            </span>
+                          ) : operationalStatus === 'upcoming_duty' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                              <Clock className="w-3 h-3 text-amber-600 shrink-0" />
+                              <span>{isAr ? 'مهمة قادمة' : 'Upcoming'}</span>
+                            </span>
+                          ) : operationalStatus === 'delivered' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-blue-100 text-blue-900 border border-blue-200 shadow-2xs">
+                              <CheckCircle2 className="w-3 h-3 text-blue-600 shrink-0" />
+                              <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
+                            </span>
+                          ) : operationalStatus === 'maintenance' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
+                              <Wrench className="w-3 h-3 text-purple-600 shrink-0" />
+                              <span>{isAr ? 'في الصيانة' : 'Maintenance'}</span>
+                            </span>
+                          ) : operationalStatus === 'inactive' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-200 text-slate-700 border border-slate-300">
+                              <span>{isAr ? 'خارج الخدمة' : 'Inactive'}</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs">
+                              <span>{isAr ? 'جاهزة / في الانتظار' : 'Stand-by'}</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Plate Number & Vehicle Specs */}
+                      <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-mono flex-wrap">
+                        {veh.plateNumber && (
+                          <span className="px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-slate-700 font-bold">
+                            {veh.plateNumber}
+                          </span>
+                        )}
+                        <span>•</span>
+                        <span>
+                          {maxCap > 0 ? `${(maxCap / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : (isAr ? 'حمولة غير محددة' : 'Uncapped')}
+                        </span>
+                      </div>
+
+                      {/* Conflict Warnings Box (if conflicts detected) */}
+                      {conflicts.length > 0 && (
+                        <div className="p-2.5 bg-rose-100/90 border border-rose-300 rounded-2xl space-y-1 text-[10px] text-rose-950 font-semibold mt-1">
+                          {conflicts.map((c, idx) => (
+                            <div key={idx} className="flex items-start gap-1.5 leading-snug">
+                              <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                              <span>{isAr ? c.messageAr : c.messageEn}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Middle: Crew, Weight Gauge & Orders Chips */}
+                    <div className="space-y-2 pt-1 border-t border-slate-100">
+                      {/* Assigned Crew */}
+                      <div className="text-[11px] text-slate-600 space-y-0.5">
+                        <div className="flex items-center gap-1.5 truncate" title={primaryDriverName}>
+                          <User className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="font-semibold">{isAr ? 'السائق:' : 'Driver:'}</span>
+                          <span className="truncate">{primaryDriverName || (isAr ? 'غير مخصص' : 'Unassigned')}</span>
+                        </div>
+                        {primaryRepName && (
+                          <div className="flex items-center gap-1.5 text-slate-500 text-[10px] truncate" title={primaryRepName}>
+                            <Users className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span>{isAr ? 'المندوب:' : 'Rep:'}</span>
+                            <span className="truncate">{primaryRepName}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Weight & Capacity Gauge */}
+                      <div className="space-y-1 bg-slate-50/80 p-2 rounded-xl border border-slate-200/70 text-[10px]">
+                        <div className="flex items-center justify-between font-mono">
+                          <span className="text-slate-500 font-bold">
+                            {totalCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}{totalBonus > 0 ? ` (+${totalBonus})` : ''}
+                          </span>
+                          <span className={`font-black ${
+                            isOverweight
+                              ? 'text-rose-600 font-extrabold animate-pulse'
+                              : weightPct > 85
+                              ? 'text-amber-700'
+                              : 'text-emerald-700'
+                          }`}>
+                            {(totalWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'} / {maxCap > 0 ? `${(maxCap / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : '—'}
+                          </span>
+                        </div>
+
+                        {/* Progress Bar */}
+                        {maxCap > 0 && (
+                          <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-300 ${
+                                isOverweight
+                                  ? 'bg-rose-500 animate-pulse'
+                                  : weightPct > 85
+                                  ? 'bg-amber-500'
+                                  : 'bg-emerald-500'
+                              }`}
+                              style={{ width: `${Math.min(100, weightPct)}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Loaded Orders Chips */}
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold text-slate-400 flex items-center justify-between">
+                          <span>{isAr ? 'الطلبات المحملة:' : 'Loaded Orders:'}</span>
+                          <span className="font-mono text-slate-600 font-extrabold">
+                            {targetOrders.length} {isAr ? 'أمر' : 'orders'}
+                          </span>
+                        </div>
+
+                        {!hasOrders ? (
+                          <p className="text-[10px] text-slate-400 italic py-0.5">
+                            {isAr ? 'لا توجد طلبات محملة على هذه الشاحنة' : 'No orders loaded'}
+                          </p>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto pt-0.5">
+                            {targetOrders.slice(0, 4).map((ord) => {
+                              const oSerial = resolveOrderSerial(ord, orders);
+                              return (
+                                <span
+                                  key={ord.id}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg text-[10px] font-bold bg-white text-slate-700 border border-slate-200 shadow-2xs truncate max-w-full"
+                                  title={`#${oSerial} — ${ord.clientName || '—'}`}
+                                >
+                                  <span className="font-mono text-indigo-700 font-black shrink-0">#{oSerial}</span>
+                                  <span className="truncate max-w-[90px]">{ord.clientName || (isAr ? 'عميل' : 'Client')}</span>
+                                </span>
+                              );
+                            })}
+                            {targetOrders.length > 4 && (
+                              <span className="px-1.5 py-0.5 rounded-lg text-[9px] font-mono font-bold bg-slate-100 text-slate-500 border border-slate-200">
+                                +{targetOrders.length - 4} {isAr ? 'آخرين' : 'more'}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Bottom: Sequential 3-Step Stepper Controls */}
+                    <div className="pt-2 border-t border-slate-100">
+                      {!hasOrders ? (
+                        <div className="text-center py-1 text-[10px] text-slate-400 font-medium">
+                          {isAr ? 'الشاحنة جاهزة للتحميل والتسكين' : 'Ready for dispatch'}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-1 w-full">
+                          {/* Preceding Step Button */}
+                          {precedingStep ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTruckStatusModal({
+                                  isOpen: true,
+                                  truck: veh,
+                                  targetStep: precedingStep,
+                                  affectedOrders: targetOrders,
+                                  isExecuting: false
+                                })
+                              }
+                              className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title={isAr ? `تراجع إلى: ${precedingStep.labelAr}` : `Revert to: ${precedingStep.labelEn}`}
+                            >
+                              {isAr ? <ArrowRight className="w-2.5 h-2.5 text-slate-500" /> : <ArrowLeft className="w-2.5 h-2.5 text-slate-500" />}
+                              <span className="truncate max-w-[70px]">{isAr ? precedingStep.labelAr : precedingStep.labelEn}</span>
+                            </button>
+                          ) : (
+                            <div className="w-12"></div>
+                          )}
+
+                          {/* Current Active Step */}
+                          <div
+                            className="px-2 py-1 rounded-lg text-[10px] font-black border flex items-center gap-1 shadow-2xs truncate"
+                            style={{
+                              backgroundColor: currentStep?.color === 'emerald' ? '#ecfdf5' : currentStep?.color === 'amber' ? '#fffbeb' : currentStep?.color === 'blue' ? '#eff6ff' : '#f8fafc',
+                              borderColor: currentStep?.color === 'emerald' ? '#a7f3d0' : currentStep?.color === 'amber' ? '#fde68a' : currentStep?.color === 'blue' ? '#bfdbfe' : '#e2e8f0',
+                              color: currentStep?.color === 'emerald' ? '#065f46' : currentStep?.color === 'amber' ? '#92400e' : currentStep?.color === 'blue' ? '#1e40af' : '#334155'
+                            }}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-current shrink-0"></span>
+                            <span className="truncate">{isAr ? currentStep?.labelAr : currentStep?.labelEn}</span>
+                          </div>
+
+                          {/* Next Step Advance Button */}
+                          {nextStep ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTruckStatusModal({
+                                  isOpen: true,
+                                  truck: veh,
+                                  targetStep: nextStep,
+                                  affectedOrders: targetOrders,
+                                  isExecuting: false
+                                })
+                              }
+                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-black transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title={isAr ? `تقديم إلى: ${nextStep.labelAr}` : `Advance to: ${nextStep.labelEn}`}
+                            >
+                              <span className="truncate max-w-[70px]">{isAr ? nextStep.labelAr : nextStep.labelEn}</span>
+                              {isAr ? <ArrowLeft className="w-2.5 h-2.5 text-white" /> : <ArrowRight className="w-2.5 h-2.5 text-white" />}
+                            </button>
+                          ) : (
+                            <div className="w-12"></div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
 
       {/* ORDERS CARDS LIST */}
@@ -1936,7 +2567,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   <div className="text-xs font-mono font-bold text-slate-500 flex items-center gap-2">
                     <span>{group.items.reduce((s, o) => s + (Number(o.totalCartons || o.totalQty) || 0), 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
                     <span className="text-slate-300">•</span>
-                    <span className="text-emerald-700 font-black">{(group.items.reduce((s, o) => s + (Number(o.totalWeightKg) || 0), 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                    <span className="text-emerald-700 font-black">{(group.items.reduce((s, o) => s + (Number(o.totalWeightKg) || 0), 0) / 1000).toFixed(1)} {isAr ? 'طن' : 'Ton'}</span>
                   </div>
                 </div>
               )}
@@ -3162,7 +3793,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                 ? 'text-amber-400'
                                 : 'text-slate-200'
                             }`}>
-                              {(tm.totalWeightKg / 1000).toFixed(2)} / {tm.maxCap ? `${(tm.maxCap / 1000).toFixed(1)}t` : '—'}
+                              {(tm.totalWeightKg / 1000).toFixed(2)} / {tm.maxCap ? `${(tm.maxCap / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : '—'}
                             </span>
                           </div>
 
@@ -3666,6 +4297,117 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   <span>{isAr ? 'تأكيد التغيير' : 'Confirm Change'}</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TRUCK BULK FULFILLMENT STATUS TRANSITION CONFIRMATION MODAL */}
+      {truckStatusModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-slate-200 space-y-4 text-start">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center justify-center shrink-0 shadow-2xs">
+                  <Truck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="font-extrabold text-sm text-slate-900">
+                    {isAr ? 'تأكيد تحديث حالة شاحنة التحميل' : 'Confirm Truck Fulfillment Transition'}
+                  </h4>
+                  <div className="text-xs text-slate-500 font-mono mt-0.5">
+                    {truckStatusModal.truck?.code || truckStatusModal.truck?.id} • {truckStatusModal.truck?.plateNumber || ''}
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTruckStatusModal(null)}
+                disabled={truckStatusModal.isExecuting}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+              <div className="text-xs text-slate-600 font-medium">
+                {isAr
+                  ? `أنت على وشك تحديث حالة كافة الطلبات المحملة على هذه الشاحنة (${truckStatusModal.affectedOrders.length} أوامر) بشكل مجمّع ومباشر إلى:`
+                  : `You are about to batch-update all orders loaded on this truck (${truckStatusModal.affectedOrders.length} orders) to:`}
+              </div>
+
+              <div className="flex items-center justify-center gap-3 py-2 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                <span className="px-3 py-1 bg-slate-100 text-slate-700 border border-slate-200 rounded-lg font-bold text-xs">
+                  {isAr
+                    ? (SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === (truckStatusModal.affectedOrders[0]?.fulfillmentStatus || 'not_yet'))?.labelAr || 'الحالة الحالية')
+                    : (SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === (truckStatusModal.affectedOrders[0]?.fulfillmentStatus || 'not_yet'))?.labelEn || 'Current')}
+                </span>
+                <span className="text-slate-400 font-bold">➔</span>
+                <span className={`px-3 py-1 rounded-lg font-black text-xs border shadow-2xs ${
+                  truckStatusModal.targetStep.color === 'emerald'
+                    ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                    : truckStatusModal.targetStep.color === 'amber'
+                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                    : truckStatusModal.targetStep.color === 'blue'
+                    ? 'bg-blue-100 text-blue-900 border-blue-300'
+                    : 'bg-slate-100 text-slate-800 border-slate-300'
+                }`}>
+                  {isAr ? truckStatusModal.targetStep.labelAr : truckStatusModal.targetStep.labelEn}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-slate-500 flex items-center justify-between">
+                <span>{isAr ? 'الأوامر المتأثرة بالتحديث:' : 'Affected Orders:'}</span>
+                <span className="font-mono text-slate-700">{truckStatusModal.affectedOrders.length} {isAr ? 'أمر' : 'orders'}</span>
+              </div>
+              <div className="max-h-36 overflow-y-auto space-y-1 border border-slate-200 rounded-xl p-2 bg-slate-50/50">
+                {truckStatusModal.affectedOrders.map((ord) => {
+                  const oSerial = resolveOrderSerial(ord, orders);
+                  return (
+                    <div key={ord.id} className="flex items-center justify-between gap-2 text-xs p-1.5 bg-white rounded-lg border border-slate-100 shadow-2xs">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="font-mono font-black text-indigo-700">#{oSerial}</span>
+                        <span className="font-bold text-slate-800 truncate">{ord.clientName || '—'}</span>
+                      </div>
+                      <span className="font-mono text-[11px] text-slate-500 shrink-0">
+                        {(ord.totalCartons || ord.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setTruckStatusModal(null)}
+                disabled={truckStatusModal.isExecuting}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmTruckFulfillmentTransition}
+                disabled={truckStatusModal.isExecuting}
+                className="inline-flex items-center gap-1.5 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black shadow-xs transition cursor-pointer disabled:opacity-50"
+              >
+                {truckStatusModal.isExecuting ? (
+                  <>
+                    <PeacockLoader size="xs" text="" />
+                    <span>{isAr ? 'جاري التحديث...' : 'Updating...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>{isAr ? 'تأكيد وتحديث الحالة' : 'Confirm & Apply'}</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>
