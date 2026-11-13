@@ -11,7 +11,16 @@
   }
 }
 
-@keyframes road-dash-scroll {
+@keyframes road-dash-scroll-ltr {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: -24px 0;
+  }
+}
+
+@keyframes road-dash-scroll-rtl {
   from {
     background-position: 0 0;
   }
@@ -20,7 +29,7 @@
   }
 }
 
-@keyframes trip-slide-next {
+@keyframes trip-slide-from-end {
   0% {
     opacity: 0;
     transform: translateX(18px);
@@ -31,7 +40,7 @@
   }
 }
 
-@keyframes trip-slide-prev {
+@keyframes trip-slide-from-start {
   0% {
     opacity: 0;
     transform: translateX(-18px);
@@ -42,9 +51,9 @@
   }
 }
 
-@keyframes truck-glide {
+@keyframes truck-glide-from-start {
   0% {
-    transform: translateX(-8px) scale(0.95);
+    transform: translateX(-10px) scale(0.95);
     opacity: 0.5;
   }
   60% {
@@ -54,6 +63,43 @@
   100% {
     transform: translateX(0) scale(1);
     opacity: 1;
+  }
+}
+
+@keyframes truck-glide-from-end {
+  0% {
+    transform: translateX(10px) scale(0.95);
+    opacity: 0.5;
+  }
+  60% {
+    transform: translateX(-2px) scale(1.04);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes panel-expand-ltr {
+  0% {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes panel-expand-rtl {
+  0% {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 
@@ -67,7 +113,11 @@
   );
   background-size: 24px 2px;
   background-repeat: repeat-x;
-  animation: road-dash-scroll 0.9s linear infinite;
+  animation: road-dash-scroll-ltr 0.9s linear infinite;
+}
+
+[dir="rtl"] .animate-road-dashes {
+  animation-name: road-dash-scroll-rtl;
 }
 
 .animate-road-dashes-static {
@@ -82,14 +132,46 @@
   background-repeat: repeat-x;
 }
 
+/* LTR: Prev is on left, Next is on right */
 .animate-trip-slide-next {
-  animation: trip-slide-next 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: trip-slide-from-end 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 .animate-trip-slide-prev {
-  animation: trip-slide-prev 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: trip-slide-from-start 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
-.animate-truck-glide {
-  animation: truck-glide 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+.animate-truck-glide,
+.animate-truck-glide-next {
+  animation: truck-glide-from-start 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-truck-glide-prev {
+  animation: truck-glide-from-end 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-panel-expand {
+  animation: panel-expand-ltr 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* RTL: Prev is on right, Next is on left */
+[dir="rtl"] .animate-trip-slide-next {
+  animation-name: trip-slide-from-start;
+}
+
+[dir="rtl"] .animate-trip-slide-prev {
+  animation-name: trip-slide-from-end;
+}
+
+[dir="rtl"] .animate-truck-glide,
+[dir="rtl"] .animate-truck-glide-next {
+  animation-name: truck-glide-from-end;
+}
+
+[dir="rtl"] .animate-truck-glide-prev {
+  animation-name: truck-glide-from-start;
+}
+
+[dir="rtl"] .animate-panel-expand {
+  animation-name: panel-expand-rtl;
 }

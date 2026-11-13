@@ -441,7 +441,7 @@ function TripRoadwayCarousel({
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <div className={`p-1 rounded-lg ${isMaint ? 'bg-purple-500/20 text-purple-300' : isInact ? 'bg-slate-700 text-slate-400' : 'bg-slate-700/90 text-slate-300'}`}>
-            {isMaint ? <Wrench className="w-3 h-3" /> : <Truck className="w-3 h-3" />}
+            {isMaint ? <Wrench className="w-3 h-3" /> : <Truck className="w-3 h-3 rtl:-scale-x-100" />}
           </div>
           <span className="text-[10px] font-bold truncate">
             {isMaint
@@ -515,7 +515,7 @@ function TripRoadwayCarousel({
               title={isAr ? `عرض رحلة #${prevTrip.loadingOrderNumber}` : `View Trip #${prevTrip.loadingOrderNumber}`}
             >
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${renderStatusDot(prevTrip)}`}></span>
-              <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+              <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
               <span className="truncate">#{prevTrip.loadingOrderNumber}</span>
               {prevTrip.hasStatusConflict && <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />}
             </button>
@@ -528,7 +528,9 @@ function TripRoadwayCarousel({
         <div className="shrink-0">
           <div
             key={`${vehicle.id}-${safeIdx}-${slideDir}`}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-mono font-black border shadow-sm animate-truck-glide ${
+            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-mono font-black border shadow-sm ${
+              slideDir === 'prev' ? 'animate-truck-glide-prev' : 'animate-truck-glide-next'
+            } ${
               activeTrip.hasStatusConflict
                 ? 'bg-rose-600/95 border-rose-400 text-white ring-2 ring-rose-500/40'
                 : activeTrip.currentStep?.id === 'shipped'
@@ -540,7 +542,7 @@ function TripRoadwayCarousel({
                 : 'bg-indigo-600 border-indigo-400 text-white'
             }`}
           >
-            <Truck className="w-3.5 h-3.5 shrink-0" />
+            <Truck className="w-3.5 h-3.5 shrink-0 rtl:-scale-x-100" />
             <span>
               {activeTrip.loadingOrderNumber === 'unnumbered'
                 ? (isAr ? 'بدون رحلة' : 'No Trip#')
@@ -581,7 +583,7 @@ function TripRoadwayCarousel({
               title={isAr ? `عرض رحلة #${nextTrip.loadingOrderNumber}` : `View Trip #${nextTrip.loadingOrderNumber}`}
             >
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${renderStatusDot(nextTrip)}`}></span>
-              <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+              <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
               <span className="truncate">#{nextTrip.loadingOrderNumber}</span>
               {nextTrip.hasStatusConflict && <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />}
             </button>
@@ -1917,8 +1919,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       if (!isAssigned) {
         showToast(
           isAr
-            ? 'يرجى إكمال بيانات التسكين الإلزامية (رقم أمر التحميل، السيارة، والسائق) أولاً قبل بدء التجهيز والتنفيذ'
-            : 'Please complete mandatory assignment fields (LO #, Truck, Driver) before advancing from Pending.',
+            ? 'يرجى إكمال بيانات التسكين الإلزامية (رقم الرحلة، السيارة، والسائق) أولاً قبل بدء التجهيز والتنفيذ'
+            : 'Please complete mandatory assignment fields (Trip #, Truck, Driver) before advancing from Pending.',
           'error'
         );
         return;
@@ -2234,12 +2236,33 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return groupList;
   }, [sortedOrders, groupBy, sortBy, isAr, stagedAssignments, targetPlanningDate, todayStr, tomorrowStr, vehicles]);
 
-  // Active Trucks / Loading Orders Manifest Analysis (COMPOUND ALIGNMENT: loadingDate + loadingOrderNumber)
+  // Active Trucks / Trips Manifest Analysis (Focused ONLY on trips triggered by stagedAssignments)
   const truckManifest = useMemo(() => {
     const loGroups = {};
 
+    // 1. Identify which compound trip keys (loadingDate_#tripNumber) were triggered by currently staged orders
+    const triggeredCompoundKeys = new Set();
+    Object.entries(stagedAssignments).forEach(([orderId, staged]) => {
+      const stagedLo = Number(staged?.loadingOrderNumber);
+      if (stagedLo > 0) {
+        const stagedDate = staged.loadingDate || targetPlanningDate || todayStr;
+        triggeredCompoundKeys.add(`${stagedDate}_#${stagedLo}`);
+      }
+      // Also include the original trip if a staged order was modified from an existing trip
+      const origOrder = orders.find((o) => o.id === orderId);
+      const origLo = Number(origOrder?.loadingOrderNumber);
+      if (origLo > 0) {
+        const origDate = origOrder.loadingDate || targetPlanningDate || todayStr;
+        triggeredCompoundKeys.add(`${origDate}_#${origLo}`);
+      }
+    });
+
+    if (triggeredCompoundKeys.size === 0) return [];
+
     const allRelevantOrders = orders.filter(
-      (o) => !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(o.orderType)
+      (o) =>
+        o.confirmationStatus !== 'canceled' &&
+        !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(o.orderType)
     );
 
     allRelevantOrders.forEach((order) => {
@@ -2249,6 +2272,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       const loDate = eff.loadingDate || targetPlanningDate || todayStr;
       const compoundKey = `${loDate}_#${loNum}`;
+
+      // Focus strictly on trips triggered by the floating bar's staged orders
+      if (!triggeredCompoundKeys.has(compoundKey)) return;
 
       if (!loGroups[compoundKey]) {
         loGroups[compoundKey] = {
@@ -2260,6 +2286,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           driversAssigned: new Set(),
           repsAssigned: new Set(),
           assignedOrders: [],
+          stagedOrderIds: new Set(),
           totalCartons: 0,
           totalWeightKg: 0,
           primaryVehicleId: eff.assignedVehicleId,
@@ -2273,6 +2300,26 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       }
 
       const g = loGroups[compoundKey];
+      const isOrderStaged = Boolean(stagedAssignments[order.id]);
+      if (isOrderStaged) {
+        g.stagedOrderIds.add(order.id);
+        // Prefer the staged order's vehicle & driver as primary target when aligning
+        if (eff.assignedVehicleId) {
+          const vObj = vehicles.find((v) => v.id === eff.assignedVehicleId);
+          g.primaryVehicleId = eff.assignedVehicleId;
+          g.primaryVehicleName = eff.assignedVehicleName || vObj?.vehicleModel || vObj?.name || vObj?.code || '';
+          g.primaryVehiclePlate = eff.assignedVehiclePlate || vObj?.plateNumber || '';
+        }
+        if (eff.assignedDriverId) {
+          g.primaryDriverId = eff.assignedDriverId;
+          g.primaryDriverName = eff.assignedDriverName;
+        }
+        if (eff.assignedDeliveryRepId) {
+          g.primaryRepId = eff.assignedDeliveryRepId;
+          g.primaryRepName = eff.assignedDeliveryRepName;
+        }
+      }
+
       if (eff.assignedVehicleId) {
         g.vehiclesAssigned.add(eff.assignedVehicleId);
         if (!g.primaryVehicleName) {
@@ -2771,8 +2818,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
     showToast(
       isAr
-        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق لأمر تحميل #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح`
-        : `Truck and driver aligned for LO #${loNumber} on ${targetLoadingDate}`
+        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق للرحلة #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح`
+        : `Truck and driver aligned for Trip #${loNumber} on ${targetLoadingDate}`
     );
   };
 
@@ -2790,7 +2837,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // Pre-Save Validations & Open Confirmation Modal
   const handleOpenSaveModal = () => {
     if (hasIncompleteStagedOrder) {
-      alert(isAr ? 'لا يمكن حفظ الخطة! يوجد طلبات غير مكتملة البيانات الإلزامية (رقم أمر التحميل، السيارة، أو السائق). يرجى استكمالها أولاً.' : 'Cannot save plan! Some orders have incomplete mandatory fields (LO #, Truck, or Driver). Please complete them first.');
+      alert(isAr ? 'لا يمكن حفظ الخطة! يوجد طلبات غير مكتملة البيانات الإلزامية (رقم الرحلة، السيارة، أو السائق). يرجى استكمالها أولاً.' : 'Cannot save plan! Some orders have incomplete mandatory fields (Trip #, Truck, or Driver). Please complete them first.');
       return;
     }
 
@@ -2801,11 +2848,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       const targetStatus = eff.fulfillmentStatus || originalOrder?.fulfillmentStatus || 'not_yet';
       if (targetStatus !== 'not_yet' && eff.loadingOrderNumber) {
         if (!eff.assignedVehicleId) {
-          alert(isAr ? `أمر التحميل #${eff.loadingOrderNumber} ينقصه اختيار السيارة!` : `LO #${eff.loadingOrderNumber} is missing a selected truck!`);
+          alert(isAr ? `رحلة #${eff.loadingOrderNumber} ينقصها اختيار السيارة!` : `Trip #${eff.loadingOrderNumber} is missing a selected truck!`);
           return;
         }
         if (!eff.assignedDriverId) {
-          alert(isAr ? `أمر التحميل #${eff.loadingOrderNumber} ينقصه تعيين السائق!` : `LO #${eff.loadingOrderNumber} is missing an assigned driver!`);
+          alert(isAr ? `رحلة #${eff.loadingOrderNumber} ينقصها تعيين السائق!` : `Trip #${eff.loadingOrderNumber} is missing an assigned driver!`);
           return;
         }
       }
@@ -3170,7 +3217,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         >
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-2xl bg-indigo-50 text-indigo-700 border border-indigo-200/80 flex items-center justify-center shrink-0 shadow-2xs">
-              <Truck className="w-5 h-5" />
+              <Truck className="w-5 h-5 rtl:-scale-x-100" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -3457,7 +3504,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       title={isAr ? 'عرض تفاصيل أمر البيع في تبويب أوامر البيع' : 'View order details in Sales Orders'}
                                     >
                                       <span>#{orderSerial}</span>
-                                      <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                      <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
                                     </button>
                                     <RowCommentButton
                                       docId={order.id}
@@ -3553,7 +3600,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             </div>
 
                             {/* Ultra-Compact Assignment Form Panel (80% width) - Header and Footer removed */}
-                            <div className="w-full md:w-[80%] p-3 sm:p-4 bg-white flex flex-col justify-between gap-3 text-start transition-all duration-700 ease-out origin-right rtl:origin-left animate-in fade-in slide-in-from-right-16 rtl:slide-in-from-left-16 duration-700">
+                            <div className="w-full md:w-[80%] p-3 sm:p-4 bg-white flex flex-col justify-between gap-3 text-start transition-all duration-700 ease-out origin-right rtl:origin-left animate-panel-expand">
                               {/* 1. Sequential Fulfillment Status Stepper (Pending -> Preparing -> Out for Delivery -> Delivered) */}
                               <div className="w-full p-2 bg-slate-50/90 rounded-2xl border border-slate-200/90 space-y-1.5">
                                 <div className="flex items-center justify-between px-1">
@@ -3864,7 +3911,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     title={isAr ? 'عرض تفاصيل أمر البيع في تبويب أوامر البيع' : 'View order details in Sales Orders'}
                                   >
                                     <span>#{orderSerial}</span>
-                                    <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                    <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
                                   </button>
 
                                   <RowCommentButton
@@ -4105,7 +4152,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   <span className={`text-[10px] font-black uppercase flex items-center gap-1 ${
                                     isOrderLocked ? 'text-slate-500' : currentStatusConfig.textColor
                                   }`}>
-                                    <Truck className="w-3.5 h-3.5" />
+                                    <Truck className="w-3.5 h-3.5 rtl:-scale-x-100" />
                                     <span>{isAr ? 'بيانات الشاحنة' : 'Assigned Truck'}</span>
                                   </span>
                                   {isOrderLocked ? (
@@ -4139,7 +4186,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                 <div className="grid grid-cols-2 gap-1.5 text-start">
                                   {/* Cell 1: Trip Number */}
                                   <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs font-mono font-black text-xs text-slate-800 flex items-center gap-1 truncate">
-                                    <Truck className="w-3 h-3 text-emerald-600 shrink-0" />
+                                    <Truck className="w-3 h-3 text-emerald-600 shrink-0 rtl:-scale-x-100" />
                                     <span>{isAr ? `رحلة #${eff.loadingOrderNumber}` : `Trip #${eff.loadingOrderNumber}`}</span>
                                   </div>
 
@@ -4204,7 +4251,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     title={isAr ? 'عرض تفاصيل أمر البيع في تبويب أوامر البيع' : 'View order details in Sales Orders'}
                                   >
                                     <span>#{orderSerial}</span>
-                                    <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                    <ExternalLink className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
                                   </button>
 
                                   <RowCommentButton
@@ -4452,7 +4499,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               ) : (
                                 <>
                                   <div className="w-9 h-9 rounded-2xl bg-white group-hover:bg-emerald-600 text-slate-400 group-hover:text-white border border-slate-200 group-hover:border-emerald-600 flex items-center justify-center transition shadow-2xs">
-                                    <Truck className="w-4 h-4" />
+                                    <Truck className="w-4 h-4 rtl:-scale-x-100" />
                                   </div>
                                   <span className="text-[10px] font-black text-slate-400 group-hover:text-emerald-700 mt-1.5">
                                     {isAr ? '+ تسكين' : '+ Assign'}
@@ -4481,176 +4528,192 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               <div className="p-4 sm:p-5 border-b border-slate-800 max-h-[55vh] overflow-y-auto space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Truck className="w-5 h-5 text-emerald-400" />
+                    <Truck className="w-5 h-5 text-emerald-400 rtl:-scale-x-100" />
                     <h4 className="font-extrabold text-sm text-white">
-                      {isAr ? 'بيان الشاحنات وأوامر التحميل المجدولة' : 'Scheduled Trucks & Loading Manifest'}
+                      {isAr ? 'بيان الرحلات والشاحنات قيد التعديل حالياً' : 'Active Staged Trips & Trucks Manifest'}
                     </h4>
                   </div>
                   <span className="text-xs text-slate-400 font-bold">
-                    {truckManifest.length} {isAr ? 'رحلات / شاحنات مجدولة' : 'truck trips scheduled'}
+                    {truckManifest.length} {isAr ? 'رحلات قيد التعديل' : 'staged trip(s)'}
                   </span>
                 </div>
 
-                {/* Grid of Trucks */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {truckManifest.map((tm) => {
-                    return (
-                      <div
-                        key={tm.compoundKey}
-                        data-comment-doc={tm.compoundKey}
-                        className={`rounded-2xl p-4 border transition ${
-                          tm.isMisaligned
-                            ? 'bg-rose-950/60 border-rose-500/80'
-                            : 'bg-slate-800/80 border-slate-700'
-                        }`}
-                      >
-                        {/* Truck Card Header */}
-                        <div className="flex items-start justify-between gap-2 mb-2">
-                          <div>
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="font-mono text-xs font-black text-amber-400">
-                                #{tm.loadingOrderNumber}
-                              </span>
-                              <span className="font-bold text-white text-xs truncate max-w-[140px]" title={tm.primaryVehicleName}>
-                                {tm.primaryVehicleName || (isAr ? 'شاحنة' : 'Truck')}
-                              </span>
-                              {tm.primaryVehiclePlate && (
-                                <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-800 border border-slate-700 font-mono text-[9px] text-slate-300">
-                                  <span>{tm.primaryVehiclePlate}</span>
-                                  <CopyButton text={tm.primaryVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} className="text-slate-400 hover:text-white hover:bg-slate-700" />
+                {truckManifest.length === 0 ? (
+                  <div className="p-4 rounded-2xl bg-slate-800/60 border border-slate-700 text-center text-xs text-slate-400">
+                    {isAr
+                      ? 'لا توجد رحلات برقم محدد ضمن التعديلات المعلقة حالياً (الأوامر في حالة قيد الانتظار بدون رقم رحلة).'
+                      : 'No numbered trips in the current staged changes (orders are Pending without a Trip #).'}
+                  </div>
+                ) : (
+                  /* Grid of Triggered Trips */
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {truckManifest.map((tm) => {
+                      return (
+                        <div
+                          key={tm.compoundKey}
+                          data-comment-doc={tm.compoundKey}
+                          className={`rounded-2xl p-4 border transition ${
+                            tm.isMisaligned
+                              ? 'bg-rose-950/60 border-rose-500/80'
+                              : 'bg-slate-800/80 border-slate-700'
+                          }`}
+                        >
+                          {/* Truck Card Header */}
+                          <div className="flex items-start justify-between gap-2 mb-2">
+                            <div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-mono text-xs font-black text-amber-400">
+                                  {isAr ? `رحلة #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
                                 </span>
-                              )}
+                                <span className="font-bold text-white text-xs truncate max-w-[140px]" title={tm.primaryVehicleName}>
+                                  {tm.primaryVehicleName || (isAr ? 'شاحنة' : 'Truck')}
+                                </span>
+                                {tm.primaryVehiclePlate && (
+                                  <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-800 border border-slate-700 font-mono text-[9px] text-slate-300">
+                                    <span>{tm.primaryVehiclePlate}</span>
+                                    <CopyButton text={tm.primaryVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} className="text-slate-400 hover:text-white hover:bg-slate-700" />
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
+                                <span className="flex items-center gap-1">
+                                  <Calendar className="w-3 h-3 text-slate-400 inline shrink-0" />
+                                  <span>{tm.loadingDate}</span>
+                                </span>
+                                <span>•</span>
+                                <span>{isAr ? 'إذن صرف:' : 'Dismiss #:'} {tm.dismissNumber}</span>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
-                              <span className="flex items-center gap-1">
-                                <Calendar className="w-3 h-3 text-slate-400 inline shrink-0" />
-                                <span>{tm.loadingDate}</span>
-                              </span>
-                              <span>•</span>
-                              <span>{isAr ? 'إذن صرف:' : 'Dismiss #:'} {tm.dismissNumber}</span>
-                            </div>
-                          </div>
 
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <RowCommentButton
-                              docId={tm.compoundKey}
-                              docNumber={isAr ? `إذن تحميل #${tm.loadingOrderNumber}` : `Loading #${tm.loadingOrderNumber}`}
-                              tab="loading_plan"
-                              module="sales"
-                              className="bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700"
-                            />
-                            <span className="text-[10px] font-mono font-bold bg-slate-900 text-slate-300 px-2 py-0.5 rounded-lg border border-slate-700">
-                              {tm.assignedOrders.length} {isAr ? 'أمر' : 'orders'}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Driver & Rep */}
-                        <div className="text-[11px] text-slate-300 space-y-0.5 mb-2">
-                          <div className="flex items-center gap-1">
-                            <User className="w-3 h-3 text-slate-400 shrink-0" />
-                            <span className="truncate">{tm.primaryDriverName || (isAr ? 'غير محدد' : 'Unassigned')}</span>
-                          </div>
-                          {tm.primaryRepName && (
-                            <div className="flex items-center gap-1 text-slate-400 text-[10px]">
-                              <Users className="w-3 h-3 text-slate-500 shrink-0" />
-                              <span className="truncate">{tm.primaryRepName}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Assigned Orders Chips with Order Serial & Client Name */}
-                        {Array.isArray(tm.assignedOrders) && tm.assignedOrders.length > 0 && (
-                          <div className="pt-2 border-t border-slate-700/60 mb-2">
-                            <div className="text-[10px] font-bold text-slate-400 mb-1 flex items-center justify-between">
-                              <span>{isAr ? 'الطلبات المحملة:' : 'Loaded Orders:'}</span>
-                              <span className="font-mono text-[9px] text-slate-500">
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <RowCommentButton
+                                docId={tm.compoundKey}
+                                docNumber={isAr ? `رحلة #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
+                                tab="loading_plan"
+                                module="sales"
+                                className="bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700"
+                              />
+                              <span className="text-[10px] font-mono font-bold bg-slate-900 text-slate-300 px-2 py-0.5 rounded-lg border border-slate-700">
                                 {tm.assignedOrders.length} {isAr ? 'أمر' : 'orders'}
                               </span>
                             </div>
-                            <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-                              {tm.assignedOrders.map((ord) => {
-                                const oSerial = resolveOrderSerial(ord, orders);
-                                return (
-                                  <span
-                                    key={ord.id}
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-slate-900/90 text-slate-200 border border-slate-700 truncate max-w-full"
-                                    title={`#${oSerial} — ${ord.clientName || '—'}`}
-                                  >
-                                    <span className="font-mono text-amber-400 font-black shrink-0">#{oSerial}</span>
-                                    <span className="truncate">{ord.clientName || (isAr ? 'عميل' : 'Client')}</span>
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Weight Capacity Gauge */}
-                        <div className="space-y-1 pt-2 border-t border-slate-700/60 text-xs">
-                          <div className="flex items-center justify-between text-[11px] font-mono">
-                            <span className="text-slate-300 font-bold">
-                              {tm.totalCartons} {isAr ? 'كرتونة' : 'ctn'}
-                            </span>
-                            <span className={`font-black ${
-                              tm.gaugeStatus === 'over'
-                                ? 'text-rose-400'
-                                : tm.gaugeStatus === 'optimal'
-                                ? 'text-emerald-400'
-                                : tm.gaugeStatus === 'under'
-                                ? 'text-amber-400'
-                                : 'text-slate-200'
-                            }`}>
-                              {(tm.totalWeightKg / 1000).toFixed(2)} / {tm.maxCap ? `${(tm.maxCap / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : '—'}
-                            </span>
                           </div>
 
-                          {/* Progress Bar */}
-                          {tm.maxCap > 0 ? (
-                            <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
-                              <div
-                                className={`h-full transition-all duration-300 ${
-                                  tm.gaugeStatus === 'over'
-                                    ? 'bg-rose-500 animate-pulse'
-                                    : tm.gaugeStatus === 'optimal'
-                                    ? 'bg-emerald-500'
-                                    : tm.gaugeStatus === 'heavy'
-                                    ? 'bg-amber-500'
-                                    : 'bg-amber-400'
-                                }`}
-                                style={{ width: `${tm.gaugePct}%` }}
-                              />
+                          {/* Driver & Rep */}
+                          <div className="text-[11px] text-slate-300 space-y-0.5 mb-2">
+                            <div className="flex items-center gap-1">
+                              <User className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span className="truncate">{tm.primaryDriverName || (isAr ? 'غير محدد' : 'Unassigned')}</span>
                             </div>
-                          ) : (
-                            <div className="text-[10px] text-slate-500">
-                              {isAr ? 'لم تسجل محددات الحمولة للمركبة' : 'Vehicle capacity not set'}
+                            {tm.primaryRepName && (
+                              <div className="flex items-center gap-1 text-slate-400 text-[10px]">
+                                <Users className="w-3 h-3 text-slate-500 shrink-0" />
+                                <span className="truncate">{tm.primaryRepName}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Assigned Orders Chips with Order Serial & Client Name (Staged Triggerer Orders Highlighted) */}
+                          {Array.isArray(tm.assignedOrders) && tm.assignedOrders.length > 0 && (
+                            <div className="pt-2 border-t border-slate-700/60 mb-2">
+                              <div className="text-[10px] font-bold text-slate-400 mb-1 flex items-center justify-between">
+                                <span>{isAr ? 'إجمالي طلبات الرحلة:' : 'Trip Orders:'}</span>
+                                <span className="font-mono text-[9px] text-emerald-400">
+                                  {tm.stagedOrderIds?.size || 0} {isAr ? 'قيد التعديل' : 'staged'} / {tm.assignedOrders.length} {isAr ? 'إجمالي' : 'total'}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                                {tm.assignedOrders.map((ord) => {
+                                  const oSerial = resolveOrderSerial(ord, orders);
+                                  const isTriggerer = tm.stagedOrderIds?.has(ord.id);
+                                  return (
+                                    <span
+                                      key={ord.id}
+                                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border truncate max-w-full ${
+                                        isTriggerer
+                                          ? 'bg-emerald-950/90 text-emerald-200 border-emerald-500/80 ring-1 ring-emerald-400/30'
+                                          : 'bg-slate-900/90 text-slate-300 border-slate-700'
+                                      }`}
+                                      title={`#${oSerial} — ${ord.clientName || '—'}${isTriggerer ? (isAr ? ' (قيد التعديل الآن)' : ' (Staged Trigger)') : ''}`}
+                                    >
+                                      {isTriggerer && (
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" />
+                                      )}
+                                      <span className="font-mono text-amber-400 font-black shrink-0">#{oSerial}</span>
+                                      <span className="truncate">{ord.clientName || (isAr ? 'عميل' : 'Client')}</span>
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Weight Capacity Gauge */}
+                          <div className="space-y-1 pt-2 border-t border-slate-700/60 text-xs">
+                            <div className="flex items-center justify-between text-[11px] font-mono">
+                              <span className="text-slate-300 font-bold">
+                                {tm.totalCartons} {isAr ? 'كرتونة' : 'ctn'}
+                              </span>
+                              <span className={`font-black ${
+                                tm.gaugeStatus === 'over'
+                                  ? 'text-rose-400'
+                                  : tm.gaugeStatus === 'optimal'
+                                  ? 'text-emerald-400'
+                                  : tm.gaugeStatus === 'under'
+                                  ? 'text-amber-400'
+                                  : 'text-slate-200'
+                              }`}>
+                                {(tm.totalWeightKg / 1000).toFixed(2)} / {tm.maxCap ? `${(tm.maxCap / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : '—'}
+                              </span>
+                            </div>
+
+                            {/* Progress Bar */}
+                            {tm.maxCap > 0 ? (
+                              <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full transition-all duration-300 ${
+                                    tm.gaugeStatus === 'over'
+                                      ? 'bg-rose-500 animate-pulse'
+                                      : tm.gaugeStatus === 'optimal'
+                                      ? 'bg-emerald-500'
+                                      : tm.gaugeStatus === 'heavy'
+                                      ? 'bg-amber-500'
+                                      : 'bg-amber-400'
+                                  }`}
+                                  style={{ width: `${tm.gaugePct}%` }}
+                                />
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-slate-500">
+                                {isAr ? 'لم تسجل محددات الحمولة للمركبة' : 'Vehicle capacity not set'}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Misalignment Warning Alert & 1-Click Align Button */}
+                          {tm.isMisaligned && (
+                            <div className="mt-3 p-2 rounded-xl bg-rose-900/80 border border-rose-600 text-rose-100 text-[11px] space-y-1.5">
+                              <div className="flex items-center gap-1 font-bold">
+                                <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
+                                <span>{isAr ? `تعارض في رحلة #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in Trip #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
+                              </div>
+                              <p className="text-[10px] text-rose-200">
+                                {isAr ? 'أوامر مختلفة بنفس رقم الرحلة لنفس اليوم مسندة لشاحنات وسائقين متباينين.' : 'Different orders in this Trip # on this date have conflicting trucks/drivers.'}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => handleAlignTruckOrders(tm.compoundKey, tm.loadingOrderNumber, tm.loadingDate, tm.primaryVehicleId, tm.primaryDriverId)}
+                                className="w-full py-1 px-2 rounded-lg bg-rose-500 hover:bg-rose-400 text-white font-bold text-[10px] transition cursor-pointer shadow-xs"
+                              >
+                                {isAr ? 'مطابقة وتوحيد كافة الطلبات' : 'Align All Orders'}
+                              </button>
                             </div>
                           )}
                         </div>
-
-                        {/* Misalignment Warning Alert & 1-Click Align Button */}
-                        {tm.isMisaligned && (
-                          <div className="mt-3 p-2 rounded-xl bg-rose-900/80 border border-rose-600 text-rose-100 text-[11px] space-y-1.5">
-                            <div className="flex items-center gap-1 font-bold">
-                              <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-                              <span>{isAr ? `تعارض في رحلة #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in Trip #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
-                            </div>
-                            <p className="text-[10px] text-rose-200">
-                              {isAr ? 'أوامر مختلفة بنفس رقم الرحلة لنفس اليوم مسندة لشاحنات وسائقين متباينين.' : 'Different orders in this Trip # on this date have conflicting trucks/drivers.'}
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => handleAlignTruckOrders(tm.compoundKey, tm.loadingOrderNumber, tm.loadingDate, tm.primaryVehicleId, tm.primaryDriverId)}
-                              className="w-full py-1 px-2 rounded-lg bg-rose-500 hover:bg-rose-400 text-white font-bold text-[10px] transition cursor-pointer shadow-xs"
-                            >
-                              {isAr ? 'مطابقة وتوحيد كافة الطلبات' : 'Align All Orders'}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
@@ -4697,8 +4760,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   onClick={() => setIsManifestExpanded((prev) => !prev)}
                   className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition cursor-pointer border border-slate-700"
                 >
-                  <Truck className="w-3.5 h-3.5 text-amber-400" />
-                  <span>{isAr ? 'بيان الشاحنات' : 'Trucks Manifest'}</span>
+                  <Truck className="w-3.5 h-3.5 text-amber-400 rtl:-scale-x-100" />
+                  <span>{isAr ? 'بيان الرحلات' : 'Trips Manifest'} ({truckManifest.length})</span>
                   {isManifestExpanded ? <ChevronDown className="w-3.5 h-3.5 ms-0.5" /> : <ChevronUp className="w-3.5 h-3.5 ms-0.5" />}
                 </button>
 
@@ -4801,7 +4864,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     </span>
                     <div className="flex items-center gap-2 font-mono text-[11px]">
                       <span className="text-slate-500">{dateMismatchModal.existingLoadingDate || (isAr ? 'غير محدد' : 'Unset')}</span>
-                      <span className="text-slate-400">→</span>
+                      {isAr ? (
+                        <ArrowLeft className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      ) : (
+                        <ArrowRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      )}
                       <span className="font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
                         {dateMismatchModal.targetLoadingDate}
                       </span>
@@ -4967,7 +5034,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     >
                       <div className="flex items-center justify-between font-bold text-slate-900">
                         <span className="font-mono text-amber-700">
-                          {isAr ? 'أمر تحميل #' : 'LO #'}{t.loadingOrderNumber}
+                          {isAr ? 'رحلة #' : 'Trip #'}{t.loadingOrderNumber}
                         </span>
                         <span className="text-[10px] font-mono text-slate-500">
                           {t.loadingDate}
@@ -4978,10 +5045,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                       </div>
                       <div className="text-[11px] text-rose-700 space-y-0.5 font-medium">
                         {t.hasVehicleMismatch && (
-                          <div>• {isAr ? 'شاحنات مختلفة مسندة لنفس أمر التحميل' : 'Multiple conflicting trucks assigned'}</div>
+                          <div>• {isAr ? 'شاحنات مختلفة مسندة لنفس الرحلة' : 'Multiple conflicting trucks assigned'}</div>
                         )}
                         {t.hasDriverMismatch && (
-                          <div>• {isAr ? 'سائقون مختلفون مسندون لنفس أمر التحميل' : 'Multiple conflicting drivers assigned'}</div>
+                          <div>• {isAr ? 'سائقون مختلفون مسندون لنفس الرحلة' : 'Multiple conflicting drivers assigned'}</div>
                         )}
                       </div>
                     </div>
@@ -5117,7 +5184,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2.5">
                 <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center justify-center shrink-0 shadow-2xs">
-                  <Truck className="w-5 h-5" />
+                  <Truck className="w-5 h-5 rtl:-scale-x-100" />
                 </div>
                 <div>
                   <h4 className="font-extrabold text-sm text-slate-900">
@@ -5168,7 +5235,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     ? (SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === normalizeFulfillmentStatus(truckStatusModal.affectedOrders[0]?.fulfillmentStatus))?.labelAr || 'الحالة الحالية')
                     : (SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === normalizeFulfillmentStatus(truckStatusModal.affectedOrders[0]?.fulfillmentStatus))?.labelEn || 'Current')}
                 </span>
-                <span className="text-slate-400 font-bold">➔</span>
+                {isAr ? (
+                  <ArrowLeft className="w-4 h-4 text-slate-400 shrink-0" />
+                ) : (
+                  <ArrowRight className="w-4 h-4 text-slate-400 shrink-0" />
+                )}
                 <span className={`px-3 py-1 rounded-lg font-black text-xs border shadow-2xs ${
                   truckStatusModal.targetStep.color === 'emerald'
                     ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
