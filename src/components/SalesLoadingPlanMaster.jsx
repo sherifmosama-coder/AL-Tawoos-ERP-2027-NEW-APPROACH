@@ -543,8 +543,8 @@ function TripRoadwayCarousel({
             <Truck className="w-3.5 h-3.5 shrink-0" />
             <span>
               {activeTrip.loadingOrderNumber === 'unnumbered'
-                ? (isAr ? 'بدون رقم' : 'No LO#')
-                : `LO #${activeTrip.loadingOrderNumber}`}
+                ? (isAr ? 'بدون رحلة' : 'No Trip#')
+                : (isAr ? `رحلة #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`)}
             </span>
             {activeTrip.hasStatusConflict && (
               <button
@@ -953,7 +953,7 @@ function CompactTruckCard({
             </FleetRichTooltip>
           </div>
 
-          {/* Clickable Conflict Alert Icon (triggers manual LO# filter when trip or vehicle has conflict) */}
+          {/* Clickable Conflict Alert Icon (triggers manual Trip# filter when trip or vehicle has conflict) */}
           {(activeTrip?.hasStatusConflict || conflicts.length > 0) && (
             <FleetRichTooltip
               widthClass="w-60"
@@ -967,8 +967,8 @@ function CompactTruckCard({
                   {activeTrip?.hasStatusConflict && (
                     <div className="text-rose-900 font-semibold leading-snug">
                       • {isAr
-                        ? `أمر التحميل #${activeTrip.loadingOrderNumber} يحتوي على أكثر من حالة تنفيذ — انقر لتصفية الطلبات وإصلاحها يدوياً.`
-                        : `LO #${activeTrip.loadingOrderNumber} has mixed statuses — click to filter orders & fix manually.`}
+                        ? `رحلة #${activeTrip.loadingOrderNumber} تحتوي على أكثر من حالة تنفيذ — انقر لتصفية الطلبات وإصلاحها يدوياً.`
+                        : `Trip #${activeTrip.loadingOrderNumber} has mixed statuses — click to filter orders & fix manually.`}
                     </div>
                   )}
                   {conflicts.map((c, i) => (
@@ -1012,8 +1012,8 @@ function CompactTruckCard({
             <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0 animate-pulse" />
             <span className="truncate">
               {isAr
-                ? `تعارض حالات #${activeTrip.loadingOrderNumber} — انقر للإصلاح يدوياً`
-                : `Status Conflict #${activeTrip.loadingOrderNumber} — Click to Fix`}
+                ? `تعارض حالات رحلة #${activeTrip.loadingOrderNumber} — انقر للإصلاح يدوياً`
+                : `Trip #${activeTrip.loadingOrderNumber} Conflict — Click to Fix`}
             </span>
           </button>
         ) : (
@@ -1351,8 +1351,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const [searchTerm, setSearchTerm] = useState('');
   const [confirmedOnly, setConfirmedOnly] = useState(true);
   const [fulfillmentFilter, setFulfillmentFilter] = useState('all');
-  const [groupBy, setGroupBy] = useState('loadingDate'); // 'loadingDate' | 'none' | 'region' | 'client' | 'loadingOrder' | 'fulfillmentStatus'
-  const [sortBy, setSortBy] = useState('weight_desc'); // 'weight_desc' | 'weight_asc' | 'cartons_desc' | 'serial_asc' | 'client_asc'
+  const [groupBy, setGroupBy] = useState('status_hierarchy'); // 'status_hierarchy' | 'loadingDate' | 'none' | 'region' | 'client' | 'loadingOrder' | 'fulfillmentStatus'
+  const [sortBy, setSortBy] = useState('trip_asc'); // 'trip_asc' | 'weight_desc' | 'weight_asc' | 'cartons_desc' | 'serial_asc' | 'client_asc'
 
   // Staged Assignments: Record<orderId, { loadingOrderNumber, assignedVehicleId, assignedVehiclePlate, assignedDriverId, assignedDriverName, assignedDeliveryRepId, assignedDeliveryRepName, loadingDate }>
   const [stagedAssignments, setStagedAssignments] = useState({});
@@ -1967,11 +1967,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     );
   };
 
-  // Filtered Orders
+  // Filtered Orders (Unified Target Loading Date Visibility Scope)
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
-      // Exclude purely administrative or non-delivery orders
-      if (order.orderType === 'admin' || order.orderType === 'collection') {
+      // Exclude purely administrative, collection, or financial-only (invoice_only_*) orders
+      if (['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType)) {
         return false;
       }
 
@@ -1989,8 +1989,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       const effectiveDate = eff.loadingDate || order.loadingDate || order.invoiceDate || '';
       const effectiveLo = String(eff.loadingOrderNumber || order.loadingOrderNumber || '').trim();
       const effectiveVehId = eff.assignedVehicleId || order.assignedVehicleId || '';
+      const normStatus = normalizeFulfillmentStatus(eff.fulfillmentStatus || order.fulfillmentStatus);
 
-      // Conflict Resolution LO # Filter takes priority so user sees all conflicting orders across all statuses
+      // Conflict Resolution Trip # Filter takes priority so user sees all conflicting orders across all statuses
       if (loFilter) {
         if (loFilter.loNumber === 'unnumbered') {
           if (effectiveLo) return false;
@@ -2002,25 +2003,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         return true;
       }
 
-      // Date Scope Filter
-      if (dateScope === 'all_pending') {
-        // Default to all orders with 'pending' fulfillment status (not_yet or undefined) across all dates
-        if (order.fulfillmentStatus && order.fulfillmentStatus !== 'not_yet') {
+      // Unified Target Loading Date Visibility Rule:
+      // - 'prepare' (Preparing) and 'not_yet' (Pending) are shown across ALL dates (targetPlanningDate + delayed past + upcoming future)
+      // - 'shipped' (Out for Delivery) and 'delivered' (Delivered / Paid) are shown ONLY for targetPlanningDate
+      if (normStatus === 'shipped' || normStatus === 'delivered') {
+        if (effectiveDate !== targetPlanningDate) {
           return false;
         }
-      } else if (dateScope === 'today') {
-        if (effectiveDate !== todayStr) return false;
-      } else if (dateScope === 'tomorrow') {
-        if (effectiveDate !== tomorrowStr) return false;
-      } else if (dateScope === 'week') {
-        if (!effectiveDate || effectiveDate < todayStr || effectiveDate > weekEndStr) return false;
-      } else if (dateScope === 'custom') {
-        if (effectiveDate !== customDate) return false;
       }
 
-      // Fulfillment status filter
+      // Fulfillment status quick filter
       if (fulfillmentFilter !== 'all') {
-        if (order.fulfillmentStatus !== fulfillmentFilter) return false;
+        if (fulfillmentFilter === 'delivered') {
+          if (normStatus !== 'delivered') return false;
+        } else if (normStatus !== fulfillmentFilter && order.fulfillmentStatus !== fulfillmentFilter) {
+          return false;
+        }
       }
 
       // Search term filter
@@ -2049,12 +2047,47 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       return true;
     });
-  }, [orders, stagedAssignments, dateScope, todayStr, tomorrowStr, weekEndStr, customDate, confirmedOnly, fulfillmentFilter, searchTerm, loFilter]);
+  }, [orders, stagedAssignments, targetPlanningDate, confirmedOnly, fulfillmentFilter, searchTerm, loFilter]);
+
+  // Helper comparator: Target Loading Date on top -> ascending dates -> ascending Trip # -> secondary sortBy
+  const compareOrdersByTargetDateAndTrip = (a, b) => {
+    const effA = getEffectiveAssignment(a);
+    const effB = getEffectiveAssignment(b);
+    const dateA = effA.loadingDate || a.loadingDate || a.invoiceDate || '9999-99-99';
+    const dateB = effB.loadingDate || b.loadingDate || b.invoiceDate || '9999-99-99';
+
+    const aIsTarget = dateA === targetPlanningDate;
+    const bIsTarget = dateB === targetPlanningDate;
+    if (aIsTarget && !bIsTarget) return -1;
+    if (!aIsTarget && bIsTarget) return 1;
+    if (dateA !== dateB) return dateA.localeCompare(dateB);
+
+    const tripA = Number(effA.loadingOrderNumber || a.loadingOrderNumber) || Infinity;
+    const tripB = Number(effB.loadingOrderNumber || b.loadingOrderNumber) || Infinity;
+    if (tripA !== tripB) return tripA - tripB;
+
+    if (sortBy === 'weight_desc') {
+      return (Number(b.totalWeightKg) || 0) - (Number(a.totalWeightKg) || 0);
+    }
+    if (sortBy === 'weight_asc') {
+      return (Number(a.totalWeightKg) || 0) - (Number(b.totalWeightKg) || 0);
+    }
+    if (sortBy === 'cartons_desc') {
+      return (Number(b.totalCartons || b.totalQty) || 0) - (Number(a.totalCartons || a.totalQty) || 0);
+    }
+    if (sortBy === 'client_asc') {
+      return String(a.clientName || '').localeCompare(String(b.clientName || ''), 'ar');
+    }
+    return (Number(a.serial) || 0) - (Number(b.serial) || 0);
+  };
 
   // Sorted Orders
   const sortedOrders = useMemo(() => {
     const list = [...filteredOrders];
     list.sort((a, b) => {
+      if (sortBy === 'trip_asc') {
+        return compareOrdersByTargetDateAndTrip(a, b);
+      }
       if (sortBy === 'weight_desc') {
         return (Number(b.totalWeightKg) || 0) - (Number(a.totalWeightKg) || 0);
       }
@@ -2070,15 +2103,71 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       if (sortBy === 'client_asc') {
         return String(a.clientName || '').localeCompare(String(b.clientName || ''), 'ar');
       }
-      return 0;
+      return compareOrdersByTargetDateAndTrip(a, b);
     });
     return list;
-  }, [filteredOrders, sortBy]);
+  }, [filteredOrders, sortBy, stagedAssignments, targetPlanningDate]);
 
   // Grouped Orders
   const groupedOrders = useMemo(() => {
     if (groupBy === 'none') {
       return [{ groupKey: 'all', groupLabel: '', items: sortedOrders }];
+    }
+
+    // Default Operational Status Hierarchy:
+    // a) Preparing on top (Target Loading Date on top -> ascending dates -> Trip # ascending)
+    // b) Pending second (Target Loading Date on top -> ascending dates -> Trip # ascending)
+    // c) Out for Delivery third (Target Loading Date only -> Trip # ascending)
+    // d) Delivered / Paid fourth (Target Loading Date only -> Trip # ascending)
+    if (groupBy === 'status_hierarchy') {
+      const buckets = {
+        prepare: {
+          groupKey: 'status_prepare',
+          groupLabel: isAr
+            ? '١. جاري التجهيز والتحميل (Preparing)'
+            : '1. Preparing (Loading in Progress)',
+          items: []
+        },
+        not_yet: {
+          groupKey: 'status_not_yet',
+          groupLabel: isAr
+            ? '٢. قيد الانتظار (Pending — متاح للتسكين والتنفيذ)'
+            : '2. Pending (Ready for Dispatch / Scheduling)',
+          items: []
+        },
+        shipped: {
+          groupKey: 'status_shipped',
+          groupLabel: isAr
+            ? `٣. جاري التوصيل على الطريق (${targetPlanningDate})`
+            : `3. Out for Delivery (${targetPlanningDate})`,
+          items: []
+        },
+        delivered: {
+          groupKey: 'status_delivered',
+          groupLabel: isAr
+            ? `٤. تم التسليم (${targetPlanningDate})`
+            : `4. Delivered / Paid (${targetPlanningDate})`,
+          items: []
+        }
+      };
+
+      sortedOrders.forEach((order) => {
+        const eff = getEffectiveAssignment(order);
+        const norm = normalizeFulfillmentStatus(eff.fulfillmentStatus || order.fulfillmentStatus);
+        if (buckets[norm]) {
+          buckets[norm].items.push(order);
+        } else {
+          buckets.not_yet.items.push(order);
+        }
+      });
+
+      return ['prepare', 'not_yet', 'shipped', 'delivered']
+        .map((k) => {
+          const b = buckets[k];
+          b.items.sort(compareOrdersByTargetDateAndTrip);
+          return b;
+        })
+        .filter((b) => b.items.length > 0);
     }
 
     const groups = {};
@@ -2095,7 +2184,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           const isToday = lDate === todayStr;
           const isTomorrow = lDate === tomorrowStr;
           let tag = '';
-          if (isTarget) tag = isAr ? ' [تاريخ التسكين المستهدف]' : ' [Target Plan Date]';
+          if (isTarget) tag = isAr ? ' [تاريخ التحميل المستهدف]' : ' [Target Loading Date]';
           else if (isToday) tag = isAr ? ' (اليوم)' : ' (Today)';
           else if (isTomorrow) tag = isAr ? ' (غداً)' : ' (Tomorrow)';
 
@@ -2115,8 +2204,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         const tName = eff.assignedVehicleName || vObj?.vehicleModel || vObj?.name || vObj?.code || '';
         key = eff.loadingOrderNumber ? `lo_${eff.loadingOrderNumber}` : 'unassigned';
         label = eff.loadingOrderNumber
-          ? `${isAr ? 'أمر تحميل #' : 'Loading Order #'}${eff.loadingOrderNumber}${tName ? ` — ${tName}` : ''}`
-          : (isAr ? 'غير مسكن بشاحنة' : 'Unassigned to Truck');
+          ? `${isAr ? 'رحلة #' : 'Trip #'}${eff.loadingOrderNumber}${tName ? ` — ${tName}` : ''}`
+          : (isAr ? 'غير مسكن برحلة / شاحنة' : 'Unassigned to Trip / Truck');
       } else if (groupBy === 'fulfillmentStatus') {
         const fulf = FULFILLMENT_STATUSES.find((f) => f.id === order.fulfillmentStatus);
         key = order.fulfillmentStatus || 'not_yet';
@@ -2131,25 +2220,27 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
     const groupList = Object.values(groups);
 
-    // Group Sorting: for loadingDate, targetPlanningDate on top, then descending, unscheduled last
+    // Group Sorting: for loadingDate, targetPlanningDate on top, then ascending, unscheduled last
     if (groupBy === 'loadingDate') {
       groupList.sort((a, b) => {
         if (a.groupKey === targetPlanningDate) return -1;
         if (b.groupKey === targetPlanningDate) return 1;
         if (a.groupKey === 'unscheduled') return 1;
         if (b.groupKey === 'unscheduled') return -1;
-        return b.groupKey.localeCompare(a.groupKey);
+        return a.groupKey.localeCompare(b.groupKey);
       });
     }
 
     return groupList;
-  }, [sortedOrders, groupBy, isAr, stagedAssignments, targetPlanningDate, todayStr, tomorrowStr, vehicles]);
+  }, [sortedOrders, groupBy, sortBy, isAr, stagedAssignments, targetPlanningDate, todayStr, tomorrowStr, vehicles]);
 
   // Active Trucks / Loading Orders Manifest Analysis (COMPOUND ALIGNMENT: loadingDate + loadingOrderNumber)
   const truckManifest = useMemo(() => {
     const loGroups = {};
 
-    const allRelevantOrders = orders.filter((o) => o.orderType !== 'admin' && o.orderType !== 'collection');
+    const allRelevantOrders = orders.filter(
+      (o) => !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(o.orderType)
+    );
 
     allRelevantOrders.forEach((order) => {
       const eff = getEffectiveAssignment(order);
@@ -2265,9 +2356,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     const analyzed = vehicles.map((veh) => {
       const maxCapKg = Number(veh.maxCapacityKg) || 0;
 
-      // 1. Gather all active orders assigned to this vehicle
+      // 1. Gather all active physical delivery orders assigned to this vehicle
       const allVehicleOrders = orders.filter((o) => {
         if (o.confirmationStatus === 'canceled') return false;
+        if (['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(o.orderType)) return false;
         const eff = getEffectiveAssignment(o);
         const vehId = eff.assignedVehicleId || o.assignedVehicleId;
         return vehId === veh.id;
@@ -2365,41 +2457,33 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           };
         });
 
-      // 5. Check for multiple simultaneous active (non-delivered) trips on targetPlanningDate
-      const activeLoadingOrders = new Set();
-      trips.forEach((t) => {
-        if (t.loadingOrderNumber !== 'unnumbered' && t.tripOperationalStatus !== 'delivered') {
-          activeLoadingOrders.add(t.loadingOrderNumber);
-        }
-      });
+      // 5. Check for simultaneous on-road ('shipped' / Out for Delivery) trips on targetPlanningDate
+      // Note: Having Trip #1 in Preparing/Out for Delivery while Trip #2 is Pending/Preparing is normal sequential multi-trip scheduling.
+      const onRoadTrips = trips.filter(
+        (t) => t.loadingOrderNumber !== 'unnumbered' && (t.currentStep?.id === 'shipped' || (t.statusCounts?.shipped || 0) > 0)
+      );
 
       const anyTripMixedConflict = trips.some((t) => t.hasStatusConflict);
       const anyTripOverweight = trips.some((t) => t.isOverweight);
 
       // 6. Compile vehicle-level conflicts
+      // Case A: A single Trip # has mixed fulfillment statuses on the same day (anyTripMixedConflict)
+      // Case B: A single Truck is on 2 or more trips simultaneously Out for Delivery (onRoadTrips.length > 1)
       const conflicts = [];
-      if (activeLoadingOrders.size > 1) {
+      if (onRoadTrips.length > 1) {
+        const roadTripNums = onRoadTrips.map((t) => `#${t.loadingOrderNumber}`).join(isAr ? ' و ' : ' & ');
         conflicts.push({
           type: 'simultaneous_trips',
-          messageAr: `تعارض: الشاحنة مجدولة لأكثر من رحلة غير مكتملة في نفس اليوم (${Array.from(activeLoadingOrders).map((n) => `#${n}`).join(' و ')})`,
-          messageEn: `Conflict: Truck scheduled for multiple active trips on the same day (${Array.from(activeLoadingOrders).map((n) => `#${n}`).join(' & ')})`
-        });
-      }
-
-      if (priorOpenOrders.length > 0) {
-        const priorDates = Array.from(new Set(priorOpenOrders.map((o) => o.loadingDate || '—'))).join(', ');
-        conflicts.push({
-          type: 'prior_trip_open',
-          messageAr: `تعارض: الشاحنة ما زالت في رحلة مفتوحة بتاريخ سابق (${priorDates}) ولم تُغلق بعد`,
-          messageEn: `Conflict: Truck still has an uncompleted trip from prior date (${priorDates})`
+          messageAr: `تعارض: الشاحنة خرجت للتوصيل في أكثر من رحلة في نفس الوقت (${roadTripNums})`,
+          messageEn: `Conflict: Truck is simultaneously Out for Delivery on multiple trips (${roadTripNums})`
         });
       }
 
       if (anyTripMixedConflict) {
         conflicts.push({
           type: 'mixed_statuses',
-          messageAr: 'حالات تنفيذ متباينة داخل نفس أمر التحميل — انقر أيقونة التنبيه لإصلاحها يدوياً',
-          messageEn: 'Mixed fulfillment statuses within a single LO # — click alert icon to resolve manually'
+          messageAr: 'حالات تنفيذ متباينة داخل نفس الرحلة — انقر أيقونة التنبيه لإصلاحها يدوياً',
+          messageEn: 'Mixed fulfillment statuses within a single Trip # — click alert icon to resolve manually'
         });
       }
 
@@ -2474,45 +2558,123 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return analyzed;
   }, [vehicles, orders, stagedAssignments, targetPlanningDate]);
 
-  // Handler to execute atomic batch transition for all orders on a truck
+  // Handler to execute atomic batch transition for a truck trip (supports partial delivery / returned orders)
   const handleConfirmTruckFulfillmentTransition = async () => {
     if (!truckStatusModal || !truckStatusModal.targetStep || !Array.isArray(truckStatusModal.affectedOrders) || truckStatusModal.affectedOrders.length === 0) return;
 
-    const { truck, targetStep, affectedOrders } = truckStatusModal;
+    const { truck, targetStep, affectedOrders, selectedOrderIds, unassignOnRevertToPending, loadingOrderNumber } = truckStatusModal;
+    const selectedSet = Array.isArray(selectedOrderIds)
+      ? new Set(selectedOrderIds)
+      : new Set(affectedOrders.map((o) => o.id));
+
     setTruckStatusModal((prev) => ({ ...prev, isExecuting: true }));
 
     try {
       const batch = writeBatch(db);
       const nowIso = new Date().toISOString();
+      let advancedCount = 0;
+      let returnedCount = 0;
 
       affectedOrders.forEach((order) => {
         const orderRef = doc(db, 'sales_orders', order.id);
         const oldStatus = order.fulfillmentStatus || 'not_yet';
-        const newStatus = targetStep.id;
-
+        const isChecked = selectedSet.has(order.id);
         const existingAudit = Array.isArray(order.auditTrail) ? order.auditTrail : [];
-        const auditEntry = {
-          id: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          timestamp: nowIso,
-          userId: currentUserId,
-          userName: currentUserName,
-          performedBy: currentUserName,
-          performedById: currentUserId,
-          action: 'truck_bulk_fulfillment_transition',
-          summaryAr: `تحديث مجمّع لحالة تنفيذ الشاحنة (${truck.code || truck.plateNumber || 'شاحنة'}) إلى "${targetStep.labelAr}"`,
-          summaryEn: `Truck bulk fulfillment transition (${truck.code || truck.plateNumber || 'Truck'}) to "${targetStep.labelEn}"`,
-          changes: {
-            metadata: [
-              { labelAr: 'حالة التنفيذ', labelEn: 'Fulfillment Status', oldValue: oldStatus, newValue: newStatus }
-            ]
-          }
-        };
 
-        batch.update(orderRef, {
-          fulfillmentStatus: newStatus,
-          updatedAt: serverTimestamp(),
-          auditTrail: [auditEntry, ...existingAudit]
-        });
+        if (isChecked) {
+          advancedCount++;
+          const newStatus = targetStep.id;
+          const shouldClearAssignment = newStatus === 'not_yet' && Boolean(unassignOnRevertToPending);
+
+          const metadataChanges = [
+            { labelAr: 'حالة التنفيذ', labelEn: 'Fulfillment Status', oldValue: oldStatus, newValue: newStatus }
+          ];
+          if (shouldClearAssignment) {
+            metadataChanges.push({
+              labelAr: 'إلغاء تسكين الرحلة والشاحنة',
+              labelEn: 'Cleared Trip & Truck Assignment',
+              oldValue: `Trip #${order.loadingOrderNumber || loadingOrderNumber || '—'} (${truck.code || truck.plateNumber || ''})`,
+              newValue: 'Unassigned'
+            });
+          }
+
+          const auditEntry = {
+            id: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            timestamp: nowIso,
+            userId: currentUserId,
+            userName: currentUserName,
+            performedBy: currentUserName,
+            performedById: currentUserId,
+            action: 'truck_bulk_fulfillment_transition',
+            summaryAr: shouldClearAssignment
+              ? `إرجاع الطلب إلى "${targetStep.labelAr}" وإلغاء تسكين الشاحنة (${truck.code || truck.plateNumber || ''})`
+              : `تحديث مجمّع لحالة تنفيذ الرحلة #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truck.code || truck.plateNumber || 'شاحنة'}) إلى "${targetStep.labelAr}"`,
+            summaryEn: shouldClearAssignment
+              ? `Reverted order to "${targetStep.labelEn}" & cleared truck assignment (${truck.code || truck.plateNumber || ''})`
+              : `Trip #${loadingOrderNumber || order.loadingOrderNumber || ''} bulk transition (${truck.code || truck.plateNumber || 'Truck'}) to "${targetStep.labelEn}"`,
+            changes: {
+              metadata: metadataChanges
+            }
+          };
+
+          const updatePayload = {
+            fulfillmentStatus: newStatus,
+            updatedAt: serverTimestamp(),
+            auditTrail: [auditEntry, ...existingAudit]
+          };
+
+          if (shouldClearAssignment) {
+            updatePayload.loadingOrderNumber = null;
+            updatePayload.assignedVehicleId = '';
+            updatePayload.assignedVehicleName = '';
+            updatePayload.assignedVehiclePlate = '';
+            updatePayload.assignedDriverId = '';
+            updatePayload.assignedDriverName = '';
+            updatePayload.assignedDeliveryRepId = '';
+            updatePayload.assignedDeliveryRepName = '';
+          }
+
+          batch.update(orderRef, updatePayload);
+        } else {
+          // Unchecked order during transition -> Returned / Undelivered -> Revert to 'not_yet' (Pending) & detach from Trip # / Truck
+          returnedCount++;
+          const auditEntry = {
+            id: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            timestamp: nowIso,
+            userId: currentUserId,
+            userName: currentUserName,
+            performedBy: currentUserName,
+            performedById: currentUserId,
+            action: 'partial_delivery_return',
+            summaryAr: `استثناء/ارتجاع الطلب من رحلة #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truck.code || truck.plateNumber || ''}) وإعادته إلى "قيد الانتظار" لإعادة الجدولة`,
+            summaryEn: `Detached returned/undelivered order from Trip #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truck.code || truck.plateNumber || ''}) & reverted to Pending`,
+            changes: {
+              metadata: [
+                { labelAr: 'حالة التنفيذ', labelEn: 'Fulfillment Status', oldValue: oldStatus, newValue: 'not_yet' },
+                {
+                  labelAr: 'فصل عن الرحلة والشاحنة',
+                  labelEn: 'Detached from Trip & Truck',
+                  oldValue: `Trip #${order.loadingOrderNumber || loadingOrderNumber || '—'} (${truck.code || truck.plateNumber || ''})`,
+                  newValue: 'Pending (Unassigned)'
+                }
+              ]
+            }
+          };
+
+          batch.update(orderRef, {
+            fulfillmentStatus: 'not_yet',
+            loadingOrderNumber: null,
+            assignedVehicleId: '',
+            assignedVehicleName: '',
+            assignedVehiclePlate: '',
+            assignedDriverId: '',
+            assignedDriverName: '',
+            assignedDeliveryRepId: '',
+            assignedDeliveryRepName: '',
+            updatedAt: serverTimestamp(),
+            auditTrail: [auditEntry, ...existingAudit]
+          });
+        }
       });
 
       await batch.commit();
@@ -2521,7 +2683,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       setStagedAssignments((prev) => {
         const updated = { ...prev };
         affectedOrders.forEach((o) => {
-          if (updated[o.id]) {
+          const isChecked = selectedSet.has(o.id);
+          if (!isChecked || (targetStep.id === 'not_yet' && unassignOnRevertToPending)) {
+            delete updated[o.id];
+          } else if (updated[o.id]) {
             updated[o.id] = {
               ...updated[o.id],
               fulfillmentStatus: targetStep.id
@@ -2531,11 +2696,19 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         return updated;
       });
 
-      showToast(
-        isAr
-          ? `تم تحديث حالة ${affectedOrders.length} أوامر للشاحنة ${truck.code || truck.plateNumber || ''} إلى "${targetStep.labelAr}" بنجاح`
-          : `Successfully updated ${affectedOrders.length} orders on ${truck.code || truck.plateNumber || ''} to "${targetStep.labelEn}"`
-      );
+      if (returnedCount > 0) {
+        showToast(
+          isAr
+            ? `تم تحديث ${advancedCount} طلبات إلى "${targetStep.labelAr}" وإرجاع ${returnedCount} طلب(ات) إلى "قيد الانتظار"`
+            : `Updated ${advancedCount} order(s) to "${targetStep.labelEn}" & returned ${returnedCount} order(s) to Pending`
+        );
+      } else {
+        showToast(
+          isAr
+            ? `تم تحديث حالة ${advancedCount} أوامر للرحلة #${loadingOrderNumber || ''} (${truck.code || truck.plateNumber || ''}) إلى "${targetStep.labelAr}" بنجاح`
+            : `Successfully updated ${advancedCount} orders on Trip #${loadingOrderNumber || ''} (${truck.code || truck.plateNumber || ''}) to "${targetStep.labelEn}"`
+        );
+      }
 
       setTruckStatusModal(null);
     } catch (err) {
@@ -2859,92 +3032,44 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       {/* 2. ORDERS SCOPE & FILTERS RIBBON (Middle Container)                       */}
       {/* ========================================================================= */}
       <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-4 sm:p-5 space-y-3.5">
-        {/* Row 1: Date Scope Shortcuts & Overall Scope Stats */}
+        {/* Row 1: Operational Status Quick Filter & Target Loading Date Scope Summary */}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-slate-600 font-bold text-xs flex items-center gap-1.5 me-1">
               <Filter className="w-3.5 h-3.5 text-slate-400" />
-              <span>{isAr ? 'نطاق عرض الأوامر:' : 'Orders Scope:'}</span>
+              <span>{isAr ? 'تصفية الحالة:' : 'Status Filter:'}</span>
             </span>
 
-            {/* Scope Shortcuts */}
+            {/* Quick Status Filter Pills */}
             <div className="flex items-center gap-1 flex-wrap">
-              <button
-                type="button"
-                onClick={() => setDateScope('all_pending')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                  dateScope === 'all_pending'
-                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                {isAr ? 'كافة المعلقة' : 'All Pending'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setDateScope('today')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                  dateScope === 'today'
-                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                {isAr ? 'اليوم' : 'Today'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setDateScope('tomorrow')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                  dateScope === 'tomorrow'
-                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                {isAr ? 'غداً' : 'Tomorrow'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setDateScope('week')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                  dateScope === 'week'
-                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                {isAr ? 'خلال 7 أيام' : 'Next 7 Days'}
-              </button>
-
-              <div className="flex items-center gap-1 ms-1">
+              {[
+                { id: 'all', labelAr: 'الكل (التسلسل التشغيلي)', labelEn: 'All (Operational Scope)' },
+                { id: 'prepare', labelAr: 'جاري التجهيز', labelEn: 'Preparing' },
+                { id: 'not_yet', labelAr: 'قيد الانتظار', labelEn: 'Pending' },
+                { id: 'shipped', labelAr: 'جاري التوصيل', labelEn: 'Out for Delivery' },
+                { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered' }
+              ].map((st) => (
                 <button
+                  key={st.id}
                   type="button"
-                  onClick={() => setDateScope('custom')}
+                  onClick={() => setFulfillmentFilter(st.id)}
                   className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
-                    dateScope === 'custom'
+                    fulfillmentFilter === st.id
                       ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
                       : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                   }`}
                 >
-                  {isAr ? 'تاريخ مخصص' : 'Custom Scope'}
+                  {isAr ? st.labelAr : st.labelEn}
                 </button>
-
-                {dateScope === 'custom' && (
-                  <input
-                    type="date"
-                    value={customDate}
-                    onChange={(e) => setCustomDate(e.target.value)}
-                    className="px-2.5 py-1 bg-white border border-emerald-300 rounded-xl text-xs font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                  />
-                )}
-              </div>
+              ))}
             </div>
           </div>
 
           {/* Scope Summary Badge */}
           <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-400 font-bold">{activeDateScopeLabel}</span>
+            <span className="text-slate-500 font-bold">
+              {isAr ? `تاريخ التحميل المستهدف: ${targetPlanningDate}` : `Target Loading Date: ${targetPlanningDate}`}
+            </span>
             <div className="inline-flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1 rounded-xl font-mono text-[11px] font-bold text-slate-700">
               <span>{filteredOrders.length} {isAr ? 'أمر' : 'orders'}</span>
               <span className="text-slate-300">•</span>
@@ -2996,12 +3121,13 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               onChange={(e) => setGroupBy(e.target.value)}
               className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none cursor-pointer"
             >
+              <option value="status_hierarchy">{isAr ? 'تجميع: التسلسل التشغيلي' : 'Group: Operational Hierarchy'}</option>
               <option value="loadingDate">{isAr ? 'تجميع: تاريخ التحميل' : 'Group: Loading Date'}</option>
-              <option value="none">{isAr ? 'تجميع: بدون' : 'Group: None'}</option>
+              <option value="loadingOrder">{isAr ? 'تجميع: الرحلة / الشاحنة' : 'Group: Trip / Truck'}</option>
               <option value="region">{isAr ? 'تجميع: المنطقة' : 'Group: Region'}</option>
               <option value="client">{isAr ? 'تجميع: العميل' : 'Group: Client'}</option>
-              <option value="loadingOrder">{isAr ? 'تجميع: الشاحنة' : 'Group: Truck'}</option>
               <option value="fulfillmentStatus">{isAr ? 'تجميع: حالة التنفيذ' : 'Group: Status'}</option>
+              <option value="none">{isAr ? 'تجميع: بدون' : 'Group: None'}</option>
             </select>
           </div>
 
@@ -3012,6 +3138,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               onChange={(e) => setSortBy(e.target.value)}
               className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none cursor-pointer"
             >
+              <option value="trip_asc">{isAr ? 'ترتيب: التاريخ ثم رقم الرحلة' : 'Sort: Date & Trip #'}</option>
               <option value="weight_desc">{isAr ? 'ترتيب: الأثقل وزناً' : 'Sort: Heaviest'}</option>
               <option value="weight_asc">{isAr ? 'ترتيب: الأخف وزناً' : 'Sort: Lightest'}</option>
               <option value="cartons_desc">{isAr ? 'ترتيب: الأكثر كراتين' : 'Sort: Most Cartons'}</option>
@@ -3140,6 +3267,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                       truck: veh,
                       targetStep: step,
                       affectedOrders: trip.orders,
+                      selectedOrderIds: trip.orders.map((o) => o.id),
+                      unassignOnRevertToPending: false,
                       loadingOrderNumber: trip.loadingOrderNumber,
                       isExecuting: false
                     })
@@ -3164,7 +3293,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 <div className="text-xs font-black text-rose-900 flex items-center gap-1.5 flex-wrap">
                   <span>{isAr ? 'وضع معالجة التعارض:' : 'Conflict Fix Filter Active:'}</span>
                   <span className="font-mono px-2 py-0.5 rounded-md bg-white border border-rose-300 text-rose-800">
-                    LO #{loFilter.loNumber}
+                    {isAr ? `رحلة #${loFilter.loNumber}` : `Trip #${loFilter.loNumber}`}
                   </span>
                   {loFilter.vehicleCode && (
                     <span className="font-mono text-[11px] text-rose-700 font-bold">
@@ -3174,8 +3303,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 </div>
                 <p className="text-[11px] text-rose-700 font-medium mt-0.5">
                   {isAr
-                    ? 'يتم عرض كافة الطلبات المرتبطة بأمر التحميل هذا (بجميع حالات التنفيذ) لتتمكن من توحيد حالتها يدوياً.'
-                    : 'Showing all orders linked to this Loading Order # across all fulfillment statuses for manual resolution.'}
+                    ? 'يتم عرض كافة الطلبات المرتبطة بهذه الرحلة (بجميع حالات التنفيذ) لتتمكن من توحيد حالتها يدوياً.'
+                    : 'Showing all orders linked to this Trip # across all fulfillment statuses for manual resolution.'}
                 </p>
               </div>
             </div>
@@ -3514,10 +3643,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {/* 2. Fields Grid & Action Buttons */}
                               <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
                                 <div className="w-full flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2 text-xs">
-                                  {/* 1. Loading Order Number */}
+                                  {/* 1. Trip Number */}
                                   <div>
                                     <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-                                      {isAr ? 'رقم التحميل:' : 'LO #:'} *
+                                      {isAr ? 'رقم الرحلة:' : 'Trip #:'} *
                                     </label>
                                     <input
                                       type="number"
@@ -3953,26 +4082,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   )}
                                 </div>
                               )}
-
-                              {/* CHIPS OF TOTAL PER PRODUCT QTY (Space-Saving) */}
-                              {Array.isArray(order.items) && order.items.length > 0 && (
-                                <div className="pt-1.5">
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    {order.items.map((it, idx) => (
-                                      <span
-                                        key={idx}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200"
-                                        title={`${it.nameAr || it.productName || it.itemCode}: ${it.quantity} كرتونة`}
-                                      >
-                                        <span className="truncate max-w-[140px]">{it.nameAr || it.productName || it.name || it.itemCode}</span>
-                                        <span className="text-emerald-700 font-mono font-black">
-                                          ({it.quantity} {isAr ? 'ك' : 'c'})
-                                        </span>
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
                             </div>
 
                             {/* COMPACT 2X2 SUMMARY GRID STRIP (20% width) - Inherits fulfillment status icon & color */}
@@ -4028,10 +4137,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
                                 {/* 2x2 Cell Badge Box */}
                                 <div className="grid grid-cols-2 gap-1.5 text-start">
-                                  {/* Cell 1: LO Number */}
+                                  {/* Cell 1: Trip Number */}
                                   <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs font-mono font-black text-xs text-slate-800 flex items-center gap-1 truncate">
                                     <Truck className="w-3 h-3 text-emerald-600 shrink-0" />
-                                    <span>#{eff.loadingOrderNumber}</span>
+                                    <span>{isAr ? `رحلة #${eff.loadingOrderNumber}` : `Trip #${eff.loadingOrderNumber}`}</span>
                                   </div>
 
                                   {/* Cell 2: Vehicle Truck Name (Truck Name + copyable Plate) */}
@@ -4313,26 +4422,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   )}
                                 </div>
                               )}
-
-                              {/* CHIPS OF TOTAL PER PRODUCT QTY (Space-Saving) */}
-                              {Array.isArray(order.items) && order.items.length > 0 && (
-                                <div className="pt-1.5">
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    {order.items.map((it, idx) => (
-                                      <span
-                                        key={idx}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200"
-                                        title={`${it.nameAr || it.productName || it.itemCode}: ${it.quantity} كرتونة`}
-                                      >
-                                        <span className="truncate max-w-[140px]">{it.nameAr || it.productName || it.name || it.itemCode}</span>
-                                        <span className="text-emerald-700 font-mono font-black">
-                                          ({it.quantity} {isAr ? 'ك' : 'c'})
-                                        </span>
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
                             </div>
 
                             {/* COMPACT STRIP WITH TRUCK ICON (+ تسكين or LOCKED) */}
@@ -4544,10 +4633,10 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                           <div className="mt-3 p-2 rounded-xl bg-rose-900/80 border border-rose-600 text-rose-100 text-[11px] space-y-1.5">
                             <div className="flex items-center gap-1 font-bold">
                               <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-                              <span>{isAr ? `تعارض في أمر تحميل #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in LO #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
+                              <span>{isAr ? `تعارض في رحلة #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in Trip #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
                             </div>
                             <p className="text-[10px] text-rose-200">
-                              {isAr ? 'أوامر مختلفة بنفس رقم التحميل لنفس اليوم مسندة لشاحنات وسائقين متباينين.' : 'Different orders in this LO on this date have conflicting trucks/drivers.'}
+                              {isAr ? 'أوامر مختلفة بنفس رقم الرحلة لنفس اليوم مسندة لشاحنات وسائقين متباينين.' : 'Different orders in this Trip # on this date have conflicting trucks/drivers.'}
                             </p>
                             <button
                               type="button"
@@ -5032,7 +5121,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 </div>
                 <div>
                   <h4 className="font-extrabold text-sm text-slate-900">
-                    {isAr ? 'تأكيد تحديث حالة شاحنة التحميل' : 'Confirm Truck Fulfillment Transition'}
+                    {isAr ? 'تأكيد تحديث حالة رحلة الشاحنة' : 'Confirm Truck Trip Transition'}
                   </h4>
                   <div className="text-xs text-slate-500 font-mono mt-0.5 flex items-center gap-1.5 flex-wrap">
                     <span>{truckStatusModal.truck?.code || truckStatusModal.truck?.id}</span>
@@ -5040,7 +5129,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                       <>
                         <span>•</span>
                         <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-black">
-                          LO #{truckStatusModal.loadingOrderNumber}
+                          {isAr ? `رحلة #${truckStatusModal.loadingOrderNumber}` : `Trip #${truckStatusModal.loadingOrderNumber}`}
                         </span>
                       </>
                     )}
@@ -5069,8 +5158,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
               <div className="text-xs text-slate-600 font-medium">
                 {isAr
-                  ? `أنت على وشك تحديث حالة كافة الطلبات المحملة على هذه الشاحنة (${truckStatusModal.affectedOrders.length} أوامر) بشكل مجمّع ومباشر إلى:`
-                  : `You are about to batch-update all orders loaded on this truck (${truckStatusModal.affectedOrders.length} orders) to:`}
+                  ? `أنت على وشك تحديث حالة الطلبات المحددة في هذه الرحلة (${truckStatusModal.affectedOrders.length} أوامر) إلى:`
+                  : `You are about to transition the checked orders in this trip (${truckStatusModal.affectedOrders.length} orders) to:`}
               </div>
 
               <div className="flex items-center justify-center gap-3 py-2 bg-white rounded-xl border border-slate-200 shadow-2xs">
@@ -5094,28 +5183,110 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <div className="text-[11px] font-bold text-slate-500 flex items-center justify-between">
-                <span>{isAr ? 'الأوامر المتأثرة بالتحديث:' : 'Affected Orders:'}</span>
-                <span className="font-mono text-slate-700">{truckStatusModal.affectedOrders.length} {isAr ? 'أمر' : 'orders'}</span>
-              </div>
-              <div className="max-h-36 overflow-y-auto space-y-1 border border-slate-200 rounded-xl p-2 bg-slate-50/50">
-                {truckStatusModal.affectedOrders.map((ord) => {
-                  const oSerial = resolveOrderSerial(ord, orders);
-                  return (
-                    <div key={ord.id} className="flex items-center justify-between gap-2 text-xs p-1.5 bg-white rounded-lg border border-slate-100 shadow-2xs">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="font-mono font-black text-indigo-700">#{oSerial}</span>
-                        <span className="font-bold text-slate-800 truncate">{ord.clientName || '—'}</span>
+            {(() => {
+              const selectedIds = Array.isArray(truckStatusModal.selectedOrderIds)
+                ? truckStatusModal.selectedOrderIds
+                : truckStatusModal.affectedOrders.map((o) => o.id);
+              const uncheckedCount = truckStatusModal.affectedOrders.length - selectedIds.length;
+
+              return (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-600">
+                    <span>
+                      {isAr
+                        ? 'حدد الطلبات المكتملة (إلغاء التحديد يُرجع الطلب إلى قيد الانتظار ويفصله عن الرحلة):'
+                        : 'Check orders to transition (unchecked orders return to Pending & detach from Trip #):'}
+                    </span>
+                    <span className="font-mono text-indigo-700 shrink-0">
+                      {selectedIds.length} / {truckStatusModal.affectedOrders.length}
+                    </span>
+                  </div>
+
+                  <div className="max-h-44 overflow-y-auto space-y-1.5 border border-slate-200 rounded-xl p-2 bg-slate-50/50">
+                    {truckStatusModal.affectedOrders.map((ord) => {
+                      const oSerial = resolveOrderSerial(ord, orders);
+                      const isChecked = selectedIds.includes(ord.id);
+                      return (
+                        <label
+                          key={ord.id}
+                          className={`flex items-center justify-between gap-2 text-xs p-2 rounded-xl border transition cursor-pointer select-none ${
+                            isChecked
+                              ? 'bg-white border-indigo-200 shadow-2xs'
+                              : 'bg-amber-50/80 border-amber-300 text-amber-950'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {
+                                setTruckStatusModal((prev) => {
+                                  const curr = Array.isArray(prev.selectedOrderIds)
+                                    ? prev.selectedOrderIds
+                                    : prev.affectedOrders.map((o) => o.id);
+                                  const next = curr.includes(ord.id)
+                                    ? curr.filter((id) => id !== ord.id)
+                                    : [...curr, ord.id];
+                                  return { ...prev, selectedOrderIds: next };
+                                });
+                              }}
+                              className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shrink-0"
+                            />
+                            <span className="font-mono font-black text-indigo-700 shrink-0">#{oSerial}</span>
+                            <span className="font-bold text-slate-800 truncate">{ord.clientName || '—'}</span>
+                            {ord.branchName && (
+                              <span className="text-[10px] text-slate-500 truncate">({ord.branchName})</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {!isChecked && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-900 font-bold text-[9px]">
+                                {isAr ? 'مرتجع ← قيد الانتظار' : 'Return → Pending'}
+                              </span>
+                            )}
+                            <span className="font-mono text-[11px] text-slate-500">
+                              {(ord.totalCartons || ord.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                            </span>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  {uncheckedCount > 0 && (
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] font-semibold flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        {isAr
+                          ? `سيتم تحديث (${selectedIds.length}) طلب إلى "${truckStatusModal.targetStep.labelAr}"، بينما سيتم إرجاع (${uncheckedCount}) طلب غير محدد تلقائياً إلى "قيد الانتظار" وفصله عن الرحلة #${truckStatusModal.loadingOrderNumber || ''} لإعادة جدولته.`
+                          : `${selectedIds.length} order(s) will advance to "${truckStatusModal.targetStep.labelEn}", while ${uncheckedCount} unchecked order(s) will revert to "Pending" and detach from Trip #${truckStatusModal.loadingOrderNumber || ''}.`}
                       </div>
-                      <span className="font-mono text-[11px] text-slate-500 shrink-0">
-                        {(ord.totalCartons || ord.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
-                      </span>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
+                  )}
+
+                  {truckStatusModal.targetStep.id === 'not_yet' && selectedIds.length > 0 && (
+                    <label className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(truckStatusModal.unassignOnRevertToPending)}
+                        onChange={(e) =>
+                          setTruckStatusModal((prev) => ({
+                            ...prev,
+                            unassignOnRevertToPending: e.target.checked
+                          }))
+                        }
+                        className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
+                      <span>
+                        {isAr
+                          ? 'إلغاء تسكين الشاحنة ورقم الرحلة أيضاً (إرجاع كطلبات غير مسكنة)'
+                          : 'Also clear Truck & Trip # assignment (return as unassigned Pending orders)'}
+                      </span>
+                    </label>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
               <button

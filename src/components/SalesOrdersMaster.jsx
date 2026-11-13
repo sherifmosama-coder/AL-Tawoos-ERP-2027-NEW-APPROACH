@@ -2146,7 +2146,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     /* Sales Order / Invoice Only Display */
                                     <div className="space-y-3">
                                       {/* Dedicated Dispatch & Loading Assignment Panel */}
-                                      {!['admin', 'collection'].includes(order.orderType) && (
+                                      {!['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) && (
                                         <div className="p-3 bg-gradient-to-r from-indigo-50/80 via-blue-50/50 to-indigo-50/80 border border-indigo-200/80 rounded-xl space-y-2.5 shadow-2xs">
                                           <div className="flex items-center justify-between border-b border-indigo-200/70 pb-2">
                                             <div className="flex items-center gap-2">
@@ -2212,10 +2212,10 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                               </div>
 
                                               <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
-                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'رقم وتاريخ أمر التحميل:' : 'LO # & Loading Date:'}</span>
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'رقم وتاريخ الرحلة:' : 'Trip # & Loading Date:'}</span>
                                                 <span className="font-mono font-black text-indigo-700 text-xs flex items-center gap-1 mt-0.5">
                                                   <PackageCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                                                  <span>#{order.loadingOrderNumber || '—'}</span>
+                                                  <span>{order.loadingOrderNumber ? (isAr ? `رحلة #${order.loadingOrderNumber}` : `Trip #${order.loadingOrderNumber}`) : '—'}</span>
                                                 </span>
                                                 <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{order.loadingDate || order.invoiceDate || '—'}</span>
                                               </div>
@@ -3974,8 +3974,8 @@ function SalesOrderEditorModal({
                   {hasActiveAssignment && (
                     <span className="text-[10px] text-amber-700 font-medium block mt-1 leading-tight">
                       {isAr
-                        ? `الطلب مُسكن بشاحنة (${formData.assignedVehicleName || formData.assignedVehiclePlate || ''}) وأمر تحميل #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
-                        : `Order assigned to ${formData.assignedVehicleName || ''} (LO #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
+                        ? `الطلب مُسكن بشاحنة (${formData.assignedVehicleName || formData.assignedVehiclePlate || ''}) ورحلة #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
+                        : `Order assigned to ${formData.assignedVehicleName || ''} (Trip #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
                     </span>
                   )}
                 </div>
@@ -4020,7 +4020,7 @@ function SalesOrderEditorModal({
                         </span>
                       )}
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 border border-indigo-200 font-mono">
-                        LO #{formData.loadingOrderNumber}
+                        {isAr ? `رحلة #${formData.loadingOrderNumber}` : `Trip #${formData.loadingOrderNumber}`}
                       </span>
                     </div>
                     <div className="text-[11px] text-slate-600 font-medium flex items-center gap-2 mt-0.5 flex-wrap">
@@ -4693,20 +4693,44 @@ function SalesOrderEditorModal({
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  {isAr ? 'حالة التنفيذ والتحميل' : 'Fulfillment Status'}
+                <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center justify-between">
+                  <span>{isAr ? 'حالة التنفيذ والتحميل' : 'Fulfillment Status'}</span>
+                  <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
+                    <Lock className="w-2.5 h-2.5" />
+                    {isAr ? 'تُدار من خطة التحميل' : 'Managed in Loading Plan'}
+                  </span>
                 </label>
-                <select
-                  value={formData.fulfillmentStatus}
-                  onChange={(e) => setFormData({ ...formData, fulfillmentStatus: e.target.value })}
-                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
-                >
-                  {availableFulfillmentStatuses.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {isAr ? f.labelAr : f.labelEn}
-                    </option>
-                  ))}
-                </select>
+                {(() => {
+                  const currentFulfillment =
+                    availableFulfillmentStatuses.find((f) => f.id === formData.fulfillmentStatus) ||
+                    availableFulfillmentStatuses[0] || {
+                      id: 'not_yet',
+                      labelAr: 'قيد الانتظار',
+                      labelEn: 'Pending',
+                      color: 'bg-slate-100 text-slate-700 border-slate-300'
+                    };
+                  return (
+                    <div
+                      className="w-full py-2 px-3 bg-slate-100/80 border border-slate-200 rounded-xl flex items-center justify-between cursor-not-allowed select-none"
+                      title={
+                        isAr
+                          ? 'تُدار مراحل التحميل والتوصيل حصرياً من تبويب خطة التحميل'
+                          : 'Fulfillment stages are managed exclusively from the Loading Plan tab'
+                      }
+                    >
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-black border ${
+                          currentFulfillment.color || 'bg-slate-100 text-slate-700 border-slate-300'
+                        }`}
+                      >
+                        {isAr ? currentFulfillment.labelAr : currentFulfillment.labelEn}
+                      </span>
+                      <span className="text-[10px] font-medium text-slate-500">
+                        {isAr ? 'للقراءة فقط' : 'Read-only'}
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div>
