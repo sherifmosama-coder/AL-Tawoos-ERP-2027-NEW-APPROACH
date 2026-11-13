@@ -17,6 +17,8 @@ import {
   ShieldCheck,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   X,
   RotateCcw,
   Save,
@@ -357,6 +359,727 @@ function CopyButton({ text, title, isAr = true, className = '' }) {
   );
 }
 
+// Normalizes legacy ('preparing', 'out_for_delivery') and canonical ('prepare', 'shipped', 'delivered', 'paid', 'not_yet') fulfillment statuses
+function normalizeFulfillmentStatus(st) {
+  if (!st || st === 'not_yet' || st === 'pending') return 'not_yet';
+  if (st === 'prepare' || st === 'preparing') return 'prepare';
+  if (st === 'shipped' || st === 'out_for_delivery') return 'shipped';
+  if (st === 'delivered' || st === 'paid') return 'delivered';
+  return 'not_yet';
+}
+
+// Sleek Light-Themed Floating Rich Tooltip Card (Hover on desktop + Tap toggle support)
+function FleetRichTooltip({ children, content, widthClass = 'w-60', enableTap = true }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const wrapperRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleOutside = (e) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('touchstart', handleOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('touchstart', handleOutside);
+    };
+  }, [isOpen]);
+
+  return (
+    <div
+      ref={wrapperRef}
+      className="relative inline-flex"
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+      onClick={(e) => {
+        if (enableTap) {
+          e.stopPropagation();
+          setIsOpen((prev) => !prev);
+        }
+      }}
+    >
+      {children}
+      {isOpen && content && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className={`absolute bottom-full mb-2 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 ${widthClass} bg-white text-slate-800 border border-slate-200/95 shadow-2xl rounded-2xl p-2.5 z-50 text-start pointer-events-auto animate-in fade-in zoom-in-95 duration-150`}
+        >
+          {content}
+          <div className="w-2.5 h-2.5 bg-white border-e border-b border-slate-200 rotate-45 absolute -bottom-1.5 start-1/2 -translate-x-1/2 rtl:translate-x-1/2"></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Animated Bottom Roadway Carousel for Truck Trips (Prev, Current, Next — max 3 visible slots)
+function TripRoadwayCarousel({
+  trips = [],
+  activeIndex = 0,
+  slideDir = 'next',
+  onSelectTrip,
+  vehicle,
+  operationalStatus,
+  priorOpenOrders = [],
+  onFilterConflict,
+  isAr = true
+}) {
+  if (!trips || trips.length === 0) {
+    const isMaint = operationalStatus === 'maintenance';
+    const isInact = operationalStatus === 'inactive';
+    const hasPrior = priorOpenOrders.length > 0;
+    return (
+      <div
+        className={`relative rounded-b-2xl px-2.5 py-1.5 flex items-center justify-between gap-2 border-t ${
+          hasPrior
+            ? 'bg-rose-950 text-rose-100 border-rose-800'
+            : 'bg-slate-800 text-slate-300 border-slate-700'
+        }`}
+      >
+        <div className="flex items-center gap-1.5 min-w-0">
+          <div className={`p-1 rounded-lg ${isMaint ? 'bg-purple-500/20 text-purple-300' : isInact ? 'bg-slate-700 text-slate-400' : 'bg-slate-700/90 text-slate-300'}`}>
+            {isMaint ? <Wrench className="w-3 h-3" /> : <Truck className="w-3 h-3" />}
+          </div>
+          <span className="text-[10px] font-bold truncate">
+            {isMaint
+              ? (isAr ? 'في الصيانة — متوقفة' : 'In Maintenance — Parked')
+              : isInact
+              ? (isAr ? 'خارج الخدمة' : 'Out of Service')
+              : (isAr ? 'جاهزة على الرصيف للتحميل' : 'Parked — Ready for Loading')}
+          </span>
+        </div>
+
+        {/* Dashed Static Road Line */}
+        <div className="flex-1 h-0.5 animate-road-dashes-static mx-1 hidden sm:block opacity-60"></div>
+
+        {hasPrior && (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-400/40 text-rose-200 text-[9px] font-black shrink-0 animate-pulse">
+            <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+            <span>{isAr ? 'رحلة سابقة مفتوحة' : 'Prior Open Trip'}</span>
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  const safeIdx = Math.min(Math.max(0, activeIndex), trips.length - 1);
+  const prevTrip = safeIdx > 0 ? trips[safeIdx - 1] : null;
+  const activeTrip = trips[safeIdx];
+  const nextTrip = safeIdx < trips.length - 1 ? trips[safeIdx + 1] : null;
+
+  const isOnRoad = activeTrip?.tripOperationalStatus === 'on_duty';
+
+  const renderStatusDot = (trip) => {
+    if (trip.hasStatusConflict) return 'bg-rose-500 animate-ping';
+    if (trip.currentStep?.id === 'shipped') return 'bg-emerald-400 animate-pulse';
+    if (trip.currentStep?.id === 'prepare') return 'bg-amber-400';
+    if (trip.currentStep?.id === 'delivered') return 'bg-teal-400';
+    return 'bg-slate-400';
+  };
+
+  return (
+    <div className="relative bg-slate-900 text-white rounded-b-2xl px-2 py-1.5 border-t border-slate-800 select-none">
+      {/* Animated Roadway Centerline */}
+      <div
+        className={`absolute inset-x-3 top-1/2 -translate-y-1/2 h-0.5 pointer-events-none ${
+          isOnRoad ? 'animate-road-dashes opacity-80' : 'animate-road-dashes-static opacity-40'
+        }`}
+      ></div>
+
+      <div className="relative z-10 flex items-center justify-between gap-1">
+        {/* Previous Slot (Smaller Box) */}
+        <div className="flex items-center gap-0.5 min-w-0 flex-1 justify-start">
+          {trips.length > 1 && (
+            <button
+              type="button"
+              disabled={!prevTrip}
+              onClick={() => prevTrip && onSelectTrip(safeIdx - 1, 'prev')}
+              className="p-0.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-25 disabled:cursor-default cursor-pointer transition shrink-0"
+              title={isAr ? 'الرحلة السابقة' : 'Previous Trip'}
+            >
+              {isAr ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}
+            </button>
+          )}
+          {prevTrip ? (
+            <button
+              type="button"
+              onClick={() => onSelectTrip(safeIdx - 1, 'prev')}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold border transition cursor-pointer truncate max-w-[74px] ${
+                prevTrip.hasStatusConflict
+                  ? 'bg-rose-950/90 border-rose-500/60 text-rose-200 hover:bg-rose-900'
+                  : 'bg-slate-800/95 border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
+              }`}
+              title={isAr ? `عرض رحلة #${prevTrip.loadingOrderNumber}` : `View Trip #${prevTrip.loadingOrderNumber}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${renderStatusDot(prevTrip)}`}></span>
+              <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+              <span className="truncate">#{prevTrip.loadingOrderNumber}</span>
+              {prevTrip.hasStatusConflict && <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />}
+            </button>
+          ) : (
+            <span className="text-[9px] text-slate-600 font-mono px-1 hidden sm:inline">•</span>
+          )}
+        </div>
+
+        {/* Center Active Slot (Larger Animated Truck Pill) */}
+        <div className="shrink-0">
+          <div
+            key={`${vehicle.id}-${safeIdx}-${slideDir}`}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-mono font-black border shadow-sm animate-truck-glide ${
+              activeTrip.hasStatusConflict
+                ? 'bg-rose-600/95 border-rose-400 text-white ring-2 ring-rose-500/40'
+                : activeTrip.currentStep?.id === 'shipped'
+                ? 'bg-emerald-600 border-emerald-400 text-white ring-2 ring-emerald-500/30'
+                : activeTrip.currentStep?.id === 'prepare'
+                ? 'bg-amber-500 border-amber-300 text-slate-950'
+                : activeTrip.currentStep?.id === 'delivered'
+                ? 'bg-teal-600 border-teal-400 text-white'
+                : 'bg-indigo-600 border-indigo-400 text-white'
+            }`}
+          >
+            <Truck className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {activeTrip.loadingOrderNumber === 'unnumbered'
+                ? (isAr ? 'بدون رقم' : 'No LO#')
+                : `LO #${activeTrip.loadingOrderNumber}`}
+            </span>
+            {activeTrip.hasStatusConflict && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFilterConflict?.(activeTrip.loadingOrderNumber, vehicle);
+                }}
+                className="p-0.5 rounded bg-white/20 hover:bg-white/35 text-white transition cursor-pointer"
+                title={isAr ? 'تعارض حالات: انقر لتصفية الطلبات وإصلاحه يدوياً' : 'Status Conflict: Click to filter orders & fix manually'}
+              >
+                <AlertTriangle className="w-3 h-3 animate-pulse" />
+              </button>
+            )}
+            {trips.length > 1 && (
+              <span className="text-[8px] opacity-80 font-normal ms-0.5">
+                ({safeIdx + 1}/{trips.length})
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Next Slot (Smaller Box) */}
+        <div className="flex items-center gap-0.5 min-w-0 flex-1 justify-end">
+          {nextTrip ? (
+            <button
+              type="button"
+              onClick={() => onSelectTrip(safeIdx + 1, 'next')}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold border transition cursor-pointer truncate max-w-[74px] ${
+                nextTrip.hasStatusConflict
+                  ? 'bg-rose-950/90 border-rose-500/60 text-rose-200 hover:bg-rose-900'
+                  : 'bg-slate-800/95 border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
+              }`}
+              title={isAr ? `عرض رحلة #${nextTrip.loadingOrderNumber}` : `View Trip #${nextTrip.loadingOrderNumber}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${renderStatusDot(nextTrip)}`}></span>
+              <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+              <span className="truncate">#{nextTrip.loadingOrderNumber}</span>
+              {nextTrip.hasStatusConflict && <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />}
+            </button>
+          ) : (
+            <span className="text-[9px] text-slate-600 font-mono px-1 hidden sm:inline">•</span>
+          )}
+          {trips.length > 1 && (
+            <button
+              type="button"
+              disabled={!nextTrip}
+              onClick={() => nextTrip && onSelectTrip(safeIdx + 1, 'next')}
+              className="p-0.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-25 disabled:cursor-default cursor-pointer transition shrink-0"
+              title={isAr ? 'الرحلة التالية' : 'Next Trip'}
+            >
+              {isAr ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Compact 50%-Size Truck Scorecard with Rich Light Hover Tooltips, Bidirectional Stepper & Trip Carousel
+function CompactTruckCard({
+  truckData,
+  allOrders,
+  selectedTripState,
+  onSelectTrip,
+  onFilterConflict,
+  onOpenTransitionModal,
+  isAr = true
+}) {
+  const {
+    vehicle: veh,
+    operationalStatus,
+    conflicts,
+    trips,
+    priorOpenOrders,
+    defaultTripIndex
+  } = truckData;
+
+  const activeTripIndex =
+    selectedTripState?.index !== undefined && selectedTripState.index < trips.length
+      ? selectedTripState.index
+      : defaultTripIndex;
+  const slideDir = selectedTripState?.dir || 'next';
+  const activeTrip = trips.length > 0 ? trips[activeTripIndex] : null;
+
+  const maxCap = Number(veh.maxCapacityKg) || 0;
+  const tripWeightKg = activeTrip ? activeTrip.totalWeightKg : 0;
+  const tripCartons = activeTrip ? activeTrip.totalCartons : 0;
+  const tripBonus = activeTrip ? activeTrip.totalBonus : 0;
+  const tripOrders = activeTrip ? activeTrip.orders : [];
+  const weightPct = maxCap > 0 ? Math.min(100, Math.round((tripWeightKg / maxCap) * 100)) : 0;
+  const rawWeightPct = maxCap > 0 ? Math.round((tripWeightKg / maxCap) * 100) : 0;
+  const isOverweight = maxCap > 0 && tripWeightKg > maxCap;
+
+  const precedingStep =
+    activeTrip && !activeTrip.hasStatusConflict && activeTrip.currentStepIndex > 0
+      ? SEQUENTIAL_FULFILLMENT_STEPS[activeTrip.currentStepIndex - 1]
+      : null;
+  const nextStep =
+    activeTrip && !activeTrip.hasStatusConflict && activeTrip.currentStepIndex < 3
+      ? SEQUENTIAL_FULFILLMENT_STEPS[activeTrip.currentStepIndex + 1]
+      : null;
+
+  const effectiveCardStatus = activeTrip?.hasStatusConflict
+    ? 'conflict'
+    : operationalStatus === 'conflict' && !activeTrip
+    ? 'conflict'
+    : operationalStatus;
+
+  const cardSurfaceClasses =
+    effectiveCardStatus === 'conflict' || activeTrip?.hasStatusConflict
+      ? 'bg-rose-50/40 border-rose-300 ring-1 ring-rose-500/20 shadow-xs'
+      : activeTrip?.tripOperationalStatus === 'on_duty' || effectiveCardStatus === 'on_duty'
+      ? 'bg-emerald-50/20 border-emerald-300 shadow-2xs hover:border-emerald-400'
+      : activeTrip?.tripOperationalStatus === 'upcoming_duty' || effectiveCardStatus === 'upcoming_duty'
+      ? 'bg-amber-50/20 border-amber-300 shadow-2xs hover:border-amber-400'
+      : activeTrip?.tripOperationalStatus === 'delivered' || effectiveCardStatus === 'delivered'
+      ? 'bg-teal-50/20 border-teal-200 shadow-2xs'
+      : effectiveCardStatus === 'maintenance' || effectiveCardStatus === 'inactive'
+      ? 'bg-slate-50 border-slate-200/80 opacity-80'
+      : 'bg-white border-slate-200/90 shadow-2xs hover:border-slate-300';
+
+  const weightBadgeColor = !activeTrip || tripWeightKg === 0
+    ? 'bg-slate-100 text-slate-500 border-slate-200'
+    : isOverweight
+    ? 'bg-rose-100 text-rose-800 border-rose-300 animate-pulse'
+    : rawWeightPct > 85
+    ? 'bg-amber-100 text-amber-800 border-amber-300'
+    : 'bg-emerald-50 text-emerald-800 border-emerald-200';
+
+  return (
+    <div className={`rounded-2xl border transition-all duration-200 flex flex-col justify-between ${cardSurfaceClasses}`}>
+      {/* 1. COMPACT TOP HEADER ROW */}
+      <div className="px-2.5 pt-2.5 pb-1.5 flex items-center justify-between gap-1.5 border-b border-slate-100/90">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <FleetRichTooltip
+            widthClass="w-48"
+            content={
+              <div className="space-y-1 text-[10px]">
+                <div className="font-black text-slate-900 border-b border-slate-100 pb-1">
+                  {veh.vehicleModel || veh.vehicleType || (isAr ? 'شاحنة نقل' : 'Delivery Truck')}
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>{isAr ? 'الكود:' : 'Code:'}</span>
+                  <span className="font-mono font-bold text-slate-800">{veh.code || veh.id}</span>
+                </div>
+                {maxCap > 0 && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>{isAr ? 'السعة القصوى:' : 'Max Cap:'}</span>
+                    <span className="font-mono font-bold text-slate-800">
+                      {(maxCap / 1000).toFixed(1)} {isAr ? 'طن' : 'Ton'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            }
+          >
+            <span className="font-mono text-[11px] font-black text-slate-900 hover:text-indigo-700 cursor-help truncate">
+              {veh.code || veh.id}
+            </span>
+          </FleetRichTooltip>
+
+          {veh.plateNumber && (
+            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-slate-700 font-mono text-[10px] font-bold shrink-0">
+              <span>{veh.plateNumber}</span>
+              <CopyButton text={veh.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+            </span>
+          )}
+        </div>
+
+        {/* Status Pill / Prior Trip Indicator */}
+        <div className="flex items-center gap-1 shrink-0">
+          {priorOpenOrders.length > 0 && (
+            <FleetRichTooltip
+              widthClass="w-56"
+              content={
+                <div className="space-y-1 text-[10px]">
+                  <div className="font-black text-rose-700 flex items-center gap-1 border-b border-rose-100 pb-1">
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    <span>{isAr ? 'رحلة سابقة غير مكتملة' : 'Uncompleted Prior Trip'}</span>
+                  </div>
+                  <p className="text-slate-600 leading-snug">
+                    {isAr
+                      ? `يوجد ${priorOpenOrders.length} طلبات مفتوحة بتاريخ سابق (${Array.from(new Set(priorOpenOrders.map((o) => o.loadingDate || '—'))).join(', ')}).`
+                      : `${priorOpenOrders.length} open order(s) from prior date (${Array.from(new Set(priorOpenOrders.map((o) => o.loadingDate || '—'))).join(', ')}).`}
+                  </p>
+                </div>
+              }
+            >
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-md bg-rose-100 text-rose-700 border border-rose-300 animate-pulse cursor-help">
+                <Clock className="w-3 h-3" />
+              </span>
+            </FleetRichTooltip>
+          )}
+
+          {activeTrip?.hasStatusConflict || (operationalStatus === 'conflict' && !activeTrip) ? (
+            <button
+              type="button"
+              onClick={() => activeTrip && onFilterConflict(activeTrip.loadingOrderNumber, veh)}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-300 shadow-2xs animate-pulse cursor-pointer"
+              title={isAr ? 'تعارض: انقر لتصفية الطلبات وإصلاحه يدوياً' : 'Conflict: Click to filter orders & resolve manually'}
+            >
+              <AlertTriangle className="w-2.5 h-2.5 text-rose-600 shrink-0" />
+              <span>{isAr ? 'تعارض' : 'Conflict'}</span>
+            </button>
+          ) : (activeTrip?.tripOperationalStatus || operationalStatus) === 'on_duty' ? (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black bg-emerald-100 text-emerald-900 border border-emerald-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+              <span>{isAr ? 'في الخدمة' : 'On Duty'}</span>
+            </span>
+          ) : (activeTrip?.tripOperationalStatus || operationalStatus) === 'upcoming_duty' ? (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black bg-amber-100 text-amber-900 border border-amber-300">
+              <Clock className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+              <span>{isAr ? 'مهمة قادمة' : 'Upcoming'}</span>
+            </span>
+          ) : (activeTrip?.tripOperationalStatus || operationalStatus) === 'delivered' ? (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-teal-100 text-teal-900 border border-teal-200">
+              <CheckCircle2 className="w-2.5 h-2.5 text-teal-600 shrink-0" />
+              <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
+            </span>
+          ) : operationalStatus === 'maintenance' ? (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
+              <Wrench className="w-2.5 h-2.5 text-purple-600 shrink-0" />
+              <span>{isAr ? 'صيانة' : 'Maint'}</span>
+            </span>
+          ) : operationalStatus === 'inactive' ? (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-slate-200 text-slate-700">
+              {isAr ? 'متوقفة' : 'Inactive'}
+            </span>
+          ) : (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+              {isAr ? 'في الانتظار' : 'Stand-by'}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* 2. COMPACT ANIMATED TRIP DATA BODY (Icon Tooltips Strip + Sequential Stepper) */}
+      <div
+        key={`${veh.id}-body-${activeTripIndex}-${slideDir}`}
+        className={`px-2.5 py-2 space-y-2 ${
+          trips.length > 0 ? (slideDir === 'prev' ? 'animate-trip-slide-prev' : 'animate-trip-slide-next') : ''
+        }`}
+      >
+        {/* Icon Metadata Strip with Rich Hover Tooltips */}
+        <div className="flex items-center justify-between gap-1 flex-wrap">
+          <div className="flex items-center gap-1 flex-wrap">
+            {/* Weight Icon + Color-Coded Tooltip */}
+            <FleetRichTooltip
+              widthClass="w-56"
+              content={
+                <div className="space-y-1.5 text-[10px]">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+                    <span className="font-black text-slate-900 flex items-center gap-1">
+                      <Weight className="w-3 h-3 text-indigo-600" />
+                      <span>{isAr ? 'تفاصيل الحمولة والوزن' : 'Weight & Capacity'}</span>
+                    </span>
+                    {maxCap > 0 && (
+                      <span className={`font-mono font-black ${isOverweight ? 'text-rose-600' : rawWeightPct > 85 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                        {rawWeightPct}%
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>{isAr ? 'الوزن المحمل:' : 'Loaded:'}</span>
+                    <span className="font-mono font-bold text-slate-900">
+                      {(tripWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'} ({tripWeightKg.toLocaleString()} {isAr ? 'كجم' : 'kg'})
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>{isAr ? 'الحد الأقصى:' : 'Max Cap:'}</span>
+                    <span className="font-mono font-bold text-slate-800">
+                      {maxCap > 0 ? `${(maxCap / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : (isAr ? 'غير محدد' : 'Uncapped')}
+                    </span>
+                  </div>
+                  {maxCap > 0 && (
+                    <>
+                      <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${isOverweight ? 'bg-rose-500' : rawWeightPct > 85 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                          style={{ width: `${weightPct}%` }}
+                        />
+                      </div>
+                      <div className={`text-[9px] font-bold ${isOverweight ? 'text-rose-600' : 'text-slate-500'}`}>
+                        {isOverweight
+                          ? (isAr ? `حمولة زائدة بمقدار ${((tripWeightKg - maxCap) / 1000).toFixed(2)} طن!` : `Overweight by ${((tripWeightKg - maxCap) / 1000).toFixed(2)} Ton!`)
+                          : (isAr ? `متبقي ${( (maxCap - tripWeightKg) / 1000).toFixed(2)} طن متاح` : `${((maxCap - tripWeightKg) / 1000).toFixed(2)} Ton available`)}
+                      </div>
+                    </>
+                  )}
+                </div>
+              }
+            >
+              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[10px] font-mono font-black cursor-help transition ${weightBadgeColor}`}>
+                <Weight className="w-3 h-3 shrink-0" />
+                <span>{(tripWeightKg / 1000).toFixed(1)}{isAr ? 'ط' : 'T'}</span>
+              </span>
+            </FleetRichTooltip>
+
+            {/* Cartons Icon + Rich Tooltip */}
+            <FleetRichTooltip
+              widthClass="w-48"
+              content={
+                <div className="space-y-1 text-[10px]">
+                  <div className="font-black text-slate-900 border-b border-slate-100 pb-1 flex items-center gap-1">
+                    <Boxes className="w-3 h-3 text-amber-600" />
+                    <span>{isAr ? 'ملخص الكراتين' : 'Cartons Summary'}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-600">
+                    <span>{isAr ? 'الكراتين:' : 'Cartons:'}</span>
+                    <span className="font-mono font-bold text-slate-900">{tripCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
+                  </div>
+                  {tripBonus > 0 && (
+                    <div className="flex justify-between text-emerald-700 font-bold">
+                      <span>{isAr ? 'بونص إضافي:' : 'Bonus:'}</span>
+                      <span className="font-mono">+{tripBonus.toLocaleString()}</span>
+                    </div>
+                  )}
+                </div>
+              }
+            >
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-700 text-[10px] font-mono font-bold cursor-help">
+                <Boxes className="w-3 h-3 text-amber-600 shrink-0" />
+                <span>{tripCartons.toLocaleString()}</span>
+              </span>
+            </FleetRichTooltip>
+
+            {/* Orders & Clients Icon + Rich Tooltip */}
+            <FleetRichTooltip
+              widthClass="w-64"
+              content={
+                <div className="space-y-1.5 text-[10px]">
+                  <div className="font-black text-slate-900 border-b border-slate-100 pb-1 flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      <FileText className="w-3 h-3 text-indigo-600" />
+                      <span>{isAr ? 'الطلبات المحملة بالرحلة' : 'Loaded Orders on Trip'}</span>
+                    </span>
+                    <span className="font-mono text-indigo-700">{tripOrders.length}</span>
+                  </div>
+                  {tripOrders.length === 0 ? (
+                    <div className="text-slate-400 italic">{isAr ? 'لا توجد طلبات مسكنة' : 'No assigned orders'}</div>
+                  ) : (
+                    <div className="max-h-36 overflow-y-auto space-y-1">
+                      {tripOrders.map((ord) => {
+                        const oSerial = resolveOrderSerial(ord, allOrders);
+                        const normSt = normalizeFulfillmentStatus(ord.fulfillmentStatus);
+                        const stCfg = FULFILLMENT_CONFIG_MAP[normSt] || FULFILLMENT_CONFIG_MAP.not_yet;
+                        return (
+                          <div key={ord.id} className="flex items-center justify-between gap-1.5 p-1 rounded-lg bg-slate-50 border border-slate-100">
+                            <div className="flex items-center gap-1 min-w-0">
+                              <span className="font-mono font-black text-indigo-700 shrink-0">#{oSerial}</span>
+                              <span className="font-bold text-slate-800 truncate">{ord.clientName || '—'}</span>
+                            </div>
+                            <span className={`px-1 py-0.2 rounded text-[8px] font-bold border shrink-0 ${stCfg.badgeClasses}`}>
+                              {isAr ? stCfg.labelAr : stCfg.labelEn}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              }
+            >
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-700 text-[10px] font-mono font-bold cursor-help">
+                <FileText className="w-3 h-3 text-indigo-600 shrink-0" />
+                <span>{tripOrders.length}</span>
+              </span>
+            </FleetRichTooltip>
+
+            {/* Crew Icon + Rich Tooltip */}
+            <FleetRichTooltip
+              widthClass="w-52"
+              content={
+                <div className="space-y-1 text-[10px]">
+                  <div className="font-black text-slate-900 border-b border-slate-100 pb-1 flex items-center gap-1">
+                    <User className="w-3 h-3 text-blue-600" />
+                    <span>{isAr ? 'طاقم الرحلة' : 'Trip Crew'}</span>
+                  </div>
+                  <div className="flex justify-between gap-2 text-slate-600">
+                    <span>{isAr ? 'السائق:' : 'Driver:'}</span>
+                    <span className="font-bold text-slate-900 truncate">
+                      {activeTrip?.driverName || veh.driverName || (isAr ? 'غير مخصص' : 'Unassigned')}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2 text-slate-600">
+                    <span>{isAr ? 'المندوب:' : 'Rep:'}</span>
+                    <span className="font-bold text-slate-800 truncate">
+                      {activeTrip?.repName || '—'}
+                    </span>
+                  </div>
+                </div>
+              }
+            >
+              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[10px] font-bold cursor-help max-w-[80px] ${
+                activeTrip?.driverName || veh.driverName
+                  ? 'border-blue-200 bg-blue-50/70 text-blue-900'
+                  : 'border-slate-200 bg-slate-50 text-slate-400'
+              }`}>
+                <User className="w-3 h-3 shrink-0" />
+                <span className="truncate">
+                  {(activeTrip?.driverName || veh.driverName || '—').split(' ')[0]}
+                </span>
+              </span>
+            </FleetRichTooltip>
+          </div>
+
+          {/* Clickable Conflict Alert Icon (triggers manual LO# filter when trip or vehicle has conflict) */}
+          {(activeTrip?.hasStatusConflict || conflicts.length > 0) && (
+            <FleetRichTooltip
+              widthClass="w-60"
+              enableTap={false}
+              content={
+                <div className="space-y-1 text-[10px]">
+                  <div className="font-black text-rose-700 border-b border-rose-100 pb-1 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    <span>{isAr ? 'تعارضات مكتشفة' : 'Detected Conflicts'}</span>
+                  </div>
+                  {activeTrip?.hasStatusConflict && (
+                    <div className="text-rose-900 font-semibold leading-snug">
+                      • {isAr
+                        ? `أمر التحميل #${activeTrip.loadingOrderNumber} يحتوي على أكثر من حالة تنفيذ — انقر لتصفية الطلبات وإصلاحها يدوياً.`
+                        : `LO #${activeTrip.loadingOrderNumber} has mixed statuses — click to filter orders & fix manually.`}
+                    </div>
+                  )}
+                  {conflicts.map((c, i) => (
+                    <div key={i} className="text-slate-700 leading-snug">
+                      • {isAr ? c.messageAr : c.messageEn}
+                    </div>
+                  ))}
+                </div>
+              }
+            >
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const targetLo = activeTrip?.loadingOrderNumber || priorOpenOrders[0]?.loadingOrderNumber;
+                  if (targetLo) onFilterConflict(targetLo, veh);
+                }}
+                className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 border border-rose-300 shadow-2xs transition cursor-pointer animate-pulse"
+              >
+                <AlertTriangle className="w-3.5 h-3.5" />
+              </button>
+            </FleetRichTooltip>
+          )}
+        </div>
+
+        {/* Sequential Stepper Row (Bwd & Fwd for Middle Statuses, or Clickable Conflict Bar) */}
+        {!activeTrip ? (
+          <div className="text-center py-0.5 text-[10px] text-slate-400 font-medium">
+            {operationalStatus === 'maintenance'
+              ? (isAr ? 'الشاحنة غير متاحة (صيانة)' : 'Unavailable (Maintenance)')
+              : operationalStatus === 'inactive'
+              ? (isAr ? 'الشاحنة متوقفة' : 'Vehicle inactive')
+              : (isAr ? 'لا توجد رحلات مجدولة لهذا اليوم' : 'No trips scheduled for today')}
+          </div>
+        ) : activeTrip.hasStatusConflict ? (
+          <button
+            type="button"
+            onClick={() => onFilterConflict(activeTrip.loadingOrderNumber, veh)}
+            className="w-full py-1 px-2 rounded-xl bg-rose-100/90 hover:bg-rose-200/90 text-rose-900 border border-rose-300 text-[10px] font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-2xs"
+          >
+            <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0 animate-pulse" />
+            <span className="truncate">
+              {isAr
+                ? `تعارض حالات #${activeTrip.loadingOrderNumber} — انقر للإصلاح يدوياً`
+                : `Status Conflict #${activeTrip.loadingOrderNumber} — Click to Fix`}
+            </span>
+          </button>
+        ) : (
+          <div className="flex items-center justify-between gap-1 w-full">
+            {/* Backward Step Button */}
+            {precedingStep ? (
+              <button
+                type="button"
+                onClick={() => onOpenTransitionModal(veh, precedingStep, activeTrip)}
+                className="flex-1 min-w-0 px-1.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-[9px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer shadow-2xs"
+                title={isAr ? `تراجع إلى: ${precedingStep.labelAr}` : `Revert to: ${precedingStep.labelEn}`}
+              >
+                {isAr ? <ArrowRight className="w-2.5 h-2.5 text-slate-500 shrink-0" /> : <ArrowLeft className="w-2.5 h-2.5 text-slate-500 shrink-0" />}
+                <span className="truncate">{isAr ? precedingStep.labelAr : precedingStep.labelEn}</span>
+              </button>
+            ) : (
+              <div className="flex-1"></div>
+            )}
+
+            {/* Current Active Step Pill */}
+            <div
+              className="px-2 py-1 rounded-lg text-[9px] font-black border flex items-center gap-1 shadow-2xs shrink-0"
+              style={{
+                backgroundColor: activeTrip.currentStep?.color === 'emerald' ? '#ecfdf5' : activeTrip.currentStep?.color === 'amber' ? '#fffbeb' : activeTrip.currentStep?.color === 'teal' ? '#f0fdfa' : '#f8fafc',
+                borderColor: activeTrip.currentStep?.color === 'emerald' ? '#a7f3d0' : activeTrip.currentStep?.color === 'amber' ? '#fde68a' : activeTrip.currentStep?.color === 'teal' ? '#99f6e4' : '#e2e8f0',
+                color: activeTrip.currentStep?.color === 'emerald' ? '#065f46' : activeTrip.currentStep?.color === 'amber' ? '#92400e' : activeTrip.currentStep?.color === 'teal' ? '#115e59' : '#334155'
+              }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-current shrink-0"></span>
+              <span>{isAr ? activeTrip.currentStep?.labelAr : activeTrip.currentStep?.labelEn}</span>
+            </div>
+
+            {/* Forward Step Button */}
+            {nextStep ? (
+              <button
+                type="button"
+                onClick={() => onOpenTransitionModal(veh, nextStep, activeTrip)}
+                className="flex-1 min-w-0 px-1.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[9px] font-black transition flex items-center justify-center gap-0.5 cursor-pointer shadow-2xs"
+                title={isAr ? `تقديم إلى: ${nextStep.labelAr}` : `Advance to: ${nextStep.labelEn}`}
+              >
+                <span className="truncate">{isAr ? nextStep.labelAr : nextStep.labelEn}</span>
+                {isAr ? <ArrowLeft className="w-2.5 h-2.5 text-white shrink-0" /> : <ArrowRight className="w-2.5 h-2.5 text-white shrink-0" />}
+              </button>
+            ) : (
+              <div className="flex-1"></div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 3. BOTTOM ROADWAY TRIP CAROUSEL BANNER */}
+      <TripRoadwayCarousel
+        trips={trips}
+        activeIndex={activeTripIndex}
+        slideDir={slideDir}
+        onSelectTrip={(idx, dir) => onSelectTrip(veh.id, idx, dir)}
+        vehicle={veh}
+        operationalStatus={operationalStatus}
+        priorOpenOrders={priorOpenOrders}
+        onFilterConflict={onFilterConflict}
+        isAr={isAr}
+      />
+    </div>
+  );
+}
+
 // Non-Intrusive Order Products & Prices Breakdown Modal
 function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segments = [], products = [], isAr = true }) {
   useEffect(() => {
@@ -650,11 +1373,43 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // Trucks Fleet Dashboard Collapsed/Expanded State (Default Collapsed)
   const [isTrucksDashboardOpen, setIsTrucksDashboardOpen] = useState(false);
 
-  // Truck Batch Fulfillment Status Transition Modal State: { isOpen, truck, targetStep, affectedOrders, isExecuting }
+  // Selected trip carousel index & slide direction per truck: Record<vehicleId, { index, dir }>
+  const [selectedTripByVehicle, setSelectedTripByVehicle] = useState({});
+
+  // Conflict Resolution LO # Filter (temporary state — clears on unmount/refresh/date change)
+  const [loFilter, setLoFilter] = useState(null); // { loNumber, loadingDate, vehicleId, vehicleCode }
+  const ordersListRef = useRef(null);
+
+  // Truck Batch Fulfillment Status Transition Modal State: { isOpen, truck, targetStep, affectedOrders, loadingOrderNumber, isExecuting }
   const [truckStatusModal, setTruckStatusModal] = useState(null);
 
   // Notification Toast
   const [toastMsg, setToastMsg] = useState(null);
+
+  useEffect(() => {
+    setLoFilter(null);
+    setSelectedTripByVehicle({});
+  }, [targetPlanningDate]);
+
+  const handleSelectVehicleTrip = (vehicleId, index, dir = 'next') => {
+    setSelectedTripByVehicle((prev) => ({
+      ...prev,
+      [vehicleId]: { index, dir }
+    }));
+  };
+
+  const handleFilterConflictByLO = (loNumber, vehicleObj = null) => {
+    if (!loNumber) return;
+    setLoFilter({
+      loNumber: String(loNumber),
+      loadingDate: targetPlanningDate,
+      vehicleId: vehicleObj?.id || null,
+      vehicleCode: vehicleObj?.code || vehicleObj?.plateNumber || ''
+    });
+    setTimeout(() => {
+      ordersListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  };
 
   const showToast = (message, type = 'success') => {
     setToastMsg({ message, type });
@@ -1232,6 +1987,20 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       const eff = getEffectiveAssignment(order);
       const effectiveDate = eff.loadingDate || order.loadingDate || order.invoiceDate || '';
+      const effectiveLo = String(eff.loadingOrderNumber || order.loadingOrderNumber || '').trim();
+      const effectiveVehId = eff.assignedVehicleId || order.assignedVehicleId || '';
+
+      // Conflict Resolution LO # Filter takes priority so user sees all conflicting orders across all statuses
+      if (loFilter) {
+        if (loFilter.loNumber === 'unnumbered') {
+          if (effectiveLo) return false;
+          if (loFilter.vehicleId && effectiveVehId !== loFilter.vehicleId) return false;
+        } else {
+          if (effectiveLo !== String(loFilter.loNumber)) return false;
+        }
+        if (loFilter.loadingDate && effectiveDate !== loFilter.loadingDate) return false;
+        return true;
+      }
 
       // Date Scope Filter
       if (dateScope === 'all_pending') {
@@ -1280,7 +2049,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       return true;
     });
-  }, [orders, stagedAssignments, dateScope, todayStr, tomorrowStr, weekEndStr, customDate, confirmedOnly, fulfillmentFilter, searchTerm]);
+  }, [orders, stagedAssignments, dateScope, todayStr, tomorrowStr, weekEndStr, customDate, confirmedOnly, fulfillmentFilter, searchTerm, loFilter]);
 
   // Sorted Orders
   const sortedOrders = useMemo(() => {
@@ -1489,11 +2258,13 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return truckManifest.filter((t) => t.isMisaligned).length;
   }, [truckManifest]);
 
-  // Real-time Trucks Fleet Operational Analysis & Multi-tier Conflict Detection
+  // Real-time Trucks Fleet Operational Analysis, Per-Trip Carousel Grouping & Multi-tier Conflict Detection
   const truckFleetAnalysis = useMemo(() => {
     if (!Array.isArray(vehicles) || vehicles.length === 0) return [];
 
     const analyzed = vehicles.map((veh) => {
+      const maxCapKg = Number(veh.maxCapacityKg) || 0;
+
       // 1. Gather all active orders assigned to this vehicle
       const allVehicleOrders = orders.filter((o) => {
         if (o.confirmationStatus === 'canceled') return false;
@@ -1509,50 +2280,109 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         return lDate === targetPlanningDate;
       });
 
-      // 3. Orders from prior dates that are still out_for_delivery or preparing (uncompleted prior trips)
+      // 3. Orders from prior dates that are still prepare/shipped (uncompleted prior trips)
       const priorOpenOrders = allVehicleOrders.filter((o) => {
         const eff = getEffectiveAssignment(o);
         const lDate = eff.loadingDate || o.loadingDate || '';
-        const status = eff.fulfillmentStatus || o.fulfillmentStatus || 'not_yet';
-        return lDate && lDate < targetPlanningDate && (status === 'out_for_delivery' || status === 'preparing');
+        const norm = normalizeFulfillmentStatus(eff.fulfillmentStatus || o.fulfillmentStatus);
+        return lDate && lDate < targetPlanningDate && (norm === 'prepare' || norm === 'shipped');
       });
 
-      // 4. Check for distinct Loading Orders on targetPlanningDate
-      const activeLoadingOrders = new Set();
+      // 4. Group targetOrders into discrete Trips by Loading Order Number (LO #)
+      const tripGroupsMap = {};
       targetOrders.forEach((o) => {
         const eff = getEffectiveAssignment(o);
-        const lo = eff.loadingOrderNumber || o.loadingOrderNumber;
-        const status = eff.fulfillmentStatus || o.fulfillmentStatus || 'not_yet';
-        if (lo && Number(lo) > 0 && status !== 'delivered') {
-          activeLoadingOrders.add(Number(lo));
+        const rawLo = String(eff.loadingOrderNumber || o.loadingOrderNumber || '').trim();
+        const key = rawLo || 'unnumbered';
+        if (!tripGroupsMap[key]) {
+          tripGroupsMap[key] = {
+            loadingOrderNumber: key,
+            orders: []
+          };
+        }
+        tripGroupsMap[key].orders.push(o);
+      });
+
+      const trips = Object.values(tripGroupsMap)
+        .sort((a, b) => {
+          if (a.loadingOrderNumber === 'unnumbered') return 1;
+          if (b.loadingOrderNumber === 'unnumbered') return -1;
+          return Number(a.loadingOrderNumber) - Number(b.loadingOrderNumber);
+        })
+        .map((grp) => {
+          const tripWeightKg = grp.orders.reduce((sum, o) => sum + (Number(o.totalWeightKg) || 0), 0);
+          const tripCartons = grp.orders.reduce((sum, o) => sum + (Number(o.totalCartons || o.totalQty) || 0), 0);
+          const tripBonus = grp.orders.reduce((sum, o) => sum + (Number(o.totalBonus) || 0), 0);
+          const isTripOverweight = maxCapKg > 0 && tripWeightKg > maxCapKg;
+
+          const tripStatusCounts = { not_yet: 0, prepare: 0, shipped: 0, delivered: 0 };
+          grp.orders.forEach((o) => {
+            const eff = getEffectiveAssignment(o);
+            const norm = normalizeFulfillmentStatus(eff.fulfillmentStatus || o.fulfillmentStatus);
+            if (tripStatusCounts[norm] !== undefined) tripStatusCounts[norm]++;
+          });
+
+          const distinctStatuses = Object.keys(tripStatusCounts).filter((k) => tripStatusCounts[k] > 0);
+          const hasStatusConflict = grp.orders.length > 1 && distinctStatuses.length > 1;
+
+          let currentStepIndex = 0;
+          if (!hasStatusConflict && grp.orders.length > 0) {
+            const singleStatus = distinctStatuses[0] || 'not_yet';
+            const foundIdx = SEQUENTIAL_FULFILLMENT_STEPS.findIndex((s) => s.id === singleStatus);
+            currentStepIndex = foundIdx >= 0 ? foundIdx : 0;
+          }
+
+          let tripOperationalStatus = 'upcoming_duty';
+          if (hasStatusConflict || isTripOverweight) {
+            tripOperationalStatus = 'conflict';
+          } else if (tripStatusCounts.delivered === grp.orders.length) {
+            tripOperationalStatus = 'delivered';
+          } else if (tripStatusCounts.not_yet === grp.orders.length) {
+            tripOperationalStatus = 'upcoming_duty';
+          } else {
+            tripOperationalStatus = 'on_duty';
+          }
+
+          const effFirst = grp.orders[0] ? getEffectiveAssignment(grp.orders[0]) : null;
+          const driverName = effFirst?.assignedDriverName || grp.orders[0]?.assignedDriverName || veh.driverName || '';
+          const repName = effFirst?.assignedDeliveryRepName || grp.orders[0]?.assignedDeliveryRepName || '';
+
+          return {
+            loadingOrderNumber: grp.loadingOrderNumber,
+            orders: grp.orders,
+            totalWeightKg: tripWeightKg,
+            totalCartons: tripCartons,
+            totalBonus: tripBonus,
+            isOverweight: isTripOverweight,
+            statusCounts: tripStatusCounts,
+            distinctStatuses,
+            hasStatusConflict,
+            currentStepIndex: hasStatusConflict ? null : currentStepIndex,
+            currentStep: hasStatusConflict ? null : SEQUENTIAL_FULFILLMENT_STEPS[currentStepIndex],
+            tripOperationalStatus,
+            driverName,
+            repName
+          };
+        });
+
+      // 5. Check for multiple simultaneous active (non-delivered) trips on targetPlanningDate
+      const activeLoadingOrders = new Set();
+      trips.forEach((t) => {
+        if (t.loadingOrderNumber !== 'unnumbered' && t.tripOperationalStatus !== 'delivered') {
+          activeLoadingOrders.add(t.loadingOrderNumber);
         }
       });
 
-      // 5. Weight & Cartons telemetry
-      const totalWeightKg = targetOrders.reduce((sum, o) => sum + (Number(o.totalWeightKg) || 0), 0);
-      const totalCartons = targetOrders.reduce((sum, o) => sum + (Number(o.totalCartons || o.totalQty) || 0), 0);
-      const totalBonus = targetOrders.reduce((sum, o) => sum + (Number(o.totalBonus) || 0), 0);
-      const maxCapKg = Number(veh.maxCapacityKg) || 0;
-      const isOverweight = maxCapKg > 0 && totalWeightKg > maxCapKg;
+      const anyTripMixedConflict = trips.some((t) => t.hasStatusConflict);
+      const anyTripOverweight = trips.some((t) => t.isOverweight);
 
-      // 6. Fulfillment statuses distribution on targetPlanningDate
-      const statusCounts = { not_yet: 0, preparing: 0, out_for_delivery: 0, delivered: 0 };
-      targetOrders.forEach((o) => {
-        const eff = getEffectiveAssignment(o);
-        const st = eff.fulfillmentStatus || o.fulfillmentStatus || 'not_yet';
-        if (statusCounts[st] !== undefined) statusCounts[st]++;
-      });
-
-      const distinctActiveStatuses = Object.keys(statusCounts).filter((k) => statusCounts[k] > 0);
-      const hasMixedStatuses = targetOrders.length > 1 && distinctActiveStatuses.length > 1;
-
-      // 7. Compile conflicts
+      // 6. Compile vehicle-level conflicts
       const conflicts = [];
       if (activeLoadingOrders.size > 1) {
         conflicts.push({
           type: 'simultaneous_trips',
-          messageAr: `تعارض: الشاحنة مجدولة لأكثر من رحلة تحميل مختلفة في نفس اليوم (${Array.from(activeLoadingOrders).map((n) => `#${n}`).join(' و ')})`,
-          messageEn: `Conflict: Truck assigned to multiple distinct loading orders on the same day (${Array.from(activeLoadingOrders).map((n) => `#${n}`).join(' & ')})`
+          messageAr: `تعارض: الشاحنة مجدولة لأكثر من رحلة غير مكتملة في نفس اليوم (${Array.from(activeLoadingOrders).map((n) => `#${n}`).join(' و ')})`,
+          messageEn: `Conflict: Truck scheduled for multiple active trips on the same day (${Array.from(activeLoadingOrders).map((n) => `#${n}`).join(' & ')})`
         });
       }
 
@@ -1560,61 +2390,57 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         const priorDates = Array.from(new Set(priorOpenOrders.map((o) => o.loadingDate || '—'))).join(', ');
         conflicts.push({
           type: 'prior_trip_open',
-          messageAr: `تعارض: الشاحنة ما زالت في طريقها للتسليم من رحلة سابقة (${priorDates}) ولم تُسجّل كمكتملة بعد`,
-          messageEn: `Conflict: Truck is still out for delivery on an earlier trip (${priorDates})`
+          messageAr: `تعارض: الشاحنة ما زالت في رحلة مفتوحة بتاريخ سابق (${priorDates}) ولم تُغلق بعد`,
+          messageEn: `Conflict: Truck still has an uncompleted trip from prior date (${priorDates})`
         });
       }
 
-      if (hasMixedStatuses) {
+      if (anyTripMixedConflict) {
         conflicts.push({
           type: 'mixed_statuses',
-          messageAr: 'حالات تنفيذ متباينة: الأوامر المحملة على نفس الشاحنة تحمل حالات تنفيذ مختلفة',
-          messageEn: 'Mixed fulfillment statuses: Orders on this truck have varying statuses'
+          messageAr: 'حالات تنفيذ متباينة داخل نفس أمر التحميل — انقر أيقونة التنبيه لإصلاحها يدوياً',
+          messageEn: 'Mixed fulfillment statuses within a single LO # — click alert icon to resolve manually'
         });
       }
 
-      if (isOverweight) {
+      if (anyTripOverweight) {
+        const maxTripKg = Math.max(...trips.map((t) => t.totalWeightKg));
         conflicts.push({
           type: 'overweight',
-          messageAr: `حمولة زائدة: الوزن الإجمالي (${(totalWeightKg / 1000).toFixed(2)} طن) يتجاوز السعة القصوى للشاحنة (${(maxCapKg / 1000).toFixed(1)} طن)`,
-          messageEn: `Overweight: Total weight (${(totalWeightKg / 1000).toFixed(2)} Ton) exceeds truck max capacity (${(maxCapKg / 1000).toFixed(1)} Ton)`
+          messageAr: `حمولة زائدة: وزن الرحلة (${(maxTripKg / 1000).toFixed(2)} طن) يتجاوز السعة القصوى (${(maxCapKg / 1000).toFixed(1)} طن)`,
+          messageEn: `Overweight: Trip weight (${(maxTripKg / 1000).toFixed(2)} Ton) exceeds truck max capacity (${(maxCapKg / 1000).toFixed(1)} Ton)`
         });
       }
 
-      // 8. Determine overall operational status
-      let operationalStatus = 'stand_by'; // 'stand_by' | 'upcoming_duty' | 'on_duty' | 'delivered' | 'conflict' | 'maintenance' | 'inactive'
+      // 7. Determine overall vehicle operational status
+      let operationalStatus = 'stand_by';
       if (veh.status === 'maintenance') {
         operationalStatus = 'maintenance';
       } else if (veh.status === 'inactive') {
         operationalStatus = 'inactive';
       } else if (conflicts.length > 0) {
         operationalStatus = 'conflict';
-      } else if (targetOrders.length === 0) {
+      } else if (trips.length === 0) {
         operationalStatus = 'stand_by';
-      } else if (statusCounts.delivered === targetOrders.length) {
-        operationalStatus = 'delivered';
-      } else if (statusCounts.not_yet === targetOrders.length) {
+      } else if (trips.some((t) => t.tripOperationalStatus === 'on_duty')) {
+        operationalStatus = 'on_duty';
+      } else if (trips.some((t) => t.tripOperationalStatus === 'upcoming_duty')) {
         operationalStatus = 'upcoming_duty';
       } else {
-        operationalStatus = 'on_duty';
+        operationalStatus = 'delivered';
       }
 
-      // 9. Primary driver, rep & loading order #
-      const effFirst = targetOrders[0] ? getEffectiveAssignment(targetOrders[0]) : null;
-      const primaryDriverName = effFirst?.assignedDriverName || targetOrders[0]?.assignedDriverName || veh.driverName || '';
-      const primaryRepName = effFirst?.assignedDeliveryRepName || targetOrders[0]?.assignedDeliveryRepName || '';
-      const primaryLoadingOrderNumber = effFirst?.loadingOrderNumber || targetOrders[0]?.loadingOrderNumber || (activeLoadingOrders.size > 0 ? Array.from(activeLoadingOrders)[0] : null);
-
-      // 10. Sequential Stepper Resolution
-      let currentStepIndex = 0;
-      if (statusCounts.delivered === targetOrders.length && targetOrders.length > 0) {
-        currentStepIndex = 3;
-      } else if (statusCounts.out_for_delivery > 0) {
-        currentStepIndex = 2;
-      } else if (statusCounts.preparing > 0) {
-        currentStepIndex = 1;
-      } else {
-        currentStepIndex = 0;
+      // 8. Choose smart default active trip index ("where the default is the current trip/state"):
+      // Priority: active conflict -> on_duty ('shipped'/'prepare') -> upcoming_duty ('not_yet') -> latest delivered (last)
+      let defaultTripIndex = 0;
+      if (trips.length > 1) {
+        const conflictIdx = trips.findIndex((t) => t.hasStatusConflict);
+        const onDutyIdx = trips.findIndex((t) => t.tripOperationalStatus === 'on_duty');
+        const upcomingIdx = trips.findIndex((t) => t.tripOperationalStatus === 'upcoming_duty');
+        if (conflictIdx >= 0) defaultTripIndex = conflictIdx;
+        else if (onDutyIdx >= 0) defaultTripIndex = onDutyIdx;
+        else if (upcomingIdx >= 0) defaultTripIndex = upcomingIdx;
+        else defaultTripIndex = trips.length - 1;
       }
 
       return {
@@ -1622,16 +2448,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         operationalStatus,
         conflicts,
         targetOrders,
-        priorOpenOrders,
-        totalWeightKg,
-        totalCartons,
-        totalBonus,
-        isOverweight,
-        primaryDriverName,
-        primaryRepName,
-        primaryLoadingOrderNumber,
-        currentStepIndex,
-        currentStep: SEQUENTIAL_FULFILLMENT_STEPS[currentStepIndex]
+        trips,
+        defaultTripIndex,
+        priorOpenOrders
       };
     });
 
@@ -2300,301 +3119,74 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
         {/* Scorecards Grid */}
         {isTrucksDashboardOpen && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 pt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 pt-3">
             {truckFleetAnalysis.length === 0 ? (
               <div className="col-span-full p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-slate-200">
                 <Truck className="w-8 h-8 text-slate-300 mx-auto mb-1.5" />
                 <p className="text-xs font-bold text-slate-600">{isAr ? 'لا توجد شاحنات مسجلة في شاشات المركبات' : 'No vehicles configured'}</p>
               </div>
             ) : (
-              truckFleetAnalysis.map((truckData) => {
-                const {
-                  vehicle: veh,
-                  operationalStatus,
-                  conflicts,
-                  targetOrders,
-                  totalWeightKg,
-                  totalCartons,
-                  totalBonus,
-                  isOverweight,
-                  primaryDriverName,
-                  primaryRepName,
-                  primaryLoadingOrderNumber,
-                  currentStepIndex,
-                  currentStep
-                } = truckData;
-
-                const maxCap = Number(veh.maxCapacityKg) || 0;
-                const weightPct = maxCap > 0 ? Math.min(100, Math.round((totalWeightKg / maxCap) * 100)) : 0;
-                const hasOrders = targetOrders.length > 0;
-                const precedingStep = currentStepIndex > 0 ? SEQUENTIAL_FULFILLMENT_STEPS[currentStepIndex - 1] : null;
-                const nextStep = currentStepIndex < 3 ? SEQUENTIAL_FULFILLMENT_STEPS[currentStepIndex + 1] : null;
-
-                return (
-                  <div
-                    key={veh.id}
-                    className={`rounded-3xl p-4 border transition-all duration-200 flex flex-col justify-between space-y-3 ${
-                      operationalStatus === 'conflict'
-                        ? 'bg-rose-50/40 border-rose-300 ring-2 ring-rose-500/20 shadow-xs'
-                        : operationalStatus === 'on_duty'
-                        ? 'bg-emerald-50/20 border-emerald-300 shadow-2xs hover:border-emerald-400'
-                        : operationalStatus === 'upcoming_duty'
-                        ? 'bg-amber-50/20 border-amber-300 shadow-2xs hover:border-amber-400'
-                        : operationalStatus === 'delivered'
-                        ? 'bg-blue-50/20 border-blue-200 shadow-2xs'
-                        : operationalStatus === 'maintenance' || operationalStatus === 'inactive'
-                        ? 'bg-slate-50 border-slate-200/80 opacity-75'
-                        : 'bg-white border-slate-200/90 shadow-2xs hover:border-slate-300'
-                    }`}
-                  >
-                    {/* Top: Header with Vehicle Info & Status Badge */}
-                    <div className="space-y-1.5">
-                      <div className="flex items-start justify-between gap-1.5">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-mono text-xs font-black text-slate-900">
-                              {veh.code || veh.id}
-                            </span>
-                            {primaryLoadingOrderNumber && (
-                              <span className="font-mono text-[10px] font-black px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-200">
-                                LO #{primaryLoadingOrderNumber}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs font-bold text-slate-700 truncate" title={veh.vehicleModel || veh.vehicleType}>
-                            {veh.vehicleModel || veh.vehicleType || (isAr ? 'شاحنة نقل' : 'Delivery Truck')}
-                          </div>
-                        </div>
-
-                        {/* Operational Status Badge */}
-                        <div className="shrink-0">
-                          {operationalStatus === 'conflict' ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-rose-100 text-rose-900 border border-rose-300 shadow-2xs animate-pulse">
-                              <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" />
-                              <span>{isAr ? 'تعارض تشغيلي' : 'Conflict'}</span>
-                            </span>
-                          ) : operationalStatus === 'on_duty' ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-emerald-100 text-emerald-900 border border-emerald-300 shadow-2xs">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-                              <span>{isAr ? 'في الخدمة' : 'On Duty'}</span>
-                            </span>
-                          ) : operationalStatus === 'upcoming_duty' ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
-                              <Clock className="w-3 h-3 text-amber-600 shrink-0" />
-                              <span>{isAr ? 'مهمة قادمة' : 'Upcoming'}</span>
-                            </span>
-                          ) : operationalStatus === 'delivered' ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-blue-100 text-blue-900 border border-blue-200 shadow-2xs">
-                              <CheckCircle2 className="w-3 h-3 text-blue-600 shrink-0" />
-                              <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
-                            </span>
-                          ) : operationalStatus === 'maintenance' ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
-                              <Wrench className="w-3 h-3 text-purple-600 shrink-0" />
-                              <span>{isAr ? 'في الصيانة' : 'Maintenance'}</span>
-                            </span>
-                          ) : operationalStatus === 'inactive' ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-200 text-slate-700 border border-slate-300">
-                              <span>{isAr ? 'خارج الخدمة' : 'Inactive'}</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs">
-                              <span>{isAr ? 'جاهزة / في الانتظار' : 'Stand-by'}</span>
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Plate Number & Vehicle Specs */}
-                      <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-mono flex-wrap">
-                        {veh.plateNumber && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-slate-700 font-bold">
-                            <span>{veh.plateNumber}</span>
-                            <CopyButton text={veh.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-                          </span>
-                        )}
-                        <span>•</span>
-                        <span>
-                          {maxCap > 0 ? `${(maxCap / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : (isAr ? 'حمولة غير محددة' : 'Uncapped')}
-                        </span>
-                      </div>
-
-                      {/* Conflict Warnings Box (if conflicts detected) */}
-                      {conflicts.length > 0 && (
-                        <div className="p-2.5 bg-rose-100/90 border border-rose-300 rounded-2xl space-y-1 text-[10px] text-rose-950 font-semibold mt-1">
-                          {conflicts.map((c, idx) => (
-                            <div key={idx} className="flex items-start gap-1.5 leading-snug">
-                              <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
-                              <span>{isAr ? c.messageAr : c.messageEn}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Middle: Crew, Weight Gauge & Orders Chips */}
-                    <div className="space-y-2 pt-1 border-t border-slate-100">
-                      {/* Assigned Crew */}
-                      <div className="text-[11px] text-slate-600 space-y-0.5">
-                        <div className="flex items-center gap-1.5 truncate" title={primaryDriverName}>
-                          <User className="w-3 h-3 text-slate-400 shrink-0" />
-                          <span className="font-semibold">{isAr ? 'السائق:' : 'Driver:'}</span>
-                          <span className="truncate">{primaryDriverName || (isAr ? 'غير مخصص' : 'Unassigned')}</span>
-                        </div>
-                        {primaryRepName && (
-                          <div className="flex items-center gap-1.5 text-slate-500 text-[10px] truncate" title={primaryRepName}>
-                            <Users className="w-3 h-3 text-slate-400 shrink-0" />
-                            <span>{isAr ? 'المندوب:' : 'Rep:'}</span>
-                            <span className="truncate">{primaryRepName}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Weight & Capacity Gauge */}
-                      <div className="space-y-1 bg-slate-50/80 p-2 rounded-xl border border-slate-200/70 text-[10px]">
-                        <div className="flex items-center justify-between font-mono">
-                          <span className="text-slate-500 font-bold">
-                            {totalCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}{totalBonus > 0 ? ` (+${totalBonus})` : ''}
-                          </span>
-                          <span className={`font-black ${
-                            isOverweight
-                              ? 'text-rose-600 font-extrabold animate-pulse'
-                              : weightPct > 85
-                              ? 'text-amber-700'
-                              : 'text-emerald-700'
-                          }`}>
-                            {(totalWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'} / {maxCap > 0 ? `${(maxCap / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : '—'}
-                          </span>
-                        </div>
-
-                        {/* Progress Bar */}
-                        {maxCap > 0 && (
-                          <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full transition-all duration-300 ${
-                                isOverweight
-                                  ? 'bg-rose-500 animate-pulse'
-                                  : weightPct > 85
-                                  ? 'bg-amber-500'
-                                  : 'bg-emerald-500'
-                              }`}
-                              style={{ width: `${Math.min(100, weightPct)}%` }}
-                            />
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Loaded Orders Chips */}
-                      <div className="space-y-1">
-                        <div className="text-[10px] font-bold text-slate-400 flex items-center justify-between">
-                          <span>{isAr ? 'الطلبات المحملة:' : 'Loaded Orders:'}</span>
-                          <span className="font-mono text-slate-600 font-extrabold">
-                            {targetOrders.length} {isAr ? 'أمر' : 'orders'}
-                          </span>
-                        </div>
-
-                        {!hasOrders ? (
-                          <p className="text-[10px] text-slate-400 italic py-0.5">
-                            {isAr ? 'لا توجد طلبات محملة على هذه الشاحنة' : 'No orders loaded'}
-                          </p>
-                        ) : (
-                          <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto pt-0.5">
-                            {targetOrders.slice(0, 4).map((ord) => {
-                              const oSerial = resolveOrderSerial(ord, orders);
-                              return (
-                                <span
-                                  key={ord.id}
-                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg text-[10px] font-bold bg-white text-slate-700 border border-slate-200 shadow-2xs truncate max-w-full"
-                                  title={`#${oSerial} — ${ord.clientName || '—'}`}
-                                >
-                                  <span className="font-mono text-indigo-700 font-black shrink-0">#{oSerial}</span>
-                                  <span className="truncate max-w-[90px]">{ord.clientName || (isAr ? 'عميل' : 'Client')}</span>
-                                </span>
-                              );
-                            })}
-                            {targetOrders.length > 4 && (
-                              <span className="px-1.5 py-0.5 rounded-lg text-[9px] font-mono font-bold bg-slate-100 text-slate-500 border border-slate-200">
-                                +{targetOrders.length - 4} {isAr ? 'آخرين' : 'more'}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Bottom: Sequential 3-Step Stepper Controls */}
-                    <div className="pt-2 border-t border-slate-100">
-                      {!hasOrders ? (
-                        <div className="text-center py-1 text-[10px] text-slate-400 font-medium">
-                          {isAr ? 'الشاحنة جاهزة للتحميل والتسكين' : 'Ready for dispatch'}
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-between gap-1 w-full">
-                          {/* Preceding Step Button */}
-                          {precedingStep ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setTruckStatusModal({
-                                  isOpen: true,
-                                  truck: veh,
-                                  targetStep: precedingStep,
-                                  affectedOrders: targetOrders,
-                                  isExecuting: false
-                                })
-                              }
-                              className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
-                              title={isAr ? `تراجع إلى: ${precedingStep.labelAr}` : `Revert to: ${precedingStep.labelEn}`}
-                            >
-                              {isAr ? <ArrowRight className="w-2.5 h-2.5 text-slate-500" /> : <ArrowLeft className="w-2.5 h-2.5 text-slate-500" />}
-                              <span className="truncate max-w-[70px]">{isAr ? precedingStep.labelAr : precedingStep.labelEn}</span>
-                            </button>
-                          ) : (
-                            <div className="w-12"></div>
-                          )}
-
-                          {/* Current Active Step */}
-                          <div
-                            className="px-2 py-1 rounded-lg text-[10px] font-black border flex items-center gap-1 shadow-2xs truncate"
-                            style={{
-                              backgroundColor: currentStep?.color === 'emerald' ? '#ecfdf5' : currentStep?.color === 'amber' ? '#fffbeb' : currentStep?.color === 'blue' ? '#eff6ff' : '#f8fafc',
-                              borderColor: currentStep?.color === 'emerald' ? '#a7f3d0' : currentStep?.color === 'amber' ? '#fde68a' : currentStep?.color === 'blue' ? '#bfdbfe' : '#e2e8f0',
-                              color: currentStep?.color === 'emerald' ? '#065f46' : currentStep?.color === 'amber' ? '#92400e' : currentStep?.color === 'blue' ? '#1e40af' : '#334155'
-                            }}
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full bg-current shrink-0"></span>
-                            <span className="truncate">{isAr ? currentStep?.labelAr : currentStep?.labelEn}</span>
-                          </div>
-
-                          {/* Next Step Advance Button */}
-                          {nextStep ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setTruckStatusModal({
-                                  isOpen: true,
-                                  truck: veh,
-                                  targetStep: nextStep,
-                                  affectedOrders: targetOrders,
-                                  isExecuting: false
-                                })
-                              }
-                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-black transition flex items-center gap-1 cursor-pointer shadow-2xs"
-                              title={isAr ? `تقديم إلى: ${nextStep.labelAr}` : `Advance to: ${nextStep.labelEn}`}
-                            >
-                              <span className="truncate max-w-[70px]">{isAr ? nextStep.labelAr : nextStep.labelEn}</span>
-                              {isAr ? <ArrowLeft className="w-2.5 h-2.5 text-white" /> : <ArrowRight className="w-2.5 h-2.5 text-white" />}
-                            </button>
-                          ) : (
-                            <div className="w-12"></div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
+              truckFleetAnalysis.map((truckData) => (
+                <CompactTruckCard
+                  key={truckData.vehicle.id}
+                  truckData={truckData}
+                  allOrders={orders}
+                  selectedTripState={selectedTripByVehicle[truckData.vehicle.id]}
+                  onSelectTrip={handleSelectVehicleTrip}
+                  onFilterConflict={handleFilterConflictByLO}
+                  onOpenTransitionModal={(veh, step, trip) =>
+                    setTruckStatusModal({
+                      isOpen: true,
+                      truck: veh,
+                      targetStep: step,
+                      affectedOrders: trip.orders,
+                      loadingOrderNumber: trip.loadingOrderNumber,
+                      isExecuting: false
+                    })
+                  }
+                  isAr={isAr}
+                />
+              ))
             )}
+          </div>
+        )}
+      </div>
+
+      {/* CONFLICT LO # MANUAL FIX FILTER BANNER & SCROLL ANCHOR */}
+      <div ref={ordersListRef} className="scroll-mt-4">
+        {loFilter && (
+          <div className="mb-3 px-4 py-2.5 rounded-2xl bg-rose-50 border border-rose-300 shadow-xs flex flex-wrap items-center justify-between gap-3 animate-in fade-in duration-150">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-rose-100 border border-rose-300 text-rose-600 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-black text-rose-900 flex items-center gap-1.5 flex-wrap">
+                  <span>{isAr ? 'وضع معالجة التعارض:' : 'Conflict Fix Filter Active:'}</span>
+                  <span className="font-mono px-2 py-0.5 rounded-md bg-white border border-rose-300 text-rose-800">
+                    LO #{loFilter.loNumber}
+                  </span>
+                  {loFilter.vehicleCode && (
+                    <span className="font-mono text-[11px] text-rose-700 font-bold">
+                      ({loFilter.vehicleCode})
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-rose-700 font-medium mt-0.5">
+                  {isAr
+                    ? 'يتم عرض كافة الطلبات المرتبطة بأمر التحميل هذا (بجميع حالات التنفيذ) لتتمكن من توحيد حالتها يدوياً.'
+                    : 'Showing all orders linked to this Loading Order # across all fulfillment statuses for manual resolution.'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLoFilter(null)}
+              className="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 text-xs font-black transition flex items-center gap-1.5 cursor-pointer shrink-0 shadow-2xs"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>{isAr ? 'إلغاء تصفية التعارض' : 'Clear Conflict Filter'}</span>
+            </button>
           </div>
         )}
       </div>
@@ -4442,8 +5034,16 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   <h4 className="font-extrabold text-sm text-slate-900">
                     {isAr ? 'تأكيد تحديث حالة شاحنة التحميل' : 'Confirm Truck Fulfillment Transition'}
                   </h4>
-                  <div className="text-xs text-slate-500 font-mono mt-0.5 flex items-center gap-1.5">
+                  <div className="text-xs text-slate-500 font-mono mt-0.5 flex items-center gap-1.5 flex-wrap">
                     <span>{truckStatusModal.truck?.code || truckStatusModal.truck?.id}</span>
+                    {truckStatusModal.loadingOrderNumber && truckStatusModal.loadingOrderNumber !== 'unnumbered' && (
+                      <>
+                        <span>•</span>
+                        <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-black">
+                          LO #{truckStatusModal.loadingOrderNumber}
+                        </span>
+                      </>
+                    )}
                     {truckStatusModal.truck?.plateNumber && (
                       <>
                         <span>•</span>
@@ -4476,8 +5076,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               <div className="flex items-center justify-center gap-3 py-2 bg-white rounded-xl border border-slate-200 shadow-2xs">
                 <span className="px-3 py-1 bg-slate-100 text-slate-700 border border-slate-200 rounded-lg font-bold text-xs">
                   {isAr
-                    ? (SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === (truckStatusModal.affectedOrders[0]?.fulfillmentStatus || 'not_yet'))?.labelAr || 'الحالة الحالية')
-                    : (SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === (truckStatusModal.affectedOrders[0]?.fulfillmentStatus || 'not_yet'))?.labelEn || 'Current')}
+                    ? (SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === normalizeFulfillmentStatus(truckStatusModal.affectedOrders[0]?.fulfillmentStatus))?.labelAr || 'الحالة الحالية')
+                    : (SEQUENTIAL_FULFILLMENT_STEPS.find((s) => s.id === normalizeFulfillmentStatus(truckStatusModal.affectedOrders[0]?.fulfillmentStatus))?.labelEn || 'Current')}
                 </span>
                 <span className="text-slate-400 font-bold">➔</span>
                 <span className={`px-3 py-1 rounded-lg font-black text-xs border shadow-2xs ${
@@ -4485,8 +5085,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
                     : truckStatusModal.targetStep.color === 'amber'
                     ? 'bg-amber-100 text-amber-900 border-amber-300'
-                    : truckStatusModal.targetStep.color === 'blue'
-                    ? 'bg-blue-100 text-blue-900 border-blue-300'
+                    : (truckStatusModal.targetStep.color === 'blue' || truckStatusModal.targetStep.color === 'teal')
+                    ? 'bg-teal-100 text-teal-900 border-teal-300'
                     : 'bg-slate-100 text-slate-800 border-slate-300'
                 }`}>
                   {isAr ? truckStatusModal.targetStep.labelAr : truckStatusModal.targetStep.labelEn}

@@ -10,3 +10,86 @@
     display: none !important;
   }
 }
+
+@keyframes road-dash-scroll {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 24px 0;
+  }
+}
+
+@keyframes trip-slide-next {
+  0% {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes trip-slide-prev {
+  0% {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes truck-glide {
+  0% {
+    transform: translateX(-8px) scale(0.95);
+    opacity: 0.5;
+  }
+  60% {
+    transform: translateX(2px) scale(1.04);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-road-dashes {
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(245, 158, 11, 0.75) 0px,
+    rgba(245, 158, 11, 0.75) 8px,
+    transparent 8px,
+    transparent 16px
+  );
+  background-size: 24px 2px;
+  background-repeat: repeat-x;
+  animation: road-dash-scroll 0.9s linear infinite;
+}
+
+.animate-road-dashes-static {
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0.5) 0px,
+    rgba(148, 163, 184, 0.5) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  background-size: 18px 2px;
+  background-repeat: repeat-x;
+}
+
+.animate-trip-slide-next {
+  animation: trip-slide-next 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-trip-slide-prev {
+  animation: trip-slide-prev 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-truck-glide {
+  animation: truck-glide 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
