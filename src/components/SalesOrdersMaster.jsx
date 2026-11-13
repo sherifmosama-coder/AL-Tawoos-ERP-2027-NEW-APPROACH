@@ -159,15 +159,65 @@ const CONFIRMATION_STATUSES = [
 ];
 
 /**
- * 5 Fulfillment Statuses Dictionary
+ * 5 Fulfillment Statuses Dictionary & Standardized Corporate Styles
  */
 const FULFILLMENT_STATUSES = [
   { id: 'not_yet', labelAr: 'قيد الانتظار', labelEn: 'Pending', color: 'slate', isDefault: true },
   { id: 'prepare', labelAr: 'جاري التجهيز', labelEn: 'Preparing', color: 'amber' },
-  { id: 'shipped', labelAr: 'جاري التوصيل', labelEn: 'Out for Delivery', color: 'emerald' },
-  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered', color: 'teal' },
-  { id: 'paid', labelAr: 'مدفوع', labelEn: 'Paid', color: 'blue' },
+  { id: 'shipped', labelAr: 'جاري التوصيل', labelEn: 'Out for Delivery', color: 'sky' },
+  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered', color: 'emerald' },
+  { id: 'paid', labelAr: 'مدفوع', labelEn: 'Paid', color: 'indigo' },
 ];
+
+const SALES_FULFILLMENT_STYLE_MAP = {
+  not_yet: {
+    badgeClasses: 'bg-slate-100 text-slate-800 border-slate-300 ring-1 ring-slate-300/35',
+    rowClasses: 'border-s-[4px] border-s-slate-400 hover:bg-slate-50/90',
+    groupBannerClasses: 'bg-gradient-to-r from-slate-100 via-slate-50 to-white border-slate-300 border-s-[4px] border-s-slate-500 text-slate-900',
+    dotClasses: 'bg-slate-500'
+  },
+  prepare: {
+    badgeClasses: 'bg-amber-100 text-amber-950 border-amber-400 ring-1 ring-amber-400/35',
+    rowClasses: 'border-s-[4px] border-s-amber-500 bg-gradient-to-r from-amber-500/[0.08] via-amber-500/[0.025] to-transparent hover:from-amber-500/[0.13]',
+    groupBannerClasses: 'bg-gradient-to-r from-amber-100/90 via-amber-50/75 to-white border-amber-300 border-s-[4px] border-s-amber-500 text-amber-950',
+    dotClasses: 'bg-amber-500'
+  },
+  shipped: {
+    badgeClasses: 'bg-sky-100 text-sky-950 border-sky-400 ring-1 ring-sky-400/35',
+    rowClasses: 'border-s-[4px] border-s-sky-500 bg-gradient-to-r from-sky-500/[0.08] via-sky-500/[0.025] to-transparent hover:from-sky-500/[0.13]',
+    groupBannerClasses: 'bg-gradient-to-r from-sky-100/90 via-sky-50/75 to-white border-sky-300 border-s-[4px] border-s-sky-600 text-sky-950',
+    dotClasses: 'bg-sky-600'
+  },
+  delivered: {
+    badgeClasses: 'bg-emerald-100 text-emerald-950 border-emerald-400 ring-1 ring-emerald-400/35',
+    rowClasses: 'border-s-[4px] border-s-emerald-600 bg-gradient-to-r from-emerald-500/[0.07] via-emerald-500/[0.02] to-transparent hover:from-emerald-500/[0.12]',
+    groupBannerClasses: 'bg-gradient-to-r from-emerald-100/90 via-emerald-50/75 to-white border-emerald-300 border-s-[4px] border-s-emerald-600 text-emerald-950',
+    dotClasses: 'bg-emerald-600'
+  },
+  paid: {
+    badgeClasses: 'bg-indigo-100 text-indigo-950 border-indigo-400 ring-1 ring-indigo-400/35',
+    rowClasses: 'border-s-[4px] border-s-indigo-600 bg-gradient-to-r from-indigo-500/[0.07] via-indigo-500/[0.02] to-transparent hover:from-indigo-500/[0.12]',
+    groupBannerClasses: 'bg-gradient-to-r from-indigo-100/90 via-indigo-50/75 to-white border-indigo-300 border-s-[4px] border-s-indigo-600 text-indigo-950',
+    dotClasses: 'bg-indigo-600'
+  }
+};
+
+/**
+ * Standardizes Vehicle Name (`vehicleModel` / `name` / `nameAr`) as the main human-recognizable reference.
+ */
+const resolveVehicleDisplayName = (veh, fallbackName = '') => {
+  if (!veh && !fallbackName) return '';
+  return (
+    veh?.vehicleModel ||
+    veh?.name ||
+    veh?.nameAr ||
+    veh?.nameEn ||
+    fallbackName ||
+    veh?.code ||
+    veh?.id ||
+    ''
+  ).trim();
+};
 
 /**
  * 5 Tax / VAT Modes Dictionary (Legacy Matching)
@@ -930,23 +980,23 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   // Helper to determine table row background based on status and fulfillment
   const resolveRowBackground = (order, isExpanded) => {
     if (order.confirmationStatus === 'canceled') {
-      return 'bg-slate-100/90 opacity-60 grayscale-[25%]';
+      return 'border-s-[4px] border-s-rose-400 bg-slate-100/90 opacity-60 grayscale-[25%]';
     }
     if (isExpanded) {
-      return 'bg-slate-50/90 border-blue-200';
+      return 'border-s-[4px] border-s-indigo-600 bg-indigo-50/35 border-blue-200';
     }
     switch (order.fulfillmentStatus) {
       case 'prepare':
-        return 'bg-gradient-to-r from-amber-500/[0.05] via-amber-500/[0.02] to-transparent hover:from-amber-500/[0.09]';
+        return SALES_FULFILLMENT_STYLE_MAP.prepare.rowClasses;
       case 'shipped':
       case 'out_for_delivery':
-        return 'bg-gradient-to-r from-emerald-500/[0.06] via-emerald-500/[0.02] to-transparent hover:from-emerald-500/[0.10]';
+        return SALES_FULFILLMENT_STYLE_MAP.shipped.rowClasses;
       case 'delivered':
-        return 'bg-gradient-to-r from-teal-500/[0.05] via-teal-500/[0.02] to-transparent hover:from-teal-500/[0.09]';
+        return SALES_FULFILLMENT_STYLE_MAP.delivered.rowClasses;
       case 'paid':
-        return 'bg-gradient-to-r from-blue-500/[0.05] via-blue-500/[0.02] to-transparent hover:from-blue-500/[0.09]';
+        return SALES_FULFILLMENT_STYLE_MAP.paid.rowClasses;
       default:
-        return 'hover:bg-slate-50/80';
+        return SALES_FULFILLMENT_STYLE_MAP.not_yet.rowClasses;
     }
   };
 
@@ -1078,19 +1128,27 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         label = item ? (isAr ? item.labelAr : item.labelEn) : key;
       } else if (groupBy === 'assignedVehicle') {
         key = o.assignedVehicleId || 'unassigned';
-        label = o.assignedVehicleName
-          ? `${o.assignedVehicleName}${o.assignedVehiclePlate ? ` (${o.assignedVehiclePlate})` : ''}`
+        const matchedVeh = vehicles.find((v) => v.id === o.assignedVehicleId);
+        const vName = resolveVehicleDisplayName(matchedVeh, o.assignedVehicleName);
+        const vPlate = o.assignedVehiclePlate || matchedVeh?.plateNumber || '';
+        label = vName
+          ? `${vName}${vPlate ? ` (${vPlate})` : ''}`
           : (isAr ? 'أوامر غير مسكنة بشاحنة' : 'Unassigned Orders');
       }
 
       if (!groupsMap[key]) {
-        groupsMap[key] = { groupKey: key, groupLabel: label, items: [] };
+        groupsMap[key] = {
+          groupKey: key,
+          statusKey: groupBy === 'fulfillmentStatus' ? (key === 'out_for_delivery' ? 'shipped' : key) : null,
+          groupLabel: label,
+          items: []
+        };
       }
       groupsMap[key].items.push(o);
     });
 
     return Object.values(groupsMap);
-  }, [filteredOrders, groupBy, isAr]);
+  }, [filteredOrders, groupBy, isAr, vehicles]);
 
   // KPI Summary Metrics
   const summaryMetrics = useMemo(() => {
@@ -1425,7 +1483,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               <option value="unassigned">{isAr ? 'غير مسكن بشاحنة' : 'Unassigned Only'}</option>
               {vehicles.map((v) => (
                 <option key={v.id} value={v.id}>
-                  {v.vehicleModel || v.name || v.nameAr || v.code || (isAr ? 'شاحنة' : 'Truck')} {v.plateNumber ? `(${v.plateNumber})` : ''}
+                  {resolveVehicleDisplayName(v, v.plateNumber || (isAr ? 'شاحنة' : 'Truck'))}
                 </option>
               ))}
             </select>
@@ -1556,19 +1614,24 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                 {groupedOrders.map((group) => (
                   <React.Fragment key={group.groupKey}>
                     {/* Optional Group Header Row */}
-                    {groupBy !== 'none' && (
-                      <tr className="bg-slate-100/80 border-t border-b border-slate-200">
-                        <td colSpan={10} className="py-2 px-4 font-black text-slate-800 text-xs">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                            <span>{group.groupLabel}</span>
-                            <span className="text-[10px] text-slate-400 font-mono font-bold">
-                              ({group.items.length} {isAr ? 'أوامر' : 'orders'})
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
+                    {groupBy !== 'none' && (() => {
+                      const gStyle = group.statusKey ? (SALES_FULFILLMENT_STYLE_MAP[group.statusKey] || SALES_FULFILLMENT_STYLE_MAP.not_yet) : null;
+                      return (
+                        <tr className={`border-t border-b ${gStyle ? gStyle.groupBannerClasses : 'bg-gradient-to-r from-slate-100/95 via-slate-50 to-white border-slate-200 border-s-[4px] border-s-indigo-500 text-slate-900'}`}>
+                          <td colSpan={10} className="py-2.5 px-4 font-black text-xs">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <div className="flex items-center gap-2">
+                                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${gStyle ? gStyle.dotClasses : 'bg-indigo-500'}`}></span>
+                                <span className="text-sm font-black">{group.groupLabel}</span>
+                                <span className={`text-[10px] font-mono font-black px-2 py-0.5 rounded-lg border ${gStyle ? gStyle.badgeClasses : 'bg-slate-200/80 text-slate-700 border-slate-300'}`}>
+                                  {group.items.length} {isAr ? 'أوامر' : 'orders'}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })()}
 
                     {group.items.map((order) => {
                       const isExpanded = expandedOrderIds.has(order.id);
@@ -1577,6 +1640,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       const confStatusObj = CONFIRMATION_STATUSES.find((s) => s.id === order.confirmationStatus) || CONFIRMATION_STATUSES[0];
                       const fulfStatusObj = FULFILLMENT_STATUSES.find((s) => s.id === order.fulfillmentStatus) || FULFILLMENT_STATUSES[0];
                       const vatModeObj = VAT_MODES.find((v) => v.id === order.vatMode) || VAT_MODES[0];
+                      const matchedOrderVehicle = vehicles.find((v) => v.id === order.assignedVehicleId);
+                      const orderVehicleDisplayName = resolveVehicleDisplayName(matchedOrderVehicle, order.assignedVehicleName);
+                      const orderVehiclePlate = order.assignedVehiclePlate || matchedOrderVehicle?.plateNumber || '';
 
                       // Client and Branch resolution
                       const clientObj = clients.find((c) => c.id === order.clientId) || null;
@@ -1742,29 +1808,40 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   </div>
                                 )}
                                 {/* Preserved Truck / Dispatch Badge */}
-                                {(order.assignedVehicleName || order.loadingOrderNumber) ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleNavigateToLoadingPlan(order);
-                                    }}
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 hover:text-indigo-900 border border-indigo-200/80 shadow-2xs transition cursor-pointer max-w-[170px] truncate"
-                                    title={
-                                      isAr
-                                        ? `مُسكن في أمر تحميل #${order.loadingOrderNumber || '—'} — سيارة: ${order.assignedVehicleName || ''} (${order.assignedVehiclePlate || ''}) — سائق: ${order.assignedDriverName || '—'} — انقر لفتح وتعديل خطة التحميل والتوزيع`
-                                        : `Assigned to LO #${order.loadingOrderNumber || '—'} — Truck: ${order.assignedVehicleName || ''} (${order.assignedVehiclePlate || ''}) — Driver: ${order.assignedDriverName || '—'} — Click to open in Loading Plan`
-                                    }
-                                  >
-                                    <Truck className="w-3 h-3 text-indigo-600 shrink-0" />
-                                    <span className="truncate">{order.assignedVehicleName || order.assignedVehiclePlate || (isAr ? 'شاحنة' : 'Truck')}</span>
-                                    {order.loadingOrderNumber && (
-                                      <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-200/70 text-indigo-900 font-mono font-black">
-                                        #{order.loadingOrderNumber}
+                                {(orderVehicleDisplayName || order.loadingOrderNumber) ? (
+                                  <div className="flex flex-col gap-1 items-start">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleNavigateToLoadingPlan(order);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-black bg-indigo-50 text-indigo-800 hover:bg-indigo-100 hover:text-indigo-950 border border-indigo-200/90 shadow-2xs transition cursor-pointer max-w-[180px] truncate"
+                                      title={
+                                        isAr
+                                          ? `مُسكن في رحلة #${order.loadingOrderNumber || '—'} — سيارة: ${orderVehicleDisplayName || ''} (${orderVehiclePlate || ''}) — سائق: ${order.assignedDriverName || '—'} — انقر لفتح وتعديل خطة التحميل والتوزيع`
+                                          : `Assigned to Trip #${order.loadingOrderNumber || '—'} — Truck: ${orderVehicleDisplayName || ''} (${orderVehiclePlate || ''}) — Driver: ${order.assignedDriverName || '—'} — Click to open in Loading Plan`
+                                      }
+                                    >
+                                      <Truck className="w-3 h-3 text-indigo-600 shrink-0 rtl:-scale-x-100" />
+                                      <span className="truncate">{orderVehicleDisplayName || orderVehiclePlate || (isAr ? 'شاحنة' : 'Truck')}</span>
+                                      {order.loadingOrderNumber && (
+                                        <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-200/80 text-indigo-950 font-mono font-black shrink-0">
+                                          #{order.loadingOrderNumber}
+                                        </span>
+                                      )}
+                                    </button>
+                                    {orderVehiclePlate && (
+                                      <span
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-100 border border-slate-200 font-mono text-[9px] font-bold text-slate-600"
+                                      >
+                                        <span>{orderVehiclePlate}</span>
+                                        <CopyButton text={orderVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
                                       </span>
                                     )}
-                                  </button>
-                                ) : !['admin', 'collection'].includes(order.orderType) ? (
+                                  </div>
+                                ) : !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) ? (
                                   <button
                                     type="button"
                                     onClick={(e) => {
@@ -1774,7 +1851,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-indigo-600 hover:bg-slate-100 px-1 py-0.5 rounded transition cursor-pointer"
                                     title={isAr ? 'الطلب غير مسكن بشاحنة — انقر للتسكين في خطة التحميل' : 'Unassigned — Click to assign in Loading Plan'}
                                   >
-                                    <Truck className="w-2.5 h-2.5 text-slate-300" />
+                                    <Truck className="w-2.5 h-2.5 text-slate-300 rtl:-scale-x-100" />
                                     <span className="italic">{isAr ? 'غير مسكن' : 'Unassigned'}</span>
                                   </button>
                                 ) : null}
@@ -1960,31 +2037,38 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   )}
                                 </div>
 
-                                {/* Fulfillment Status (Pending is hidden; Preparing with flashing dot; Out for Delivery with moving truck animation; Delivered with teal check; Paid with blue banknote) */}
+                                {/* Fulfillment Status (Prominent Corporate Badges matching Loading Plan) */}
+                                {(!order.fulfillmentStatus || order.fulfillmentStatus === 'not_yet') &&
+                                  !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) && (
+                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.not_yet.badgeClasses}`}>
+                                    <Clock className="w-3 h-3 text-slate-600 shrink-0" />
+                                    <span>{isAr ? 'قيد الانتظار' : 'Pending'}</span>
+                                  </span>
+                                )}
                                 {order.fulfillmentStatus === 'prepare' && (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 shadow-2xs">
+                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.prepare.badgeClasses}`}>
                                     <span className="relative flex h-2 w-2">
-                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75"></span>
+                                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600"></span>
                                     </span>
                                     <span>{isAr ? 'جاري التجهيز' : 'Preparing'}</span>
                                   </span>
                                 )}
                                 {(order.fulfillmentStatus === 'shipped' || order.fulfillmentStatus === 'out_for_delivery') && (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-2xs">
-                                    <Truck className="w-3 h-3 text-emerald-600 animate-pulse" />
+                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.shipped.badgeClasses}`}>
+                                    <Truck className="w-3 h-3 text-sky-600 animate-pulse rtl:-scale-x-100 shrink-0" />
                                     <span>{isAr ? 'جاري التوصيل' : 'Out for Delivery'}</span>
                                   </span>
                                 )}
                                 {order.fulfillmentStatus === 'delivered' && (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200 shadow-2xs">
-                                    <CheckCircle2 className="w-3 h-3 text-teal-600" />
+                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.delivered.badgeClasses}`}>
+                                    <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
                                     <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
                                   </span>
                                 )}
                                 {order.fulfillmentStatus === 'paid' && (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200 shadow-2xs">
-                                    <Banknote className="w-3 h-3 text-blue-600" />
+                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.paid.badgeClasses}`}>
+                                    <Banknote className="w-3 h-3 text-indigo-600 shrink-0" />
                                     <span>{isAr ? 'مدفوع' : 'Paid'}</span>
                                   </span>
                                 )}
@@ -2179,18 +2263,18 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                           </div>
 
                                           {/* 4-Grid of Preserved Assignment Info */}
-                                          {(order.assignedVehicleName || order.loadingOrderNumber) ? (
+                                          {(orderVehicleDisplayName || order.loadingOrderNumber) ? (
                                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                                               <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
                                                 <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'الشاحنة المخصصة:' : 'Assigned Truck:'}</span>
-                                                <span className="font-bold text-slate-800 flex items-center gap-1 mt-0.5">
-                                                  <Truck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                                                  <span className="truncate">{order.assignedVehicleName || (isAr ? 'غير محدد' : 'Unknown')}</span>
+                                                <span className="font-black text-slate-900 flex items-center gap-1 mt-0.5">
+                                                  <Truck className="w-3.5 h-3.5 text-indigo-600 shrink-0 rtl:-scale-x-100" />
+                                                  <span className="truncate">{orderVehicleDisplayName || (isAr ? 'غير محدد' : 'Unknown')}</span>
                                                 </span>
-                                                {order.assignedVehiclePlate && (
-                                                  <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1 mt-0.5">
-                                                    <span>{order.assignedVehiclePlate}</span>
-                                                    <CopyButton text={order.assignedVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                                                {orderVehiclePlate && (
+                                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-[10px] text-slate-600 font-mono mt-1">
+                                                    <span>{orderVehiclePlate}</span>
+                                                    <CopyButton text={orderVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
                                                   </span>
                                                 )}
                                               </div>
@@ -2599,6 +2683,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           productCategories={productCategories}
           priceLists={priceLists}
           strategies={strategies}
+          vehicles={vehicles}
           allOrders={orders}
           isAr={isAr}
           currentUserName={currentUserName}
@@ -2762,6 +2847,7 @@ function SalesOrderEditorModal({
   productCategories = [],
   priceLists = [],
   strategies = [],
+  vehicles = [],
   allOrders = [],
   isAr = true,
   currentUserName = 'مستخدم معتمد',
@@ -3971,13 +4057,18 @@ function SalesOrderEditorModal({
                       hasActiveAssignment ? 'bg-slate-100/90 border-amber-300 text-slate-600 cursor-not-allowed' : 'bg-white border-slate-300'
                     }`}
                   />
-                  {hasActiveAssignment && (
-                    <span className="text-[10px] text-amber-700 font-medium block mt-1 leading-tight">
-                      {isAr
-                        ? `الطلب مُسكن بشاحنة (${formData.assignedVehicleName || formData.assignedVehiclePlate || ''}) ورحلة #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
-                        : `Order assigned to ${formData.assignedVehicleName || ''} (Trip #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
-                    </span>
-                  )}
+                  {hasActiveAssignment && (() => {
+                    const matchedVehModal = vehicles.find((v) => v.id === formData.assignedVehicleId);
+                    const modalVehName = resolveVehicleDisplayName(matchedVehModal, formData.assignedVehicleName);
+                    const modalVehPlate = formData.assignedVehiclePlate || matchedVehModal?.plateNumber || '';
+                    return (
+                      <span className="text-[10px] text-amber-700 font-medium block mt-1 leading-tight">
+                        {isAr
+                          ? `الطلب مُسكن بشاحنة (${modalVehName || modalVehPlate || ''}) ورحلة #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
+                          : `Order assigned to ${modalVehName || ''} (Trip #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
+                      </span>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -4003,20 +4094,25 @@ function SalesOrderEditorModal({
             </div>
 
             {/* Read-Only Dispatch Assignment Card (if order is assigned) */}
-            {hasActiveAssignment && (
+            {hasActiveAssignment && (() => {
+              const matchedVehModal = vehicles.find((v) => v.id === formData.assignedVehicleId);
+              const modalVehName = resolveVehicleDisplayName(matchedVehModal, formData.assignedVehicleName);
+              const modalVehPlate = formData.assignedVehiclePlate || matchedVehModal?.plateNumber || '';
+              return (
               <div className="p-3 bg-gradient-to-r from-amber-50/90 via-indigo-50/60 to-amber-50/90 border border-amber-300/80 rounded-2xl flex items-center justify-between gap-3 shadow-2xs">
                 <div className="flex items-center gap-2.5">
                   <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-400 text-amber-900 flex items-center justify-center shrink-0 shadow-2xs">
-                    <Truck className="w-4 h-4" />
+                    <Truck className="w-4 h-4 rtl:-scale-x-100" />
                   </div>
                   <div>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-xs font-black text-slate-900">
-                        {formData.assignedVehicleName || (isAr ? 'شاحنة معتمدة' : 'Assigned Truck')}
+                        {modalVehName || (isAr ? 'شاحنة معتمدة' : 'Assigned Truck')}
                       </span>
-                      {formData.assignedVehiclePlate && (
-                        <span className="text-[11px] font-mono text-slate-500 font-bold">
-                          ({formData.assignedVehiclePlate})
+                      {modalVehPlate && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-white border border-slate-200 text-[10px] font-mono text-slate-700 font-bold">
+                          <span>{modalVehPlate}</span>
+                          <CopyButton text={modalVehPlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
                         </span>
                       )}
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 border border-indigo-200 font-mono">
@@ -4038,7 +4134,8 @@ function SalesOrderEditorModal({
                   {isAr ? 'بيانات معتمدة للقراءة فقط' : 'Read-Only Assignment'}
                 </span>
               </div>
-            )}
+              );
+            })()}
 
             {/* Row 2: Client Name and Branch on next row */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-200/60">
