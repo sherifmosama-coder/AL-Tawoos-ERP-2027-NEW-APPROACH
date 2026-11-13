@@ -127,7 +127,7 @@ const FULFILLMENT_CONFIG_MAP = {
     badgeClasses: 'bg-slate-100 text-slate-800 border-slate-300 ring-1 ring-slate-300/40',
     stripClasses: 'bg-gradient-to-b from-slate-100/85 to-slate-50/75 hover:from-slate-100 hover:to-slate-100/85 border-slate-200',
     cardAccentClasses: 'border-s-[5px] border-s-slate-400',
-    groupBannerClasses: 'bg-gradient-to-r from-slate-100 via-slate-50/95 to-white border-slate-300 border-s-[5px] border-s-slate-500 text-slate-900',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-100 via-slate-50/95 to-white border-slate-300 border-s-[5px] border-s-slate-500 text-slate-900',
     groupIconClasses: 'bg-slate-600 text-white border-slate-700 shadow-2xs',
     groupCountClasses: 'bg-slate-200/80 text-slate-800 border-slate-300',
     filterActiveClasses: 'bg-slate-700 text-white border-slate-800 shadow-xs ring-2 ring-slate-500/25',
@@ -143,8 +143,8 @@ const FULFILLMENT_CONFIG_MAP = {
     color: 'amber',
     badgeClasses: 'bg-amber-100 text-amber-950 border-amber-400 ring-1 ring-amber-400/35',
     stripClasses: 'bg-gradient-to-b from-amber-100/80 via-amber-50/65 to-amber-50/35 hover:from-amber-100/95 hover:to-amber-50/75 border-amber-300',
-    cardAccentClasses: 'border-s-[5px] border-s-amber-500 bg-gradient-to-r from-amber-50/30 via-white to-white',
-    groupBannerClasses: 'bg-gradient-to-r from-amber-100/90 via-amber-50/75 to-white border-amber-300 border-s-[5px] border-s-amber-500 text-amber-950',
+    cardAccentClasses: 'border-s-[5px] border-s-amber-500 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-50/30 via-white to-white',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-100/90 via-amber-50/75 to-white border-amber-300 border-s-[5px] border-s-amber-500 text-amber-950',
     groupIconClasses: 'bg-amber-500 text-white border-amber-600 shadow-2xs',
     groupCountClasses: 'bg-amber-100 text-amber-900 border-amber-300',
     filterActiveClasses: 'bg-amber-500 text-white border-amber-600 shadow-xs ring-2 ring-amber-400/30',
@@ -160,8 +160,8 @@ const FULFILLMENT_CONFIG_MAP = {
     color: 'sky',
     badgeClasses: 'bg-sky-100 text-sky-950 border-sky-400 ring-1 ring-sky-400/35',
     stripClasses: 'bg-gradient-to-b from-sky-100/80 via-sky-50/65 to-sky-50/35 hover:from-sky-100/95 hover:to-sky-50/75 border-sky-300',
-    cardAccentClasses: 'border-s-[5px] border-s-sky-500 bg-gradient-to-r from-sky-50/30 via-white to-white',
-    groupBannerClasses: 'bg-gradient-to-r from-sky-100/90 via-sky-50/75 to-white border-sky-300 border-s-[5px] border-s-sky-600 text-sky-950',
+    cardAccentClasses: 'border-s-[5px] border-s-sky-500 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-sky-50/30 via-white to-white',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-sky-100/90 via-sky-50/75 to-white border-sky-300 border-s-[5px] border-s-sky-600 text-sky-950',
     groupIconClasses: 'bg-sky-600 text-white border-sky-700 shadow-2xs',
     groupCountClasses: 'bg-sky-100 text-sky-900 border-sky-300',
     filterActiveClasses: 'bg-sky-600 text-white border-sky-700 shadow-xs ring-2 ring-sky-500/30',
@@ -177,8 +177,8 @@ const FULFILLMENT_CONFIG_MAP = {
     color: 'emerald',
     badgeClasses: 'bg-emerald-100 text-emerald-950 border-emerald-400 ring-1 ring-emerald-400/35',
     stripClasses: 'bg-gradient-to-b from-emerald-100/80 via-emerald-50/65 to-emerald-50/35 hover:from-emerald-100/95 hover:to-emerald-50/75 border-emerald-300',
-    cardAccentClasses: 'border-s-[5px] border-s-emerald-600 bg-gradient-to-r from-emerald-50/25 via-white to-white',
-    groupBannerClasses: 'bg-gradient-to-r from-emerald-100/90 via-emerald-50/75 to-white border-emerald-300 border-s-[5px] border-s-emerald-600 text-emerald-950',
+    cardAccentClasses: 'border-s-[5px] border-s-emerald-600 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-emerald-50/25 via-white to-white',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-emerald-100/90 via-emerald-50/75 to-white border-emerald-300 border-s-[5px] border-s-emerald-600 text-emerald-950',
     groupIconClasses: 'bg-emerald-600 text-white border-emerald-700 shadow-2xs',
     groupCountClasses: 'bg-emerald-100 text-emerald-900 border-emerald-300',
     filterActiveClasses: 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-500/30',
@@ -194,8 +194,8 @@ const FULFILLMENT_CONFIG_MAP = {
     color: 'indigo',
     badgeClasses: 'bg-indigo-100 text-indigo-950 border-indigo-400 ring-1 ring-indigo-400/35',
     stripClasses: 'bg-gradient-to-b from-indigo-100/80 via-indigo-50/65 to-indigo-50/35 hover:from-indigo-100/95 hover:to-indigo-50/75 border-indigo-300',
-    cardAccentClasses: 'border-s-[5px] border-s-indigo-600 bg-gradient-to-r from-indigo-50/25 via-white to-white',
-    groupBannerClasses: 'bg-gradient-to-r from-indigo-100/90 via-indigo-50/75 to-white border-indigo-300 border-s-[5px] border-s-indigo-600 text-indigo-950',
+    cardAccentClasses: 'border-s-[5px] border-s-indigo-600 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-indigo-50/25 via-white to-white',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-indigo-100/90 via-indigo-50/75 to-white border-indigo-300 border-s-[5px] border-s-indigo-600 text-indigo-950',
     groupIconClasses: 'bg-indigo-600 text-white border-indigo-700 shadow-2xs',
     groupCountClasses: 'bg-indigo-100 text-indigo-900 border-indigo-300',
     filterActiveClasses: 'bg-indigo-600 text-white border-indigo-700 shadow-xs ring-2 ring-indigo-500/30',
@@ -525,7 +525,7 @@ function TripRoadwayCarousel({
   const activeTrip = trips[safeIdx];
   const nextTrip = safeIdx < trips.length - 1 ? trips[safeIdx + 1] : null;
 
-  const isOnRoad = activeTrip?.tripOperationalStatus === 'on_duty';
+  const isOnRoad = activeTrip?.tripOperationalStatus === 'shipped';
 
   const renderStatusDot = (trip) => {
     if (trip.hasStatusConflict) return 'bg-rose-500 animate-ping';
@@ -706,22 +706,24 @@ function CompactTruckCard({
       ? SEQUENTIAL_FULFILLMENT_STEPS[activeTrip.currentStepIndex + 1]
       : null;
 
-  const effectiveCardStatus = activeTrip?.hasStatusConflict
-    ? 'conflict'
-    : operationalStatus === 'conflict' && !activeTrip
-    ? 'conflict'
+  const displayStatus = activeTrip
+    ? (activeTrip.hasStatusConflict || activeTrip.tripOperationalStatus === 'conflict'
+        ? 'conflict'
+        : activeTrip.tripOperationalStatus)
     : operationalStatus;
 
   const cardSurfaceClasses =
-    effectiveCardStatus === 'conflict' || activeTrip?.hasStatusConflict
+    displayStatus === 'conflict'
       ? 'bg-rose-50/40 border-rose-300 ring-1 ring-rose-500/20 shadow-xs'
-      : activeTrip?.tripOperationalStatus === 'on_duty' || effectiveCardStatus === 'on_duty'
+      : displayStatus === 'shipped'
       ? 'bg-sky-50/30 border-sky-300 shadow-2xs hover:border-sky-400'
-      : activeTrip?.tripOperationalStatus === 'upcoming_duty' || effectiveCardStatus === 'upcoming_duty'
+      : displayStatus === 'prepare'
       ? 'bg-amber-50/25 border-amber-300 shadow-2xs hover:border-amber-400'
-      : activeTrip?.tripOperationalStatus === 'delivered' || effectiveCardStatus === 'delivered'
+      : displayStatus === 'not_yet'
+      ? 'bg-slate-50/60 border-slate-300 shadow-2xs hover:border-slate-400'
+      : displayStatus === 'delivered'
       ? 'bg-emerald-50/25 border-emerald-300 shadow-2xs'
-      : effectiveCardStatus === 'maintenance' || effectiveCardStatus === 'inactive'
+      : displayStatus === 'maintenance' || displayStatus === 'inactive'
       ? 'bg-slate-50 border-slate-200/80 opacity-80'
       : 'bg-white border-slate-200/90 shadow-2xs hover:border-slate-300';
 
@@ -808,7 +810,7 @@ function CompactTruckCard({
             </FleetRichTooltip>
           )}
 
-          {activeTrip?.hasStatusConflict || (operationalStatus === 'conflict' && !activeTrip) ? (
+          {displayStatus === 'conflict' ? (
             <button
               type="button"
               onClick={() => activeTrip && onFilterConflict(activeTrip.loadingOrderNumber, veh)}
@@ -818,33 +820,38 @@ function CompactTruckCard({
               <AlertTriangle className="w-2.5 h-2.5 text-rose-600 shrink-0" />
               <span>{isAr ? 'تعارض' : 'Conflict'}</span>
             </button>
-          ) : (activeTrip?.tripOperationalStatus || operationalStatus) === 'on_duty' ? (
+          ) : displayStatus === 'shipped' ? (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black bg-sky-100 text-sky-950 border border-sky-300">
               <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping"></span>
-              <span>{isAr ? 'في الخدمة' : 'On Duty'}</span>
+              <span>{isAr ? 'جاري التوصيل' : 'Out for Delivery'}</span>
             </span>
-          ) : (activeTrip?.tripOperationalStatus || operationalStatus) === 'upcoming_duty' ? (
+          ) : displayStatus === 'prepare' ? (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black bg-amber-100 text-amber-950 border border-amber-300">
-              <Clock className="w-2.5 h-2.5 text-amber-600 shrink-0" />
-              <span>{isAr ? 'مهمة قادمة' : 'Upcoming'}</span>
+              <PackageCheck className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+              <span>{isAr ? 'جاري التجهيز' : 'Preparing'}</span>
             </span>
-          ) : (activeTrip?.tripOperationalStatus || operationalStatus) === 'delivered' ? (
+          ) : displayStatus === 'not_yet' ? (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black bg-slate-100 text-slate-800 border border-slate-300">
+              <Clock className="w-2.5 h-2.5 text-slate-600 shrink-0" />
+              <span>{isAr ? 'قيد الانتظار' : 'Pending'}</span>
+            </span>
+          ) : displayStatus === 'delivered' ? (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-emerald-100 text-emerald-950 border border-emerald-300">
               <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
               <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
             </span>
-          ) : operationalStatus === 'maintenance' ? (
+          ) : displayStatus === 'maintenance' ? (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
               <Wrench className="w-2.5 h-2.5 text-purple-600 shrink-0" />
               <span>{isAr ? 'صيانة' : 'Maint'}</span>
             </span>
-          ) : operationalStatus === 'inactive' ? (
+          ) : displayStatus === 'inactive' ? (
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-slate-200 text-slate-700">
               {isAr ? 'متوقفة' : 'Inactive'}
             </span>
           ) : (
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-              {isAr ? 'في الانتظار' : 'Stand-by'}
+              {isAr ? 'متاحة' : 'Available'}
             </span>
           )}
         </div>
@@ -2544,15 +2551,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             currentStepIndex = foundIdx >= 0 ? foundIdx : 0;
           }
 
-          let tripOperationalStatus = 'upcoming_duty';
+          let tripOperationalStatus = 'not_yet';
           if (hasStatusConflict || isTripOverweight) {
             tripOperationalStatus = 'conflict';
-          } else if (tripStatusCounts.delivered === grp.orders.length) {
-            tripOperationalStatus = 'delivered';
-          } else if (tripStatusCounts.not_yet === grp.orders.length) {
-            tripOperationalStatus = 'upcoming_duty';
           } else {
-            tripOperationalStatus = 'on_duty';
+            tripOperationalStatus = distinctStatuses[0] || 'not_yet';
           }
 
           const effFirst = grp.orders[0] ? getEffectiveAssignment(grp.orders[0]) : null;
@@ -2616,8 +2619,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         });
       }
 
-      // 7. Determine overall vehicle operational status
-      let operationalStatus = 'stand_by';
+      // 7. Determine overall vehicle operational status aligned with order fulfillment statuses
+      let operationalStatus = 'available';
       if (veh.status === 'maintenance') {
         operationalStatus = 'maintenance';
       } else if (veh.status === 'inactive') {
@@ -2625,25 +2628,29 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       } else if (conflicts.length > 0) {
         operationalStatus = 'conflict';
       } else if (trips.length === 0) {
-        operationalStatus = 'stand_by';
-      } else if (trips.some((t) => t.tripOperationalStatus === 'on_duty')) {
-        operationalStatus = 'on_duty';
-      } else if (trips.some((t) => t.tripOperationalStatus === 'upcoming_duty')) {
-        operationalStatus = 'upcoming_duty';
+        operationalStatus = 'available';
+      } else if (trips.some((t) => t.tripOperationalStatus === 'shipped')) {
+        operationalStatus = 'shipped';
+      } else if (trips.some((t) => t.tripOperationalStatus === 'prepare')) {
+        operationalStatus = 'prepare';
+      } else if (trips.some((t) => t.tripOperationalStatus === 'not_yet')) {
+        operationalStatus = 'not_yet';
       } else {
         operationalStatus = 'delivered';
       }
 
       // 8. Choose smart default active trip index ("where the default is the current trip/state"):
-      // Priority: active conflict -> on_duty ('shipped'/'prepare') -> upcoming_duty ('not_yet') -> latest delivered (last)
+      // Priority: active conflict -> shipped -> prepare -> not_yet -> latest delivered (last)
       let defaultTripIndex = 0;
       if (trips.length > 1) {
-        const conflictIdx = trips.findIndex((t) => t.hasStatusConflict);
-        const onDutyIdx = trips.findIndex((t) => t.tripOperationalStatus === 'on_duty');
-        const upcomingIdx = trips.findIndex((t) => t.tripOperationalStatus === 'upcoming_duty');
+        const conflictIdx = trips.findIndex((t) => t.hasStatusConflict || t.tripOperationalStatus === 'conflict');
+        const shippedIdx = trips.findIndex((t) => t.tripOperationalStatus === 'shipped');
+        const prepareIdx = trips.findIndex((t) => t.tripOperationalStatus === 'prepare');
+        const pendingIdx = trips.findIndex((t) => t.tripOperationalStatus === 'not_yet');
         if (conflictIdx >= 0) defaultTripIndex = conflictIdx;
-        else if (onDutyIdx >= 0) defaultTripIndex = onDutyIdx;
-        else if (upcomingIdx >= 0) defaultTripIndex = upcomingIdx;
+        else if (shippedIdx >= 0) defaultTripIndex = shippedIdx;
+        else if (prepareIdx >= 0) defaultTripIndex = prepareIdx;
+        else if (pendingIdx >= 0) defaultTripIndex = pendingIdx;
         else defaultTripIndex = trips.length - 1;
       }
 
@@ -2658,15 +2665,16 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       };
     });
 
-    // Sort order: conflicts first -> on_duty -> upcoming_duty -> stand_by -> delivered -> maintenance/inactive
+    // Sort order: conflicts first -> shipped (Out for Delivery) -> prepare (Preparing) -> not_yet (Pending) -> available -> delivered -> maintenance/inactive
     const priorityMap = {
       conflict: 0,
-      on_duty: 1,
-      upcoming_duty: 2,
-      stand_by: 3,
-      delivered: 4,
-      maintenance: 5,
-      inactive: 6
+      shipped: 1,
+      prepare: 2,
+      not_yet: 3,
+      available: 4,
+      delivered: 5,
+      maintenance: 6,
+      inactive: 7
     };
 
     analyzed.sort((a, b) => {
@@ -3079,7 +3087,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       {/* ========================================================================= */}
       {/* 1. TARGET LOADING DATE DEDICATED ANCHOR BAR (Top Container)               */}
       {/* ========================================================================= */}
-      <div className="bg-gradient-to-r from-amber-50/90 via-amber-50/50 to-slate-50 border border-amber-200/90 rounded-3xl p-3.5 sm:px-5 sm:py-3 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+      <div className="ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-50/90 via-amber-50/50 to-slate-50 border border-amber-200/90 rounded-3xl p-3.5 sm:px-5 sm:py-3 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-700 border border-amber-300/60 flex items-center justify-center shrink-0 shadow-2xs">
@@ -3319,25 +3327,41 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
           {/* Quick Metrics Badges & Collapse Toggle */}
           <div className="flex items-center gap-2 flex-wrap">
-            {/* On Duty */}
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200/90 shadow-2xs">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>{isAr ? 'في الخدمة:' : 'On Duty:'}</span>
-              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'on_duty').length}</span>
+            {/* Out for Delivery */}
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-sky-50 text-sky-900 border border-sky-200/90 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-sky-500 animate-pulse"></span>
+              <span>{isAr ? 'جاري التوصيل:' : 'Out for Delivery:'}</span>
+              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'shipped').length}</span>
             </span>
 
-            {/* Upcoming Duty */}
+            {/* Preparing */}
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-amber-50 text-amber-900 border border-amber-200/90 shadow-2xs">
               <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-              <span>{isAr ? 'مهمة قادمة:' : 'Upcoming:'}</span>
-              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'upcoming_duty').length}</span>
+              <span>{isAr ? 'جاري التجهيز:' : 'Preparing:'}</span>
+              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'prepare').length}</span>
             </span>
 
-            {/* Stand-by */}
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs">
-              <span className="w-2 h-2 rounded-full bg-slate-400"></span>
-              <span>{isAr ? 'في الانتظار:' : 'Stand-by:'}</span>
-              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'stand_by').length}</span>
+            {/* Pending */}
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-800 border border-slate-300/80 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-slate-500"></span>
+              <span>{isAr ? 'قيد الانتظار:' : 'Pending:'}</span>
+              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'not_yet').length}</span>
+            </span>
+
+            {/* Delivered */}
+            {truckFleetAnalysis.filter((t) => t.operationalStatus === 'delivered').length > 0 && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-900 border border-emerald-200/90 shadow-2xs">
+                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span>{isAr ? 'تم التسليم:' : 'Delivered:'}</span>
+                <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'delivered').length}</span>
+              </span>
+            )}
+
+            {/* Available (no trips assigned on target date) */}
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-white text-slate-600 border border-slate-200 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-slate-300"></span>
+              <span>{isAr ? 'متاحة:' : 'Available:'}</span>
+              <span className="font-mono font-black">{truckFleetAnalysis.filter((t) => t.operationalStatus === 'available').length}</span>
             </span>
 
             {/* Conflicts Alert Pill */}
@@ -3478,8 +3502,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             const bannerClasses = statusCfg
               ? statusCfg.groupBannerClasses
               : isTargetDateGroup
-              ? 'bg-gradient-to-r from-amber-100/80 via-amber-50/70 to-white border-amber-300 border-s-[5px] border-s-amber-500 text-amber-950'
-              : 'bg-gradient-to-r from-slate-100/95 via-slate-50 to-white border-slate-300 border-s-[5px] border-s-indigo-500 text-slate-900';
+              ? 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-100/80 via-amber-50/70 to-white border-amber-300 border-s-[5px] border-s-amber-500 text-amber-950'
+              : 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-100/95 via-slate-50 to-white border-slate-300 border-s-[5px] border-s-indigo-500 text-slate-900';
             const iconBoxClasses = statusCfg
               ? statusCfg.groupIconClasses
               : isTargetDateGroup

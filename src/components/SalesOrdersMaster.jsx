@@ -172,32 +172,37 @@ const FULFILLMENT_STATUSES = [
 const SALES_FULFILLMENT_STYLE_MAP = {
   not_yet: {
     badgeClasses: 'bg-slate-100 text-slate-800 border-slate-300 ring-1 ring-slate-300/35',
-    rowClasses: 'border-s-[4px] border-s-slate-400 hover:bg-slate-50/90',
-    groupBannerClasses: 'bg-gradient-to-r from-slate-100 via-slate-50 to-white border-slate-300 border-s-[4px] border-s-slate-500 text-slate-900',
+    startBorderClasses: 'border-s-[4px] border-s-slate-400',
+    rowClasses: 'bg-white hover:bg-slate-50/90',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-100 via-slate-50 to-white border-slate-300 border-s-[4px] border-s-slate-500 text-slate-900',
     dotClasses: 'bg-slate-500'
   },
   prepare: {
     badgeClasses: 'bg-amber-100 text-amber-950 border-amber-400 ring-1 ring-amber-400/35',
-    rowClasses: 'border-s-[4px] border-s-amber-500 bg-gradient-to-r from-amber-500/[0.08] via-amber-500/[0.025] to-transparent hover:from-amber-500/[0.13]',
-    groupBannerClasses: 'bg-gradient-to-r from-amber-100/90 via-amber-50/75 to-white border-amber-300 border-s-[4px] border-s-amber-500 text-amber-950',
+    startBorderClasses: 'border-s-[4px] border-s-amber-500',
+    rowClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-500/[0.085] via-amber-500/[0.03] to-white hover:from-amber-500/[0.14]',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-100/90 via-amber-50/75 to-white border-amber-300 border-s-[4px] border-s-amber-500 text-amber-950',
     dotClasses: 'bg-amber-500'
   },
   shipped: {
     badgeClasses: 'bg-sky-100 text-sky-950 border-sky-400 ring-1 ring-sky-400/35',
-    rowClasses: 'border-s-[4px] border-s-sky-500 bg-gradient-to-r from-sky-500/[0.08] via-sky-500/[0.025] to-transparent hover:from-sky-500/[0.13]',
-    groupBannerClasses: 'bg-gradient-to-r from-sky-100/90 via-sky-50/75 to-white border-sky-300 border-s-[4px] border-s-sky-600 text-sky-950',
+    startBorderClasses: 'border-s-[4px] border-s-sky-500',
+    rowClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-sky-500/[0.085] via-sky-500/[0.03] to-white hover:from-sky-500/[0.14]',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-sky-100/90 via-sky-50/75 to-white border-sky-300 border-s-[4px] border-s-sky-600 text-sky-950',
     dotClasses: 'bg-sky-600'
   },
   delivered: {
     badgeClasses: 'bg-emerald-100 text-emerald-950 border-emerald-400 ring-1 ring-emerald-400/35',
-    rowClasses: 'border-s-[4px] border-s-emerald-600 bg-gradient-to-r from-emerald-500/[0.07] via-emerald-500/[0.02] to-transparent hover:from-emerald-500/[0.12]',
-    groupBannerClasses: 'bg-gradient-to-r from-emerald-100/90 via-emerald-50/75 to-white border-emerald-300 border-s-[4px] border-s-emerald-600 text-emerald-950',
+    startBorderClasses: 'border-s-[4px] border-s-emerald-600',
+    rowClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-emerald-500/[0.075] via-emerald-500/[0.025] to-white hover:from-emerald-500/[0.13]',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-emerald-100/90 via-emerald-50/75 to-white border-emerald-300 border-s-[4px] border-s-emerald-600 text-emerald-950',
     dotClasses: 'bg-emerald-600'
   },
   paid: {
     badgeClasses: 'bg-indigo-100 text-indigo-950 border-indigo-400 ring-1 ring-indigo-400/35',
-    rowClasses: 'border-s-[4px] border-s-indigo-600 bg-gradient-to-r from-indigo-500/[0.07] via-indigo-500/[0.02] to-transparent hover:from-indigo-500/[0.12]',
-    groupBannerClasses: 'bg-gradient-to-r from-indigo-100/90 via-indigo-50/75 to-white border-indigo-300 border-s-[4px] border-s-indigo-600 text-indigo-950',
+    startBorderClasses: 'border-s-[4px] border-s-indigo-600',
+    rowClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-indigo-500/[0.075] via-indigo-500/[0.025] to-white hover:from-indigo-500/[0.13]',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-indigo-100/90 via-indigo-50/75 to-white border-indigo-300 border-s-[4px] border-s-indigo-600 text-indigo-950',
     dotClasses: 'bg-indigo-600'
   }
 };
@@ -977,26 +982,46 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     }
   };
 
-  // Helper to determine table row background based on status and fulfillment
+  // Helper to resolve inline-start status bar (applied to first <td> and <tr> so RTL/LTR renders cleanly in border-collapse tables)
+  const resolveRowStartBorder = (order, isExpanded) => {
+    if (order.confirmationStatus === 'canceled') return 'border-s-[4px] border-s-rose-400';
+    if (isExpanded) return 'border-s-[4px] border-s-indigo-600';
+    switch (order.fulfillmentStatus) {
+      case 'prepare':
+        return SALES_FULFILLMENT_STYLE_MAP.prepare.startBorderClasses;
+      case 'shipped':
+      case 'out_for_delivery':
+        return SALES_FULFILLMENT_STYLE_MAP.shipped.startBorderClasses;
+      case 'delivered':
+        return SALES_FULFILLMENT_STYLE_MAP.delivered.startBorderClasses;
+      case 'paid':
+        return SALES_FULFILLMENT_STYLE_MAP.paid.startBorderClasses;
+      default:
+        return SALES_FULFILLMENT_STYLE_MAP.not_yet.startBorderClasses;
+    }
+  };
+
+  // Helper to determine table row background and record separator based on status and fulfillment
   const resolveRowBackground = (order, isExpanded) => {
+    const startBorder = resolveRowStartBorder(order, isExpanded);
     if (order.confirmationStatus === 'canceled') {
-      return 'border-s-[4px] border-s-rose-400 bg-slate-100/90 opacity-60 grayscale-[25%]';
+      return `${startBorder} bg-slate-100/90 opacity-60 grayscale-[25%] ${isExpanded ? 'border-b border-rose-200/70' : 'border-b-[3px] border-slate-200/90'}`;
     }
     if (isExpanded) {
-      return 'border-s-[4px] border-s-indigo-600 bg-indigo-50/35 border-blue-200';
+      return `${startBorder} bg-indigo-50/35 border-b border-indigo-200/80`;
     }
     switch (order.fulfillmentStatus) {
       case 'prepare':
-        return SALES_FULFILLMENT_STYLE_MAP.prepare.rowClasses;
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.prepare.rowClasses} border-b-[3px] border-slate-200/90`;
       case 'shipped':
       case 'out_for_delivery':
-        return SALES_FULFILLMENT_STYLE_MAP.shipped.rowClasses;
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.shipped.rowClasses} border-b-[3px] border-slate-200/90`;
       case 'delivered':
-        return SALES_FULFILLMENT_STYLE_MAP.delivered.rowClasses;
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.delivered.rowClasses} border-b-[3px] border-slate-200/90`;
       case 'paid':
-        return SALES_FULFILLMENT_STYLE_MAP.paid.rowClasses;
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.paid.rowClasses} border-b-[3px] border-slate-200/90`;
       default:
-        return SALES_FULFILLMENT_STYLE_MAP.not_yet.rowClasses;
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.not_yet.rowClasses} border-b-[3px] border-slate-200/90`;
     }
   };
 
@@ -1610,15 +1635,18 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                   <th className="py-3 px-3 text-center w-12">{isAr ? 'إجراءات' : 'Actions'}</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-xs">
+              <tbody className="text-xs">
                 {groupedOrders.map((group) => (
                   <React.Fragment key={group.groupKey}>
                     {/* Optional Group Header Row */}
                     {groupBy !== 'none' && (() => {
                       const gStyle = group.statusKey ? (SALES_FULFILLMENT_STYLE_MAP[group.statusKey] || SALES_FULFILLMENT_STYLE_MAP.not_yet) : null;
+                      const gClasses = gStyle
+                        ? gStyle.groupBannerClasses
+                        : 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-100/95 via-slate-50 to-white border-slate-200 border-s-[4px] border-s-indigo-500 text-slate-900';
                       return (
-                        <tr className={`border-t border-b ${gStyle ? gStyle.groupBannerClasses : 'bg-gradient-to-r from-slate-100/95 via-slate-50 to-white border-slate-200 border-s-[4px] border-s-indigo-500 text-slate-900'}`}>
-                          <td colSpan={10} className="py-2.5 px-4 font-black text-xs">
+                        <tr className={`border-t-2 border-b-2 ${gClasses}`}>
+                          <td colSpan={10} className={`py-2.5 px-4 font-black text-xs ${gStyle ? gStyle.startBorderClasses : 'border-s-[4px] border-s-indigo-500'}`}>
                             <div className="flex items-center justify-between gap-2 flex-wrap">
                               <div className="flex items-center gap-2">
                                 <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${gStyle ? gStyle.dotClasses : 'bg-indigo-500'}`}></span>
@@ -1671,7 +1699,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                             className={`transition cursor-pointer select-none ${resolveRowBackground(order, isExpanded)}`}
                           >
                             {/* 1. Type & Serial */}
-                            <td className="py-3 px-3 whitespace-nowrap">
+                            <td className={`py-3 px-3 whitespace-nowrap ${resolveRowStartBorder(order, isExpanded)}`}>
                               <div className="flex flex-col gap-1 items-start">
                                 {/* Order Type Badge */}
                                 <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold ${
@@ -2113,8 +2141,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
 
                           {/* Expandable Order Details Row */}
                           {isExpanded && (
-                            <tr className="bg-slate-50/70 border-b border-slate-200">
-                              <td colSpan={10} className="py-3 px-4 sm:ps-8 sm:pe-6">
+                            <tr className="bg-slate-50/75 border-b-[3px] border-slate-200/95">
+                              <td colSpan={10} className={`py-3 px-4 sm:ps-8 sm:pe-6 ${resolveRowStartBorder(order, isExpanded)}`}>
                                 <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
                                   {order.orderType === 'admin' ? (
                                     /* Administrative Directive Display */
@@ -3866,7 +3894,7 @@ function SalesOrderEditorModal({
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto font-sans">
       <div className="bg-white rounded-3xl max-w-5xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] my-4 animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className={`px-6 py-4 bg-gradient-to-r ${
+        <div className={`px-6 py-4 ltr:bg-gradient-to-r rtl:bg-gradient-to-l ${
           isAdminModal
             ? 'from-slate-900 via-purple-950 to-slate-900'
             : 'from-slate-900 via-indigo-950 to-slate-900'
@@ -4202,7 +4230,7 @@ function SalesOrderEditorModal({
 
             {/* Row 3: Then the operational profile (Sales & Admin Modals) */}
             {clientOperationalProfile && (
-              <div className="mt-3 p-3.5 bg-gradient-to-r from-slate-50 to-indigo-50/30 border border-slate-200/90 rounded-xl space-y-2.5">
+              <div className="mt-3 p-3.5 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-50 to-indigo-50/30 border border-slate-200/90 rounded-xl space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
                   <div className="flex items-center gap-2">
                     <Building2 className="w-4 h-4 text-indigo-600 shrink-0" />
