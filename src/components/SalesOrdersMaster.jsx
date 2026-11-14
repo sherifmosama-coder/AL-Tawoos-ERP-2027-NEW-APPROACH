@@ -745,12 +745,16 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
       const params = new URLSearchParams(queryPart);
       const targetSerial = params.get('focusOrder');
       if (targetSerial && orders.length > 0) {
-        setSearchTerm(targetSerial);
         const found = orders.find((o) => resolveOrderSerial(o, orders) === targetSerial || o.id === targetSerial);
-        if (found) {
-          setExpandedOrderIds((prev) => new Set([...prev, found.id]));
+        const resolvedFound =
+          found && found.splitParentId && found.invoiceSplitMode === 'merged_on_parent'
+            ? orders.find((o) => o.id === found.splitParentId) || found
+            : found;
+        setSearchTerm(resolvedFound ? resolveOrderSerial(resolvedFound, orders) : targetSerial);
+        if (resolvedFound) {
+          setExpandedOrderIds((prev) => new Set([...prev, resolvedFound.id]));
           setTimeout(() => {
-            const el = document.getElementById(`sales-order-row-${found.id}`);
+            const el = document.getElementById(`sales-order-row-${resolvedFound.id}`);
             if (el) {
               el.scrollIntoView({ behavior: 'smooth', block: 'center' });
               el.classList.add('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
@@ -769,8 +773,19 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     const handleCustomNav = (e) => {
       const { tab, focusOrder, orderId } = e.detail || {};
       if (tab === 'sales_orders') {
-        if (focusOrder) setSearchTerm(focusOrder);
-        const targetId = orderId || (focusOrder ? orders.find((o) => resolveOrderSerial(o, orders) === focusOrder)?.id : null);
+        const initialFound =
+          (orderId ? orders.find((o) => o.id === orderId) : null) ||
+          (focusOrder ? orders.find((o) => resolveOrderSerial(o, orders) === focusOrder) : null);
+        const resolvedFound =
+          initialFound && initialFound.splitParentId && initialFound.invoiceSplitMode === 'merged_on_parent'
+            ? orders.find((o) => o.id === initialFound.splitParentId) || initialFound
+            : initialFound;
+        if (resolvedFound) {
+          setSearchTerm(resolveOrderSerial(resolvedFound, orders));
+        } else if (focusOrder) {
+          setSearchTerm(focusOrder);
+        }
+        const targetId = resolvedFound?.id || orderId || null;
         if (targetId) {
           setExpandedOrderIds((prev) => new Set([...prev, targetId]));
           setTimeout(() => {
@@ -1052,6 +1067,12 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   // Filtered orders list
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
+      // When financial documents are merged on the parent order, collapse into ONE card on Sales Orders tab
+      // while Loading Plan keeps each split truck portion as an independent schedulable load.
+      if (order.splitParentId && order.invoiceSplitMode === 'merged_on_parent') {
+        return false;
+      }
+
       // 1. Search term
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase().trim();
@@ -1199,7 +1220,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     return Object.values(groupsMap);
   }, [filteredOrders, groupBy, isAr, vehicles]);
 
-  // KPI Summary Metrics (skip immutable isSplitParent references to avoid double-counting cartons/weight/revenue)
+  // KPI Summary Metrics: skip split parent reference ONLY when billed separately per portion (merged parents represent the sole row)
   const summaryMetrics = useMemo(() => {
     let totalOrders = 0;
     let totalCartons = 0;
@@ -1209,7 +1230,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     let confirmedCount = 0;
 
     filteredOrders.forEach((o) => {
-      if (o.isSplitParent) return;
+      if (o.isSplitParent && o.invoiceSplitMode !== 'merged_on_parent') return;
       totalOrders++;
       totalCartons += Number(o.totalCartons || o.totalQty || 0);
       totalWeightKg += Number(o.totalWeightKg || 0);
@@ -1393,7 +1414,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                 {summaryMetrics.totalCartons.toLocaleString()}
               </span>
               <span className="text-xs text-slate-400 font-semibold">
-                ({summaryMetrics.totalWeightTons} t)
+                ({summaryMetrics.totalWeightTons} {isAr ? 'طن' : 'Ton'})
               </span>
             </div>
           </div>
@@ -1746,6 +1767,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       const segObj = rawSegKey ? (segmentMap[rawSegKey] || (segments.length > 0 ? segments : PRESET_DEFAULT_SEGMENTS).find((s) => s.id === rawSegKey || s.nameAr === rawSegKey || s.nameEn === rawSegKey || s.code === rawSegKey)) : null;
                       const SegIcon = (segObj?.icon && SEGMENT_ICON_MAP[segObj.icon]) ? SEGMENT_ICON_MAP[segObj.icon] : Building2;
                       const segColor = segObj?.color || '#64748b';
+                      const splitChildPortions = order.isSplitParent
+                        ? orders
+                            .filter((o) => o.splitParentId === order.id)
+                            .sort((a, b) => (Number(a.splitIndex) || 0) - (Number(b.splitIndex) || 0))
+                        : [];
 
                       return (
                         <React.Fragment key={order.id}>
@@ -1790,17 +1816,33 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   {order.isSplitParent && (
                                     <span
                                       className="inline-flex items-center gap-0.5 text-[10px] font-black text-violet-800 bg-violet-50 border border-violet-200 px-1.5 py-0.2 rounded-md"
-                                      title={isAr ? 'أمر أم مقسم إلى شحنات فرعية' : 'Split Parent Reference'}
+                                      title={
+                                        isAr
+                                          ? 'طلب مقسّم على عدة شاحنات في خطة التحميل'
+                                          : 'Order split across multiple truck dispatches in Loading Plan'
+                                      }
                                     >
                                       <GitFork className="w-2.5 h-2.5 text-violet-600" />
-                                      <span>{isAr ? `أمر أم مقسم (${order.splitTotal || order.splitChildrenIds?.length || 0})` : `Split Parent (${order.splitTotal || order.splitChildrenIds?.length || 0})`}</span>
+                                      <span>
+                                        {order.invoiceSplitMode === 'merged_on_parent'
+                                          ? (isAr
+                                              ? `مقسم (${order.splitTotal || splitChildPortions.length} شحنات)`
+                                              : `Split (${order.splitTotal || splitChildPortions.length} Trips)`)
+                                          : (isAr
+                                              ? `أمر أم مقسم (${order.splitTotal || splitChildPortions.length})`
+                                              : `Split Parent (${order.splitTotal || splitChildPortions.length})`)}
+                                      </span>
                                     </span>
                                   )}
 
                                   {order.isSplitParent && (
-                                    <span className="text-[9px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded">
+                                    <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border ${
+                                      order.invoiceSplitMode === 'merged_on_parent'
+                                        ? 'text-amber-800 bg-amber-50 border-amber-200'
+                                        : 'text-slate-600 bg-slate-100 border-slate-200'
+                                    }`}>
                                       {order.invoiceSplitMode === 'merged_on_parent'
-                                        ? (isAr ? 'فاتورة مجمعة' : 'Merged Invoice')
+                                        ? (isAr ? 'فاتورة موحدة' : 'Merged Invoice')
                                         : (isAr ? 'مستندات منفصلة' : 'Split Docs')}
                                     </span>
                                   )}
@@ -2160,39 +2202,68 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                 </div>
 
                                 {/* Fulfillment Status (Prominent Corporate Badges matching Loading Plan) */}
-                                {(!order.fulfillmentStatus || order.fulfillmentStatus === 'not_yet') &&
-                                  !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) && (
-                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.not_yet.badgeClasses}`}>
-                                    <Clock className="w-3 h-3 text-slate-600 shrink-0" />
-                                    <span>{isAr ? 'قيد الانتظار' : 'Pending'}</span>
-                                  </span>
-                                )}
-                                {order.fulfillmentStatus === 'prepare' && (
-                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.prepare.badgeClasses}`}>
-                                    <span className="relative flex h-2 w-2">
-                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75"></span>
-                                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600"></span>
-                                    </span>
-                                    <span>{isAr ? 'جاري التجهيز' : 'Preparing'}</span>
-                                  </span>
-                                )}
-                                {(order.fulfillmentStatus === 'shipped' || order.fulfillmentStatus === 'out_for_delivery') && (
-                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.shipped.badgeClasses}`}>
-                                    <Truck className="w-3 h-3 text-sky-600 animate-pulse rtl:-scale-x-100 shrink-0" />
-                                    <span>{isAr ? 'جاري التوصيل' : 'Out for Delivery'}</span>
-                                  </span>
-                                )}
-                                {order.fulfillmentStatus === 'delivered' && (
-                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.delivered.badgeClasses}`}>
-                                    <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
-                                    <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
-                                  </span>
-                                )}
-                                {order.fulfillmentStatus === 'paid' && (
-                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.paid.badgeClasses}`}>
-                                    <Banknote className="w-3 h-3 text-indigo-600 shrink-0" />
-                                    <span>{isAr ? 'مدفوع' : 'Paid'}</span>
-                                  </span>
+                                {order.isSplitParent && splitChildPortions.length > 0 ? (
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {Object.entries(
+                                      splitChildPortions.reduce((acc, ch) => {
+                                        const st = ch.fulfillmentStatus === 'out_for_delivery' ? 'shipped' : (ch.fulfillmentStatus || 'not_yet');
+                                        acc[st] = (acc[st] || 0) + 1;
+                                        return acc;
+                                      }, {})
+                                    ).map(([stKey, cnt]) => {
+                                      const stObj = FULFILLMENT_STATUSES.find((s) => s.id === stKey) || FULFILLMENT_STATUSES[0];
+                                      const stStyle = SALES_FULFILLMENT_STYLE_MAP[stKey] || SALES_FULFILLMENT_STYLE_MAP.not_yet;
+                                      return (
+                                        <span
+                                          key={stKey}
+                                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${stStyle.badgeClasses}`}
+                                          title={isAr ? 'توزيع حالات الشحنات الفرعية في خطة التحميل' : 'Dispatch portion status breakdown'}
+                                        >
+                                          <span className={`w-1.5 h-1.5 rounded-full ${stStyle.dotClasses}`}></span>
+                                          <span>
+                                            {cnt}/{splitChildPortions.length} {isAr ? stObj.labelAr : stObj.labelEn}
+                                          </span>
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <>
+                                    {(!order.fulfillmentStatus || order.fulfillmentStatus === 'not_yet') &&
+                                      !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.not_yet.badgeClasses}`}>
+                                        <Clock className="w-3 h-3 text-slate-600 shrink-0" />
+                                        <span>{isAr ? 'قيد الانتظار' : 'Pending'}</span>
+                                      </span>
+                                    )}
+                                    {order.fulfillmentStatus === 'prepare' && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.prepare.badgeClasses}`}>
+                                        <span className="relative flex h-2 w-2">
+                                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75"></span>
+                                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600"></span>
+                                        </span>
+                                        <span>{isAr ? 'جاري التجهيز' : 'Preparing'}</span>
+                                      </span>
+                                    )}
+                                    {(order.fulfillmentStatus === 'shipped' || order.fulfillmentStatus === 'out_for_delivery') && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.shipped.badgeClasses}`}>
+                                        <Truck className="w-3 h-3 text-sky-600 animate-pulse rtl:-scale-x-100 shrink-0" />
+                                        <span>{isAr ? 'جاري التوصيل' : 'Out for Delivery'}</span>
+                                      </span>
+                                    )}
+                                    {order.fulfillmentStatus === 'delivered' && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.delivered.badgeClasses}`}>
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                                        <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
+                                      </span>
+                                    )}
+                                    {order.fulfillmentStatus === 'paid' && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.paid.badgeClasses}`}>
+                                        <Banknote className="w-3 h-3 text-indigo-600 shrink-0" />
+                                        <span>{isAr ? 'مدفوع' : 'Paid'}</span>
+                                      </span>
+                                    )}
+                                  </>
                                 )}
                                 {order.hasPartialRejection && Number(order.returnedCartons || 0) > 0 && (
                                   <span
@@ -2210,7 +2281,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 10. Actions Button (Split + 3-dots Portal Menu + Dynamic Row Comment) */}
+                            {/* 10. Actions Button (3-dots Portal Menu + Dynamic Row Comment) */}
                             <td className="py-3 px-3 text-center whitespace-nowrap">
                               <div className="flex items-center justify-center gap-1">
                                 <RowCommentButton
@@ -2219,31 +2290,6 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   tab="sales_orders"
                                   module="sales"
                                 />
-                                {!PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(order.orderType) && !order.isSplitParent && !order.splitParentId && canSplitOrder && (() => {
-                                  const isPendingForSplit = !order.fulfillmentStatus || order.fulfillmentStatus === 'not_yet';
-                                  return (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleRequestSplitOrder(order);
-                                      }}
-                                      aria-disabled={!isPendingForSplit}
-                                      className={`p-1.5 rounded-lg border transition cursor-pointer ${
-                                        isPendingForSplit
-                                          ? 'text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100 hover:text-violet-900 shadow-2xs'
-                                          : 'text-slate-300 bg-slate-50 border-slate-200/70 opacity-60 hover:opacity-100 hover:text-amber-600 hover:border-amber-300'
-                                      }`}
-                                      title={
-                                        isPendingForSplit
-                                          ? (isAr ? 'تقسيم الطلب على عدة شاحنات' : 'Split order across trucks')
-                                          : (isAr ? 'غير متاح التقسيم لأن الطلب دخل مرحلة التجهيز — انقر للتوضيح' : 'Cannot split once Preparing — click for instructions')
-                                      }
-                                    >
-                                      <GitFork className="w-3.5 h-3.5" />
-                                    </button>
-                                  );
-                                })()}
                                 <button
                                   type="button"
                                   data-order-menu
@@ -2389,8 +2435,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   ) : (
                                     /* Sales Order / Invoice Only Display */
                                     <div className="space-y-3">
-                                      {/* Dedicated Dispatch & Loading Assignment Panel */}
-                                      {!['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) && (
+                                      {/* Dedicated Dispatch & Loading Assignment Panel (hidden for split parent since dispatch lives on child portions) */}
+                                      {!order.isSplitParent && !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) && (
                                         <div className="p-3 bg-gradient-to-r from-indigo-50/80 via-blue-50/50 to-indigo-50/80 border border-indigo-200/80 rounded-xl space-y-2.5 shadow-2xs">
                                           <div className="flex items-center justify-between border-b border-indigo-200/70 pb-2">
                                             <div className="flex items-center gap-2">
@@ -2475,79 +2521,74 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       )}
 
                                       {/* Split Parent Portions Directory OR Child Lineage Notice */}
-                                      {order.isSplitParent && (() => {
-                                        const childPortions = orders
-                                          .filter((o) => o.splitParentId === order.id)
-                                          .sort((a, b) => (Number(a.splitIndex) || 0) - (Number(b.splitIndex) || 0));
-                                        return (
-                                          <div className="p-3 bg-violet-50/75 border border-violet-200 rounded-xl space-y-2 shadow-2xs">
-                                            <div className="flex items-center justify-between flex-wrap gap-2 border-b border-violet-200/70 pb-2">
-                                              <div className="flex items-center gap-2">
-                                                <div className="w-7 h-7 rounded-lg bg-violet-600 text-white flex items-center justify-center shadow-xs">
-                                                  <GitFork className="w-4 h-4" />
-                                                </div>
-                                                <div>
-                                                  <h5 className="font-extrabold text-xs text-violet-950">
-                                                    {isAr
-                                                      ? `دليل الشحنات الفرعية للأمر المقسم (${childPortions.length} أجزاء)`
-                                                      : `Split Order Portions Directory (${childPortions.length} Portions)`}
-                                                  </h5>
-                                                  <span className="text-[10px] text-violet-700 font-medium">
-                                                    {order.invoiceSplitMode === 'merged_on_parent'
-                                                      ? (isAr
-                                                          ? 'هذا الأمر الأصلي مرجعي (مستبعد من إجماليات خطة التحميل والمبيعات لتجنب التكرار)، والفاتورة الضريبية مجمعة على هذا السجل.'
-                                                          : 'Immutable Parent Reference (excluded from dispatch/KPI totals to avoid double-counting). Tax invoice is consolidated on this parent record.')
-                                                      : (isAr
-                                                          ? 'هذا الأمر الأصلي مرجعي (مستبعد من الإجماليات لتجنب التكرار)، وكل جزء له مستند مالي منفصل.'
-                                                          : 'Immutable Parent Reference (excluded from KPI/Loading Plan totals to avoid double-counting). Each portion carries standalone billing.')}
-                                                  </span>
-                                                </div>
+                                      {order.isSplitParent && (
+                                        <div className="p-3 bg-violet-50/75 border border-violet-200 rounded-xl space-y-2 shadow-2xs">
+                                          <div className="flex items-center justify-between flex-wrap gap-2 border-b border-violet-200/70 pb-2">
+                                            <div className="flex items-center gap-2">
+                                              <div className="w-7 h-7 rounded-lg bg-violet-600 text-white flex items-center justify-center shadow-xs">
+                                                <GitFork className="w-4 h-4" />
+                                              </div>
+                                              <div>
+                                                <h5 className="font-extrabold text-xs text-violet-950">
+                                                  {isAr
+                                                    ? `دليل الشحنات الفرعية للأمر المقسم (${splitChildPortions.length} أجزاء)`
+                                                    : `Split Order Portions Directory (${splitChildPortions.length} Portions)`}
+                                                </h5>
+                                                <span className="text-[10px] text-violet-700 font-medium">
+                                                  {order.invoiceSplitMode === 'merged_on_parent'
+                                                    ? (isAr
+                                                        ? 'الفاتورة الضريبية والمستند المالي موحد على هذا الطلب، بينما تم تقسيم التحميل والتسليم إلى الشحنات التالية في خطة التحميل:'
+                                                        : 'Billing & financial documents remain consolidated on this order while Loading Plan dispatches it across these portions:')
+                                                    : (isAr
+                                                        ? 'هذا الأمر الأصلي مرجعي (مستبعد من الإجماليات لتجنب التكرار)، وكل جزء له مستند مالي منفصل.'
+                                                        : 'Immutable Parent Reference (excluded from KPI/Loading Plan totals to avoid double-counting). Each portion carries standalone billing.')}
+                                                </span>
                                               </div>
                                             </div>
-
-                                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
-                                              {childPortions.map((child) => {
-                                                const childVeh = vehicles.find((v) => v.id === child.assignedVehicleId);
-                                                const childVehName = resolveVehicleDisplayName(childVeh, child.assignedVehicleName);
-                                                const childFulf = FULFILLMENT_STATUSES.find((s) => s.id === (child.fulfillmentStatus || 'not_yet')) || FULFILLMENT_STATUSES[0];
-                                                return (
-                                                  <div key={child.id} className="bg-white border border-violet-200/80 rounded-lg p-2.5 flex flex-col gap-1.5 shadow-2xs">
-                                                    <div className="flex items-center justify-between gap-2">
-                                                      <span className="font-mono font-black text-violet-900 text-xs">
-                                                        #{resolveOrderSerial(child, orders)}
-                                                      </span>
-                                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
-                                                        {isAr ? childFulf.labelAr : childFulf.labelEn}
-                                                      </span>
-                                                    </div>
-                                                    <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono">
-                                                      <span>{Number(child.totalCartons || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
-                                                      <span>{((Number(child.totalWeightKg) || 0) / 1000).toFixed(2)} {isAr ? 'طن' : 't'}</span>
-                                                      <span className="font-bold text-slate-800">{Number(child.grandTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} EGP</span>
-                                                    </div>
-                                                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100 text-[10px]">
-                                                      <span className="text-slate-600 truncate flex items-center gap-1">
-                                                        <Truck className="w-3 h-3 text-indigo-500 shrink-0" />
-                                                        <span className="truncate">{childVehName || (isAr ? 'بانتظار التسكين' : 'Awaiting Truck')}</span>
-                                                      </span>
-                                                      <button
-                                                        type="button"
-                                                        onClick={(e) => {
-                                                          e.stopPropagation();
-                                                          handleNavigateToLoadingPlan(child);
-                                                        }}
-                                                        className="text-indigo-600 hover:text-indigo-800 font-bold shrink-0 cursor-pointer"
-                                                      >
-                                                        {isAr ? 'خطة التحميل' : 'Plan'} →
-                                                      </button>
-                                                    </div>
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
                                           </div>
-                                        );
-                                      })()}
+
+                                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+                                            {splitChildPortions.map((child) => {
+                                              const childVeh = vehicles.find((v) => v.id === child.assignedVehicleId);
+                                              const childVehName = resolveVehicleDisplayName(childVeh, child.assignedVehicleName);
+                                              const childFulf = FULFILLMENT_STATUSES.find((s) => s.id === (child.fulfillmentStatus || 'not_yet')) || FULFILLMENT_STATUSES[0];
+                                              return (
+                                                <div key={child.id} className="bg-white border border-violet-200/80 rounded-lg p-2.5 flex flex-col gap-1.5 shadow-2xs">
+                                                  <div className="flex items-center justify-between gap-2">
+                                                    <span className="font-mono font-black text-violet-900 text-xs">
+                                                      #{resolveOrderSerial(child, orders)}
+                                                    </span>
+                                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                                                      {isAr ? childFulf.labelAr : childFulf.labelEn}
+                                                    </span>
+                                                  </div>
+                                                  <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono">
+                                                    <span>{Number(child.totalCartons || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
+                                                    <span>{((Number(child.totalWeightKg) || 0) / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'}</span>
+                                                    <span className="font-bold text-slate-800">{Number(child.grandTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} EGP</span>
+                                                  </div>
+                                                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100 text-[10px]">
+                                                    <span className="text-slate-600 truncate flex items-center gap-1">
+                                                      <Truck className="w-3 h-3 text-indigo-500 shrink-0 rtl:-scale-x-100" />
+                                                      <span className="truncate">{childVehName || (isAr ? 'بانتظار التسكين' : 'Awaiting Truck')}</span>
+                                                    </span>
+                                                    <button
+                                                      type="button"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleNavigateToLoadingPlan(child);
+                                                      }}
+                                                      className="text-indigo-600 hover:text-indigo-800 font-bold shrink-0 cursor-pointer"
+                                                    >
+                                                      {isAr ? 'خطة التحميل' : 'Plan'} {isAr ? '←' : '→'}
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      )}
 
                                       {order.splitParentId && (
                                         <div className="px-3 py-2 bg-blue-50/75 border border-blue-200 rounded-xl flex items-center justify-between flex-wrap gap-2 text-xs">
@@ -2866,7 +2907,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                                   -{retCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
                                                 </span>
                                                 <span className="font-mono text-[11px] text-amber-700">
-                                                  {retWeightKg.toFixed(1)} kg ({(retWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 't'})
+                                                  {retWeightKg.toFixed(1)} {isAr ? 'كجم' : 'kg'} ({(retWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'})
                                                 </span>
                                               </div>
 

@@ -564,7 +564,7 @@ export default function OrderSplitModal({
                 <div className="bg-white p-2 rounded-xl border border-slate-200">
                   <span className="text-[10px] text-slate-400 block">{isAr ? 'الوزن' : 'Weight'}</span>
                   <span className="font-mono font-black text-emerald-700 text-sm">
-                    {(totalOrderWeightKg / 1000).toFixed(2)} <span className="text-[10px] font-sans">t</span>
+                    {(totalOrderWeightKg / 1000).toFixed(2)} <span className="text-[10px] font-sans">{isAr ? 'طن' : 'Ton'}</span>
                   </span>
                 </div>
               </div>
@@ -730,7 +730,7 @@ export default function OrderSplitModal({
                               </option>
                               {vehicles.map((v) => {
                                 const name = resolveVehicleDisplayName ? resolveVehicleDisplayName(v) : (v.vehicleModel || v.name || v.plateNumber);
-                                const capT = Number(v.maxCapacityKg) > 0 ? ` (${(Number(v.maxCapacityKg) / 1000).toFixed(1)}t)` : '';
+                                const capT = Number(v.maxCapacityKg) > 0 ? ` (${(Number(v.maxCapacityKg) / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'})` : '';
                                 return (
                                   <option key={v.id} value={v.id}>
                                     {name}{capT}
@@ -803,7 +803,7 @@ export default function OrderSplitModal({
                                       : `${cStat.pct}% ${isAr ? 'سعة' : 'cap'}`}
                                   </span>
                                   <span className="font-mono text-slate-400">
-                                    Max {(cStat.maxCapKg / 1000).toFixed(1)}t
+                                    {isAr ? `الحد الأقصى ${(cStat.maxCapKg / 1000).toFixed(1)} طن` : `Max ${(cStat.maxCapKg / 1000).toFixed(1)} Ton`}
                                   </span>
                                 </div>
                               </div>
