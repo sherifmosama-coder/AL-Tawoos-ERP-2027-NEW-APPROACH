@@ -4196,6 +4196,24 @@ function SalesOrderEditorModal({
     return deliv.length > 0 ? deliv : selectedClient.branches;
   }, [selectedClient]);
 
+  // SearchableSelect options for Delivery Branch picker
+  const branchSelectOptions = useMemo(() => {
+    return deliveryBranches.map((b) => {
+      const id = b.id || 'br_main';
+      const label = resolveBranchDisplayName(b, isAr);
+      const altName = isAr ? (b.nameEn || '') : (b.nameAr || '');
+      const sublabel = [altName, b.region, b.address].filter(Boolean).join(' · ');
+      return {
+        value: id,
+        label,
+        sublabel,
+        specs: `${b.nameAr || ''} ${b.nameEn || ''} ${b.name || ''} ${b.code || ''} ${b.region || ''} ${b.address || ''} ${b.contactPerson || ''} ${id}`.toLowerCase(),
+        icon: MapPin,
+        iconColor: b.isMain ? '#6366f1' : '#059669'
+      };
+    });
+  }, [deliveryBranches, isAr]);
+
   // Allowed Order Types based on modal mode
   const availableOrderTypes = useMemo(() => {
     return isAdminModal ? ADMIN_ORDER_TYPES : SALES_ORDER_TYPES;
@@ -5716,27 +5734,24 @@ function SalesOrderEditorModal({
                     </div>
                   </div>
                 ) : (
-                  <select
-                    value={formData.branchId}
-                    onChange={(e) => {
-                      if (isStructureLocked) return;
-                      handleBranchChange(e.target.value);
-                    }}
-                    disabled={!formData.clientId || isStructureLocked}
-                    className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer disabled:bg-slate-100 disabled:cursor-not-allowed truncate"
-                  >
-                    {deliveryBranches.length === 0 ? (
-                      <option value="">
-                        {isAr ? '— لا توجد فروع تسليم مسجلة للعميل —' : '— No delivery branches found —'}
-                      </option>
-                    ) : (
-                      deliveryBranches.map((b) => (
-                        <option key={b.id || 'br_deliv'} value={b.id}>
-                          {resolveBranchDisplayName(b, isAr)}
-                        </option>
-                      ))
-                    )}
-                  </select>
+                  <div className={isStructureLocked || !formData.clientId ? 'pointer-events-none opacity-65' : ''}>
+                    <SearchableSelect
+                      options={branchSelectOptions}
+                      value={formData.branchId}
+                      onChange={(v) => {
+                        if (isStructureLocked || !formData.clientId) return;
+                        handleBranchChange(v);
+                      }}
+                      disabled={!formData.clientId || isStructureLocked}
+                      placeholder={
+                        !formData.clientId
+                          ? (isAr ? '— اختر العميل أولاً —' : '— Select client first —')
+                          : (isAr ? 'اختر فرع التسليم والمستودع...' : 'Select delivery branch...')
+                      }
+                      emptyText={isAr ? '— لا توجد فروع تسليم مسجلة للعميل —' : '— No delivery branches found —'}
+                      isAr={isAr}
+                    />
+                  </div>
                 )}
               </div>
             </div>
