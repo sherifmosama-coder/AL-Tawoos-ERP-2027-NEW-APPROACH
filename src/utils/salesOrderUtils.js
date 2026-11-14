@@ -303,3 +303,433 @@ export function openPrintableAdjustmentSlip(order, isAr = true) {
     win.document.close();
   }
 }
+
+/**
+ * Checks whether a segment record or raw key represents the Retail segment.
+ */
+export function isRetailSegmentRecord(segmentObj = null, rawSegKey = '') {
+  const candidates = [
+    rawSegKey,
+    segmentObj?.id,
+    segmentObj?.code,
+    segmentObj?.nameEn,
+    segmentObj?.nameAr
+  ]
+    .filter(Boolean)
+    .map((v) => String(v).trim().toLowerCase());
+
+  return candidates.some(
+    (c) =>
+      c === 'seg_retail' ||
+      c === 'retail' ||
+      c === 'تجزئة' ||
+      c.includes('retail') ||
+      c.includes('تجزئة')
+  );
+}
+
+/**
+ * Resolves whether a sales order follows the Retail Van-Sales Route Settlement flow.
+ * Checks explicit manual override first (`isRetailRouteOverride`), then order flags and client segment.
+ */
+export function isOrderRetailRoute(order, clients = [], segments = []) {
+  if (!order) return false;
+  if (PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(order.orderType)) return false;
+  if (typeof order.isRetailRouteOverride === 'boolean') {
+    return order.isRetailRouteOverride;
+  }
+  if (order.isRetailRouteOrder === true) return true;
+
+  const clientObj = (clients || []).find((c) => c.id === order.clientId);
+  const rawSegKey =
+    clientObj?.segmentId ||
+    clientObj?.segment ||
+    order.clientSegmentId ||
+    order.segmentId ||
+    order.segment ||
+    '';
+
+  if (!rawSegKey) return false;
+  const segObj = (segments || []).find(
+    (s) =>
+      s.id === rawSegKey ||
+      s.code === rawSegKey ||
+      s.nameAr === rawSegKey ||
+      s.nameEn === rawSegKey
+  );
+
+  return isRetailSegmentRecord(segObj, rawSegKey);
+}
+
+/**
+ * Compresses images to lightweight JPEG Data URLs (<80KB typical) or reads PDFs as Data URLs
+ * for storing reference documents in Firestore documents.
+ */
+export function compressAttachmentFile(file, maxWidth = 900, maxHeight = 900, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    if (file.type === 'application/pdf') {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(file);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = (err) => reject(err);
+      img.src = event.target.result;
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Computes Firestore update payload for confirming or Force-Sync re-editing
+ * a Retail Van-Sales Route Settlement (loaded vs sold vs unsold returned + buyer docs).
+ */
+export function computeRetailSettlementPayload({
+  order,
+  soldLinesInput = [],
+  settlementNotes = '',
+  buyerAttachments = [],
+  markDelivered = false,
+  currentUserName = 'مستخدم معتمد',
+  currentUserId = 'usr_unknown'
+}) {
+  const nowIso = new Date().toISOString();
+  const vatMode = order?.vatMode || 'none';
+  const existingSnap = order?.preAdjustmentSnapshot;
+  const origLines = Array.isArray(existingSnap?.originalLines) && existingSnap.originalLines.length > 0
+    ? existingSnap.originalLines
+    : (order?.lines || []);
+
+  const preAdjustmentSnapshot = existingSnap || {
+    capturedAt: nowIso,
+    originalTotalQty: Number(order?.totalQty || 0),
+    originalTotalBonus: Number(order?.totalBonus || 0),
+    originalTotalCartons: Number(order?.totalCartons || order?.totalQty || 0),
+    originalTotalWeightKg: Number(order?.totalWeightKg || 0),
+    originalGrandTotal: Number(order?.grandTotal || 0),
+    originalNetPreTax: Number(order?.netPreTaxSubtotal || 0),
+    originalVat: Number(order?.totalVat || 0),
+    originalWht: Number(order?.whtAmount || 0),
+    originalLines: (order?.lines || []).map((l) => ({ ...l }))
+  };
+
+  const soldByProductMap = {};
+  (soldLinesInput || []).forEach((item) => {
+    soldByProductMap[item.productId] = item;
+  });
+
+  const isWhtMode = vatMode === 'exclusive_wht' || vatMode === 'inclusive_wht';
+  let returnedQtySum = 0;
+  let returnedBonusSum = 0;
+  let returnedCartonsSum = 0;
+  let qtyChangedVsPrevious = false;
+
+  const prevLinesMap = {};
+  (order?.lines || []).forEach((l) => {
+    prevLinesMap[l.productId] = l;
+  });
+
+  const lineChanges = [];
+  const stampedLines = origLines.map((origLine) => {
+    const dispatchedQty = Math.max(0, Number(origLine.dispatchedQty ?? origLine.qty ?? 0));
+    const dispatchedBonus = Math.max(0, Number(origLine.dispatchedBonus ?? origLine.bonus ?? 0));
+    const input = soldByProductMap[origLine.productId] || {};
+    const actualQty = Math.min(dispatchedQty, Math.max(0, Math.round(Number(input.soldQty ?? origLine.qty ?? 0))));
+    const actualBonus = Math.min(dispatchedBonus, Math.max(0, Math.round(Number(input.soldBonus ?? origLine.bonus ?? 0))));
+
+    const returnedQty = Math.max(0, dispatchedQty - actualQty);
+    const returnedBonus = Math.max(0, dispatchedBonus - actualBonus);
+    const returnedCartons = returnedQty + returnedBonus;
+
+    const recalcLine = calculateSalesOrderLineTotals(
+      { ...origLine, qty: actualQty, bonus: actualBonus },
+      Number(origLine.detectedUnitPrice) || 0,
+      Boolean(origLine.isPromotional),
+      Number(origLine.promoDiscountPct) || 0,
+      vatMode
+    );
+
+    const origLineEffTotal = isWhtMode
+      ? Number(origLine.lineFinalTotal ?? Math.max(0, Number(origLine.lineNet || 0) + Number(origLine.lineVat || 0) - Number(origLine.lineWht || 0)))
+      : Number(origLine.lineTotal || 0);
+    const currLineEffTotal = Number(recalcLine.lineTotal || 0);
+    const returnedLineTotal = Math.max(0, Math.round((origLineEffTotal - currLineEffTotal) * 100) / 100);
+
+    const prevLine = prevLinesMap[origLine.productId];
+    const prevQty = Number(prevLine?.qty ?? dispatchedQty);
+    const prevBonus = Number(prevLine?.bonus ?? dispatchedBonus);
+    if (prevQty !== actualQty || prevBonus !== actualBonus || order?.retailSettlementStatus !== 'settled') {
+      qtyChangedVsPrevious = true;
+    }
+
+    if (prevQty !== actualQty || prevBonus !== actualBonus || returnedCartons > 0) {
+      lineChanges.push({
+        productCode: origLine.productCode || '',
+        productNameAr: origLine.productNameAr || '',
+        productNameEn: origLine.productNameEn || '',
+        type: 'modified',
+        detailAr: `محمل: ${dispatchedQty}${dispatchedBonus > 0 ? `+${dispatchedBonus}` : ''} | مباع: ${actualQty}${actualBonus > 0 ? `+${actualBonus}` : ''} | مرتجع: ${returnedCartons}`,
+        detailEn: `Loaded: ${dispatchedQty}${dispatchedBonus > 0 ? `+${dispatchedBonus}` : ''} | Sold: ${actualQty}${actualBonus > 0 ? `+${actualBonus}` : ''} | Returned: ${returnedCartons}`
+      });
+    }
+
+    returnedQtySum += returnedQty;
+    returnedBonusSum += returnedBonus;
+    returnedCartonsSum += returnedCartons;
+
+    return {
+      ...recalcLine,
+      qty: actualQty,
+      bonus: actualBonus,
+      dispatchedQty,
+      dispatchedBonus,
+      returnedQty,
+      returnedBonus,
+      returnedCartons,
+      returnedLineTotal
+    };
+  });
+
+  const totals = aggregateSalesOrderTotals(stampedLines, vatMode);
+  const returnedWeightKg = Math.max(
+    0,
+    Math.round((Number(preAdjustmentSnapshot.originalTotalWeightKg || 0) - Number(totals.totalWeightKg || 0)) * 100) / 100
+  );
+  const returnedAmount = Math.max(
+    0,
+    Math.round((Number(preAdjustmentSnapshot.originalGrandTotal || 0) - Number(totals.grandTotal || 0)) * 100) / 100
+  );
+
+  const isForceSyncEdit = order?.retailSettlementStatus === 'settled';
+  const prevRevision = Number(order?.retailSettlementRevision || 0);
+  const nextRevision = isForceSyncEdit ? prevRevision + 1 : 1;
+
+  const existingAudit = Array.isArray(order?.auditTrail) ? order.auditTrail : [];
+  const nextFulfillmentStatus = markDelivered
+    ? (order?.fulfillmentStatus === 'paid' ? 'paid' : 'delivered')
+    : (order?.fulfillmentStatus || 'delivered');
+
+  const cleanAttachments = (buyerAttachments || []).map((att) => ({
+    id: att.id,
+    name: att.name || 'document',
+    type: att.type || '',
+    size: Number(att.size || 0),
+    url: att.url || '',
+    buyerNote: (att.buyerNote || '').trim(),
+    uploadedAt: att.uploadedAt || nowIso,
+    uploadedBy: att.uploadedBy || currentUserName
+  }));
+
+  const auditAction = isForceSyncEdit ? 'retail_settlement_force_synced' : 'retail_settlement_confirmed';
+  const auditEntry = {
+    id: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    action: auditAction,
+    performedBy: currentUserName,
+    performedById: currentUserId,
+    timestamp: nowIso,
+    summaryAr: isForceSyncEdit
+      ? `تحديث ومزامنة تسوية التجزئة (مراجعة #${nextRevision}) #${order?.serial || order?.id}: المباع ${totals.totalCartons} كرتونة | المرتجع للمخزن ${returnedCartonsSum} كرتونة | الفاتورة المعدلة ${totals.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} ج.م | مرفقات المشترين: ${cleanAttachments.length}`
+      : `تأكيد تسوية مبيعات التجزئة بعد العودة #${order?.serial || order?.id}: المباع ${totals.totalCartons} كرتونة | المرتجع للمخزن ${returnedCartonsSum} كرتونة | الصافي ${totals.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} ج.م | مرفقات المشترين: ${cleanAttachments.length}`,
+    summaryEn: isForceSyncEdit
+      ? `Force-synced Retail Settlement (Rev #${nextRevision}) #${order?.serial || order?.id}: Sold ${totals.totalCartons} ctn | Warehouse Return ${returnedCartonsSum} ctn | Adjusted Invoice ${totals.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP | Buyer Docs: ${cleanAttachments.length}`
+      : `Confirmed Retail Van-Sales Settlement #${order?.serial || order?.id}: Sold ${totals.totalCartons} ctn | Unsold Return ${returnedCartonsSum} ctn | Invoice Total ${totals.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP | Buyer Docs: ${cleanAttachments.length}`,
+    changes: {
+      metadata: [
+        { labelAr: 'المباع الفعلي (كرتونة)', labelEn: 'Confirmed Sold (ctn)', oldValue: `${order?.totalCartons ?? preAdjustmentSnapshot.originalTotalCartons}`, newValue: `${totals.totalCartons}` },
+        { labelAr: 'المرتجع غير المباع للمخزن', labelEn: 'Unsold Return to Warehouse', oldValue: `${order?.returnedCartons ?? 0}`, newValue: `${returnedCartonsSum}` },
+        { labelAr: 'قيمة الفاتورة بعد التسوية', labelEn: 'Settled Invoice Total', oldValue: `${Number(order?.grandTotal || 0).toFixed(2)}`, newValue: `${Number(totals.grandTotal || 0).toFixed(2)}` },
+        { labelAr: 'مستندات/إثباتات المشترين', labelEn: 'Buyer Reference Docs', oldValue: `${(order?.retailSettlementAttachments || []).length}`, newValue: `${cleanAttachments.length}` }
+      ],
+      lineChanges
+    }
+  };
+
+  // Reset Warehouse & Accounting Acknowledgments if quantities changed or if Force-Synced after an initial settlement
+  const shouldResetAcks = !isForceSyncEdit || qtyChangedVsPrevious;
+
+  return {
+    isRetailRouteOrder: true,
+    retailSettlementStatus: 'settled',
+    retailSettlementRevision: nextRevision,
+    retailSettlementNotes: (settlementNotes || '').trim(),
+    retailSettlementAttachments: cleanAttachments,
+    retailSettledBy: currentUserName,
+    retailSettledById: currentUserId,
+    retailSettledAt: nowIso,
+    fulfillmentStatus: nextFulfillmentStatus,
+    lines: stampedLines,
+    ...totals,
+    preAdjustmentSnapshot,
+    returnedQty: returnedQtySum,
+    returnedBonus: returnedBonusSum,
+    returnedCartons: returnedCartonsSum,
+    returnedWeightKg,
+    returnedAmount,
+    lastAdjustedBy: currentUserName,
+    lastAdjustedById: currentUserId,
+    lastAdjustedAt: nowIso,
+    warehouseAck: shouldResetAcks ? { status: 'pending', revision: nextRevision } : (order?.warehouseAck || { status: 'pending', revision: nextRevision }),
+    accountingAck: shouldResetAcks ? { status: 'pending', revision: nextRevision } : (order?.accountingAck || { status: 'pending', revision: nextRevision }),
+    auditTrail: [auditEntry, ...existingAudit]
+  };
+}
+
+/**
+ * Opens a printable Van-Sales Trip Settlement & Adjusted Invoice Sheet for Retail route orders.
+ */
+export function openPrintableRetailSettlementSlip(order, isAr = true) {
+  if (!order) return;
+  const snap = order.preAdjustmentSnapshot || {};
+  const loadedCartons = Number(snap.originalTotalCartons ?? ((Number(order.totalCartons || order.totalQty || 0)) + Number(order.returnedCartons || 0)));
+  const soldCartons = Number(order.totalCartons ?? order.totalQty ?? 0);
+  const returnedCartons = Number(order.returnedCartons ?? Math.max(0, loadedCartons - soldCartons));
+  const origTotal = Number(snap.originalGrandTotal ?? (Number(order.grandTotal || 0) + Number(order.returnedAmount || 0)));
+  const soldTotal = Number(order.grandTotal ?? 0);
+  const returnedAmount = Number(order.returnedAmount ?? Math.max(0, origTotal - soldTotal));
+
+  const lines = Array.isArray(order.lines) ? order.lines : [];
+  const origLines = Array.isArray(snap.originalLines) ? snap.originalLines : [];
+
+  const rowsHtml = lines
+    .map((l) => {
+      const base = origLines.find((ol) => ol.productId === l.productId) || {};
+      const lQty = Number(l.dispatchedQty ?? base.qty ?? l.qty ?? 0);
+      const lBonus = Number(l.dispatchedBonus ?? base.bonus ?? l.bonus ?? 0);
+      const sQty = Number(l.qty ?? 0);
+      const sBonus = Number(l.bonus ?? 0);
+      const rQty = Math.max(0, lQty - sQty);
+      const rBonus = Math.max(0, lBonus - sBonus);
+      const sLineTotal = Number(l.lineTotal ?? 0);
+      const prodName = isAr ? (l.productNameAr || l.productNameEn) : (l.productNameEn || l.productNameAr);
+      return `
+        <tr>
+          <td><strong>${escHtml(prodName)}</strong><br/><small style="color:#64748b">${escHtml(l.productCode || '')}</small></td>
+          <td class="num">${lQty}${lBonus > 0 ? ` (+${lBonus})` : ''}</td>
+          <td class="num" style="color:#047857;font-weight:700">${sQty}${sBonus > 0 ? ` (+${sBonus})` : ''}</td>
+          <td class="num" style="color:${rQty + rBonus > 0 ? '#0369a1' : '#94a3b8'};font-weight:700">${rQty + rBonus > 0 ? `${rQty}${rBonus > 0 ? ` (+${rBonus})` : ''}` : '0'}</td>
+          <td class="num" style="font-weight:700">${sLineTotal.toFixed(2)}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  const buyerDocs = Array.isArray(order.retailSettlementAttachments) ? order.retailSettlementAttachments : [];
+  const buyerDocsHtml = buyerDocs.length > 0
+    ? `<div style="margin-top:14px;padding:10px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;">
+        <strong style="font-size:12px;">${isAr ? `مستندات ومراجع المشترين المرفقة (${buyerDocs.length}):` : `Buyer Reference Documents (${buyerDocs.length}):`}</strong>
+        <ul style="margin:6px 0 0 0;padding-inline-start:18px;font-size:12px;">
+          ${buyerDocs.map((d) => `<li><strong>${escHtml(d.buyerNote || d.name)}</strong> <span style="color:#64748b">(${escHtml(d.name)})</span></li>`).join('')}
+        </ul>
+      </div>`
+    : '';
+
+  const whAck = order.warehouseAck?.status === 'acknowledged'
+    ? (isAr ? `معتمد: ${order.warehouseAck.by} (${new Date(order.warehouseAck.at).toLocaleDateString('ar-EG')})` : `Ack: ${order.warehouseAck.by} (${new Date(order.warehouseAck.at).toLocaleDateString('en-US')})`)
+    : (isAr ? 'بانتظار توقيع/اعتماد أمين المخزن' : 'Pending Warehouse Ack');
+  const accAck = order.accountingAck?.status === 'acknowledged'
+    ? (isAr ? `معتمد: ${order.accountingAck.by} (${new Date(order.accountingAck.at).toLocaleDateString('ar-EG')})` : `Ack: ${order.accountingAck.by} (${new Date(order.accountingAck.at).toLocaleDateString('en-US')})`)
+    : (isAr ? 'بانتظار مراجعة واعتماد الحسابات' : 'Pending Accounting Ack');
+
+  const html = `<!doctype html>
+<html dir="${isAr ? 'rtl' : 'ltr'}" lang="${isAr ? 'ar' : 'en'}">
+<head>
+  <meta charset="utf-8" />
+  <title>${isAr ? `تسوية رحلة مبيعات تجزئة #${order.serial || order.id}` : `Retail Van-Sales Trip Settlement #${order.serial || order.id}`}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 28px; font-size: 13px; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0f172a; padding-bottom: 14px; margin-bottom: 18px; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-weight: 800; font-size: 11px; background: #ecfeff; color: #0e7490; border: 1px solid #a5f3fc; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px; }
+    .card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px; background: #f8fafc; }
+    .card .lbl { font-size: 11px; color: #64748b; display: block; margin-bottom: 4px; }
+    .card .val { font-size: 15px; font-weight: 800; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #cbd5e1; padding: 8px 10px; text-align: start; }
+    th { background: #f1f5f9; font-size: 11px; font-weight: 800; }
+    td.num, th.num { text-align: center; font-variant-numeric: tabular-nums; }
+    .footer { margin-top: 32px; display: flex; justify-content: space-between; font-size: 12px; color: #475569; gap: 16px; }
+    .sig { border-top: 1px dashed #94a3b8; flex: 1; text-align: center; padding-top: 8px; }
+    @media print { .no-print { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h2 style="margin:0 0 4px 0;">${isAr ? 'بيان جرد وتسوية رحلة مبيعات التجزئة والفاتورة النهائية' : 'Retail Van-Sales Trip Settlement & Final Invoice'}</h2>
+      <div><strong>${isAr ? 'أمر بيع رقم:' : 'Order #:'}</strong> #${escHtml(order.serial || order.id)} &nbsp;|&nbsp; <strong>${isAr ? 'العميل / المنطقة:' : 'Client / Route:'}</strong> ${escHtml(order.clientName || '—')} ${order.region ? `(${escHtml(order.region)})` : ''}</div>
+      <div style="color:#475569;margin-top:3px;"><strong>${isAr ? 'تاريخ التحميل:' : 'Loading Date:'}</strong> ${escHtml(order.loadingDate || '—')} ${order.assignedVehicleName ? `&nbsp;|&nbsp; <strong>${isAr ? 'الشاحنة:' : 'Truck:'}</strong> ${escHtml(order.assignedVehicleName)} ${order.assignedDriverName ? `— ${escHtml(order.assignedDriverName)}` : ''}` : ''}</div>
+    </div>
+    <div style="text-align:end">
+      <span class="badge">${isAr ? `تسوية رحلة تجزئة (مراجعة #${order.retailSettlementRevision || 1})` : `RETAIL TRIP SETTLEMENT (Rev #${order.retailSettlementRevision || 1})`}</span>
+      <div style="font-size:11px;color:#64748b;margin-top:6px;">${isAr ? 'تمت التسوية بواسطة:' : 'Settled By:'} ${escHtml(order.retailSettledBy || '—')}</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><span class="lbl">${isAr ? 'إجمالي الحمولة المنصرفة' : 'Loaded on Truck'}</span><span class="val">${loadedCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
+    <div class="card" style="background:#ecfdf5;border-color:#a7f3d0"><span class="lbl">${isAr ? 'المباع الفعلي المعتمد' : 'Confirmed Sold Qty'}</span><span class="val" style="color:#065f46">${soldCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
+    <div class="card" style="background:#f0f9ff;border-color:#bae6fd"><span class="lbl">${isAr ? 'المرتجع غير المباع للمخزن' : 'Unsold Return to Warehouse'}</span><span class="val" style="color:#0369a1">${returnedCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
+    <div class="card" style="background:#eef2ff;border-color:#c7d2fe"><span class="lbl">${isAr ? 'صافي الفاتورة النهائية' : 'Final Settled Invoice'}</span><span class="val" style="color:#3730a3">${soldTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</span>${returnedAmount > 0 ? `<div style="font-size:11px;color:#0369a1;font-weight:700;">${isAr ? 'قيمة غير المباع:' : 'Unsold Credit:'} -${returnedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</div>` : ''}</div>
+  </div>
+
+  ${order.retailSettlementNotes ? `<div style="margin:12px 0;padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;"><strong>${isAr ? 'ملاحظات الرحلة والتسوية:' : 'Route & Settlement Notes:'}</strong> ${escHtml(order.retailSettlementNotes)}</div>` : ''}
+
+  <table>
+    <thead>
+      <tr>
+        <th>${isAr ? 'الصنف' : 'Product SKU'}</th>
+        <th class="num">${isAr ? 'المحمل على الشاحنة' : 'Loaded'}</th>
+        <th class="num">${isAr ? 'المباع الفعلي' : 'Sold Qty'}</th>
+        <th class="num">${isAr ? 'المرتجع غير المباع' : 'Unsold Returned'}</th>
+        <th class="num">${isAr ? 'قيمة المباع (ج.م)' : 'Sold Value (EGP)'}</th>
+      </tr>
+    </thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+
+  ${buyerDocsHtml}
+
+  <div class="footer">
+    <div class="sig"><strong>${isAr ? 'المبيعات / تسوية الرحلة' : 'Sales / Trip Settlement'}</strong><br/><small>${escHtml(order.retailSettledBy || '—')}</small></div>
+    <div class="sig"><strong>${isAr ? 'استلام أمين المخزن للمرتجع' : 'Warehouse Return Ack'}</strong><br/><small>${escHtml(whAck)}</small></div>
+    <div class="sig"><strong>${isAr ? 'اعتماد الحسابات والفاتورة النهائية' : 'Accounting Invoice Ack'}</strong><br/><small>${escHtml(accAck)}</small></div>
+  </div>
+
+  <div class="no-print" style="margin-top:24px;text-align:center;">
+    <button onclick="window.print()" style="padding:10px 24px;background:#0f172a;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;">${isAr ? 'طباعة بيان التسوية' : 'Print Settlement Sheet'}</button>
+  </div>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank', 'width=960,height=720');
+  if (win) {
+    win.document.write(html);
+    win.document.close();
+  }
+}

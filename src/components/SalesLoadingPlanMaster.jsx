@@ -45,7 +45,9 @@ import {
   ArrowRight,
   Copy,
   GitFork,
-  PackageMinus
+  PackageMinus,
+  Store,
+  ClipboardCheck
 } from 'lucide-react';
 import {
   collection,
@@ -60,7 +62,8 @@ import PeacockLoader from './PeacockLoader.jsx';
 import { canAccessAction } from '../config/appArchitecture.js';
 import { RowCommentButton } from './comments';
 import { resolveLocationInfo, normalizeLocationUrl } from '../utils/locationUtils.js';
-import { compareOrdersBySerialAsc } from '../utils/salesOrderUtils.js';
+import { compareOrdersBySerialAsc, isOrderRetailRoute } from '../utils/salesOrderUtils.js';
+import RetailSettlementModal from './RetailSettlementModal.jsx';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
 
 const ORDER_TYPES = [
@@ -1331,16 +1334,23 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
             </div>
           ) : (
             <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
+              {(() => {
+                const showReconCols = Boolean(order.hasPartialRejection || order.retailSettlementStatus === 'settled');
+                return (
               <table className="w-full text-start border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200 text-[11px]">
                     <th className="py-2.5 px-3 text-start">{isAr ? 'الصنف' : 'Product'}</th>
-                    {order.hasPartialRejection && (
-                      <th className="py-2.5 px-2.5 text-center text-slate-500">{isAr ? 'المنصرف' : 'Dispatched'}</th>
+                    {showReconCols && (
+                      <th className="py-2.5 px-2.5 text-center text-slate-500">{isAr ? 'المحمل / المنصرف' : 'Loaded / Disp'}</th>
                     )}
-                    <th className="py-2.5 px-3 text-center">{isAr ? (order.hasPartialRejection ? 'المستلم فعلياً' : 'الكمية') : (order.hasPartialRejection ? 'Actual Recv' : 'Qty')}</th>
+                    <th className="py-2.5 px-3 text-center">
+                      {isAr
+                        ? (order.retailSettlementStatus === 'settled' ? 'المباع الفعلي' : order.hasPartialRejection ? 'المستلم فعلياً' : 'الكمية')
+                        : (order.retailSettlementStatus === 'settled' ? 'Actual Sold' : order.hasPartialRejection ? 'Actual Recv' : 'Qty')}
+                    </th>
                     <th className="py-2.5 px-3 text-center">{isAr ? 'البونص' : 'Bonus'}</th>
-                    {order.hasPartialRejection && (
+                    {showReconCols && (
                       <th className="py-2.5 px-2.5 text-center text-rose-700">{isAr ? 'مرتجع' : 'Returned'}</th>
                     )}
                     <th className="py-2.5 px-3 text-end">{isAr ? 'سعر الوحدة' : 'Unit Price'}</th>
@@ -1373,7 +1383,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                             </span>
                           )}
                         </td>
-                        {order.hasPartialRejection && (
+                        {showReconCols && (
                           <td className="py-2 px-2.5 text-center text-slate-500">
                             {dispCtn.toLocaleString()} {isAr ? 'ك' : 'ctn'}
                           </td>
@@ -1390,7 +1400,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                             <span className="text-slate-300">—</span>
                           )}
                         </td>
-                        {order.hasPartialRejection && (
+                        {showReconCols && (
                           <td className="py-2 px-2.5 text-center font-black text-rose-700">
                             {retCtn > 0 ? `-${retCtn}` : '0'}
                           </td>
@@ -1409,6 +1419,8 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                   })}
                 </tbody>
               </table>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -1442,6 +1454,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     permissions,
     'loading_plan',
     'canModifyClosedOrders',
+    currentUser
+  );
+  const canSettleRetailOrders = isGeneralAdmin || canAccessAction(
+    permissions,
+    'sales_orders',
+    'canSettleRetailOrders',
     currentUser
   );
 
@@ -1508,6 +1526,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
   // Notification Toast
   const [toastMsg, setToastMsg] = useState(null);
+
+  // Retail Van-Sales Settlement Modal State: { order, allowDeferDelivery }
+  const [retailSettlementModal, setRetailSettlementModal] = useState(null);
 
   useEffect(() => {
     setLoFilter(null);
@@ -2047,6 +2068,17 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         );
         return;
       }
+    }
+
+    // Retail Van-Sales Arrival Gate: intercept forward move to 'delivered' if not yet settled
+    if (
+      step.id === 'delivered' &&
+      isOrderRetailRoute(order, clients, segments) &&
+      order.retailSettlementStatus !== 'settled' &&
+      (targetIndex === currentIndex + 1 || canModifyClosedOrders || isGeneralAdmin)
+    ) {
+      setRetailSettlementModal({ order, allowDeferDelivery: true });
+      return;
     }
 
     // Standard 1-step forward (Clickable Next)
@@ -2803,6 +2835,21 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             updatedAt: serverTimestamp(),
             auditTrail: [auditEntry, ...existingAudit]
           };
+
+          if (
+            newStatus === 'delivered' &&
+            isOrderRetailRoute(order, clients, segments) &&
+            order.retailSettlementStatus !== 'settled'
+          ) {
+            updatePayload.isRetailRouteOrder = true;
+            updatePayload.retailSettlementStatus = 'awaiting_settlement';
+            metadataChanges.push({
+              labelAr: 'حالة تسوية مبيعات التجزئة',
+              labelEn: 'Retail Settlement',
+              oldValue: order.retailSettlementStatus || 'not_required',
+              newValue: 'awaiting_settlement'
+            });
+          }
 
           if (shouldClearAssignment) {
             updatePayload.loadingOrderNumber = null;
@@ -4188,6 +4235,60 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     </span>
                                   )}
 
+                                  {/* Retail Van-Sales Route Settlement Badge & Action Button */}
+                                  {isOrderRetailRoute(order, clients, segments) && (() => {
+                                    const rStatus = order.retailSettlementStatus;
+                                    const isSettled = rStatus === 'settled';
+                                    const isPostDispatchRetail =
+                                      currentFulfillmentStatus === 'shipped' ||
+                                      currentFulfillmentStatus === 'delivered' ||
+                                      currentFulfillmentStatus === 'paid';
+                                    const needsAck =
+                                      isSettled &&
+                                      (order.warehouseAck?.status !== 'acknowledged' ||
+                                        order.accountingAck?.status !== 'acknowledged');
+
+                                    return (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setRetailSettlementModal({
+                                            order,
+                                            allowDeferDelivery: currentFulfillmentStatus === 'shipped'
+                                          });
+                                        }}
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs transition cursor-pointer ${
+                                          isSettled
+                                            ? needsAck
+                                              ? 'bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border-cyan-300'
+                                              : 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300'
+                                            : isPostDispatchRetail
+                                              ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 animate-pulse'
+                                              : 'bg-cyan-50/70 hover:bg-cyan-100 text-cyan-800 border-cyan-200'
+                                        }`}
+                                        title={
+                                          isSettled
+                                            ? (isAr ? 'مراجعة أو تعديل تسوية مبيعات التجزئة (Force Sync)' : 'Inspect or Force-Sync Retail Settlement')
+                                            : isPostDispatchRetail
+                                              ? (isAr ? 'يتطلب تأكيد الكميات المباعة بعد العودة' : 'Requires Post-Arrival Sold Qty Confirmation')
+                                              : (isAr ? 'رحلة تجزئة — تُسوى الكميات المباعة بعد العودة' : 'Retail Route Trip — Settle sold qty after return')
+                                        }
+                                      >
+                                        {isSettled ? <ClipboardCheck className="w-3 h-3 shrink-0" /> : <Store className="w-3 h-3 shrink-0" />}
+                                        <span>
+                                          {isSettled
+                                            ? (isAr
+                                                ? `تسوية تجزئة #${order.retailSettlementRevision || 1}${Number(order.returnedCartons || 0) > 0 ? ` (-${order.returnedCartons})` : ''}`
+                                                : `Settled #${order.retailSettlementRevision || 1}${Number(order.returnedCartons || 0) > 0 ? ` (-${order.returnedCartons})` : ''}`)
+                                            : isPostDispatchRetail
+                                              ? (isAr ? 'بانتظار تأكيد المباع' : 'Pending Sold Settlement')
+                                              : (isAr ? 'خط سير تجزئة' : 'Retail Route')}
+                                        </span>
+                                      </button>
+                                    );
+                                  })()}
+
                                   {/* Admin Override Permitted Badge */}
                                   {isClosedOrder && canModifyClosedOrders && (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-300">
@@ -4559,6 +4660,60 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       </span>
                                     </span>
                                   )}
+
+                                  {/* Retail Van-Sales Route Settlement Badge & Action Button */}
+                                  {isOrderRetailRoute(order, clients, segments) && (() => {
+                                    const rStatus = order.retailSettlementStatus;
+                                    const isSettled = rStatus === 'settled';
+                                    const isPostDispatchRetail =
+                                      currentFulfillmentStatus === 'shipped' ||
+                                      currentFulfillmentStatus === 'delivered' ||
+                                      currentFulfillmentStatus === 'paid';
+                                    const needsAck =
+                                      isSettled &&
+                                      (order.warehouseAck?.status !== 'acknowledged' ||
+                                        order.accountingAck?.status !== 'acknowledged');
+
+                                    return (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setRetailSettlementModal({
+                                            order,
+                                            allowDeferDelivery: currentFulfillmentStatus === 'shipped'
+                                          });
+                                        }}
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs transition cursor-pointer ${
+                                          isSettled
+                                            ? needsAck
+                                              ? 'bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border-cyan-300'
+                                              : 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300'
+                                            : isPostDispatchRetail
+                                              ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 animate-pulse'
+                                              : 'bg-cyan-50/70 hover:bg-cyan-100 text-cyan-800 border-cyan-200'
+                                        }`}
+                                        title={
+                                          isSettled
+                                            ? (isAr ? 'مراجعة أو تعديل تسوية مبيعات التجزئة (Force Sync)' : 'Inspect or Force-Sync Retail Settlement')
+                                            : isPostDispatchRetail
+                                              ? (isAr ? 'يتطلب تأكيد الكميات المباعة بعد العودة' : 'Requires Post-Arrival Sold Qty Confirmation')
+                                              : (isAr ? 'رحلة تجزئة — تُسوى الكميات المباعة بعد العودة' : 'Retail Route Trip — Settle sold qty after return')
+                                        }
+                                      >
+                                        {isSettled ? <ClipboardCheck className="w-3 h-3 shrink-0" /> : <Store className="w-3 h-3 shrink-0" />}
+                                        <span>
+                                          {isSettled
+                                            ? (isAr
+                                                ? `تسوية تجزئة #${order.retailSettlementRevision || 1}${Number(order.returnedCartons || 0) > 0 ? ` (-${order.returnedCartons})` : ''}`
+                                                : `Settled #${order.retailSettlementRevision || 1}${Number(order.returnedCartons || 0) > 0 ? ` (-${order.returnedCartons})` : ''}`)
+                                            : isPostDispatchRetail
+                                              ? (isAr ? 'بانتظار تأكيد المباع' : 'Pending Sold Settlement')
+                                              : (isAr ? 'خط سير تجزئة' : 'Retail Route')}
+                                        </span>
+                                      </button>
+                                    );
+                                  })()}
 
                                   {/* Admin Override Permitted Badge */}
                                   {isClosedOrder && canModifyClosedOrders && (
@@ -5588,6 +5743,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             )}
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
+                            {truckStatusModal.targetStep?.id === 'delivered' &&
+                              isChecked &&
+                              isOrderRetailRoute(ord, clients, segments) &&
+                              ord.retailSettlementStatus !== 'settled' && (
+                                <span className="px-1.5 py-0.5 rounded bg-amber-100 border border-amber-300 text-amber-900 font-extrabold text-[9px]">
+                                  {isAr ? 'تجزئة ← بانتظار تأكيد المباع' : 'Retail → Pending Settlement'}
+                                </span>
+                              )}
                             {!isChecked && (
                               <span className="px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-900 font-bold text-[9px]">
                                 {isAr ? 'مرتجع ← قيد الانتظار' : 'Return → Pending'}
@@ -5667,6 +5830,30 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             </div>
           </div>
         </div>
+      )}
+      {/* Retail Van-Sales Arrival & Post-Return Quantity Settlement Modal */}
+      {retailSettlementModal?.order && (
+        <RetailSettlementModal
+          isOpen={Boolean(retailSettlementModal?.order)}
+          onClose={() => setRetailSettlementModal(null)}
+          order={retailSettlementModal.order}
+          canSettleRetailOrders={canSettleRetailOrders}
+          allowDeferDelivery={Boolean(retailSettlementModal.allowDeferDelivery)}
+          vehicles={vehicles}
+          resolveVehicleDisplayName={resolveVehicleDisplayName}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+          onSuccess={({ mode }) => {
+            showToast(
+              mode === 'deferred'
+                ? (isAr ? 'تم تسجيل الوصول (بانتظار تأكيد الكميات المباعة)' : 'Marked Delivered (Awaiting Retail Settlement)')
+                : mode === 'force_synced'
+                  ? (isAr ? 'تم تحديث ومزامنة تسوية التجزئة بنجاح' : 'Retail settlement force-synced successfully')
+                  : (isAr ? 'تم تأكيد الكميات المباعة وإتمام تسليم رحلة التجزئة' : 'Confirmed sold quantities & completed delivery')
+            );
+          }}
+        />
       )}
     </div>
   );

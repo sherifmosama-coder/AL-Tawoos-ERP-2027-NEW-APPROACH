@@ -881,6 +881,7 @@ export const APP_ARCHITECTURE = {
             { key: "canExport", labelAr: "تصدير أوامر البيع (CSV)", labelEn: "Export Sales Orders" },
             { key: "canSplitOrder", labelAr: "تقسيم أمر البيع إلى شحنات متعددة", labelEn: "Split Pending Sales Order" },
             { key: "canAdjustDispatchedQuantities", labelAr: "تعديل ومزامنة الكميات المستلمة فعلياً بعد التحميل (المرتجع الجزئي)", labelEn: "Sync Actual Received Qty Post-Dispatch" },
+            { key: "canSettleRetailOrders", labelAr: "تأكيد وتسوية مبيعات التجزئة بعد العودة (الجرد والفواتير)", labelEn: "Confirm & Force-Sync Retail Van-Sales Settlement" },
           ],
           fields: {
             serial: { labelAr: "مسلسل أمر البيع (#0001)", labelEn: "Order Serial", type: "string", required: true, sample: "0001" },
@@ -894,6 +895,8 @@ export const APP_ARCHITECTURE = {
             vatMode: { labelAr: "المعاملة الضريبية", labelEn: "Tax / VAT Mode", type: "enum", options: ["none", "exclusive", "exclusive_wht", "inclusive", "inclusive_wht"], sample: "none" },
             poTawoos: { labelAr: "أمر شراء طاووس", labelEn: "PO # Tawoos", type: "string", sample: "PO-TW-2026-01" },
             poPrivateLabel: { labelAr: "أمر شراء العلامة الخاصة", labelEn: "PO # Private Label", type: "string", sample: "PO-PL-4401" },
+            isRetailRouteOrder: { labelAr: "أمر خط سير تجزئة (يتطلب تسوية بعد العودة)", labelEn: "Retail Van-Sales Route Order", type: "boolean", sample: true },
+            retailSettlementStatus: { labelAr: "حالة تسوية مبيعات التجزئة", labelEn: "Retail Settlement Status", type: "enum", options: ["not_required", "awaiting_settlement", "settled"], sample: "awaiting_settlement" },
             grandTotal: { labelAr: "إجمالي أمر البيع (EGP)", labelEn: "Order Grand Total (EGP)", type: "number", sample: 45000.00 }
           }
         },

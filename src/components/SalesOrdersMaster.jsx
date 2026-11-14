@@ -66,11 +66,15 @@ import {
   Copy,
   GitFork,
   Printer,
-  PackageMinus
+  PackageMinus,
+  Store,
+  ClipboardCheck,
+  FileImage
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
 import OrderSplitModal from './OrderSplitModal';
+import RetailSettlementModal from './RetailSettlementModal';
 import PeacockLoader from './PeacockLoader';
 import { canAccessAction } from '../config/appArchitecture';
 import {
@@ -80,7 +84,10 @@ import {
   compareOrdersBySerialAsc,
   calculateSalesOrderLineTotals,
   aggregateSalesOrderTotals,
-  openPrintableAdjustmentSlip
+  openPrintableAdjustmentSlip,
+  isOrderRetailRoute,
+  isRetailSegmentRecord,
+  openPrintableRetailSettlementSlip
 } from '../utils/salesOrderUtils';
 import { normalizeLocationUrl } from '../utils/locationUtils';
 import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from './ClientSegmentsMaster';
@@ -565,6 +572,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin' || currentUser?.role === 'admin';
   const canSplitOrder = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSplitOrder', currentUser);
   const canAdjustDispatchedQty = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canAdjustDispatchedQuantities', currentUser);
+  const canSettleRetailOrders = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSettleRetailOrders', currentUser);
   const currentUserName = currentUser?.nameAr || currentUser?.name || 'مستخدم معتمد';
   const currentUserId = currentUser?.id || 'usr_unknown';
 
@@ -604,6 +612,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [auditModalOrder, setAuditModalOrder] = useState(null);
   const [splitModalOrder, setSplitModalOrder] = useState(null);
   const [splitGuidanceOrder, setSplitGuidanceOrder] = useState(null);
+  const [retailSettlementModalOrder, setRetailSettlementModalOrder] = useState(null);
   const [deleteConfirmOrder, setDeleteConfirmOrder] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null);
   const [cancelModalOrder, setCancelModalOrder] = useState(null);
@@ -1309,6 +1318,61 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
       return;
     }
     setSplitModalOrder(order);
+  };
+
+  // Explicit 1-Click Warehouse & Accountant Acknowledgment Handler for Settled Retail Trips
+  const handleAcknowledgeRetailSettlement = async (order, ackDepartment) => {
+    if (!order || !['warehouse', 'accounting'].includes(ackDepartment)) return;
+    const nowIso = new Date().toISOString();
+    const rev = Number(order.retailSettlementRevision || 1);
+    const ackObj = {
+      status: 'acknowledged',
+      by: currentUserName,
+      byId: currentUserId,
+      at: nowIso,
+      revision: rev
+    };
+    const isWh = ackDepartment === 'warehouse';
+    const existingAudit = Array.isArray(order.auditTrail) ? order.auditTrail : [];
+    const auditEntry = {
+      id: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      action: isWh ? 'retail_warehouse_acknowledged' : 'retail_accounting_acknowledged',
+      performedBy: currentUserName,
+      performedById: currentUserId,
+      timestamp: nowIso,
+      summaryAr: isWh
+        ? `اعتماد أمين المخزن (${currentUserName}) لاستلام مرتجع رحلة التجزئة #${resolveOrderSerial(order, orders)} (مراجعة #${rev}: ${Number(order.returnedCartons || 0)} كرتونة)`
+        : `اعتماد الحسابات (${currentUserName}) لتسوية وفاتورة رحلة التجزئة #${resolveOrderSerial(order, orders)} (مراجعة #${rev}: ${Number(order.grandTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} ج.م)`,
+      summaryEn: isWh
+        ? `Warehouse acknowledged Retail unsold return stock for #${resolveOrderSerial(order, orders)} (Rev #${rev}: ${Number(order.returnedCartons || 0)} ctn)`
+        : `Accounting acknowledged adjusted invoice for Retail trip #${resolveOrderSerial(order, orders)} (Rev #${rev}: ${Number(order.grandTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP)`,
+      changes: {
+        metadata: [
+          {
+            labelAr: isWh ? 'اعتماد المخزن' : 'اعتماد الحسابات',
+            labelEn: isWh ? 'Warehouse Ack' : 'Accounting Ack',
+            oldValue: 'Pending',
+            newValue: `${currentUserName} (Rev #${rev})`
+          }
+        ]
+      }
+    };
+
+    try {
+      await setDoc(
+        doc(db, 'sales_orders', order.id),
+        {
+          [isWh ? 'warehouseAck' : 'accountingAck']: ackObj,
+          auditTrail: [...existingAudit, auditEntry],
+          updatedAt: serverTimestamp(),
+          updatedBy: currentUserName
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error('Error acknowledging retail settlement:', err);
+      alert(isAr ? 'حدث خطأ أثناء تسجيل الاعتماد.' : 'Failed to record acknowledgment.');
+    }
   };
 
   // Delete Order Handler
@@ -2306,6 +2370,52 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     </span>
                                   </span>
                                 )}
+                                {!order.isSplitParent && isOrderRetailRoute(order, clients, segments) && (() => {
+                                  const isSettled = order.retailSettlementStatus === 'settled';
+                                  const isPostDisp = POST_DISPATCH_STATUSES.includes(order.fulfillmentStatus);
+                                  const pendingDeptAck =
+                                    isSettled &&
+                                    (order.warehouseAck?.status !== 'acknowledged' ||
+                                      order.accountingAck?.status !== 'acknowledged');
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (isPostDisp || isSettled) {
+                                          setRetailSettlementModalOrder(order);
+                                        }
+                                      }}
+                                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs transition ${
+                                        isSettled
+                                          ? pendingDeptAck
+                                            ? 'bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border-cyan-300 cursor-pointer'
+                                            : 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300 cursor-pointer'
+                                          : isPostDisp
+                                            ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 animate-pulse cursor-pointer'
+                                            : 'bg-cyan-50/70 text-cyan-800 border-cyan-200'
+                                      }`}
+                                      title={
+                                        isSettled
+                                          ? (isAr ? 'انقر لعرض أو تحديث تسوية مبيعات التجزئة' : 'Click to inspect or force-sync Retail settlement')
+                                          : isPostDisp
+                                            ? (isAr ? 'انقر لتأكيد الكميات المباعة بعد العودة' : 'Click to confirm post-arrival sold quantities')
+                                            : (isAr ? 'أمر تجزئة — تُؤكد الكميات المباعة بعد العودة' : 'Retail route order — confirm sold qty after return')
+                                      }
+                                    >
+                                      {isSettled ? <ClipboardCheck className="w-3 h-3 shrink-0" /> : <Store className="w-3 h-3 shrink-0" />}
+                                      <span>
+                                        {isSettled
+                                          ? (isAr
+                                              ? `تجزئة مسوّاة #${order.retailSettlementRevision || 1}${pendingDeptAck ? ' · بانتظار اعتماد' : ''}`
+                                              : `Retail Settled #${order.retailSettlementRevision || 1}${pendingDeptAck ? ' · Pending Ack' : ''}`)
+                                          : isPostDisp
+                                            ? (isAr ? 'بانتظار تأكيد المباع' : 'Awaiting Sold Settlement')
+                                            : (isAr ? 'خط سير تجزئة' : 'Retail Route')}
+                                      </span>
+                                    </button>
+                                  );
+                                })()}
                               </div>
                             </td>
 
@@ -3046,6 +3156,266 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         );
                                       })()}
 
+                                      {/* Retail Van-Sales Route Settlement, Buyer Proofs & Dual Acknowledgment Panel */}
+                                      {!order.isSplitParent && isOrderRetailRoute(order, clients, segments) && (
+                                        order.retailSettlementStatus === 'settled' ||
+                                        POST_DISPATCH_STATUSES.includes(order.fulfillmentStatus)
+                                      ) && (() => {
+                                        const isSettled = order.retailSettlementStatus === 'settled';
+                                        const snap = order.preAdjustmentSnapshot || {};
+                                        const loadedCtn = Number(snap.originalTotalCartons ?? ((Number(order.totalCartons || order.totalQty || 0)) + Number(order.returnedCartons || 0)));
+                                        const soldCtn = Number(order.totalCartons ?? order.totalQty ?? 0);
+                                        const unsoldCtn = Number(order.returnedCartons ?? Math.max(0, loadedCtn - soldCtn));
+                                        const unsoldWeightKg = Number(order.returnedWeightKg || 0);
+                                        const soldGrand = Number(order.grandTotal || 0);
+                                        const buyerDocs = Array.isArray(order.retailSettlementAttachments) ? order.retailSettlementAttachments : [];
+                                        const whAck = order.warehouseAck || { status: 'pending' };
+                                        const accAck = order.accountingAck || { status: 'pending' };
+
+                                        if (!isSettled) {
+                                          return (
+                                            <div className="p-3.5 bg-amber-50/90 border border-amber-300 rounded-xl flex items-center justify-between flex-wrap gap-3 shadow-2xs">
+                                              <div className="flex items-center gap-2.5">
+                                                <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
+                                                  <Store className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                  <h5 className="font-extrabold text-xs text-amber-950">
+                                                    {isAr
+                                                      ? 'رحلة مبيعات تجزئة — بانتظار جرد وتأكيد الكميات المباعة بعد العودة'
+                                                      : 'Retail Route Trip — Awaiting Post-Arrival Sold Quantity Settlement'}
+                                                  </h5>
+                                                  <p className="text-[11px] text-amber-800">
+                                                    {isAr
+                                                      ? 'بمجرد عودة الشاحنة، قم بمطابقة المباع الفعلي مع غير المباع العائد للمخزن وإرفاق مستندات المشترين.'
+                                                      : 'Confirm actual sold cartons vs unsold stock returning to warehouse and attach buyer reference documents.'}
+                                                  </p>
+                                                </div>
+                                              </div>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setRetailSettlementModalOrder(order);
+                                                }}
+                                                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-cyan-700 hover:bg-cyan-800 text-white rounded-xl text-xs font-extrabold transition cursor-pointer shadow-xs"
+                                              >
+                                                <ClipboardCheck className="w-3.5 h-3.5" />
+                                                <span>
+                                                  {canSettleRetailOrders
+                                                    ? (isAr ? 'تأكيد الكميات المباعة الآن' : 'Confirm Sold Quantities')
+                                                    : (isAr ? 'معاينة الجرد' : 'View Settlement')}
+                                                </span>
+                                              </button>
+                                            </div>
+                                          );
+                                        }
+
+                                        return (
+                                          <div className="p-3.5 bg-gradient-to-r from-cyan-50/90 via-teal-50/40 to-cyan-50/80 border border-cyan-200 rounded-xl space-y-3 shadow-2xs">
+                                            {/* Header */}
+                                            <div className="flex items-center justify-between flex-wrap gap-2 border-b border-cyan-200/80 pb-2">
+                                              <div className="flex items-center gap-2">
+                                                <div className="w-7 h-7 rounded-lg bg-cyan-700 text-white flex items-center justify-center shadow-xs">
+                                                  <Store className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                  <h5 className="font-extrabold text-xs text-cyan-950 flex items-center gap-2 flex-wrap">
+                                                    <span>
+                                                      {isAr
+                                                        ? `تسوية رحلة مبيعات التجزئة (مراجعة #${order.retailSettlementRevision || 1})`
+                                                        : `Retail Route Settlement & Invoice Reconciliation (Rev #${order.retailSettlementRevision || 1})`}
+                                                    </span>
+                                                  </h5>
+                                                  <span className="text-[10px] text-cyan-800 font-medium">
+                                                    {order.retailSettledBy
+                                                      ? (isAr
+                                                          ? `تمت التسوية بواسطة: ${order.retailSettledBy} ${order.retailSettledAt ? `(${new Date(order.retailSettledAt).toLocaleString('ar-EG')})` : ''}`
+                                                          : `Settled by ${order.retailSettledBy} ${order.retailSettledAt ? `(${new Date(order.retailSettledAt).toLocaleString('en-US')})` : ''}`)
+                                                      : ''}
+                                                  </span>
+                                                </div>
+                                              </div>
+
+                                              <div className="flex items-center gap-2">
+                                                {canSettleRetailOrders && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setRetailSettlementModalOrder(order);
+                                                    }}
+                                                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-indigo-50 border border-indigo-300 text-indigo-800 text-[11px] font-bold rounded-lg transition cursor-pointer shadow-2xs"
+                                                  >
+                                                    <RefreshCw className="w-3 h-3 text-indigo-600" />
+                                                    <span>{isAr ? 'تعديل ومزامنة قسرية (Force Sync)' : 'Edit / Force Sync'}</span>
+                                                  </button>
+                                                )}
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    openPrintableRetailSettlementSlip(order, isAr);
+                                                  }}
+                                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] font-bold rounded-lg transition cursor-pointer shadow-2xs"
+                                                >
+                                                  <Printer className="w-3 h-3" />
+                                                  <span>{isAr ? 'طباعة بيان تسوية التجزئة' : 'Print Retail Settlement'}</span>
+                                                </button>
+                                              </div>
+                                            </div>
+
+                                            {/* Notes */}
+                                            {order.retailSettlementNotes && (
+                                              <div className="px-2.5 py-1.5 bg-white/90 border border-cyan-200 rounded-lg text-[11px] text-cyan-950">
+                                                <strong className="font-extrabold">{isAr ? 'ملاحظات الرحلة والتسوية: ' : 'Settlement Notes: '}</strong>
+                                                <span>{order.retailSettlementNotes}</span>
+                                              </div>
+                                            )}
+
+                                            {/* 4 Summary Metrics */}
+                                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                                              <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                                                <span className="text-[10px] text-slate-500 block font-semibold">{isAr ? 'المحمل على الشاحنة:' : 'Loaded on Truck:'}</span>
+                                                <span className="font-mono font-bold text-slate-900 block mt-0.5">
+                                                  {loadedCtn.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                              </div>
+                                              <div className="bg-white p-2.5 rounded-lg border border-emerald-200">
+                                                <span className="text-[10px] text-emerald-700 block font-semibold">{isAr ? 'المباع الفعلي المعتمد:' : 'Confirmed Sold:'}</span>
+                                                <span className="font-mono font-black text-emerald-900 block mt-0.5">
+                                                  {soldCtn.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                              </div>
+                                              <div className="bg-sky-50 p-2.5 rounded-lg border border-sky-200">
+                                                <span className="text-[10px] text-sky-900 block font-bold">{isAr ? 'غير المباع العائد للمخزن:' : 'Unsold Return to Warehouse:'}</span>
+                                                <span className="font-mono font-black text-sky-900 block mt-0.5">
+                                                  {unsoldCtn.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                  {unsoldWeightKg > 0 ? ` (${(unsoldWeightKg / 1000).toFixed(2)} ${isAr ? 'طن' : 'Ton'})` : ''}
+                                                </span>
+                                              </div>
+                                              <div className="bg-indigo-700 p-2.5 rounded-lg text-white">
+                                                <span className="text-[10px] text-indigo-100 block font-bold">{isAr ? 'صافي الفاتورة النهائية:' : 'Settled Invoice Total:'}</span>
+                                                <span className="font-mono font-black text-sm block mt-0.5">
+                                                  {soldGrand.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP
+                                                </span>
+                                              </div>
+                                            </div>
+
+                                            {/* Buyer Reference Proofs Gallery */}
+                                            {buyerDocs.length > 0 && (
+                                              <div className="p-2.5 bg-white border border-cyan-200/80 rounded-xl space-y-2">
+                                                <div className="text-[11px] font-extrabold text-slate-800 flex items-center gap-1.5">
+                                                  <FileImage className="w-3.5 h-3.5 text-cyan-600" />
+                                                  <span>
+                                                    {isAr
+                                                      ? `مرفقات ومراجع المشترين على خط السير (${buyerDocs.length}):`
+                                                      : `Buyer Reference Documents (${buyerDocs.length}):`}
+                                                  </span>
+                                                </div>
+                                                <div className="flex flex-wrap gap-2">
+                                                  {buyerDocs.map((att, idx) => (
+                                                    <button
+                                                      key={att.id || idx}
+                                                      type="button"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (att.url) setLightboxImage({ url: att.url, title: att.buyerNote || att.name });
+                                                      }}
+                                                      className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-cyan-50 border border-slate-200 hover:border-cyan-300 text-xs transition cursor-pointer"
+                                                    >
+                                                      <Eye className="w-3.5 h-3.5 text-cyan-600 shrink-0" />
+                                                      <span className="font-bold text-slate-800 truncate max-w-[200px]">
+                                                        {att.buyerNote || att.name}
+                                                      </span>
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+
+                                            {/* Explicit 1-Click Warehouse & Accounting Acknowledgments */}
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                              {/* Warehouse Ack */}
+                                              <div className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${
+                                                whAck.status === 'acknowledged'
+                                                  ? 'bg-emerald-50/90 border-emerald-200'
+                                                  : 'bg-amber-50/90 border-amber-300'
+                                              }`}>
+                                                <div className="min-w-0">
+                                                  <span className="text-[11px] font-extrabold text-slate-900 block">
+                                                    {isAr ? 'اعتماد المخزن لاستلام المرتجع غير المباع' : 'Warehouse Return Stock Acknowledgment'}
+                                                  </span>
+                                                  <span className="text-[10px] text-slate-600 block truncate">
+                                                    {whAck.status === 'acknowledged'
+                                                      ? (isAr
+                                                          ? `معتمد بواسطة ${whAck.by} (${new Date(whAck.at).toLocaleString('ar-EG')})`
+                                                          : `Ack by ${whAck.by} (${new Date(whAck.at).toLocaleString('en-US')})`)
+                                                      : (isAr ? 'بانتظار مراجعة واعتماد أمين المخزن' : 'Pending Warehouse review & stamp')}
+                                                  </span>
+                                                </div>
+                                                {whAck.status === 'acknowledged' ? (
+                                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-black shrink-0">
+                                                    <Check className="w-3 h-3" />
+                                                    <span>{isAr ? 'تم الاعتماد' : 'Acknowledged'}</span>
+                                                  </span>
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleAcknowledgeRetailSettlement(order, 'warehouse');
+                                                    }}
+                                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-black transition cursor-pointer shrink-0 shadow-2xs"
+                                                  >
+                                                    <ClipboardCheck className="w-3 h-3" />
+                                                    <span>{isAr ? 'اعتماد المخزن' : 'Acknowledge Return'}</span>
+                                                  </button>
+                                                )}
+                                              </div>
+
+                                              {/* Accounting Ack */}
+                                              <div className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${
+                                                accAck.status === 'acknowledged'
+                                                  ? 'bg-teal-50/90 border-teal-200'
+                                                  : 'bg-amber-50/90 border-amber-300'
+                                              }`}>
+                                                <div className="min-w-0">
+                                                  <span className="text-[11px] font-extrabold text-slate-900 block">
+                                                    {isAr ? 'اعتماد الحسابات للفاتورة النهائية المعدلة' : 'Accounting Adjusted Invoice Acknowledgment'}
+                                                  </span>
+                                                  <span className="text-[10px] text-slate-600 block truncate">
+                                                    {accAck.status === 'acknowledged'
+                                                      ? (isAr
+                                                          ? `معتمد بواسطة ${accAck.by} (${new Date(accAck.at).toLocaleString('ar-EG')})`
+                                                          : `Ack by ${accAck.by} (${new Date(accAck.at).toLocaleString('en-US')})`)
+                                                      : (isAr ? 'بانتظار مراجعة واعتماد الحسابات' : 'Pending Accounting review & stamp')}
+                                                  </span>
+                                                </div>
+                                                {accAck.status === 'acknowledged' ? (
+                                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-600 text-white text-[10px] font-black shrink-0">
+                                                    <Check className="w-3 h-3" />
+                                                    <span>{isAr ? 'تم الاعتماد' : 'Acknowledged'}</span>
+                                                  </span>
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleAcknowledgeRetailSettlement(order, 'accounting');
+                                                    }}
+                                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-black transition cursor-pointer shrink-0 shadow-2xs"
+                                                  >
+                                                    <ClipboardCheck className="w-3 h-3" />
+                                                    <span>{isAr ? 'اعتماد الحسابات' : 'Acknowledge Invoice'}</span>
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
+
                                       {/* Financial Totals Breakdown Strip (Moved to Expanded Footer) */}
                                       <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
                                         {/* Cartons */}
@@ -3178,7 +3548,45 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               );
             })()}
 
-          {POST_DISPATCH_STATUSES.includes(activeOrderForMenu.fulfillmentStatus) && canAdjustDispatchedQty && (
+          {!activeOrderForMenu.isSplitParent &&
+            isOrderRetailRoute(activeOrderForMenu, clients, segments) &&
+            (POST_DISPATCH_STATUSES.includes(activeOrderForMenu.fulfillmentStatus) ||
+              activeOrderForMenu.retailSettlementStatus === 'settled') && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setRetailSettlementModalOrder(activeOrderForMenu);
+                  setActiveActionsMenuOrderId(null);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-cyan-800 hover:bg-cyan-50 rounded-xl transition cursor-pointer font-bold text-start"
+              >
+                <Store className="w-3.5 h-3.5 text-cyan-600" />
+                <span>
+                  {activeOrderForMenu.retailSettlementStatus === 'settled'
+                    ? (isAr ? 'تعديل تسوية التجزئة (Force Sync)' : 'Edit Retail Settlement (Force Sync)')
+                    : (isAr ? 'تأكيد الكميات المباعة (تسوية التجزئة)' : 'Confirm Sold Qty (Retail Settlement)')}
+                </span>
+              </button>
+              {activeOrderForMenu.retailSettlementStatus === 'settled' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    openPrintableRetailSettlementSlip(activeOrderForMenu, isAr);
+                    setActiveActionsMenuOrderId(null);
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-teal-800 hover:bg-teal-50 rounded-xl transition cursor-pointer font-bold text-start"
+                >
+                  <Printer className="w-3.5 h-3.5 text-teal-600" />
+                  <span>{isAr ? 'طباعة بيان تسوية التجزئة' : 'Print Retail Settlement Sheet'}</span>
+                </button>
+              )}
+            </>
+          )}
+
+          {POST_DISPATCH_STATUSES.includes(activeOrderForMenu.fulfillmentStatus) &&
+            canAdjustDispatchedQty &&
+            !isOrderRetailRoute(activeOrderForMenu, clients, segments) && (
             <button
               type="button"
               onClick={() => {
@@ -3389,6 +3797,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           canAdjustDispatchedQty={canAdjustDispatchedQty}
           initialAdjustmentMode={editorInitialAdjustmentMode}
           clients={clients}
+          segments={segments}
           products={products}
           productCategories={productCategories}
           priceLists={priceLists}
@@ -3432,6 +3841,25 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           currentUserId={currentUserId}
           onSplitSuccess={() => {
             setSplitModalOrder(null);
+          }}
+        />
+      )}
+
+      {/* Retail Van-Sales Post-Arrival Quantity Settlement & Force Sync Modal */}
+      {retailSettlementModalOrder && (
+        <RetailSettlementModal
+          isOpen={Boolean(retailSettlementModalOrder)}
+          onClose={() => setRetailSettlementModalOrder(null)}
+          order={retailSettlementModalOrder}
+          canSettleRetailOrders={canSettleRetailOrders}
+          allowDeferDelivery={false}
+          vehicles={vehicles}
+          resolveVehicleDisplayName={resolveVehicleDisplayName}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+          onSuccess={() => {
+            setRetailSettlementModalOrder(null);
           }}
         />
       )}
@@ -3653,6 +4081,7 @@ function SalesOrderEditorModal({
   canAdjustDispatchedQty = false,
   initialAdjustmentMode = false,
   clients = [],
+  segments = [],
   products = [],
   productCategories = [],
   priceLists = [],
@@ -3703,6 +4132,8 @@ function SalesOrderEditorModal({
     serial: initialSerial,
     clientId: editingOrder?.clientId || '',
     clientName: editingOrder?.clientName || '',
+    clientSegmentId: editingOrder?.clientSegmentId || editingOrder?.segmentId || '',
+    isRetailRouteOverride: typeof editingOrder?.isRetailRouteOverride === 'boolean' ? editingOrder.isRetailRouteOverride : null,
     branchId: editingOrder?.branchId || '',
     branchName: editingOrder?.branchName || '',
     region: editingOrder?.region || '',
@@ -4039,6 +4470,8 @@ function SalesOrderEditorModal({
         ...prev,
         clientId: cl.id,
         clientName,
+        clientSegmentId: cl.segmentId || cl.segment || '',
+        isRetailRouteOverride: null,
         branchId,
         branchName,
         region,
@@ -4791,8 +5224,28 @@ function SalesOrderEditorModal({
       const existingAudit = editingOrder?.auditTrail || [];
       const updatedAuditTrail = [...existingAudit, auditEvent];
 
+      const activeSegKey =
+        selectedClient?.segmentId ||
+        selectedClient?.segment ||
+        formData.clientSegmentId ||
+        editingOrder?.clientSegmentId ||
+        '';
+      const segObj = (segments || []).find(
+        (s) => s.id === activeSegKey || s.code === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey
+      ) || PRESET_DEFAULT_SEGMENTS.find((s) => s.id === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey);
+      const autoDetectedRetail = !isAdminModal && !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(formData.orderType) && isRetailSegmentRecord(segObj, activeSegKey);
+      const effectiveIsRetailRoute = !isAdminModal && !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(formData.orderType)
+        ? (typeof formData.isRetailRouteOverride === 'boolean' ? formData.isRetailRouteOverride : autoDetectedRetail)
+        : false;
+
       const payload = {
         ...formData,
+        clientSegmentId: activeSegKey,
+        isRetailRouteOrder: effectiveIsRetailRoute,
+        isRetailRouteOverride: formData.isRetailRouteOverride ?? null,
+        retailSettlementStatus: effectiveIsRetailRoute
+          ? (editingOrder?.retailSettlementStatus === 'settled' ? 'settled' : 'awaiting_settlement')
+          : 'not_required',
         lines: stampedLines,
         loadingOrderNumber: formData.loadingOrderNumber ?? null,
         assignedVehicleId: formData.assignedVehicleId || '',
@@ -5404,6 +5857,70 @@ function SalesOrderEditorModal({
                 )}
               </div>
             )}
+
+            {/* Retail Van-Sales Route Settlement Auto-Detection + Optional Per-Order Override */}
+            {!isAdminModal && !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(formData.orderType) && (() => {
+              const activeSegKey = selectedClient?.segmentId || selectedClient?.segment || formData.clientSegmentId || '';
+              const segObj = (segments || []).find(
+                (s) => s.id === activeSegKey || s.code === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey
+              ) || PRESET_DEFAULT_SEGMENTS.find((s) => s.id === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey);
+              const isSegRetail = isRetailSegmentRecord(segObj, activeSegKey);
+              const isRetailEffective = typeof formData.isRetailRouteOverride === 'boolean' ? formData.isRetailRouteOverride : isSegRetail;
+
+              return (
+                <div className={`p-2.5 rounded-xl border flex items-center justify-between flex-wrap gap-2 text-xs transition ${
+                  isRetailEffective
+                    ? 'bg-cyan-50/90 border-cyan-300 text-cyan-950'
+                    : 'bg-white border-slate-200 text-slate-700'
+                }`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                      isRetailEffective ? 'bg-cyan-600 text-white' : 'bg-slate-100 text-slate-500'
+                    }`}>
+                      <Store className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-extrabold flex items-center gap-1.5 flex-wrap">
+                        <span>{isAr ? 'تسوية رحلة مبيعات التجزئة بعد العودة' : 'Retail Van-Sales Route Settlement'}</span>
+                        {isSegRetail && (
+                          <span className="px-1.5 py-0.2 rounded bg-cyan-200/70 text-cyan-900 text-[10px] font-black">
+                            {isAr ? 'مكتشف تلقائياً من قطاع التجزئة' : 'Auto-detected from Retail segment'}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-500 block">
+                        {isRetailEffective
+                          ? (isAr
+                              ? 'تُحمّل الكميات المبدئية وتُلزم الشاحنة بتأكيد المباع الفعلي والمرتجع غير المباع عند العودة.'
+                              : 'Truck loads standard stock and requires confirming actual sold qty vs unsold returns upon return.')
+                          : (isAr
+                              ? 'أمر بيع مباشر قياسي (لا يتطلب تسوية رحلة تجزئة عند الوصول).'
+                              : 'Standard pre-sold order (no van-sales route settlement gate on delivery).')}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isStructureLocked}
+                    onClick={() =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        isRetailRouteOverride: !isRetailEffective
+                      }))
+                    }
+                    className={`px-3 py-1.5 rounded-lg text-[11px] font-extrabold border transition cursor-pointer disabled:opacity-50 ${
+                      isRetailEffective
+                        ? 'bg-cyan-700 hover:bg-cyan-800 text-white border-cyan-800'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
+                    }`}
+                  >
+                    {isRetailEffective
+                      ? (isAr ? 'مفعّل — إيقاف لهذا الطلب' : 'Enabled — Disable Override')
+                      : (isAr ? 'معطّل — تفعيل كتجزئة' : 'Disabled — Mark as Retail Route')}
+                  </button>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Section 2: Tax / VAT Mode (Sales Orders & Invoice Only) */}

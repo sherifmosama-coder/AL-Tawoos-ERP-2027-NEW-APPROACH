@@ -20,7 +20,9 @@ import {
   RotateCcw,
   Truck,
   GitFork,
-  PackageMinus
+  PackageMinus,
+  ClipboardCheck,
+  Store
 } from 'lucide-react';
 
 export default function SalesOrderAuditModal({
@@ -56,7 +58,12 @@ export default function SalesOrderAuditModal({
           entry.action !== 'split_child_created' &&
           entry.action !== 'split_child_updated' &&
           entry.action !== 'split_reverted' &&
-          entry.action !== 'partial_rejection_sync'
+          entry.action !== 'partial_rejection_sync' &&
+          entry.action !== 'retail_settlement_confirmed' &&
+          entry.action !== 'retail_settlement_force_synced' &&
+          entry.action !== 'retail_delivery_deferred' &&
+          entry.action !== 'retail_warehouse_acknowledged' &&
+          entry.action !== 'retail_accounting_acknowledged'
         ) {
           return false;
         }
@@ -183,6 +190,36 @@ export default function SalesOrderAuditModal({
           bg: 'bg-rose-50 text-rose-800 border-rose-200',
           icon: PackageMinus,
           label: isAr ? 'مزامنة الاستلام الفعلي والمرتجع' : 'Actual Qty Sync & Return'
+        };
+      case 'retail_settlement_confirmed':
+        return {
+          bg: 'bg-cyan-50 text-cyan-800 border-cyan-200',
+          icon: Store,
+          label: isAr ? 'تأكيد وتسوية مبيعات التجزئة' : 'Retail Trip Settled'
+        };
+      case 'retail_settlement_force_synced':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: Store,
+          label: isAr ? 'تحديث ومزامنة تسوية التجزئة' : 'Retail Settlement Force-Synced'
+        };
+      case 'retail_delivery_deferred':
+        return {
+          bg: 'bg-amber-50 text-amber-800 border-amber-200',
+          icon: Truck,
+          label: isAr ? 'تسجيل الوصول (بانتظار تسوية التجزئة)' : 'Arrived (Awaiting Retail Settlement)'
+        };
+      case 'retail_warehouse_acknowledged':
+        return {
+          bg: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+          icon: ClipboardCheck,
+          label: isAr ? 'اعتماد المخزن لمرتجع التجزئة' : 'Warehouse Ack (Return Stock)'
+        };
+      case 'retail_accounting_acknowledged':
+        return {
+          bg: 'bg-teal-50 text-teal-800 border-teal-200',
+          icon: ClipboardCheck,
+          label: isAr ? 'اعتماد الحسابات لفاتورة التجزئة' : 'Accounting Ack (Adjusted Invoice)'
         };
       case 'edit':
       default:
