@@ -43,7 +43,9 @@ import {
   Wrench,
   ArrowLeft,
   ArrowRight,
-  Copy
+  Copy,
+  GitFork,
+  PackageMinus
 } from 'lucide-react';
 import {
   collection,
@@ -58,6 +60,7 @@ import PeacockLoader from './PeacockLoader.jsx';
 import { canAccessAction } from '../config/appArchitecture.js';
 import { RowCommentButton } from './comments';
 import { resolveLocationInfo, normalizeLocationUrl } from '../utils/locationUtils.js';
+import { compareOrdersBySerialAsc } from '../utils/salesOrderUtils.js';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
 
 const ORDER_TYPES = [
@@ -1289,7 +1292,38 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
         </div>
 
         {/* Products Table Content */}
-        <div className="p-4 overflow-y-auto flex-1 text-xs">
+        <div className="p-4 overflow-y-auto flex-1 text-xs space-y-3">
+          {order.hasPartialRejection && (
+            <div className="p-3 bg-rose-50/90 border border-rose-200 rounded-2xl space-y-1.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-extrabold text-rose-900 flex items-center gap-1.5">
+                  <PackageMinus className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>
+                    {isAr
+                      ? 'تمت مزامنة مرتجع جزئي من العميل — القيم أدناه تعكس المستلم فعلياً'
+                      : 'Post-Dispatch Partial Client Rejection Synced — Live quantities reflect Actual Received'}
+                  </span>
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+                  <span className="px-2 py-0.5 rounded-lg bg-white border border-rose-200 text-rose-800 font-black">
+                    {isAr
+                      ? `مرتجع للمخزن: -${Number(order.returnedCartons || 0)} كرتونة (${Number(order.returnedWeightKg || 0).toFixed(1)} كجم)`
+                      : `Returned: -${Number(order.returnedCartons || 0)} ctn (${Number(order.returnedWeightKg || 0).toFixed(1)} kg)`}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white font-black">
+                    {isAr ? `تسوية: -${Number(order.returnedAmount || 0).toFixed(2)} ج.م` : `Credit: -${Number(order.returnedAmount || 0).toFixed(2)} EGP`}
+                  </span>
+                </div>
+              </div>
+              {order.rejectionReason && (
+                <div className="text-[11px] text-rose-900 bg-white/80 px-2.5 py-1 rounded-lg border border-rose-200/70">
+                  <strong>{isAr ? 'سبب الرفض: ' : 'Rejection Reason: '}</strong>
+                  {order.rejectionReason}
+                </div>
+              )}
+            </div>
+          )}
+
           {lines.length === 0 ? (
             <div className="p-8 text-center text-slate-400">
               <Boxes className="w-8 h-8 text-slate-300 mx-auto mb-2" />
@@ -1301,8 +1335,14 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                 <thead>
                   <tr className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200 text-[11px]">
                     <th className="py-2.5 px-3 text-start">{isAr ? 'الصنف' : 'Product'}</th>
-                    <th className="py-2.5 px-3 text-center">{isAr ? 'الكمية' : 'Qty'}</th>
+                    {order.hasPartialRejection && (
+                      <th className="py-2.5 px-2.5 text-center text-slate-500">{isAr ? 'المنصرف' : 'Dispatched'}</th>
+                    )}
+                    <th className="py-2.5 px-3 text-center">{isAr ? (order.hasPartialRejection ? 'المستلم فعلياً' : 'الكمية') : (order.hasPartialRejection ? 'Actual Recv' : 'Qty')}</th>
                     <th className="py-2.5 px-3 text-center">{isAr ? 'البونص' : 'Bonus'}</th>
+                    {order.hasPartialRejection && (
+                      <th className="py-2.5 px-2.5 text-center text-rose-700">{isAr ? 'مرتجع' : 'Returned'}</th>
+                    )}
                     <th className="py-2.5 px-3 text-end">{isAr ? 'سعر الوحدة' : 'Unit Price'}</th>
                     <th className="py-2.5 px-3 text-end">{isAr ? 'الوزن' : 'Weight'}</th>
                     <th className="py-2.5 px-3 text-end">{isAr ? 'الإجمالي (EGP)' : 'Total (EGP)'}</th>
@@ -1312,6 +1352,8 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                   {lines.map((l, idx) => {
                     const lineQty = Number(l.qty) || 0;
                     const lineBonus = Number(l.bonus) || 0;
+                    const dispCtn = Number(l.dispatchedQty ?? lineQty) + Number(l.dispatchedBonus ?? lineBonus);
+                    const retCtn = Number(l.returnedCartons ?? Math.max(0, dispCtn - (lineQty + lineBonus)));
                     const linePrice = Number(l.detectedUnitPrice || l.unitPrice || l.price) || 0;
                     const lineTotal = Number(l.lineTotal || (lineQty * linePrice)) || 0;
                     const matchedProd = products.find((p) => p.id === (l.productId || l.id) || (l.itemCode && p.itemCode === l.itemCode) || (l.productCode && (p.itemCode === l.productCode || p.code === l.productCode)));
@@ -1331,6 +1373,11 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                             </span>
                           )}
                         </td>
+                        {order.hasPartialRejection && (
+                          <td className="py-2 px-2.5 text-center text-slate-500">
+                            {dispCtn.toLocaleString()} {isAr ? 'ك' : 'ctn'}
+                          </td>
+                        )}
                         <td className="py-2 px-3 text-center font-bold text-slate-900">
                           {lineQty.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
                         </td>
@@ -1343,6 +1390,11 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                             <span className="text-slate-300">—</span>
                           )}
                         </td>
+                        {order.hasPartialRejection && (
+                          <td className="py-2 px-2.5 text-center font-black text-rose-700">
+                            {retCtn > 0 ? `-${retCtn}` : '0'}
+                          </td>
+                        )}
                         <td className="py-2 px-3 text-end font-semibold text-slate-700">
                           {linePrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
@@ -1495,7 +1547,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       loaded.sort((a, b) => {
         const dateComp = String(b.invoiceDate || '').localeCompare(String(a.invoiceDate || ''));
         if (dateComp !== 0) return dateComp;
-        return (Number(b.serial) || 0) - (Number(a.serial) || 0);
+        return compareOrdersBySerialAsc(b, a);
       });
       setOrders(loaded);
       setLoading(false);
@@ -2042,8 +2094,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // Filtered Orders (Unified Target Loading Date Visibility Scope)
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
-      // Exclude purely administrative, collection, or financial-only (invoice_only_*) orders
-      if (['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType)) {
+      // Exclude purely administrative, collection, financial-only, or immutable split-parent reference orders
+      if (order.isSplitParent || ['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType)) {
         return false;
       }
 
@@ -2150,7 +2202,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     if (sortBy === 'client_asc') {
       return String(a.clientName || '').localeCompare(String(b.clientName || ''), 'ar');
     }
-    return (Number(a.serial) || 0) - (Number(b.serial) || 0);
+    return compareOrdersBySerialAsc(a, b);
   };
 
   // Sorted Orders
@@ -2170,7 +2222,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         return (Number(b.totalCartons || b.totalQty) || 0) - (Number(a.totalCartons || a.totalQty) || 0);
       }
       if (sortBy === 'serial_asc') {
-        return (Number(a.serial) || 0) - (Number(b.serial) || 0);
+        return compareOrdersBySerialAsc(a, b);
       }
       if (sortBy === 'client_asc') {
         return String(a.clientName || '').localeCompare(String(b.clientName || ''), 'ar');
@@ -2483,9 +2535,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     const analyzed = vehicles.map((veh) => {
       const maxCapKg = Number(veh.maxCapacityKg) || 0;
 
-      // 1. Gather all active physical delivery orders assigned to this vehicle
+      // 1. Gather all active physical delivery orders assigned to this vehicle (excluding split parent references)
       const allVehicleOrders = orders.filter((o) => {
-        if (o.confirmationStatus === 'canceled') return false;
+        if (o.isSplitParent || o.confirmationStatus === 'canceled') return false;
         if (['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(o.orderType)) return false;
         const eff = getEffectiveAssignment(o);
         const vehId = eff.assignedVehicleId || o.assignedVehicleId;
@@ -3654,6 +3706,23 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
                                 </div>
 
+                                {(order.splitParentId || (order.hasPartialRejection && Number(order.returnedCartons || 0) > 0)) && (
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {order.splitParentId && (
+                                      <span className="inline-flex items-center gap-0.5 text-[9px] font-black text-blue-800 bg-blue-50 border border-blue-200 px-1.5 py-0.2 rounded">
+                                        <GitFork className="w-2.5 h-2.5 text-blue-600 shrink-0" />
+                                        <span>{isAr ? `جزء ${order.splitIndex}/${order.splitTotal}` : `Split ${order.splitIndex}/${order.splitTotal}`}</span>
+                                      </span>
+                                    )}
+                                    {order.hasPartialRejection && Number(order.returnedCartons || 0) > 0 && (
+                                      <span className="inline-flex items-center gap-0.5 text-[9px] font-black text-rose-800 bg-rose-50 border border-rose-200 px-1.5 py-0.2 rounded">
+                                        <PackageMinus className="w-2.5 h-2.5 text-rose-600 shrink-0" />
+                                        <span>{isAr ? `مرتجع: -${Number(order.returnedCartons)}` : `Ret: -${Number(order.returnedCartons)}`}</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+
                                 <div
                                   className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl text-xs font-black shadow-2xs max-w-full truncate"
                                   style={{
@@ -4057,6 +4126,46 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     module="sales"
                                   />
 
+                                  {order.splitParentId && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-black text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-lg"
+                                      title={isAr ? `جزء من الأمر الأصلي #${order.baseSerial || ''}` : `Split portion of #${order.baseSerial || ''}`}
+                                    >
+                                      <GitFork className="w-3 h-3 text-blue-600 shrink-0" />
+                                      <span>{isAr ? `جزء ${order.splitIndex}/${order.splitTotal}` : `Split ${order.splitIndex}/${order.splitTotal}`}</span>
+                                    </span>
+                                  )}
+
+                                  {order.splitParentId && order.invoiceSplitMode === 'merged_on_parent' && (
+                                    <span className="inline-flex items-center text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-lg">
+                                      {isAr ? `مفوتر على #${order.baseSerial || ''}` : `Billed under #${order.baseSerial || ''}`}
+                                    </span>
+                                  )}
+
+                                  {order.hasPartialRejection && Number(order.returnedCartons || 0) > 0 && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-black text-rose-800 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-lg shadow-2xs"
+                                      title={order.rejectionReason || (isAr ? 'مرتجع جزئي من العميل' : 'Partial client rejection')}
+                                    >
+                                      <PackageMinus className="w-3 h-3 text-rose-600 shrink-0" />
+                                      <span>
+                                        {isAr
+                                          ? `مرتجع جزئي: -${Number(order.returnedCartons)} كرتونة`
+                                          : `Partial Return: -${Number(order.returnedCartons)} ctn`}
+                                      </span>
+                                    </span>
+                                  )}
+
+                                  {eff.assignedVehicleId && !eff.loadingOrderNumber && truckDisplayName && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg"
+                                      title={isAr ? 'شاحنة مبدئية مقترحة من مصفوفة التقسيم' : 'Pre-selected truck from Order Split Matrix'}
+                                    >
+                                      <Truck className="w-3 h-3 text-indigo-600 shrink-0" />
+                                      <span>{isAr ? `شاحنة مقترحة: ${truckDisplayName}` : `Pre-selected: ${truckDisplayName}`}</span>
+                                    </span>
+                                  )}
+
                                   {/* Fulfillment Status Badge - Prominent Corporate Style */}
                                   {currentFulfillmentStatus && (
                                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-black border shadow-2xs ${currentStatusConfig.badgeClasses}`}>
@@ -4388,6 +4497,46 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     tab="loading_plan"
                                     module="sales"
                                   />
+
+                                  {order.splitParentId && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-black text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-lg"
+                                      title={isAr ? `جزء من الأمر الأصلي #${order.baseSerial || ''}` : `Split portion of #${order.baseSerial || ''}`}
+                                    >
+                                      <GitFork className="w-3 h-3 text-blue-600 shrink-0" />
+                                      <span>{isAr ? `جزء ${order.splitIndex}/${order.splitTotal}` : `Split ${order.splitIndex}/${order.splitTotal}`}</span>
+                                    </span>
+                                  )}
+
+                                  {order.splitParentId && order.invoiceSplitMode === 'merged_on_parent' && (
+                                    <span className="inline-flex items-center text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-lg">
+                                      {isAr ? `مفوتر على #${order.baseSerial || ''}` : `Billed under #${order.baseSerial || ''}`}
+                                    </span>
+                                  )}
+
+                                  {order.hasPartialRejection && Number(order.returnedCartons || 0) > 0 && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-black text-rose-800 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-lg shadow-2xs"
+                                      title={order.rejectionReason || (isAr ? 'مرتجع جزئي من العميل' : 'Partial client rejection')}
+                                    >
+                                      <PackageMinus className="w-3 h-3 text-rose-600 shrink-0" />
+                                      <span>
+                                        {isAr
+                                          ? `مرتجع جزئي: -${Number(order.returnedCartons)} كرتونة`
+                                          : `Partial Return: -${Number(order.returnedCartons)} ctn`}
+                                      </span>
+                                    </span>
+                                  )}
+
+                                  {eff.assignedVehicleId && !eff.loadingOrderNumber && truckDisplayName && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg"
+                                      title={isAr ? 'شاحنة مبدئية مقترحة من مصفوفة التقسيم' : 'Pre-selected truck from Order Split Matrix'}
+                                    >
+                                      <Truck className="w-3 h-3 text-indigo-600 shrink-0" />
+                                      <span>{isAr ? `شاحنة مقترحة: ${truckDisplayName}` : `Pre-selected: ${truckDisplayName}`}</span>
+                                    </span>
+                                  )}
 
                                   {/* Fulfillment Status Badge - Prominent Corporate Style */}
                                   {currentFulfillmentStatus && (

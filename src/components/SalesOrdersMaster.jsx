@@ -63,11 +63,25 @@ import {
   StickyNote,
   Users,
   PackageCheck,
-  Copy
+  Copy,
+  GitFork,
+  Printer,
+  PackageMinus
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
+import OrderSplitModal from './OrderSplitModal';
 import PeacockLoader from './PeacockLoader';
+import { canAccessAction } from '../config/appArchitecture';
+import {
+  PHYSICAL_DELIVERY_EXCLUDED_TYPES,
+  POST_DISPATCH_STATUSES,
+  parseOrderSerialParts,
+  compareOrdersBySerialAsc,
+  calculateSalesOrderLineTotals,
+  aggregateSalesOrderTotals,
+  openPrintableAdjustmentSlip
+} from '../utils/salesOrderUtils';
 import { normalizeLocationUrl } from '../utils/locationUtils';
 import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from './ClientSegmentsMaster';
 import { RowCommentButton, useRecordComments } from './comments';
@@ -241,7 +255,7 @@ const VAT_MODES = [
 const TAXABLE_VAT_MODES = VAT_MODES.filter((v) => v.id !== 'none');
 
 /**
- * Helper to resolve sequential 4-digit serial (e.g. 0001, 0002) starting at 0001
+ * Helper to resolve sequential 4-digit serial (e.g. 0001, 0002) or split serial (e.g. 0001 (2/3))
  */
 const resolveOrderSerial = (order, allOrders = []) => {
   if (!order) return '0001';
@@ -249,6 +263,9 @@ const resolveOrderSerial = (order, allOrders = []) => {
     const s = String(order.serial).trim();
     if (/^\d+$/.test(s)) return s.padStart(4, '0');
     return s;
+  }
+  if (order.baseSerial && order.splitIndex && order.splitTotal) {
+    return `${String(order.baseSerial).padStart(4, '0')} (${order.splitIndex}/${order.splitTotal})`;
   }
   const match = String(order.id || '').match(/^(?:SO-)?(\d+)$/i);
   if (match) {
@@ -258,15 +275,14 @@ const resolveOrderSerial = (order, allOrders = []) => {
 };
 
 /**
- * Helper to generate next sequential 4-digit serial starting at 0001
+ * Helper to generate next sequential 4-digit serial starting at 0001 (safe with split children like 0001 (2/3))
  */
 const generateNextOrderSerial = (allOrders = []) => {
   let max = 0;
   (allOrders || []).forEach((o) => {
-    const s = resolveOrderSerial(o, allOrders);
-    const n = parseInt(s, 10);
-    if (!isNaN(n) && n > max && n < 999999) {
-      max = n;
+    const { baseNum } = parseOrderSerialParts(o);
+    if (!isNaN(baseNum) && baseNum > max && baseNum < 999999) {
+      max = baseNum;
     }
   });
   return String(max + 1).padStart(4, '0');
@@ -546,7 +562,9 @@ function CopyButton({ text, title, isAr = true, className = '' }) {
 export default function SalesOrdersMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
-  const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
+  const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin' || currentUser?.role === 'admin';
+  const canSplitOrder = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSplitOrder', currentUser);
+  const canAdjustDispatchedQty = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canAdjustDispatchedQuantities', currentUser);
   const currentUserName = currentUser?.nameAr || currentUser?.name || 'مستخدم معتمد';
   const currentUserId = currentUser?.id || 'usr_unknown';
 
@@ -581,8 +599,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   // Modal States
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState(null);
+  const [editorInitialAdjustmentMode, setEditorInitialAdjustmentMode] = useState(false);
   const [isAdminModal, setIsAdminModal] = useState(false);
   const [auditModalOrder, setAuditModalOrder] = useState(null);
+  const [splitModalOrder, setSplitModalOrder] = useState(null);
+  const [splitGuidanceOrder, setSplitGuidanceOrder] = useState(null);
   const [deleteConfirmOrder, setDeleteConfirmOrder] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null);
   const [cancelModalOrder, setCancelModalOrder] = useState(null);
@@ -602,11 +623,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'sales_orders'), (snapshot) => {
       const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-      // Sort newest invoice date first, then serial descending
+      // Sort newest invoice date first, then base serial descending (with child split portions ascending under same base)
       loaded.sort((a, b) => {
         const dateComp = String(b.invoiceDate || '').localeCompare(String(a.invoiceDate || ''));
         if (dateComp !== 0) return dateComp;
-        return (Number(b.serial) || 0) - (Number(a.serial) || 0);
+        const pa = parseOrderSerialParts(a);
+        const pb = parseOrderSerialParts(b);
+        if (pa.baseNum !== pb.baseNum) return pb.baseNum - pa.baseNum;
+        return pa.splitIndex - pb.splitIndex;
       });
       setOrders(loaded);
       setLoading(false);
@@ -1175,8 +1199,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     return Object.values(groupsMap);
   }, [filteredOrders, groupBy, isAr, vehicles]);
 
-  // KPI Summary Metrics
+  // KPI Summary Metrics (skip immutable isSplitParent references to avoid double-counting cartons/weight/revenue)
   const summaryMetrics = useMemo(() => {
+    let totalOrders = 0;
     let totalCartons = 0;
     let totalWeightKg = 0;
     let totalValue = 0;
@@ -1184,6 +1209,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     let confirmedCount = 0;
 
     filteredOrders.forEach((o) => {
+      if (o.isSplitParent) return;
+      totalOrders++;
       totalCartons += Number(o.totalCartons || o.totalQty || 0);
       totalWeightKg += Number(o.totalWeightKg || 0);
       totalValue += Number(o.grandTotal || 0);
@@ -1196,7 +1223,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     });
 
     return {
-      totalOrders: filteredOrders.length,
+      totalOrders,
       totalCartons,
       totalWeightTons: (totalWeightKg / 1000).toFixed(2),
       totalValue,
@@ -1204,6 +1231,36 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
       confirmedCount
     };
   }, [filteredOrders]);
+
+  // Trigger Split Order Workflow with strict Pending ('not_yet') status guard & helpful user guidance
+  const handleRequestSplitOrder = (order) => {
+    if (!order) return;
+    if (order.isSplitParent || order.splitParentId) {
+      setSplitGuidanceOrder({
+        order,
+        reason: order.isSplitParent ? 'already_parent' : 'already_child'
+      });
+      return;
+    }
+    const status = order.fulfillmentStatus || 'not_yet';
+    if (status !== 'not_yet') {
+      setSplitGuidanceOrder({
+        order,
+        reason: 'not_pending',
+        currentStatus: status
+      });
+      return;
+    }
+    if (!canSplitOrder) {
+      alert(
+        isAr
+          ? 'عذراً، لا تملك صلاحية تقسيم أوامر البيع. يرجى مراجعة مدير النظام لتفعيل صلاحية (تقسيم أمر البيع).'
+          : 'You do not have permission to split sales orders (canSplitOrder).'
+      );
+      return;
+    }
+    setSplitModalOrder(order);
+  };
 
   // Delete Order Handler
   const handleDeleteOrder = async (orderId) => {
@@ -1722,13 +1779,50 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                 </span>
 
                                 {/* Subtle Serial & Audit History */}
-                                <div className="flex items-center gap-1.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
                                   <span
-                                    className="font-mono text-[11px] text-slate-400 font-semibold tracking-tight select-all"
+                                    className="font-mono text-[11px] text-slate-500 font-bold tracking-tight select-all"
                                     title={isAr ? `مسلسل أمر البيع: #${orderSerial}` : `Order Serial: #${orderSerial}`}
                                   >
                                     #{orderSerial}
                                   </span>
+
+                                  {order.isSplitParent && (
+                                    <span
+                                      className="inline-flex items-center gap-0.5 text-[10px] font-black text-violet-800 bg-violet-50 border border-violet-200 px-1.5 py-0.2 rounded-md"
+                                      title={isAr ? 'أمر أم مقسم إلى شحنات فرعية' : 'Split Parent Reference'}
+                                    >
+                                      <GitFork className="w-2.5 h-2.5 text-violet-600" />
+                                      <span>{isAr ? `أمر أم مقسم (${order.splitTotal || order.splitChildrenIds?.length || 0})` : `Split Parent (${order.splitTotal || order.splitChildrenIds?.length || 0})`}</span>
+                                    </span>
+                                  )}
+
+                                  {order.isSplitParent && (
+                                    <span className="text-[9px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded">
+                                      {order.invoiceSplitMode === 'merged_on_parent'
+                                        ? (isAr ? 'فاتورة مجمعة' : 'Merged Invoice')
+                                        : (isAr ? 'مستندات منفصلة' : 'Split Docs')}
+                                    </span>
+                                  )}
+
+                                  {order.splitParentId && (
+                                    <span
+                                      className="inline-flex items-center gap-0.5 text-[10px] font-black text-blue-800 bg-blue-50 border border-blue-200 px-1.5 py-0.2 rounded-md"
+                                      title={isAr ? `جزء من الأمر #${order.baseSerial || ''}` : `Portion of #${order.baseSerial || ''}`}
+                                    >
+                                      <GitFork className="w-2.5 h-2.5 text-blue-600" />
+                                      <span>{isAr ? `جزء ${order.splitIndex}/${order.splitTotal}` : `Portion ${order.splitIndex}/${order.splitTotal}`}</span>
+                                    </span>
+                                  )}
+
+                                  {order.splitParentId && order.invoiceSplitMode === 'merged_on_parent' && (
+                                    <span
+                                      className="text-[9px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded"
+                                      title={isAr ? 'الفاتورة الضريبية مجمعة على الأمر الأصلي' : 'VAT Invoice covered under parent order'}
+                                    >
+                                      {isAr ? `مفوتر على #${order.baseSerial || ''}` : `Billed under #${order.baseSerial || ''}`}
+                                    </span>
+                                  )}
 
                                   {order.auditTrail?.length > 0 && (
                                     <button
@@ -2100,10 +2194,23 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     <span>{isAr ? 'مدفوع' : 'Paid'}</span>
                                   </span>
                                 )}
+                                {order.hasPartialRejection && Number(order.returnedCartons || 0) > 0 && (
+                                  <span
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-rose-50 text-rose-800 border border-rose-200 shadow-2xs"
+                                    title={order.rejectionReason || (isAr ? 'مرتجع جزئي من العميل بعد التحميل' : 'Post-dispatch partial client rejection')}
+                                  >
+                                    <PackageMinus className="w-3 h-3 text-rose-600 shrink-0" />
+                                    <span>
+                                      {isAr
+                                        ? `مرتجع جزئي: -${Number(order.returnedCartons || 0)} كرتونة`
+                                        : `Partial Return: -${Number(order.returnedCartons || 0)} ctn`}
+                                    </span>
+                                  </span>
+                                )}
                               </div>
                             </td>
 
-                            {/* 10. Actions Button (3-dots with Portal Menu + Dynamic Row Comment) */}
+                            {/* 10. Actions Button (Split + 3-dots Portal Menu + Dynamic Row Comment) */}
                             <td className="py-3 px-3 text-center whitespace-nowrap">
                               <div className="flex items-center justify-center gap-1">
                                 <RowCommentButton
@@ -2112,6 +2219,31 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   tab="sales_orders"
                                   module="sales"
                                 />
+                                {!PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(order.orderType) && !order.isSplitParent && !order.splitParentId && canSplitOrder && (() => {
+                                  const isPendingForSplit = !order.fulfillmentStatus || order.fulfillmentStatus === 'not_yet';
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRequestSplitOrder(order);
+                                      }}
+                                      aria-disabled={!isPendingForSplit}
+                                      className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                                        isPendingForSplit
+                                          ? 'text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100 hover:text-violet-900 shadow-2xs'
+                                          : 'text-slate-300 bg-slate-50 border-slate-200/70 opacity-60 hover:opacity-100 hover:text-amber-600 hover:border-amber-300'
+                                      }`}
+                                      title={
+                                        isPendingForSplit
+                                          ? (isAr ? 'تقسيم الطلب على عدة شاحنات' : 'Split order across trucks')
+                                          : (isAr ? 'غير متاح التقسيم لأن الطلب دخل مرحلة التجهيز — انقر للتوضيح' : 'Cannot split once Preparing — click for instructions')
+                                      }
+                                    >
+                                      <GitFork className="w-3.5 h-3.5" />
+                                    </button>
+                                  );
+                                })()}
                                 <button
                                   type="button"
                                   data-order-menu
@@ -2342,6 +2474,99 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         </div>
                                       )}
 
+                                      {/* Split Parent Portions Directory OR Child Lineage Notice */}
+                                      {order.isSplitParent && (() => {
+                                        const childPortions = orders
+                                          .filter((o) => o.splitParentId === order.id)
+                                          .sort((a, b) => (Number(a.splitIndex) || 0) - (Number(b.splitIndex) || 0));
+                                        return (
+                                          <div className="p-3 bg-violet-50/75 border border-violet-200 rounded-xl space-y-2 shadow-2xs">
+                                            <div className="flex items-center justify-between flex-wrap gap-2 border-b border-violet-200/70 pb-2">
+                                              <div className="flex items-center gap-2">
+                                                <div className="w-7 h-7 rounded-lg bg-violet-600 text-white flex items-center justify-center shadow-xs">
+                                                  <GitFork className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                  <h5 className="font-extrabold text-xs text-violet-950">
+                                                    {isAr
+                                                      ? `دليل الشحنات الفرعية للأمر المقسم (${childPortions.length} أجزاء)`
+                                                      : `Split Order Portions Directory (${childPortions.length} Portions)`}
+                                                  </h5>
+                                                  <span className="text-[10px] text-violet-700 font-medium">
+                                                    {order.invoiceSplitMode === 'merged_on_parent'
+                                                      ? (isAr
+                                                          ? 'هذا الأمر الأصلي مرجعي (مستبعد من إجماليات خطة التحميل والمبيعات لتجنب التكرار)، والفاتورة الضريبية مجمعة على هذا السجل.'
+                                                          : 'Immutable Parent Reference (excluded from dispatch/KPI totals to avoid double-counting). Tax invoice is consolidated on this parent record.')
+                                                      : (isAr
+                                                          ? 'هذا الأمر الأصلي مرجعي (مستبعد من الإجماليات لتجنب التكرار)، وكل جزء له مستند مالي منفصل.'
+                                                          : 'Immutable Parent Reference (excluded from KPI/Loading Plan totals to avoid double-counting). Each portion carries standalone billing.')}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+                                              {childPortions.map((child) => {
+                                                const childVeh = vehicles.find((v) => v.id === child.assignedVehicleId);
+                                                const childVehName = resolveVehicleDisplayName(childVeh, child.assignedVehicleName);
+                                                const childFulf = FULFILLMENT_STATUSES.find((s) => s.id === (child.fulfillmentStatus || 'not_yet')) || FULFILLMENT_STATUSES[0];
+                                                return (
+                                                  <div key={child.id} className="bg-white border border-violet-200/80 rounded-lg p-2.5 flex flex-col gap-1.5 shadow-2xs">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                      <span className="font-mono font-black text-violet-900 text-xs">
+                                                        #{resolveOrderSerial(child, orders)}
+                                                      </span>
+                                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                                                        {isAr ? childFulf.labelAr : childFulf.labelEn}
+                                                      </span>
+                                                    </div>
+                                                    <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono">
+                                                      <span>{Number(child.totalCartons || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
+                                                      <span>{((Number(child.totalWeightKg) || 0) / 1000).toFixed(2)} {isAr ? 'طن' : 't'}</span>
+                                                      <span className="font-bold text-slate-800">{Number(child.grandTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} EGP</span>
+                                                    </div>
+                                                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100 text-[10px]">
+                                                      <span className="text-slate-600 truncate flex items-center gap-1">
+                                                        <Truck className="w-3 h-3 text-indigo-500 shrink-0" />
+                                                        <span className="truncate">{childVehName || (isAr ? 'بانتظار التسكين' : 'Awaiting Truck')}</span>
+                                                      </span>
+                                                      <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          handleNavigateToLoadingPlan(child);
+                                                        }}
+                                                        className="text-indigo-600 hover:text-indigo-800 font-bold shrink-0 cursor-pointer"
+                                                      >
+                                                        {isAr ? 'خطة التحميل' : 'Plan'} →
+                                                      </button>
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
+
+                                      {order.splitParentId && (
+                                        <div className="px-3 py-2 bg-blue-50/75 border border-blue-200 rounded-xl flex items-center justify-between flex-wrap gap-2 text-xs">
+                                          <div className="flex items-center gap-2 text-blue-900 font-bold">
+                                            <GitFork className="w-4 h-4 text-blue-600 shrink-0" />
+                                            <span>
+                                              {isAr
+                                                ? `شحنة فرعية (${order.splitIndex} من ${order.splitTotal}) للأمر الأصلي #${order.baseSerial || ''}`
+                                                : `Split Portion (${order.splitIndex} of ${order.splitTotal}) from parent order #${order.baseSerial || ''}`}
+                                            </span>
+                                          </div>
+                                          <span className="text-[11px] font-semibold text-blue-800 bg-white px-2 py-0.5 rounded-lg border border-blue-200">
+                                            {order.invoiceSplitMode === 'merged_on_parent'
+                                              ? (isAr ? `الفاتورة الضريبية مجمعة على #${order.baseSerial || ''}` : `Tax Invoice billed under parent #${order.baseSerial || ''}`)
+                                              : (isAr ? 'مستند مالي مستقل لهذا الجزء' : 'Standalone billing document')}
+                                          </span>
+                                        </div>
+                                      )}
+
                                       {/* Full Operating Schedule Card (Hiding Empty Fields) */}
                                       {(profile.hasHours || profile.hasHolidays || profile.hasAddress || profile.hasContact || locationUrl || profile.hasClientNotes || profile.hasBranchNotes || profile.hasNotes) && (
                                         <div className="p-3 bg-slate-50/90 border border-slate-200 rounded-xl space-y-2">
@@ -2537,6 +2762,168 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         </table>
                                       </div>
 
+                                      {/* Warehouse Return Estimate & Accountant Adjusted Invoice Reconciliation */}
+                                      {order.hasPartialRejection && (() => {
+                                        const snap = order.preAdjustmentSnapshot || {};
+                                        const origGrandTotal = Number(
+                                          snap.originalGrandTotal ?? (Number(order.grandTotal || 0) + Number(order.returnedAmount || 0))
+                                        );
+                                        const origTotalCartons = Number(
+                                          snap.originalTotalCartons ?? (Number(order.totalCartons || order.totalQty || 0) + Number(order.returnedCartons || 0))
+                                        );
+                                        const actualCartons = Number(order.totalCartons || order.totalQty || 0);
+                                        const actualGrandTotal = Number(order.grandTotal || 0);
+                                        const retCartons = Number(order.returnedCartons || 0);
+                                        const retWeightKg = Number(order.returnedWeightKg || 0);
+                                        const retAmount = Number(order.returnedAmount || 0);
+
+                                        return (
+                                          <div className="p-3.5 bg-gradient-to-r from-rose-50/90 via-amber-50/40 to-rose-50/80 border border-rose-200 rounded-xl space-y-3 shadow-2xs">
+                                            <div className="flex items-center justify-between flex-wrap gap-2 border-b border-rose-200/80 pb-2">
+                                              <div className="flex items-center gap-2">
+                                                <div className="w-7 h-7 rounded-lg bg-rose-600 text-white flex items-center justify-center shadow-xs">
+                                                  <PackageMinus className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                  <h5 className="font-extrabold text-xs text-rose-950">
+                                                    {isAr
+                                                      ? 'تقدير مرتجع المخزن وتسوية الفاتورة المعدلة (رفض جزئي من العميل)'
+                                                      : 'Warehouse Return Estimate & Accountant Adjusted Invoice'}
+                                                  </h5>
+                                                  <span className="text-[10px] text-rose-700 font-medium">
+                                                    {order.lastAdjustedBy
+                                                      ? (isAr
+                                                          ? `آخر مزامنة: ${order.lastAdjustedBy} ${order.lastAdjustedAt ? `(${new Date(order.lastAdjustedAt).toLocaleString('ar-EG')})` : ''}`
+                                                          : `Last synced by ${order.lastAdjustedBy} ${order.lastAdjustedAt ? `(${new Date(order.lastAdjustedAt).toLocaleString('en-US')})` : ''}`)
+                                                      : (isAr ? 'بيانات التسليم الفعلي والمرتجع متزامنة' : 'Synced actual received quantities vs dispatched baseline')}
+                                                  </span>
+                                                </div>
+                                              </div>
+
+                                              <div className="flex items-center gap-2">
+                                                {canAdjustDispatchedQty && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setEditingOrder(order);
+                                                      setIsAdminModal(false);
+                                                      setEditorInitialAdjustmentMode(true);
+                                                      setIsEditorOpen(true);
+                                                    }}
+                                                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-amber-50 border border-amber-300 text-amber-800 text-[11px] font-bold rounded-lg transition cursor-pointer shadow-2xs"
+                                                  >
+                                                    <Edit3 className="w-3 h-3 text-amber-600" />
+                                                    <span>{isAr ? 'تعديل المرتجع' : 'Adjust Sync'}</span>
+                                                  </button>
+                                                )}
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    openPrintableAdjustmentSlip(order, isAr);
+                                                  }}
+                                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold rounded-lg transition cursor-pointer shadow-2xs"
+                                                >
+                                                  <Printer className="w-3 h-3" />
+                                                  <span>{isAr ? 'طباعة إشعار المرتجع والفاتورة المعدلة' : 'Print Return & Adjusted Invoice Sheet'}</span>
+                                                </button>
+                                              </div>
+                                            </div>
+
+                                            {order.rejectionReason && (
+                                              <div className="px-2.5 py-1.5 bg-white/90 border border-rose-200 rounded-lg text-[11px] text-rose-900">
+                                                <strong className="font-extrabold">{isAr ? 'سبب الرفض الجزئي: ' : 'Rejection Reason: '}</strong>
+                                                <span>{order.rejectionReason}</span>
+                                              </div>
+                                            )}
+
+                                            {/* 4 KPI Summary Cards */}
+                                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                                              <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                                                <span className="text-[10px] text-slate-400 block font-semibold">{isAr ? 'المنصرف الأصلي (قبل الرفض):' : 'Original Dispatched:'}</span>
+                                                <span className="font-mono font-bold text-slate-800 block mt-0.5">
+                                                  {origTotalCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                                <span className="font-mono text-[11px] text-slate-500">
+                                                  {origGrandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-white p-2.5 rounded-lg border border-emerald-200">
+                                                <span className="text-[10px] text-emerald-700 block font-semibold">{isAr ? 'المستلم فعلياً (المعتمد):' : 'Actual Accepted:'}</span>
+                                                <span className="font-mono font-bold text-emerald-900 block mt-0.5">
+                                                  {actualCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                                <span className="font-mono text-[11px] font-bold text-emerald-700">
+                                                  {actualGrandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-300">
+                                                <span className="text-[10px] text-amber-900 block font-bold">{isAr ? 'تقدير المرتجع للمخزن:' : 'Estimated Warehouse Return:'}</span>
+                                                <span className="font-mono font-black text-amber-800 block mt-0.5">
+                                                  -{retCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                                <span className="font-mono text-[11px] text-amber-700">
+                                                  {retWeightKg.toFixed(1)} kg ({(retWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 't'})
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-rose-600 p-2.5 rounded-lg text-white">
+                                                <span className="text-[10px] text-rose-100 block font-bold">{isAr ? 'قيمة التسوية / إشعار الدائن:' : 'Accountant Invoice Credit:'}</span>
+                                                <span className="font-mono font-black text-sm block mt-0.5">
+                                                  -{retAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP
+                                                </span>
+                                                <span className="text-[10px] text-rose-100 block">
+                                                  {isAr ? 'صافي بعد التسوية في الفاتورة المعدلة' : 'Deducted in adjusted invoice'}
+                                                </span>
+                                              </div>
+                                            </div>
+
+                                            {/* Per-SKU Returned Reconciliation Table */}
+                                            <div className="overflow-x-auto bg-white border border-rose-200/80 rounded-lg">
+                                              <table className="w-full text-[11px]">
+                                                <thead>
+                                                  <tr className="bg-rose-50/70 text-rose-900 font-bold border-b border-rose-200/70">
+                                                    <th className="py-1.5 px-2.5 text-start">{isAr ? 'الصنف' : 'Product'}</th>
+                                                    <th className="py-1.5 px-2.5 text-center">{isAr ? 'المنصرف' : 'Dispatched'}</th>
+                                                    <th className="py-1.5 px-2.5 text-center">{isAr ? 'المستلم فعلياً' : 'Received'}</th>
+                                                    <th className="py-1.5 px-2.5 text-center text-rose-700">{isAr ? 'المرتجع للمخزن' : 'Returned'}</th>
+                                                    <th className="py-1.5 px-2.5 text-end">{isAr ? 'إجمالي أصلي' : 'Orig Total'}</th>
+                                                    <th className="py-1.5 px-2.5 text-end">{isAr ? 'إجمالي معدل' : 'Adj Total'}</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100 font-mono">
+                                                  {(order.lines || []).map((ln, idx) => {
+                                                    const dispCartons = Number(ln.dispatchedQty ?? ln.qty ?? 0) + Number(ln.dispatchedBonus ?? ln.bonus ?? 0);
+                                                    const recvCartons = Number(ln.qty || 0) + Number(ln.bonus || 0);
+                                                    const lineRetCartons = Number(ln.returnedCartons ?? Math.max(0, dispCartons - recvCartons));
+                                                    const lineAdjTotal = Number(ln.lineFinalTotal ?? ln.lineTotal ?? 0);
+                                                    const lineOrigTotal = lineAdjTotal + Number(ln.returnedLineTotal || 0);
+                                                    return (
+                                                      <tr key={idx} className={lineRetCartons > 0 ? 'bg-rose-50/30' : ''}>
+                                                        <td className="py-1.5 px-2.5 font-sans font-bold text-slate-800">
+                                                          <span className="text-[10px] font-mono text-indigo-700 me-1.5">{ln.productCode}</span>
+                                                          {isAr ? ln.productNameAr : (ln.productNameEn || ln.productNameAr)}
+                                                        </td>
+                                                        <td className="py-1.5 px-2.5 text-center text-slate-600">{dispCartons}</td>
+                                                        <td className="py-1.5 px-2.5 text-center font-bold text-emerald-700">{recvCartons}</td>
+                                                        <td className="py-1.5 px-2.5 text-center font-black text-rose-700">
+                                                          {lineRetCartons > 0 ? `-${lineRetCartons}` : '0'}
+                                                        </td>
+                                                        <td className="py-1.5 px-2.5 text-end text-slate-500">{lineOrigTotal.toFixed(2)}</td>
+                                                        <td className="py-1.5 px-2.5 text-end font-bold text-slate-900">{lineAdjTotal.toFixed(2)}</td>
+                                                      </tr>
+                                                    );
+                                                  })}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
+
                                       {/* Financial Totals Breakdown Strip (Moved to Expanded Footer) */}
                                       <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
                                         {/* Cartons */}
@@ -2621,7 +3008,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             right: !isAr ? `${window.innerWidth - actionsMenuAnchor.right}px` : undefined,
             zIndex: 9999
           }}
-          className="w-48 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
+          className="w-56 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
         >
           <button
             type="button"
@@ -2629,6 +3016,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               const isAdmin = ADMIN_ORDER_TYPES.some((t) => t.id === activeOrderForMenu.orderType) || Boolean(activeOrderForMenu.isAdministrative);
               setEditingOrder(activeOrderForMenu);
               setIsAdminModal(isAdmin);
+              setEditorInitialAdjustmentMode(false);
               setIsEditorOpen(true);
               setActiveActionsMenuOrderId(null);
             }}
@@ -2637,6 +3025,49 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             <Edit3 className="w-3.5 h-3.5 text-blue-600" />
             <span>{isAr ? 'تعديل الأمر' : 'Edit Order'}</span>
           </button>
+
+          {!PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(activeOrderForMenu.orderType) &&
+            !activeOrderForMenu.isSplitParent &&
+            !activeOrderForMenu.splitParentId &&
+            canSplitOrder && (() => {
+              const isPendingForSplit = !activeOrderForMenu.fulfillmentStatus || activeOrderForMenu.fulfillmentStatus === 'not_yet';
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = activeOrderForMenu;
+                    setActiveActionsMenuOrderId(null);
+                    handleRequestSplitOrder(target);
+                  }}
+                  aria-disabled={!isPendingForSplit}
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl transition cursor-pointer font-bold text-start ${
+                    isPendingForSplit
+                      ? 'text-violet-800 hover:bg-violet-50'
+                      : 'text-slate-400 hover:bg-amber-50 hover:text-amber-700'
+                  }`}
+                >
+                  <GitFork className={`w-3.5 h-3.5 ${isPendingForSplit ? 'text-violet-600' : 'text-slate-400'}`} />
+                  <span>{isAr ? 'تقسيم الطلب على عدة شاحنات' : 'Split Order Across Trucks'}</span>
+                </button>
+              );
+            })()}
+
+          {POST_DISPATCH_STATUSES.includes(activeOrderForMenu.fulfillmentStatus) && canAdjustDispatchedQty && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingOrder(activeOrderForMenu);
+                setIsAdminModal(false);
+                setEditorInitialAdjustmentMode(true);
+                setIsEditorOpen(true);
+                setActiveActionsMenuOrderId(null);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-amber-800 hover:bg-amber-50 rounded-xl transition cursor-pointer font-bold text-start"
+            >
+              <PackageMinus className="w-3.5 h-3.5 text-amber-600" />
+              <span>{isAr ? 'تسجيل مرتجع / مزامنة المستلم' : 'Record Partial Return / Sync Qty'}</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -2703,9 +3134,12 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             setIsEditorOpen(false);
             setEditingOrder(null);
             setIsAdminModal(false);
+            setEditorInitialAdjustmentMode(false);
           }}
           editingOrder={editingOrder}
           isAdminModal={isAdminModal}
+          canAdjustDispatchedQty={canAdjustDispatchedQty}
+          initialAdjustmentMode={editorInitialAdjustmentMode}
           clients={clients}
           products={products}
           productCategories={productCategories}
@@ -2728,6 +3162,99 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           order={auditModalOrder}
           isAr={isAr}
         />
+      )}
+
+      {/* Pending Order Split Matrix Modal */}
+      {splitModalOrder && (
+        <OrderSplitModal
+          isOpen={Boolean(splitModalOrder)}
+          onClose={() => setSplitModalOrder(null)}
+          order={splitModalOrder}
+          baseSerial={resolveOrderSerial(splitModalOrder, orders).replace(/\s*\(.*/, '')}
+          vehicles={vehicles}
+          employees={[]}
+          resolveVehicleDisplayName={resolveVehicleDisplayName}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+          onSplitSuccess={() => {
+            setSplitModalOrder(null);
+          }}
+        />
+      )}
+
+      {/* Split Guidance Modal (When order is not Pending or already split) */}
+      {splitGuidanceOrder && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 duration-100">
+            <div className="flex items-center gap-3 text-amber-700 border-b border-slate-100 pb-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                <Lock className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <h4 className="font-extrabold text-sm text-slate-900">
+                  {splitGuidanceOrder.reason === 'not_pending'
+                    ? (isAr ? 'يتعذر تقسيم الطلب حالياً' : 'Cannot Split Order in Current Status')
+                    : (isAr ? 'الطلب مقسم بالفعل' : 'Order Already Split')}
+                </h4>
+                <span className="text-xs text-slate-500 font-mono">
+                  #{resolveOrderSerial(splitGuidanceOrder.order, orders)} — {splitGuidanceOrder.order.clientName || ''}
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl text-xs text-amber-950 leading-relaxed space-y-1.5">
+              {splitGuidanceOrder.reason === 'not_pending' ? (
+                <>
+                  <p className="font-bold">
+                    {isAr
+                      ? 'لا يمكن تقسيم أمر البيع بعد دخوله في مرحلة التجهيز أو التحميل.'
+                      : 'Orders cannot be split once they enter Preparing or a later fulfillment stage.'}
+                  </p>
+                  <p className="text-amber-800">
+                    {isAr
+                      ? 'لتقسيم هذا الطلب على عدة شاحنات، يرجى الانتقال إلى تبويب (خطة التحميل) وإرجاع حالة الطلب إلى (قيد الانتظار / Pending) أولاً، ثم العودة للضغط على زر التقسيم.'
+                      : 'Please open the Loading Plan tab and revert this order status back to "Pending" first, then return here to split it across trucks.'}
+                  </p>
+                </>
+              ) : (
+                <p className="font-bold">
+                  {splitGuidanceOrder.reason === 'already_parent'
+                    ? (isAr
+                        ? 'هذا الأمر تم تقسيمه مسبقاً وهو الآن سجل أب مرجعي لا يقبل إعادة التقسيم.'
+                        : 'This order is already an immutable Split Parent Reference and cannot be split again.')
+                    : (isAr
+                        ? 'هذا السجل هو جزء فرعي من طلب مقسم بالفعل، ولا يمكن تقسيم الأجزاء الفرعية بشكل متداخل.'
+                        : 'This order is already a split child portion; nested splitting is disabled.')}
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setSplitGuidanceOrder(null)}
+                className="px-4 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition cursor-pointer"
+              >
+                {isAr ? 'إغلاق' : 'Close'}
+              </button>
+              {splitGuidanceOrder.reason === 'not_pending' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = splitGuidanceOrder.order;
+                    setSplitGuidanceOrder(null);
+                    handleNavigateToLoadingPlan(target);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition shadow-xs cursor-pointer"
+                >
+                  <span>{isAr ? 'فتح في خطة التحميل' : 'Open in Loading Plan'}</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Cancel Order Confirmation Modal */}
@@ -2870,6 +3397,8 @@ function SalesOrderEditorModal({
   onClose,
   editingOrder,
   isAdminModal = false,
+  canAdjustDispatchedQty = false,
+  initialAdjustmentMode = false,
   clients = [],
   products = [],
   productCategories = [],
@@ -2890,6 +3419,31 @@ function SalesOrderEditorModal({
   const defaultOrderType = isAdminModal ? 'admin' : 'supply';
   const initialOrderType = editingOrder?.orderType || defaultOrderType;
   const initialVatMode = editingOrder?.vatMode || (initialOrderType.startsWith('invoice_only') ? 'exclusive' : 'none');
+
+  const isSplitParentLocked = Boolean(editingOrder?.isSplitParent);
+  const isPostDispatch = Boolean(
+    editingOrder &&
+      !isSplitParentLocked &&
+      POST_DISPATCH_STATUSES.includes(editingOrder.fulfillmentStatus) &&
+      !isAdminModal &&
+      !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(editingOrder.orderType)
+  );
+  const isStructureLocked = isPostDispatch || isSplitParentLocked;
+  const [adjustmentMode, setAdjustmentMode] = useState(
+    Boolean(initialAdjustmentMode && isPostDispatch && canAdjustDispatchedQty)
+  );
+  const [rejectionReason, setRejectionReason] = useState(editingOrder?.rejectionReason || '');
+
+  // Dispatched baseline lines used when reconciling partial client rejections
+  const baselineLineMap = useMemo(() => {
+    const map = {};
+    const baseLines =
+      editingOrder?.preAdjustmentSnapshot?.originalLines || editingOrder?.lines || [];
+    baseLines.forEach((l) => {
+      map[l.productId] = l;
+    });
+    return map;
+  }, [editingOrder]);
 
   const [formData, setFormData] = useState({
     id: editingOrder?.id || `SO-${initialSerial}`,
@@ -3537,7 +4091,18 @@ function SalesOrderEditorModal({
   const handleLineChange = (index, field, value) => {
     setFormData((prev) => {
       const updatedLines = [...prev.lines];
-      const target = { ...updatedLines[index], [field]: value };
+      const existing = updatedLines[index];
+      let nextVal = value;
+      if (isPostDispatch && adjustmentMode && (field === 'qty' || field === 'bonus')) {
+        const base = baselineLineMap[existing.productId] || existing;
+        const maxAllowed =
+          field === 'qty'
+            ? Number(base.dispatchedQty ?? base.qty ?? 0)
+            : Number(base.dispatchedBonus ?? base.bonus ?? 0);
+        const parsed = Math.max(0, Math.floor(Number(value) || 0));
+        nextVal = Math.min(parsed, maxAllowed);
+      }
+      const target = { ...existing, [field]: nextVal };
       updatedLines[index] = calculateLineTotals(
         target,
         target.detectedUnitPrice,
@@ -3551,6 +4116,7 @@ function SalesOrderEditorModal({
 
   // Remove line item
   const handleRemoveLine = (index) => {
+    if (isPostDispatch) return;
     setFormData((prev) => ({
       ...prev,
       lines: prev.lines.filter((_, idx) => idx !== index)
@@ -3559,6 +4125,7 @@ function SalesOrderEditorModal({
 
   // Recalculate all lines when VAT mode changes
   const handleVatModeChange = (newVatMode) => {
+    if (isPostDispatch) return;
     setFormData((prev) => {
       const updatedLines = prev.lines.map((line) =>
         calculateLineTotals(line, line.detectedUnitPrice, line.isPromotional, line.promoDiscountPct, newVatMode)
@@ -3684,6 +4251,99 @@ function SalesOrderEditorModal({
     if (isInvoiceOrSales && formData.lines.length === 0) {
       setErrorMsg(isAr ? 'يرجى إضافة صنف واحد على الأقل في أمر البيع.' : 'Please add at least one line item.');
       return;
+    }
+
+    // Post-dispatch partial rejection adjustment computation
+    let adjustmentFields = {};
+    let stampedLines = formData.lines;
+    const isSyncingPartialRejection = Boolean(isPostDispatch && adjustmentMode && canAdjustDispatchedQty);
+
+    if (isSyncingPartialRejection) {
+      const existingSnap = editingOrder?.preAdjustmentSnapshot;
+      const snapshotObj = existingSnap || {
+        capturedAt: new Date().toISOString(),
+        originalTotalQty: Number(editingOrder.totalQty || 0),
+        originalTotalBonus: Number(editingOrder.totalBonus || 0),
+        originalTotalCartons: Number(editingOrder.totalCartons || editingOrder.totalQty || 0),
+        originalTotalWeightKg: Number(editingOrder.totalWeightKg || 0),
+        originalGrandTotal: Number(editingOrder.grandTotal || 0),
+        originalNetPreTax: Number(editingOrder.netPreTaxSubtotal || 0),
+        originalVat: Number(editingOrder.totalVat || 0),
+        originalWht: Number(editingOrder.whtAmount || 0),
+        originalLines: (editingOrder.lines || []).map((l) => ({ ...l }))
+      };
+
+      const isWhtMode = formData.vatMode === 'exclusive_wht' || formData.vatMode === 'inclusive_wht';
+      let returnedQtySum = 0;
+      let returnedBonusSum = 0;
+      let returnedCartonsSum = 0;
+
+      stampedLines = formData.lines.map((l) => {
+        const base = baselineLineMap[l.productId] || l;
+        const dispatchedQty = Number(base.dispatchedQty ?? base.qty ?? 0);
+        const dispatchedBonus = Number(base.dispatchedBonus ?? base.bonus ?? 0);
+        const actualQty = Math.min(dispatchedQty, Math.max(0, Number(l.qty || 0)));
+        const actualBonus = Math.min(dispatchedBonus, Math.max(0, Number(l.bonus || 0)));
+        const returnedQty = Math.max(0, dispatchedQty - actualQty);
+        const returnedBonus = Math.max(0, dispatchedBonus - actualBonus);
+        const returnedCartons = returnedQty + returnedBonus;
+
+        const origLineEffTotal = isWhtMode
+          ? Number(base.lineFinalTotal ?? Math.max(0, Number(base.lineNet || 0) + Number(base.lineVat || 0) - Number(base.lineWht || 0)))
+          : Number(base.lineTotal || 0);
+        const currLineEffTotal = isWhtMode
+          ? Number(l.lineFinalTotal ?? Math.max(0, Number(l.lineNet || 0) + Number(l.lineVat || 0) - Number(l.lineWht || 0)))
+          : Number(l.lineTotal || 0);
+        const returnedLineTotal = Math.max(0, Math.round((origLineEffTotal - currLineEffTotal) * 100) / 100);
+
+        returnedQtySum += returnedQty;
+        returnedBonusSum += returnedBonus;
+        returnedCartonsSum += returnedCartons;
+
+        return {
+          ...l,
+          qty: actualQty,
+          bonus: actualBonus,
+          dispatchedQty,
+          dispatchedBonus,
+          returnedQty,
+          returnedBonus,
+          returnedCartons,
+          returnedLineTotal
+        };
+      });
+
+      if (returnedCartonsSum > 0 && !rejectionReason.trim()) {
+        setErrorMsg(
+          isAr
+            ? 'يرجى إدخال سبب الرفض الجزئي عند تسجيل كميات مرتجعة من العميل.'
+            : 'Please enter a rejection reason when recording returned cartons.'
+        );
+        return;
+      }
+
+      const returnedWeightKg = Math.max(
+        0,
+        Math.round((Number(snapshotObj.originalTotalWeightKg || 0) - Number(orderCalculations.totalWeightKg || 0)) * 100) / 100
+      );
+      const returnedAmount = Math.max(
+        0,
+        Math.round((Number(snapshotObj.originalGrandTotal || 0) - Number(orderCalculations.grandTotal || 0)) * 100) / 100
+      );
+
+      adjustmentFields = {
+        preAdjustmentSnapshot: snapshotObj,
+        hasPartialRejection: returnedCartonsSum > 0,
+        returnedQty: returnedQtySum,
+        returnedBonus: returnedBonusSum,
+        returnedCartons: returnedCartonsSum,
+        returnedWeightKg,
+        returnedAmount,
+        rejectionReason: returnedCartonsSum > 0 ? rejectionReason.trim() : '',
+        lastAdjustedBy: currentUserName,
+        lastAdjustedById: currentUserId,
+        lastAdjustedAt: new Date().toISOString()
+      };
     }
 
     // Confirmation if private label is unofficial
@@ -3839,14 +4499,37 @@ function SalesOrderEditorModal({
 
         auditEvent = {
           id: `AUD-${Date.now()}-${(old.auditTrail || []).length + 1}`,
-          action: 'edit',
+          action: isSyncingPartialRejection ? 'partial_rejection_sync' : 'edit',
           performedBy: currentUserName,
           performedById: currentUserId,
           timestamp: now,
-          summaryAr: `تم تعديل بيانات أمر البيع / الإجراء #${formData.serial}`,
-          summaryEn: `Updated order / action #${formData.serial}`,
+          summaryAr: isSyncingPartialRejection
+            ? `مزامنة الكميات المستلمة فعلياً بعد الرفض الجزئي للأمر #${formData.serial} (مرتجع: ${adjustmentFields.returnedCartons || 0} كرتونة | خصم تسوية: ${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} ج.م)`
+            : `تم تعديل بيانات أمر البيع / الإجراء #${formData.serial}`,
+          summaryEn: isSyncingPartialRejection
+            ? `Synced actual received quantities for #${formData.serial} (Returned: ${adjustmentFields.returnedCartons || 0} ctn | Invoice Credit: ${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} EGP)`
+            : `Updated order / action #${formData.serial}`,
           changes: {
-            metadata: metaDiffs,
+            metadata: isSyncingPartialRejection
+              ? [
+                  ...metaDiffs,
+                  {
+                    labelAr: 'إجمالي المرتجع للمخزن',
+                    labelEn: 'Warehouse Return Estimate',
+                    oldValue: `${adjustmentFields.preAdjustmentSnapshot?.originalTotalCartons || 0} ctn`,
+                    newValue: `${adjustmentFields.returnedCartons || 0} ctn (${Number(adjustmentFields.returnedWeightKg || 0).toFixed(1)} kg)`
+                  },
+                  {
+                    labelAr: 'تسوية الفاتورة',
+                    labelEn: 'Invoice Credit',
+                    oldValue: `${Number(adjustmentFields.preAdjustmentSnapshot?.originalGrandTotal || 0).toFixed(2)} EGP`,
+                    newValue: `${Number(financials.grandTotal || 0).toFixed(2)} EGP (-${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} EGP)`
+                  },
+                  ...(adjustmentFields.rejectionReason
+                    ? [{ labelAr: 'سبب الرفض', labelEn: 'Rejection Reason', newValue: adjustmentFields.rejectionReason }]
+                    : [])
+                ]
+              : metaDiffs,
             lineChanges
           }
         };
@@ -3857,6 +4540,7 @@ function SalesOrderEditorModal({
 
       const payload = {
         ...formData,
+        lines: stampedLines,
         loadingOrderNumber: formData.loadingOrderNumber ?? null,
         assignedVehicleId: formData.assignedVehicleId || '',
         assignedVehicleName: formData.assignedVehicleName || '',
@@ -3867,6 +4551,7 @@ function SalesOrderEditorModal({
         assignedDeliveryRepName: formData.assignedDeliveryRepName || '',
         loadingDate: formData.loadingDate || '',
         ...financials,
+        ...adjustmentFields,
         isAdministrative: Boolean(isAdminModal || ADMIN_ORDER_TYPES.some((t) => t.id === formData.orderType)),
         auditTrail: updatedAuditTrail,
         updatedAt: serverTimestamp(),
@@ -4006,6 +4691,110 @@ function SalesOrderEditorModal({
             </div>
           )}
 
+          {/* Immutable Split Parent Reference Notice */}
+          {isSplitParentLocked && (
+            <div className="p-3.5 bg-violet-50 border border-violet-200 rounded-2xl flex items-start gap-3">
+              <div className="w-8 h-8 rounded-xl bg-violet-600 text-white flex items-center justify-center shrink-0">
+                <Lock className="w-4 h-4" />
+              </div>
+              <div className="text-xs text-violet-950 space-y-0.5">
+                <p className="font-extrabold">
+                  {isAr ? 'أمر أب مقسم (مرجعي فقط — مقفل ضد التعديل)' : 'Split Parent Reference (Immutable Structural Lock)'}
+                </p>
+                <p className="text-[11px] text-violet-800">
+                  {isAr
+                    ? 'تم تقسيم هذا الطلب إلى شحنات فرعية. لتعديل الأصناف أو الكميات أو التسليم، يرجى التعديل في الشحنات الفرعية المقسمة.'
+                    : 'This order has been split into child portions. Edit individual split child orders for dispatch or quantity adjustments.'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Post-Dispatch Lock & Partial Client Rejection Adjustment Bar */}
+          {isPostDispatch && (
+            <div className={`p-3.5 rounded-2xl border flex flex-wrap items-center justify-between gap-3 ${
+              adjustmentMode
+                ? 'bg-gradient-to-r from-amber-50 via-rose-50/60 to-amber-50 border-amber-300'
+                : 'bg-slate-100 border-slate-300'
+            }`}>
+              <div className="flex items-start gap-2.5">
+                <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                  adjustmentMode ? 'bg-amber-600 text-white' : 'bg-slate-700 text-white'
+                }`}>
+                  {adjustmentMode ? <PackageMinus className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                </div>
+                <div className="space-y-0.5">
+                  <p className="font-extrabold text-xs text-slate-900">
+                    {adjustmentMode
+                      ? (isAr ? 'وضع مزامنة الكميات المستلمة فعلياً (مرتجع جزئي من العميل)' : 'Post-Dispatch Actual Received Qty Sync Mode Active')
+                      : (isAr ? 'تم إقفال تعديل الأصناف والكميات والضريبة بعد خروج الشحنة' : 'Products, Quantities & Tax Treatment Locked (Post-Dispatch)')}
+                  </p>
+                  <p className="text-[11px] text-slate-600 leading-snug">
+                    {adjustmentMode
+                      ? (isAr
+                          ? 'أدخل الكميات التي استلمها العميل فعلياً (من 0 حتى الكمية المنصرفة). عند الحفظ سيتم حساب المرتجع للمخزن وتعديل إجمالي الفاتورة.'
+                          : 'Adjust Qty / Bonus down to what the client actually accepted (0 to dispatched). Saving updates warehouse return estimate & adjusted invoice.')
+                      : canAdjustDispatchedQty
+                      ? (isAr
+                          ? 'أمر البيع في مرحلة (جاري التوصيل / تم التسليم / مدفوع). يمكنك تعديل الملاحظات والمستندات فقط، أو تفعيل وضع تسجيل المرتجع الجزئي.'
+                          : 'Order is Out for Delivery or later. You can edit comments/PO attachments, or enable Partial Client Rejection Sync.')
+                      : (isAr
+                          ? 'أمر البيع في مرحلة (جاري التوصيل / تم التسليم / مدفوع). تعديل الكميات يتطلب صلاحية مزامنة المرتجع بعد التحميل.'
+                          : 'Order is Out for Delivery or later. Modifying quantities requires post-dispatch adjustment permission (canAdjustDispatchedQuantities).')}
+                  </p>
+                </div>
+              </div>
+
+              {canAdjustDispatchedQty && (
+                <div className="flex items-center gap-2 shrink-0">
+                  {adjustmentMode && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          lines: prev.lines.map((l) => {
+                            const base = baselineLineMap[l.productId] || l;
+                            return calculateLineTotals(
+                              {
+                                ...l,
+                                qty: Number(base.dispatchedQty ?? base.qty ?? 0),
+                                bonus: Number(base.dispatchedBonus ?? base.bonus ?? 0)
+                              },
+                              l.detectedUnitPrice,
+                              l.isPromotional,
+                              l.promoDiscountPct,
+                              prev.vatMode
+                            );
+                          })
+                        }));
+                      }}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 rounded-xl text-[11px] font-bold transition cursor-pointer"
+                    >
+                      {isAr ? 'استعادة الكمية المنصرفة' : 'Reset to Dispatched'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAdjustmentMode((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-[11px] font-extrabold transition cursor-pointer shadow-xs ${
+                      adjustmentMode
+                        ? 'bg-slate-800 hover:bg-slate-900 text-white'
+                        : 'bg-amber-600 hover:bg-amber-700 text-white'
+                    }`}
+                  >
+                    <PackageMinus className="w-3.5 h-3.5" />
+                    <span>
+                      {adjustmentMode
+                        ? (isAr ? 'إلغاء وضع التسوية' : 'Exit Adjustment Mode')
+                        : (isAr ? 'تفعيل تعديل الكميات المستلمة (رفض جزئي)' : 'Record Partial Rejection / Sync Qty')}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Section 1: Order Dates, Type, Client, Branch & Operational Profile */}
           <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
             <h4 className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5 border-b border-slate-200 pb-2">
@@ -4031,9 +4820,15 @@ function SalesOrderEditorModal({
                 <input
                   type="date"
                   required
+                  disabled={isStructureLocked}
                   value={formData.invoiceDate}
-                  onChange={(e) => handleInvoiceDateChange(e.target.value)}
-                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-mono font-bold text-slate-800 focus:outline-none"
+                  onChange={(e) => {
+                    if (isStructureLocked) return;
+                    handleInvoiceDateChange(e.target.value);
+                  }}
+                  className={`w-full py-2 px-3 border rounded-xl font-mono font-bold text-slate-800 focus:outline-none ${
+                    isStructureLocked ? 'bg-slate-100 border-slate-300 cursor-not-allowed opacity-75' : 'bg-white border-slate-300'
+                  }`}
                 />
               </div>
 
@@ -4107,9 +4902,13 @@ function SalesOrderEditorModal({
                 </label>
                 <select
                   value={formData.orderType}
-                  onChange={(e) => handleOrderTypeChange(e.target.value)}
-                  className={`w-full py-2 px-2.5 bg-white border rounded-xl font-bold focus:outline-none cursor-pointer ${
-                    isAdminModal ? 'border-purple-300 text-purple-950 focus:ring-1 focus:ring-purple-400' : 'border-slate-300 text-slate-800'
+                  disabled={isStructureLocked}
+                  onChange={(e) => {
+                    if (isStructureLocked) return;
+                    handleOrderTypeChange(e.target.value);
+                  }}
+                  className={`w-full py-2 px-2.5 border rounded-xl font-bold focus:outline-none disabled:bg-slate-100 disabled:cursor-not-allowed ${
+                    isAdminModal ? 'bg-white border-purple-300 text-purple-950 focus:ring-1 focus:ring-purple-400' : 'bg-white border-slate-300 text-slate-800 cursor-pointer'
                   }`}
                 >
                   {availableOrderTypes.map((t) => (
@@ -4174,18 +4973,23 @@ function SalesOrderEditorModal({
                     ? (isAr ? 'العميل (اختياري للإجراءات العامة)' : 'Client (Optional)')
                     : (isAr ? 'العميل *' : 'Client *')}
                 </label>
-                <SearchableSelect
-                  options={clientSelectOptions}
-                  value={formData.clientId}
-                  onChange={handleClientChange}
-                  placeholder={
-                    formData.orderType === 'admin'
-                      ? (isAr ? '— اختياري (بدون تخصيص عميل) —' : '— Optional (General) —')
-                      : (isAr ? 'اختر العميل...' : 'Select Client...')
-                  }
-                  searchPlaceholder={isAr ? 'ابحث باسم العميل عربي / إنجليزي...' : 'Search client...'}
-                  isAr={isAr}
-                />
+                <div className={isStructureLocked ? 'pointer-events-none opacity-65' : ''}>
+                  <SearchableSelect
+                    options={clientSelectOptions}
+                    value={formData.clientId}
+                    onChange={(v) => {
+                      if (isStructureLocked) return;
+                      handleClientChange(v);
+                    }}
+                    placeholder={
+                      formData.orderType === 'admin'
+                        ? (isAr ? '— اختياري (بدون تخصيص عميل) —' : '— Optional (General) —')
+                        : (isAr ? 'اختر العميل...' : 'Select Client...')
+                    }
+                    searchPlaceholder={isAr ? 'ابحث باسم العميل عربي / إنجليزي...' : 'Search client...'}
+                    isAr={isAr}
+                  />
+                </div>
               </div>
 
               {/* Branch Selection or Locked HQ Info */}
@@ -4208,9 +5012,12 @@ function SalesOrderEditorModal({
                 ) : (
                   <select
                     value={formData.branchId}
-                    onChange={(e) => handleBranchChange(e.target.value)}
-                    disabled={!formData.clientId}
-                    className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer disabled:bg-slate-100 truncate"
+                    onChange={(e) => {
+                      if (isStructureLocked) return;
+                      handleBranchChange(e.target.value);
+                    }}
+                    disabled={!formData.clientId || isStructureLocked}
+                    className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer disabled:bg-slate-100 disabled:cursor-not-allowed truncate"
                   >
                     {deliveryBranches.length === 0 ? (
                       <option value="">
@@ -4392,10 +5199,11 @@ function SalesOrderEditorModal({
                     <button
                       key={v.id}
                       type="button"
+                      disabled={isStructureLocked}
                       onClick={() => handleVatModeChange(v.id)}
-                      className={`p-2.5 rounded-xl border text-start transition cursor-pointer flex flex-col justify-between gap-1 ${
+                      className={`p-2.5 rounded-xl border text-start transition flex flex-col justify-between gap-1 ${
                         isSelected ? activeClasses : inactiveClasses
-                      }`}
+                      } ${isStructureLocked ? 'opacity-65 cursor-not-allowed' : 'cursor-pointer'}`}
                     >
                       <div className="flex items-center justify-between gap-1 w-full">
                         <span className="font-extrabold text-xs truncate">
@@ -4540,34 +5348,83 @@ function SalesOrderEditorModal({
                 </div>
               </div>
 
-              {/* Add Product Search & Category Bar */}
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Category Filter */}
-                <select
-                  value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
-                >
-                  <option value="all">{isAr ? 'كافة تصنيفات الأصناف' : 'All Product Categories'}</option>
-                  {productCategories.map((cat) => (
-                    <option key={cat.id} value={cat.key || cat.id}>
-                      {isAr ? cat.nameAr : (cat.nameEn || cat.nameAr)}
-                    </option>
-                  ))}
-                </select>
+              {/* Add Product Search & Category Bar (hidden once post-dispatch locked or split parent) */}
+              {!isStructureLocked ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Category Filter */}
+                  <select
+                    value={selectedCategory}
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    className="py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
+                  >
+                    <option value="all">{isAr ? 'كافة تصنيفات الأصناف' : 'All Product Categories'}</option>
+                    {productCategories.map((cat) => (
+                      <option key={cat.id} value={cat.key || cat.id}>
+                        {isAr ? cat.nameAr : (cat.nameEn || cat.nameAr)}
+                      </option>
+                    ))}
+                  </select>
 
-                {/* Product Selector */}
-                <div className="flex-1 min-w-[280px]">
-                  <SearchableSelect
-                    options={availableProductOptions}
-                    value={selectedProductId}
-                    onChange={handleAddProduct}
-                    placeholder={isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —'}
-                    searchPlaceholder={isAr ? 'ابحث باسم أو كود الصنف...' : 'Search product...'}
-                    isAr={isAr}
-                  />
+                  {/* Product Selector */}
+                  <div className="flex-1 min-w-[280px]">
+                    <SearchableSelect
+                      options={availableProductOptions}
+                      value={selectedProductId}
+                      onChange={handleAddProduct}
+                      placeholder={isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —'}
+                      searchPlaceholder={isAr ? 'ابحث باسم أو كود الصنف...' : 'Search product...'}
+                      isAr={isAr}
+                    />
+                  </div>
                 </div>
-              </div>
+              ) : isPostDispatch && adjustmentMode ? (
+                (() => {
+                  const snap = editingOrder?.preAdjustmentSnapshot || {};
+                  const origGrandTotal = Number(snap.originalGrandTotal ?? editingOrder?.grandTotal ?? 0);
+                  const origWeightKg = Number(snap.originalTotalWeightKg ?? editingOrder?.totalWeightKg ?? 0);
+                  const returnedCtnLive = formData.lines.reduce((sum, ln) => {
+                    const base = baselineLineMap[ln.productId] || ln;
+                    const dispCtn = Number(base.dispatchedQty ?? base.qty ?? 0) + Number(base.dispatchedBonus ?? base.bonus ?? 0);
+                    const recvCtn = Number(ln.qty || 0) + Number(ln.bonus || 0);
+                    return sum + Math.max(0, dispCtn - recvCtn);
+                  }, 0);
+                  const creditEgp = Math.max(0, origGrandTotal - orderCalculations.grandTotal);
+                  const returnKg = Math.max(0, origWeightKg - orderCalculations.totalWeightKg);
+
+                  return (
+                    <div className="p-3 bg-white border border-amber-300 rounded-xl space-y-2.5 shadow-2xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                        <span className="font-extrabold text-amber-900">
+                          {isAr ? 'ملخص التسوية الفورية للمستلم فعلياً:' : 'Live Partial Rejection Reconciliation:'}
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2 font-mono">
+                          <span className="px-2 py-0.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 font-bold">
+                            {isAr ? `مرتجع للمخزن: -${returnedCtnLive} كرتونة (${returnKg.toFixed(1)} كجم)` : `Warehouse Return: -${returnedCtnLive} ctn (${returnKg.toFixed(1)} kg)`}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-800 font-bold">
+                            {isAr ? `إجمالي معدل: ${orderCalculations.grandTotal.toFixed(2)} ج.م` : `Adjusted Total: ${orderCalculations.grandTotal.toFixed(2)} EGP`}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white font-black">
+                            {isAr ? `خصم تسوية الفاتورة: -${creditEgp.toFixed(2)} ج.م` : `Credit: -${creditEgp.toFixed(2)} EGP`}
+                          </span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          {isAr ? 'سبب الرفض الجزئي من العميل (إلزامي عند وجود مرتجع) *' : 'Client Rejection Reason (Required when returning cartons) *'}
+                        </label>
+                        <input
+                          type="text"
+                          value={rejectionReason}
+                          onChange={(e) => setRejectionReason(e.target.value)}
+                          placeholder={isAr ? 'مثال: رفض العميل ٢ كرتونة لتلف التغليف أو عدم مطابقة تاريخ الصلاحية...' : 'e.g. Client refused 2 damaged cartons upon delivery...'}
+                          className="w-full py-1.5 px-3 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                        />
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : null}
 
               {/* Line Items Table */}
               {formData.lines.length === 0 ? (
@@ -4593,11 +5450,18 @@ function SalesOrderEditorModal({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {formData.lines.map((line, idx) => {
+                        const base = baselineLineMap[line.productId] || line;
+                        const dispQty = Number(base.dispatchedQty ?? base.qty ?? 0);
+                        const dispBonus = Number(base.dispatchedBonus ?? base.bonus ?? 0);
+                        const retQtyLine = Math.max(0, dispQty - Number(line.qty || 0));
+                        const retBonusLine = Math.max(0, dispBonus - Number(line.bonus || 0));
+                        const qtyDisabled = isStructureLocked && !adjustmentMode;
+
                         return (
                           <tr key={idx} className="hover:bg-slate-50/50">
                             {/* Product Info + Promo Icon */}
                             <td className="py-2.5 px-3 font-bold text-slate-800">
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="font-mono text-[10px] text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
                                   {line.productCode}
                                 </span>
@@ -4620,27 +5484,61 @@ function SalesOrderEditorModal({
 
                             {/* Quantity */}
                             <td className="py-2 px-2 text-center">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={line.qty}
-                                onChange={(e) => handleLineChange(idx, 'qty', e.target.value)}
-                                className="w-20 p-1.5 text-center font-mono font-bold text-slate-900 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                              />
+                              <div className="flex flex-col items-center gap-0.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={adjustmentMode ? dispQty : undefined}
+                                  step="1"
+                                  disabled={qtyDisabled}
+                                  value={line.qty}
+                                  onChange={(e) => handleLineChange(idx, 'qty', e.target.value)}
+                                  className={`w-20 p-1.5 text-center font-mono font-bold border rounded-lg focus:outline-none ${
+                                    qtyDisabled
+                                      ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                                      : adjustmentMode
+                                      ? 'bg-amber-50/40 border-amber-300 text-slate-900 focus:ring-1 focus:ring-amber-500'
+                                      : 'text-slate-900 border-slate-300 focus:ring-1 focus:ring-emerald-500'
+                                  }`}
+                                />
+                                {isPostDispatch && (adjustmentMode || retQtyLine > 0) && (
+                                  <span className="text-[9px] font-mono text-slate-500">
+                                    {isAr ? `منصرف: ${dispQty}` : `Disp: ${dispQty}`}
+                                    {retQtyLine > 0 && (
+                                      <strong className="text-rose-600 ms-1">(-{retQtyLine})</strong>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
                             </td>
 
                             {/* Bonus Units */}
                             <td className="py-2 px-2 text-center">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={line.bonus}
-                                onChange={(e) => handleLineChange(idx, 'bonus', e.target.value)}
-                                placeholder="0"
-                                className="w-16 p-1.5 text-center font-mono font-bold text-emerald-700 bg-emerald-50/50 border border-emerald-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                              />
+                              <div className="flex flex-col items-center gap-0.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={adjustmentMode ? dispBonus : undefined}
+                                  step="1"
+                                  disabled={qtyDisabled}
+                                  value={line.bonus}
+                                  onChange={(e) => handleLineChange(idx, 'bonus', e.target.value)}
+                                  placeholder="0"
+                                  className={`w-16 p-1.5 text-center font-mono font-bold border rounded-lg focus:outline-none ${
+                                    qtyDisabled
+                                      ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                                      : 'text-emerald-700 bg-emerald-50/50 border-emerald-200 focus:ring-1 focus:ring-emerald-500'
+                                  }`}
+                                />
+                                {isPostDispatch && (adjustmentMode || retBonusLine > 0) && dispBonus > 0 && (
+                                  <span className="text-[9px] font-mono text-slate-500">
+                                    {dispBonus}
+                                    {retBonusLine > 0 && (
+                                      <strong className="text-rose-600 ms-1">(-{retBonusLine})</strong>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
                             </td>
 
                             {/* Unit Price (LOCKED) */}
@@ -4663,10 +5561,15 @@ function SalesOrderEditorModal({
                                 type="number"
                                 min="0"
                                 step="0.01"
+                                disabled={isStructureLocked}
                                 value={line.manualDiscountPerUnit}
                                 onChange={(e) => handleLineChange(idx, 'manualDiscountPerUnit', e.target.value)}
                                 placeholder="0.00"
-                                className="w-20 p-1.5 text-center font-mono font-semibold text-rose-600 bg-rose-50/30 border border-rose-200 rounded-lg focus:outline-none"
+                                className={`w-20 p-1.5 text-center font-mono font-semibold border rounded-lg focus:outline-none ${
+                                  isStructureLocked
+                                    ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                                    : 'text-rose-600 bg-rose-50/30 border-rose-200'
+                                }`}
                               />
                             </td>
 
@@ -4704,14 +5607,18 @@ function SalesOrderEditorModal({
 
                             {/* Remove */}
                             <td className="py-2 px-2 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveLine(idx)}
-                                className="p-1 text-slate-400 hover:text-rose-600 rounded transition cursor-pointer"
-                                title={isAr ? 'حذف البند' : 'Remove line'}
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
+                              {!isStructureLocked ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveLine(idx)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 rounded transition cursor-pointer"
+                                  title={isAr ? 'حذف البند' : 'Remove line'}
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              ) : (
+                                <Lock className="w-3 h-3 text-slate-300 mx-auto" />
+                              )}
                             </td>
                           </tr>
                         );
@@ -5057,9 +5964,11 @@ function SalesOrderEditorModal({
               </button>
               <button
                 type="submit"
-                disabled={isSaving}
+                disabled={isSaving || isSplitParentLocked}
                 className={`px-6 py-2 rounded-xl text-xs font-bold shadow-xs hover:shadow transition cursor-pointer disabled:opacity-50 flex items-center gap-1.5 text-white ${
-                  formData.orderType === 'admin'
+                  adjustmentMode
+                    ? 'bg-amber-600 hover:bg-amber-700'
+                    : formData.orderType === 'admin'
                     ? 'bg-purple-600 hover:bg-purple-700'
                     : formData.orderType === 'collection'
                     ? 'bg-teal-600 hover:bg-teal-700'
@@ -5068,7 +5977,9 @@ function SalesOrderEditorModal({
               >
                 {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
                 <span>
-                  {formData.orderType === 'admin'
+                  {adjustmentMode
+                    ? (isAr ? 'مزامنة الكميات المستلمة وتحديث الفاتورة' : 'Force Sync Actual Received & Adjust Invoice')
+                    : formData.orderType === 'admin'
                     ? (isAr ? 'اعتماد وحفظ الإجراء الإداري' : 'Save Directive')
                     : formData.orderType === 'collection'
                     ? (isAr ? 'تسجيل واعتماد إذن التحصيل' : 'Save Collection')

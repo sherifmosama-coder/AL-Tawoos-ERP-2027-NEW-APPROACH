@@ -18,7 +18,9 @@ import {
   FileCheck,
   XCircle,
   RotateCcw,
-  Truck
+  Truck,
+  GitFork,
+  PackageMinus
 } from 'lucide-react';
 
 export default function SalesOrderAuditModal({
@@ -49,7 +51,10 @@ export default function SalesOrderAuditModal({
           entry.action !== 'cancel_order' &&
           entry.action !== 'restore_order' &&
           entry.action !== 'dispatch_plan_update' &&
-          entry.action !== 'dispatch_assignment'
+          entry.action !== 'dispatch_assignment' &&
+          entry.action !== 'split_parent' &&
+          entry.action !== 'split_child_created' &&
+          entry.action !== 'partial_rejection_sync'
         ) {
           return false;
         }
@@ -146,6 +151,24 @@ export default function SalesOrderAuditModal({
           bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
           icon: Truck,
           label: isAr ? 'خطة التحميل والتوزيع' : 'Loading Plan & Dispatch'
+        };
+      case 'split_parent':
+        return {
+          bg: 'bg-purple-50 text-purple-800 border-purple-200',
+          icon: GitFork,
+          label: isAr ? 'تقسيم أمر البيع إلى شحنات' : 'Order Split into Portions'
+        };
+      case 'split_child_created':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: GitFork,
+          label: isAr ? 'جزء ناتج عن تقسيم أمر' : 'Split Child Portion Created'
+        };
+      case 'partial_rejection_sync':
+        return {
+          bg: 'bg-rose-50 text-rose-800 border-rose-200',
+          icon: PackageMinus,
+          label: isAr ? 'مزامنة الاستلام الفعلي والمرتجع' : 'Actual Qty Sync & Return'
         };
       case 'edit':
       default:

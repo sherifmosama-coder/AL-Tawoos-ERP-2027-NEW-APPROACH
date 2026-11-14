@@ -879,6 +879,8 @@ export const APP_ARCHITECTURE = {
             { key: "canEdit", labelAr: "تعديل أمر بيع", labelEn: "Edit Sales Order" },
             { key: "canDelete", labelAr: "حذف أو إلغاء أمر بيع", labelEn: "Delete Sales Order" },
             { key: "canExport", labelAr: "تصدير أوامر البيع (CSV)", labelEn: "Export Sales Orders" },
+            { key: "canSplitOrder", labelAr: "تقسيم أمر البيع إلى شحنات متعددة", labelEn: "Split Pending Sales Order" },
+            { key: "canAdjustDispatchedQuantities", labelAr: "تعديل ومزامنة الكميات المستلمة فعلياً بعد التحميل (المرتجع الجزئي)", labelEn: "Sync Actual Received Qty Post-Dispatch" },
           ],
           fields: {
             serial: { labelAr: "مسلسل أمر البيع (#0001)", labelEn: "Order Serial", type: "string", required: true, sample: "0001" },
