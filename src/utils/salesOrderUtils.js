@@ -570,9 +570,6 @@ export function computeRetailSettlementPayload({
     }
   };
 
-  // Reset Warehouse & Accounting Acknowledgments if quantities changed or if Force-Synced after an initial settlement
-  const shouldResetAcks = !isForceSyncEdit || qtyChangedVsPrevious;
-
   return {
     isRetailRouteOrder: true,
     retailSettlementStatus: 'settled',
@@ -594,8 +591,6 @@ export function computeRetailSettlementPayload({
     lastAdjustedBy: currentUserName,
     lastAdjustedById: currentUserId,
     lastAdjustedAt: nowIso,
-    warehouseAck: shouldResetAcks ? { status: 'pending', revision: nextRevision } : (order?.warehouseAck || { status: 'pending', revision: nextRevision }),
-    accountingAck: shouldResetAcks ? { status: 'pending', revision: nextRevision } : (order?.accountingAck || { status: 'pending', revision: nextRevision }),
     auditTrail: [auditEntry, ...existingAudit]
   };
 }
@@ -648,13 +643,6 @@ export function openPrintableRetailSettlementSlip(order, isAr = true) {
         </ul>
       </div>`
     : '';
-
-  const whAck = order.warehouseAck?.status === 'acknowledged'
-    ? (isAr ? `معتمد: ${order.warehouseAck.by} (${new Date(order.warehouseAck.at).toLocaleDateString('ar-EG')})` : `Ack: ${order.warehouseAck.by} (${new Date(order.warehouseAck.at).toLocaleDateString('en-US')})`)
-    : (isAr ? 'بانتظار توقيع/اعتماد أمين المخزن' : 'Pending Warehouse Ack');
-  const accAck = order.accountingAck?.status === 'acknowledged'
-    ? (isAr ? `معتمد: ${order.accountingAck.by} (${new Date(order.accountingAck.at).toLocaleDateString('ar-EG')})` : `Ack: ${order.accountingAck.by} (${new Date(order.accountingAck.at).toLocaleDateString('en-US')})`)
-    : (isAr ? 'بانتظار مراجعة واعتماد الحسابات' : 'Pending Accounting Ack');
 
   const html = `<!doctype html>
 <html dir="${isAr ? 'rtl' : 'ltr'}" lang="${isAr ? 'ar' : 'en'}">
@@ -717,8 +705,8 @@ export function openPrintableRetailSettlementSlip(order, isAr = true) {
 
   <div class="footer">
     <div class="sig"><strong>${isAr ? 'المبيعات / تسوية الرحلة' : 'Sales / Trip Settlement'}</strong><br/><small>${escHtml(order.retailSettledBy || '—')}</small></div>
-    <div class="sig"><strong>${isAr ? 'استلام أمين المخزن للمرتجع' : 'Warehouse Return Ack'}</strong><br/><small>${escHtml(whAck)}</small></div>
-    <div class="sig"><strong>${isAr ? 'اعتماد الحسابات والفاتورة النهائية' : 'Accounting Invoice Ack'}</strong><br/><small>${escHtml(accAck)}</small></div>
+    <div class="sig"><strong>${isAr ? 'أمين المخزن (استلام المرتجع)' : 'Warehouse (Unsold Return Receipt)'}</strong><br/><small>&nbsp;</small></div>
+    <div class="sig"><strong>${isAr ? 'الحسابات (الفاتورة النهائية)' : 'Accounting (Final Invoice)'}</strong><br/><small>&nbsp;</small></div>
   </div>
 
   <div class="no-print" style="margin-top:24px;text-align:center;">

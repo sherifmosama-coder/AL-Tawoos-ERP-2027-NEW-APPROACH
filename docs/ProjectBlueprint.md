@@ -1577,5 +1577,40 @@ To prevent visual clutter in the Sales Orders master directory, dispatch executi
 - **Cascade Compliance**: If `modules.loading_plan === false` in Scoped Permissions, all editing triggers and buttons are disabled.
 - **Atomic Commits**: Dispatches saved via Firestore `writeBatch` updating `sales_orders` documents and writing immutable audit trail entries (`action: 'dispatch_plan_update'`).
 
+---
+
+### 31.3 Fleet Dashboard, Corporate Fulfillment Progression & Bidirectional Sync (`SalesOrdersMaster.jsx` & `SalesLoadingPlanMaster.jsx`)
+- **Primary Vehicle Identity & Quick Copy**: Displays vehicle display name (`resolveVehicleDisplayName`) as the primary fleet identifier with 1-click copy chips for truck `plateNumber` and Purchase Order numbers (`PO #`).
+- **5-Stage Fulfillment Status Progression**: Unified styling and RTL/LTR directional gradients (`SALES_FULFILLMENT_STYLE_MAP`) across `not_yet` (Pending), `prepare` (Preparing), `shipped` (Dispatched), `delivered` (Delivered), and `paid` (Paid/Settled).
+- **Fleet Trips Carousel & Conflict Alignment**: Collapsible Trucks Fleet Dashboard in `loading_plan` with 3-slot trip carousel, light hover tooltips, bidirectional middle stepper controls, LO# conflict detection (`loadingOrderNumber`), and conflict filtering.
+- **Trip-Scoped Floating Manifest & Deep-Linking**: Floating manifest dock scopes dynamically to active triggered trips; bidirectional hash navigation links specific order rows between `sales_orders` and `loading_plan` while preserving full `RecordCommentAction` threads (`Section 23`).
+- **Tonnage Unit Standard**: Arabic UI labels consistently render `طن` (never `t`).
+
+---
+
+### 31.4 Order Splitting Engine & Portions Directory (`OrderSplitModal.jsx`)
+- **Eligibility & Guidance Gate**: Strictly restricted to `Pending` (`fulfillmentStatus === 'not_yet'`) orders; clicking Split on `Preparing+` orders guides the user to revert status to `Pending` first. Guarded by `canSplitOrder`.
+- **Interactive Truck Allocation Matrix**: Splits products/quantities into numbered child portions (`#0001 (1/3)`, `#0001 (2/3)`, ...) with real-time per-SKU sum validation against the parent baseline.
+- **Consolidated Financial Mode (`splitMergeInvoices`)**: When billing/financial documents are configured to remain merged, `SalesOrdersMaster` renders the parent order as a single unified card displaying an expandable **Split Order Portions Directory** with per-portion fulfillment badges and hover product breakdown tooltips, while `SalesLoadingPlanMaster` dispatches each child portion independently onto trucks.
+- **Full Split Reallocation & Unsplit**: Supports editing an existing split structure (adding/removing trips, reallocating quantities, or unsplitting back into a single unified order) atomically via Firestore batch writes.
+
+---
+
+### 31.5 Post-Dispatch Partial Rejection & Quantity Sync (`SalesOrderEditorModal` & `salesOrderUtils.js`)
+- **Authorized Post-Dispatch Adjustment (`canAdjustDispatchedQuantities`)**: Enables designated users to adjust quantities on already-dispatched (`shipped`, `delivered`, `paid`) orders to record client partial refusals (`returnedQty`, `returnedBonus`, `returnedCartons`, `returnedWeightKg`).
+- **Immutable Baseline Snapshot & Force Sync**: Captures `preAdjustmentSnapshot` on initial adjustment, force-syncs net client invoice totals and warehouse return metrics, logs granular per-line diffs in `auditTrail`, and provides `openPrintableAdjustmentSlip` for warehouse & accounting reconciliation.
+
+---
+
+### 31.6 Retail Van-Sales Route Settlement & Standard Retail Load List (`RetailSettlementModal.jsx` & `StandardRetailListModal.jsx`)
+- **Retail Route Auto-Detection & Override**: Automatically detects Retail segment orders (`isRetailSegmentRecord` / `isOrderRetailRoute`) with per-order `isRetailRouteOverride` toggle in `SalesOrderEditorModal` (plus `SearchableSelect` delivery branch picking).
+- **Global Standard Retail Load List (`system_config/retail_standard_load_list`)**:
+  - Configured once from a non-prominent toolbar button (`Std Retail List`) opening `StandardRetailListModal.jsx`, guarded by `canManageStdRetailList`.
+  - Stores default SKUs, carton `qty`, and optional `bonus`. On Retail sales orders, the **Std Retail List** button populates lines via `buildOrderLineFromProduct` (resolving 8-tier pricing, promotional discounts, VAT/WHT, weights, and `isProductAllowedForClient` checks), prompting before overwriting existing lines while keeping every populated quantity editable per trip/branch.
+- **Post-Arrival Retail Settlement & User Notification (`canSettleRetailOrders`)**:
+  - `RetailSettlementModal` reconciles loaded truck baseline against actual confirmed sold quantities and unsold warehouse returns, displaying live product breakdowns, buyer proof uploads (`retailSettlementAttachments`), printable trip settlement slips (`openPrintableRetailSettlementSlip`), and Force-Sync revision tracking (`retailSettlementRevision`).
+  - Upon settlement or Force-Sync commit, `createNotification` directly alerts relevant Sales, Warehouse, Accounting, and Admin users with sold/returned cartons (`طن`) and settled invoice totals—without intermediate pending-acknowledgment buttons or states.
+
+
 
 

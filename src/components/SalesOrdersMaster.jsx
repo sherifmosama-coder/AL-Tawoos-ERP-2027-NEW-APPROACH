@@ -69,12 +69,14 @@ import {
   PackageMinus,
   Store,
   ClipboardCheck,
+  ClipboardList,
   FileImage
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
 import OrderSplitModal from './OrderSplitModal';
 import RetailSettlementModal from './RetailSettlementModal';
+import StandardRetailListModal from './StandardRetailListModal';
 import PeacockLoader from './PeacockLoader';
 import { canAccessAction } from '../config/appArchitecture';
 import {
@@ -573,6 +575,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const canSplitOrder = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSplitOrder', currentUser);
   const canAdjustDispatchedQty = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canAdjustDispatchedQuantities', currentUser);
   const canSettleRetailOrders = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSettleRetailOrders', currentUser);
+  const canManageStdRetailList = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canManageStdRetailList', currentUser);
   const currentUserName = currentUser?.nameAr || currentUser?.name || 'مستخدم معتمد';
   const currentUserId = currentUser?.id || 'usr_unknown';
 
@@ -613,6 +616,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [splitModalOrder, setSplitModalOrder] = useState(null);
   const [splitGuidanceOrder, setSplitGuidanceOrder] = useState(null);
   const [retailSettlementModalOrder, setRetailSettlementModalOrder] = useState(null);
+  const [stdRetailListDoc, setStdRetailListDoc] = useState({ items: [], updatedAt: null, updatedBy: null });
+  const [isStdRetailModalOpen, setIsStdRetailModalOpen] = useState(false);
   const [deleteConfirmOrder, setDeleteConfirmOrder] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null);
   const [cancelModalOrder, setCancelModalOrder] = useState(null);
@@ -729,6 +734,23 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
       const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       loaded.sort((a, b) => (a.plateNumber || a.code || '').localeCompare(b.plateNumber || b.code || '', 'ar'));
       setVehicles(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // 9. Subscribe to Global Standard Retail Load List Config
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'system_config', 'retail_standard_load_list'), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() || {};
+        setStdRetailListDoc({
+          items: Array.isArray(data.items) ? data.items : [],
+          updatedAt: data.updatedAt || null,
+          updatedBy: data.updatedBy || null
+        });
+      } else {
+        setStdRetailListDoc({ items: [], updatedAt: null, updatedBy: null });
+      }
     });
     return () => unsub();
   }, []);
@@ -1320,61 +1342,6 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     setSplitModalOrder(order);
   };
 
-  // Explicit 1-Click Warehouse & Accountant Acknowledgment Handler for Settled Retail Trips
-  const handleAcknowledgeRetailSettlement = async (order, ackDepartment) => {
-    if (!order || !['warehouse', 'accounting'].includes(ackDepartment)) return;
-    const nowIso = new Date().toISOString();
-    const rev = Number(order.retailSettlementRevision || 1);
-    const ackObj = {
-      status: 'acknowledged',
-      by: currentUserName,
-      byId: currentUserId,
-      at: nowIso,
-      revision: rev
-    };
-    const isWh = ackDepartment === 'warehouse';
-    const existingAudit = Array.isArray(order.auditTrail) ? order.auditTrail : [];
-    const auditEntry = {
-      id: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      action: isWh ? 'retail_warehouse_acknowledged' : 'retail_accounting_acknowledged',
-      performedBy: currentUserName,
-      performedById: currentUserId,
-      timestamp: nowIso,
-      summaryAr: isWh
-        ? `اعتماد أمين المخزن (${currentUserName}) لاستلام مرتجع رحلة التجزئة #${resolveOrderSerial(order, orders)} (مراجعة #${rev}: ${Number(order.returnedCartons || 0)} كرتونة)`
-        : `اعتماد الحسابات (${currentUserName}) لتسوية وفاتورة رحلة التجزئة #${resolveOrderSerial(order, orders)} (مراجعة #${rev}: ${Number(order.grandTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} ج.م)`,
-      summaryEn: isWh
-        ? `Warehouse acknowledged Retail unsold return stock for #${resolveOrderSerial(order, orders)} (Rev #${rev}: ${Number(order.returnedCartons || 0)} ctn)`
-        : `Accounting acknowledged adjusted invoice for Retail trip #${resolveOrderSerial(order, orders)} (Rev #${rev}: ${Number(order.grandTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP)`,
-      changes: {
-        metadata: [
-          {
-            labelAr: isWh ? 'اعتماد المخزن' : 'اعتماد الحسابات',
-            labelEn: isWh ? 'Warehouse Ack' : 'Accounting Ack',
-            oldValue: 'Pending',
-            newValue: `${currentUserName} (Rev #${rev})`
-          }
-        ]
-      }
-    };
-
-    try {
-      await setDoc(
-        doc(db, 'sales_orders', order.id),
-        {
-          [isWh ? 'warehouseAck' : 'accountingAck']: ackObj,
-          auditTrail: [...existingAudit, auditEntry],
-          updatedAt: serverTimestamp(),
-          updatedBy: currentUserName
-        },
-        { merge: true }
-      );
-    } catch (err) {
-      console.error('Error acknowledging retail settlement:', err);
-      alert(isAr ? 'حدث خطأ أثناء تسجيل الاعتماد.' : 'Failed to record acknowledgment.');
-    }
-  };
-
   // Delete Order Handler
   const handleDeleteOrder = async (orderId) => {
     try {
@@ -1548,6 +1515,23 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
+            {canManageStdRetailList && (
+              <button
+                type="button"
+                onClick={() => setIsStdRetailModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition cursor-pointer"
+                title={isAr ? 'إعداد القائمة القياسية لتحميل التجزئة' : 'Configure Standard Retail Load List'}
+              >
+                <ClipboardList className="w-3.5 h-3.5 text-cyan-600" />
+                <span>{isAr ? 'قائمة التجزئة القياسية' : 'Std Retail List'}</span>
+                {(stdRetailListDoc.items || []).length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-md bg-slate-200/80 text-slate-700 text-[10px] font-black">
+                    {stdRetailListDoc.items.length}
+                  </span>
+                )}
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleExportCsv}
@@ -2373,10 +2357,6 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                 {!order.isSplitParent && isOrderRetailRoute(order, clients, segments) && (() => {
                                   const isSettled = order.retailSettlementStatus === 'settled';
                                   const isPostDisp = POST_DISPATCH_STATUSES.includes(order.fulfillmentStatus);
-                                  const pendingDeptAck =
-                                    isSettled &&
-                                    (order.warehouseAck?.status !== 'acknowledged' ||
-                                      order.accountingAck?.status !== 'acknowledged');
                                   return (
                                     <button
                                       type="button"
@@ -2388,9 +2368,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       }}
                                       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs transition ${
                                         isSettled
-                                          ? pendingDeptAck
-                                            ? 'bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border-cyan-300 cursor-pointer'
-                                            : 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300 cursor-pointer'
+                                          ? 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300 cursor-pointer'
                                           : isPostDisp
                                             ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 animate-pulse cursor-pointer'
                                             : 'bg-cyan-50/70 text-cyan-800 border-cyan-200'
@@ -2407,8 +2385,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       <span>
                                         {isSettled
                                           ? (isAr
-                                              ? `تجزئة مسوّاة #${order.retailSettlementRevision || 1}${pendingDeptAck ? ' · بانتظار اعتماد' : ''}`
-                                              : `Retail Settled #${order.retailSettlementRevision || 1}${pendingDeptAck ? ' · Pending Ack' : ''}`)
+                                              ? `تجزئة مسوّاة #${order.retailSettlementRevision || 1}`
+                                              : `Retail Settled #${order.retailSettlementRevision || 1}`)
                                           : isPostDisp
                                             ? (isAr ? 'بانتظار تأكيد المباع' : 'Awaiting Sold Settlement')
                                             : (isAr ? 'خط سير تجزئة' : 'Retail Route')}
@@ -3156,7 +3134,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         );
                                       })()}
 
-                                      {/* Retail Van-Sales Route Settlement, Buyer Proofs & Dual Acknowledgment Panel */}
+                                      {/* Retail Van-Sales Route Settlement & Buyer Proofs Panel */}
                                       {!order.isSplitParent && isOrderRetailRoute(order, clients, segments) && (
                                         order.retailSettlementStatus === 'settled' ||
                                         POST_DISPATCH_STATUSES.includes(order.fulfillmentStatus)
@@ -3169,8 +3147,6 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         const unsoldWeightKg = Number(order.returnedWeightKg || 0);
                                         const soldGrand = Number(order.grandTotal || 0);
                                         const buyerDocs = Array.isArray(order.retailSettlementAttachments) ? order.retailSettlementAttachments : [];
-                                        const whAck = order.warehouseAck || { status: 'pending' };
-                                        const accAck = order.accountingAck || { status: 'pending' };
 
                                         if (!isSettled) {
                                           return (
@@ -3333,85 +3309,6 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                                 </div>
                                               </div>
                                             )}
-
-                                            {/* Explicit 1-Click Warehouse & Accounting Acknowledgments */}
-                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                                              {/* Warehouse Ack */}
-                                              <div className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${
-                                                whAck.status === 'acknowledged'
-                                                  ? 'bg-emerald-50/90 border-emerald-200'
-                                                  : 'bg-amber-50/90 border-amber-300'
-                                              }`}>
-                                                <div className="min-w-0">
-                                                  <span className="text-[11px] font-extrabold text-slate-900 block">
-                                                    {isAr ? 'اعتماد المخزن لاستلام المرتجع غير المباع' : 'Warehouse Return Stock Acknowledgment'}
-                                                  </span>
-                                                  <span className="text-[10px] text-slate-600 block truncate">
-                                                    {whAck.status === 'acknowledged'
-                                                      ? (isAr
-                                                          ? `معتمد بواسطة ${whAck.by} (${new Date(whAck.at).toLocaleString('ar-EG')})`
-                                                          : `Ack by ${whAck.by} (${new Date(whAck.at).toLocaleString('en-US')})`)
-                                                      : (isAr ? 'بانتظار مراجعة واعتماد أمين المخزن' : 'Pending Warehouse review & stamp')}
-                                                  </span>
-                                                </div>
-                                                {whAck.status === 'acknowledged' ? (
-                                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-black shrink-0">
-                                                    <Check className="w-3 h-3" />
-                                                    <span>{isAr ? 'تم الاعتماد' : 'Acknowledged'}</span>
-                                                  </span>
-                                                ) : (
-                                                  <button
-                                                    type="button"
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      handleAcknowledgeRetailSettlement(order, 'warehouse');
-                                                    }}
-                                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-black transition cursor-pointer shrink-0 shadow-2xs"
-                                                  >
-                                                    <ClipboardCheck className="w-3 h-3" />
-                                                    <span>{isAr ? 'اعتماد المخزن' : 'Acknowledge Return'}</span>
-                                                  </button>
-                                                )}
-                                              </div>
-
-                                              {/* Accounting Ack */}
-                                              <div className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 ${
-                                                accAck.status === 'acknowledged'
-                                                  ? 'bg-teal-50/90 border-teal-200'
-                                                  : 'bg-amber-50/90 border-amber-300'
-                                              }`}>
-                                                <div className="min-w-0">
-                                                  <span className="text-[11px] font-extrabold text-slate-900 block">
-                                                    {isAr ? 'اعتماد الحسابات للفاتورة النهائية المعدلة' : 'Accounting Adjusted Invoice Acknowledgment'}
-                                                  </span>
-                                                  <span className="text-[10px] text-slate-600 block truncate">
-                                                    {accAck.status === 'acknowledged'
-                                                      ? (isAr
-                                                          ? `معتمد بواسطة ${accAck.by} (${new Date(accAck.at).toLocaleString('ar-EG')})`
-                                                          : `Ack by ${accAck.by} (${new Date(accAck.at).toLocaleString('en-US')})`)
-                                                      : (isAr ? 'بانتظار مراجعة واعتماد الحسابات' : 'Pending Accounting review & stamp')}
-                                                  </span>
-                                                </div>
-                                                {accAck.status === 'acknowledged' ? (
-                                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-600 text-white text-[10px] font-black shrink-0">
-                                                    <Check className="w-3 h-3" />
-                                                    <span>{isAr ? 'تم الاعتماد' : 'Acknowledged'}</span>
-                                                  </span>
-                                                ) : (
-                                                  <button
-                                                    type="button"
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      handleAcknowledgeRetailSettlement(order, 'accounting');
-                                                    }}
-                                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-black transition cursor-pointer shrink-0 shadow-2xs"
-                                                  >
-                                                    <ClipboardCheck className="w-3 h-3" />
-                                                    <span>{isAr ? 'اعتماد الحسابات' : 'Acknowledge Invoice'}</span>
-                                                  </button>
-                                                )}
-                                              </div>
-                                            </div>
                                           </div>
                                         );
                                       })()}
@@ -3804,6 +3701,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           strategies={strategies}
           vehicles={vehicles}
           allOrders={orders}
+          stdRetailList={stdRetailListDoc.items || []}
+          canManageStdRetailList={canManageStdRetailList}
+          onOpenStdRetailSetup={() => setIsStdRetailModalOpen(true)}
           isAr={isAr}
           currentUserName={currentUserName}
           currentUserId={currentUserId}
@@ -3861,6 +3761,22 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           onSuccess={() => {
             setRetailSettlementModalOrder(null);
           }}
+        />
+      )}
+
+      {/* Standard Retail Load List Setup Modal */}
+      {isStdRetailModalOpen && (
+        <StandardRetailListModal
+          isOpen={isStdRetailModalOpen}
+          onClose={() => setIsStdRetailModalOpen(false)}
+          products={products}
+          productCategories={productCategories}
+          standardRetailList={stdRetailListDoc.items || []}
+          metadata={stdRetailListDoc}
+          canManageStdRetailList={canManageStdRetailList}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
         />
       )}
 
@@ -4088,6 +4004,9 @@ function SalesOrderEditorModal({
   strategies = [],
   vehicles = [],
   allOrders = [],
+  stdRetailList = [],
+  canManageStdRetailList = false,
+  onOpenStdRetailSetup = null,
   isAr = true,
   currentUserName = 'مستخدم معتمد',
   currentUserId = 'usr_unknown',
@@ -4241,6 +4160,34 @@ function SalesOrderEditorModal({
   const clientStrategy = useMemo(() => {
     return selectedClient?.pricingStrategy || 'wholesalers';
   }, [selectedClient]);
+
+  // Unified Retail Route detection + inline Std List UI state
+  const [confirmReplaceStdList, setConfirmReplaceStdList] = useState(false);
+  const [stdListFeedback, setStdListFeedback] = useState(null);
+
+  const retailContext = useMemo(() => {
+    const activeSegKey =
+      selectedClient?.segmentId ||
+      selectedClient?.segment ||
+      formData.clientSegmentId ||
+      editingOrder?.clientSegmentId ||
+      '';
+    const segObj =
+      (segments || []).find(
+        (s) => s.id === activeSegKey || s.code === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey
+      ) ||
+      PRESET_DEFAULT_SEGMENTS.find(
+        (s) => s.id === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey
+      );
+    const isSegRetail = isRetailSegmentRecord(segObj, activeSegKey);
+    const isAllowedOrderType = !isAdminModal && !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(formData.orderType);
+    const isRetailEffective = isAllowedOrderType
+      ? typeof formData.isRetailRouteOverride === 'boolean'
+        ? formData.isRetailRouteOverride
+        : isSegRetail
+      : false;
+    return { activeSegKey, isSegRetail, isAllowedOrderType, isRetailEffective };
+  }, [selectedClient, segments, formData.clientSegmentId, formData.isRetailRouteOverride, formData.orderType, editingOrder, isAdminModal]);
 
   // Client Operational Profile (Schedule, Weekly Holidays, Address, Phones, Region & Conflicts)
   const clientOperationalProfile = useMemo(() => {
@@ -4723,6 +4670,57 @@ function SalesOrderEditorModal({
     });
   }, [products, formData.clientId, formData.clientName, selectedCategory, isAr]);
 
+  // Shared line builder for single product addition & Standard Retail List population
+  const buildOrderLineFromProduct = (prod, qty = 1, bonus = 0) => {
+    const resolved = detectProductPrice({
+      clientId: formData.clientId,
+      clientName: formData.clientName,
+      branchId: formData.branchId,
+      branchName: formData.branchName,
+      strategy: clientStrategy,
+      invoiceDate: formData.invoiceDate,
+      productId: prod.id,
+      priceLists
+    });
+
+    const promoInfo = detectPromotionalDiscount({
+      clientId: formData.clientId,
+      clientName: formData.clientName,
+      branchId: formData.branchId,
+      branchName: formData.branchName,
+      strategy: clientStrategy,
+      invoiceDate: formData.invoiceDate,
+      productId: prod.id,
+      priceLists
+    });
+
+    const primaryOpt = (prod.packagingOptions || [])[0] || {};
+    const largeUnitWeightKg = Number(primaryOpt.largeUnitWeightKg || prod.weight || 0);
+    const packagingRatio = Number(primaryOpt.packagingRatio || prod.packagingRatio || 12);
+
+    return calculateLineTotals(
+      {
+        productId: prod.id,
+        productCode: prod.code || prod.id,
+        productNameAr: prod.nameAr,
+        productNameEn: prod.nameEn || prod.nameAr,
+        isPrivateLabel: isProductPrivateLabel(prod),
+        vatRate: prod.vatRate || '14%',
+        smallUnit: prod.smallUnit || 'زجاجة',
+        largeUnitName: prod.largeUnitName || 'كرتونة',
+        packagingRatio,
+        largeUnitWeightKg,
+        qty: Math.max(1, Math.floor(Number(qty) || 1)),
+        bonus: Math.max(0, Math.floor(Number(bonus) || 0)),
+        manualDiscountPerUnit: 0
+      },
+      resolved.price || 0,
+      resolved.isPromotional,
+      promoInfo.discountPct,
+      formData.vatMode
+    );
+  };
+
   // Add Product to Lines Handler
   const handleAddProduct = (productId) => {
     if (!productId) return;
@@ -4736,59 +4734,84 @@ function SalesOrderEditorModal({
       return;
     }
 
-    const resolved = detectProductPrice({
-      clientId: formData.clientId,
-      clientName: formData.clientName,
-      branchId: formData.branchId,
-      branchName: formData.branchName,
-      strategy: clientStrategy,
-      invoiceDate: formData.invoiceDate,
-      productId,
-      priceLists
-    });
-
-    const promoInfo = detectPromotionalDiscount({
-      clientId: formData.clientId,
-      clientName: formData.clientName,
-      branchId: formData.branchId,
-      branchName: formData.branchName,
-      strategy: clientStrategy,
-      invoiceDate: formData.invoiceDate,
-      productId,
-      priceLists
-    });
-
-    const primaryOpt = (prod.packagingOptions || [])[0] || {};
-    const largeUnitWeightKg = Number(primaryOpt.largeUnitWeightKg || prod.weight || 0);
-    const packagingRatio = Number(primaryOpt.packagingRatio || prod.packagingRatio || 12);
-
-    const newLine = calculateLineTotals(
-      {
-        productId: prod.id,
-        productCode: prod.code || prod.id,
-        productNameAr: prod.nameAr,
-        productNameEn: prod.nameEn || prod.nameAr,
-        isPrivateLabel: isProductPrivateLabel(prod),
-        vatRate: prod.vatRate || '14%',
-        smallUnit: prod.smallUnit || 'زجاجة',
-        largeUnitName: prod.largeUnitName || 'كرتونة',
-        packagingRatio,
-        largeUnitWeightKg,
-        qty: 1,
-        bonus: 0,
-        manualDiscountPerUnit: 0
-      },
-      resolved.price || 0,
-      resolved.isPromotional,
-      promoInfo.discountPct,
-      formData.vatMode
-    );
+    const newLine = buildOrderLineFromProduct(prod, 1, 0);
 
     setFormData((prev) => ({
       ...prev,
       lines: [...prev.lines, newLine]
     }));
     setSelectedProductId('');
+  };
+
+  // Populate lines from the saved Standard Retail Load List
+  const applyStandardRetailList = () => {
+    const prodMap = {};
+    products.forEach((p) => {
+      prodMap[p.id] = p;
+    });
+
+    const nextLines = [];
+    let skippedCount = 0;
+
+    (stdRetailList || []).forEach((item) => {
+      const prod = prodMap[item.productId];
+      if (!prod) {
+        skippedCount += 1;
+        return;
+      }
+      if (!isProductAllowedForClient(prod, formData.clientId, formData.clientName)) {
+        skippedCount += 1;
+        return;
+      }
+      nextLines.push(buildOrderLineFromProduct(prod, item.qty, item.bonus));
+    });
+
+    if (nextLines.length === 0) {
+      setConfirmReplaceStdList(false);
+      setStdListFeedback({
+        type: 'warning',
+        message: isAr
+          ? 'لا توجد أصناف متاحة للتحميل لهذا العميل ضمن القائمة القياسية.'
+          : 'No eligible products from the standard list apply to this client.'
+      });
+      return;
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      lines: nextLines
+    }));
+    setConfirmReplaceStdList(false);
+    setStdListFeedback({
+      type: skippedCount > 0 ? 'warning' : 'success',
+      message:
+        skippedCount > 0
+          ? isAr
+            ? `تم تحميل ${nextLines.length} صنفاً من القائمة القياسية (تم تخطي ${skippedCount} صنف غير متاح لهذا العميل). يمكنك تعديل الكميات بحرية.`
+            : `Loaded ${nextLines.length} items from Standard Retail List (${skippedCount} ineligible skipped). Feel free to adjust quantities.`
+          : isAr
+            ? `تم تحميل ${nextLines.length} صنفاً من القائمة القياسية للتجزئة. يمكنك تعديل الكميات أو الأصناف بحرية.`
+            : `Loaded ${nextLines.length} items from Standard Retail List. You can adjust any quantities freely.`
+    });
+  };
+
+  const handleRequestLoadStdRetailList = () => {
+    if (isStructureLocked) return;
+    if (!stdRetailList || stdRetailList.length === 0) {
+      setStdListFeedback({
+        type: 'warning',
+        message: isAr
+          ? 'القائمة القياسية للتجزئة فارغة حالياً.'
+          : 'Standard Retail List is currently empty.'
+      });
+      return;
+    }
+    if (formData.lines.length > 0) {
+      setConfirmReplaceStdList(true);
+      setStdListFeedback(null);
+      return;
+    }
+    applyStandardRetailList();
   };
 
   // Line item change (qty, bonus, manualDiscount)
@@ -5242,26 +5265,12 @@ function SalesOrderEditorModal({
       const existingAudit = editingOrder?.auditTrail || [];
       const updatedAuditTrail = [...existingAudit, auditEvent];
 
-      const activeSegKey =
-        selectedClient?.segmentId ||
-        selectedClient?.segment ||
-        formData.clientSegmentId ||
-        editingOrder?.clientSegmentId ||
-        '';
-      const segObj = (segments || []).find(
-        (s) => s.id === activeSegKey || s.code === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey
-      ) || PRESET_DEFAULT_SEGMENTS.find((s) => s.id === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey);
-      const autoDetectedRetail = !isAdminModal && !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(formData.orderType) && isRetailSegmentRecord(segObj, activeSegKey);
-      const effectiveIsRetailRoute = !isAdminModal && !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(formData.orderType)
-        ? (typeof formData.isRetailRouteOverride === 'boolean' ? formData.isRetailRouteOverride : autoDetectedRetail)
-        : false;
-
       const payload = {
         ...formData,
-        clientSegmentId: activeSegKey,
-        isRetailRouteOrder: effectiveIsRetailRoute,
+        clientSegmentId: retailContext.activeSegKey,
+        isRetailRouteOrder: retailContext.isRetailEffective,
         isRetailRouteOverride: formData.isRetailRouteOverride ?? null,
-        retailSettlementStatus: effectiveIsRetailRoute
+        retailSettlementStatus: retailContext.isRetailEffective
           ? (editingOrder?.retailSettlementStatus === 'settled' ? 'settled' : 'awaiting_settlement')
           : 'not_required',
         lines: stampedLines,
@@ -5874,13 +5883,8 @@ function SalesOrderEditorModal({
             )}
 
             {/* Retail Van-Sales Route Settlement Auto-Detection + Optional Per-Order Override */}
-            {!isAdminModal && !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(formData.orderType) && (() => {
-              const activeSegKey = selectedClient?.segmentId || selectedClient?.segment || formData.clientSegmentId || '';
-              const segObj = (segments || []).find(
-                (s) => s.id === activeSegKey || s.code === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey
-              ) || PRESET_DEFAULT_SEGMENTS.find((s) => s.id === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey);
-              const isSegRetail = isRetailSegmentRecord(segObj, activeSegKey);
-              const isRetailEffective = typeof formData.isRetailRouteOverride === 'boolean' ? formData.isRetailRouteOverride : isSegRetail;
+            {retailContext.isAllowedOrderType && (() => {
+              const { isSegRetail, isRetailEffective } = retailContext;
 
               return (
                 <div className={`p-2.5 rounded-xl border flex items-center justify-between flex-wrap gap-2 text-xs transition ${
@@ -6135,32 +6139,121 @@ function SalesOrderEditorModal({
 
               {/* Add Product Search & Category Bar (hidden once post-dispatch locked or split parent) */}
               {!isStructureLocked ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* Category Filter */}
-                  <select
-                    value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
-                  >
-                    <option value="all">{isAr ? 'كافة تصنيفات الأصناف' : 'All Product Categories'}</option>
-                    {productCategories.map((cat) => (
-                      <option key={cat.id} value={cat.key || cat.id}>
-                        {isAr ? cat.nameAr : (cat.nameEn || cat.nameAr)}
-                      </option>
-                    ))}
-                  </select>
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Category Filter */}
+                    <select
+                      value={selectedCategory}
+                      onChange={(e) => setSelectedCategory(e.target.value)}
+                      className="py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="all">{isAr ? 'كافة تصنيفات الأصناف' : 'All Product Categories'}</option>
+                      {productCategories.map((cat) => (
+                        <option key={cat.id} value={cat.key || cat.id}>
+                          {isAr ? cat.nameAr : (cat.nameEn || cat.nameAr)}
+                        </option>
+                      ))}
+                    </select>
 
-                  {/* Product Selector */}
-                  <div className="flex-1 min-w-[280px]">
-                    <SearchableSelect
-                      options={availableProductOptions}
-                      value={selectedProductId}
-                      onChange={handleAddProduct}
-                      placeholder={isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —'}
-                      searchPlaceholder={isAr ? 'ابحث باسم أو كود الصنف...' : 'Search product...'}
-                      isAr={isAr}
-                    />
+                    {/* Product Selector */}
+                    <div className="flex-1 min-w-[260px]">
+                      <SearchableSelect
+                        options={availableProductOptions}
+                        value={selectedProductId}
+                        onChange={handleAddProduct}
+                        placeholder={isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —'}
+                        searchPlaceholder={isAr ? 'ابحث باسم أو كود الصنف...' : 'Search product...'}
+                        isAr={isAr}
+                      />
+                    </div>
+
+                    {/* Standard Retail Load List Quick Fill (Retail Route Orders only) */}
+                    {retailContext.isRetailEffective && (
+                      <button
+                        type="button"
+                        onClick={handleRequestLoadStdRetailList}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-300 rounded-xl text-xs font-extrabold transition cursor-pointer shrink-0"
+                        title={
+                          isAr
+                            ? 'تعبئة الأصناف والكميات من القائمة القياسية للتجزئة'
+                            : 'Populate lines from Standard Retail Load List'
+                        }
+                      >
+                        <ClipboardList className="w-3.5 h-3.5 text-cyan-700" />
+                        <span>{isAr ? 'قائمة التجزئة القياسية' : 'Std Retail List'}</span>
+                        {stdRetailList.length > 0 && (
+                          <span className="px-1.5 py-0.2 rounded bg-cyan-200/70 text-cyan-900 text-[10px] font-black">
+                            {stdRetailList.length}
+                          </span>
+                        )}
+                      </button>
+                    )}
                   </div>
+
+                  {/* Inline Confirmation Prompt when Replacing Existing Lines */}
+                  {confirmReplaceStdList && (
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 text-amber-900 font-bold">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>
+                          {isAr
+                            ? `يحتوي الطلب حالياً على ${formData.lines.length} بنود. هل تريد استبدالها ببنود القائمة القياسية (${stdRetailList.length} صنف)؟`
+                            : `Order already has ${formData.lines.length} line(s). Replace them with Standard Retail List (${stdRetailList.length} items)?`}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={applyStandardRetailList}
+                          className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] transition cursor-pointer"
+                        >
+                          {isAr ? 'تأكيد الاستبدال' : 'Replace Lines'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmReplaceStdList(false)}
+                          className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-[11px] transition cursor-pointer"
+                        >
+                          {isAr ? 'إلغاء' : 'Cancel'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Feedback Notice after Loading / Empty Standard List */}
+                  {stdListFeedback && (
+                    <div
+                      className={`p-2.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold ${
+                        stdListFeedback.type === 'warning'
+                          ? 'bg-amber-50 border-amber-200 text-amber-900'
+                          : 'bg-cyan-50 border-cyan-200 text-cyan-900'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Info className="w-3.5 h-3.5 shrink-0" />
+                        <span>{stdListFeedback.message}</span>
+                        {stdRetailList.length === 0 && canManageStdRetailList && typeof onOpenStdRetailSetup === 'function' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setStdListFeedback(null);
+                              onOpenStdRetailSetup();
+                            }}
+                            className="underline font-extrabold text-cyan-800 hover:text-cyan-950 cursor-pointer"
+                          >
+                            {isAr ? 'إعداد القائمة الآن' : 'Configure List Now'}
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStdListFeedback(null)}
+                        className="p-0.5 rounded hover:bg-black/5 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : isPostDispatch && adjustmentMode ? (
                 (() => {

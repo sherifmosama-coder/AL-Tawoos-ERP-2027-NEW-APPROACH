@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, collection, getDocs, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
+import { createNotification } from '../utils/notificationEngine';
 import {
   X,
   Store,
@@ -316,6 +317,70 @@ export default function RetailSettlementModal({
         updatedBy: currentUserName
       });
 
+      // Dispatch notification to Warehouse, Accounting, Sales & Admin users (fire-and-forget)
+      (async () => {
+        try {
+          const relevantTabs = [
+            'sales_orders',
+            'loading_plan',
+            'stock',
+            'fg_inward',
+            'accounts',
+            'party_statements'
+          ];
+          const usersSnap = await getDocs(collection(db, 'users'));
+          const targetUserIds = usersSnap.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .filter((u) => {
+              if (!u.id || u.id === currentUserId || u.disabled || u.isActive === false) return false;
+              if (u.role === 'general_admin' || u.isGeneralAdmin) return true;
+              const mods = u.permissions?.modules;
+              if (!mods) return true;
+              return relevantTabs.some((t) => mods[t] === true);
+            })
+            .map((u) => u.id);
+
+          const serialLabel = `#${order.serial || order.id}`;
+          const revNum = payload.retailSettlementRevision || 1;
+          const soldCtn = Number(payload.totalCartons || payload.totalQty || 0);
+          const returnedCtn = Number(payload.returnedCartons || 0);
+          const returnedTons = Number(payload.returnedWeightKg || 0) / 1000;
+          const grandVal = Number(payload.grandTotal || 0).toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          });
+
+          await createNotification({
+            type: isForceSyncEdit ? 'warning' : 'success',
+            title: isForceSyncEdit
+              ? `تحديث تسوية تجزئة ${serialLabel} (مراجعة #${revNum})`
+              : `تم تسوية رحلة تجزئة ${serialLabel}`,
+            titleEn: isForceSyncEdit
+              ? `Retail Settlement Synced ${serialLabel} (Rev #${revNum})`
+              : `Retail Trip Settled ${serialLabel}`,
+            message: `العميل: ${order.clientName || '—'} | المباع: ${soldCtn} كرتونة (${grandVal} ج.م) | المرتجع للمخزن: ${returnedCtn} كرتونة (${returnedTons.toFixed(2)} طن) — بواسطة ${currentUserName}`,
+            messageEn: `Client: ${order.clientName || '—'} | Sold: ${soldCtn} ctn (${grandVal} EGP) | Warehouse Return: ${returnedCtn} ctn (${returnedTons.toFixed(2)} Tons) — By ${currentUserName}`,
+            targetUserIds,
+            targetRoles: targetUserIds.length > 0 ? [] : ['general_admin'],
+            targetTab: 'sales_orders',
+            targetModule: 'sales',
+            highlightId: order.id,
+            createdBy: currentUserId,
+            createdByName: currentUserName,
+            metadata: {
+              orderId: order.id,
+              orderSerial: order.serial || order.id,
+              revision: revNum,
+              soldCartons: soldCtn,
+              returnedCartons: returnedCtn,
+              grandTotal: Number(payload.grandTotal || 0)
+            }
+          });
+        } catch (notifErr) {
+          console.debug('Retail settlement notification note:', notifErr);
+        }
+      })();
+
       if (onSuccess) onSuccess({ mode: isForceSyncEdit ? 'force_synced' : 'settled', payload });
       onClose();
     } catch (err) {
@@ -482,8 +547,8 @@ export default function RetailSettlementModal({
                   </div>
                   <p className="text-indigo-800 mt-0.5">
                     {isAr
-                      ? 'تمت التسوية المسبقة لهذا الطلب. أي تعديل على الكميات المباعة هنا سيتم مزامنته فوراً مع المخزن والفاتورة، وسيُطلب من أمين المخزن والمحاسب اعتماد المراجعة الجديدة.'
-                      : 'This Retail trip was previously settled. Saving changes will force-sync returned stock and invoice totals immediately, and reset Warehouse & Accounting acknowledgment stamps for the new revision.'}
+                      ? 'تمت التسوية المسبقة لهذا الطلب. أي تعديل على الكميات المباعة هنا سيتم مزامنته فوراً مع المخزن والفاتورة وإشعار المستخدمين المعنيين.'
+                      : 'This Retail trip was previously settled. Saving changes will force-sync returned stock and invoice totals immediately and notify relevant users.'}
                   </p>
                 </div>
               </div>

@@ -882,6 +882,7 @@ export const APP_ARCHITECTURE = {
             { key: "canSplitOrder", labelAr: "تقسيم أمر البيع إلى شحنات متعددة", labelEn: "Split Pending Sales Order" },
             { key: "canAdjustDispatchedQuantities", labelAr: "تعديل ومزامنة الكميات المستلمة فعلياً بعد التحميل (المرتجع الجزئي)", labelEn: "Sync Actual Received Qty Post-Dispatch" },
             { key: "canSettleRetailOrders", labelAr: "تأكيد وتسوية مبيعات التجزئة بعد العودة (الجرد والفواتير)", labelEn: "Confirm & Force-Sync Retail Van-Sales Settlement" },
+            { key: "canManageStdRetailList", labelAr: "إعداد وتعديل القائمة القياسية لتحميل التجزئة", labelEn: "Configure Standard Retail Load List" },
           ],
           fields: {
             serial: { labelAr: "مسلسل أمر البيع (#0001)", labelEn: "Order Serial", type: "string", required: true, sample: "0001" },
@@ -895,8 +896,14 @@ export const APP_ARCHITECTURE = {
             vatMode: { labelAr: "المعاملة الضريبية", labelEn: "Tax / VAT Mode", type: "enum", options: ["none", "exclusive", "exclusive_wht", "inclusive", "inclusive_wht"], sample: "none" },
             poTawoos: { labelAr: "أمر شراء طاووس", labelEn: "PO # Tawoos", type: "string", sample: "PO-TW-2026-01" },
             poPrivateLabel: { labelAr: "أمر شراء العلامة الخاصة", labelEn: "PO # Private Label", type: "string", sample: "PO-PL-4401" },
+            isSplitParent: { labelAr: "أمر رئيسي مقسّم إلى شحنات", labelEn: "Is Split Parent Order", type: "boolean", sample: false },
+            splitParentId: { labelAr: "معرف الأمر الرئيسي (للأجزاء المقسمة)", labelEn: "Split Parent Order ID", type: "string", sample: "SO-0001" },
+            splitMergeInvoices: { labelAr: "دمج الفواتير والمستندات المالية للأجزاء المقسمة", labelEn: "Merge Invoices Across Split Portions", type: "boolean", sample: true },
+            hasPartialRejection: { labelAr: "وجود مرتجع جزئي بعد التحميل", labelEn: "Has Post-Dispatch Partial Rejection", type: "boolean", sample: false },
+            returnedCartons: { labelAr: "إجمالي الكراتين المرتجعة / غير المباعة", labelEn: "Returned / Unsold Cartons", type: "number", sample: 0 },
             isRetailRouteOrder: { labelAr: "أمر خط سير تجزئة (يتطلب تسوية بعد العودة)", labelEn: "Retail Van-Sales Route Order", type: "boolean", sample: true },
             retailSettlementStatus: { labelAr: "حالة تسوية مبيعات التجزئة", labelEn: "Retail Settlement Status", type: "enum", options: ["not_required", "awaiting_settlement", "settled"], sample: "awaiting_settlement" },
+            retailSettlementRevision: { labelAr: "رقم مراجعة تسوية التجزئة", labelEn: "Retail Settlement Revision", type: "number", sample: 1 },
             grandTotal: { labelAr: "إجمالي أمر البيع (EGP)", labelEn: "Order Grand Total (EGP)", type: "number", sample: 45000.00 }
           }
         },
@@ -1027,6 +1034,10 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     actions: {
       canManageLoadingPlan: true,
       canModifyClosedOrders: true,
+      canSplitOrder: true,
+      canAdjustDispatchedQuantities: true,
+      canSettleRetailOrders: true,
+      canManageStdRetailList: true,
       canCreate: true,
       canEdit: true,
       canApprove: true,
@@ -1137,6 +1148,10 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     actions: {
       canManageLoadingPlan: true,
       canModifyClosedOrders: false,
+      canSplitOrder: true,
+      canAdjustDispatchedQuantities: false,
+      canSettleRetailOrders: true,
+      canManageStdRetailList: false,
       canCreate: true,
       canEdit: true,
       canApprove: true,

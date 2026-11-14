@@ -4243,11 +4243,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       currentFulfillmentStatus === 'shipped' ||
                                       currentFulfillmentStatus === 'delivered' ||
                                       currentFulfillmentStatus === 'paid';
-                                    const needsAck =
-                                      isSettled &&
-                                      (order.warehouseAck?.status !== 'acknowledged' ||
-                                        order.accountingAck?.status !== 'acknowledged');
-
                                     return (
                                       <button
                                         type="button"
@@ -4260,9 +4255,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                         }}
                                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs transition cursor-pointer ${
                                           isSettled
-                                            ? needsAck
-                                              ? 'bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border-cyan-300'
-                                              : 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300'
+                                            ? 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300'
                                             : isPostDispatchRetail
                                               ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 animate-pulse'
                                               : 'bg-cyan-50/70 hover:bg-cyan-100 text-cyan-800 border-cyan-200'
@@ -4669,11 +4662,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       currentFulfillmentStatus === 'shipped' ||
                                       currentFulfillmentStatus === 'delivered' ||
                                       currentFulfillmentStatus === 'paid';
-                                    const needsAck =
-                                      isSettled &&
-                                      (order.warehouseAck?.status !== 'acknowledged' ||
-                                        order.accountingAck?.status !== 'acknowledged');
-
                                     return (
                                       <button
                                         type="button"
@@ -4686,9 +4674,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                         }}
                                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs transition cursor-pointer ${
                                           isSettled
-                                            ? needsAck
-                                              ? 'bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border-cyan-300'
-                                              : 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300'
+                                            ? 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300'
                                             : isPostDispatchRetail
                                               ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 animate-pulse'
                                               : 'bg-cyan-50/70 hover:bg-cyan-100 text-cyan-800 border-cyan-200'
