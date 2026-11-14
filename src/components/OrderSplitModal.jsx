@@ -14,7 +14,9 @@ import {
   Sparkles,
   CheckCircle2,
   Info,
-  RefreshCw
+  RefreshCw,
+  Lock,
+  RotateCcw
 } from 'lucide-react';
 import { doc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -26,14 +28,14 @@ import {
 
 /**
  * Interactive Order Splitting Matrix Modal
- * Allows splitting a Pending ('not_yet') Sales Order across multiple truck/portion columns
- * (#0001 -> #0001 (1/N), #0001 (2/N), ...) with real-time per-SKU alignment validation,
- * optional truck capacity estimator + assignment checkbox, and financial document mode selection.
+ * Supports BOTH initial splitting of a Pending ('not_yet') Sales Order AND full editing/rebalancing
+ * or unsplitting of an already-split order (locking only non-Pending portions while leaving Pending portions editable).
  */
 export default function OrderSplitModal({
   isOpen,
   onClose,
   order,
+  existingChildren = [],
   baseSerial = '0001',
   vehicles = [],
   employees = [],
@@ -45,18 +47,80 @@ export default function OrderSplitModal({
 }) {
   const lines = useMemo(() => (Array.isArray(order?.lines) ? order.lines : []), [order]);
 
+  const sortedExistingChildren = useMemo(() => {
+    if (!Array.isArray(existingChildren) || existingChildren.length === 0) return [];
+    return [...existingChildren].sort((a, b) => (Number(a.splitIndex) || 0) - (Number(b.splitIndex) || 0));
+  }, [existingChildren]);
+
+  const isEditMode = Boolean(order?.isSplitParent && sortedExistingChildren.length > 0);
+  const allChildrenPending = useMemo(
+    () =>
+      isEditMode &&
+      sortedExistingChildren.every((c) => {
+        const norm = c.fulfillmentStatus === 'out_for_delivery' ? 'shipped' : (c.fulfillmentStatus || 'not_yet');
+        return norm === 'not_yet';
+      }),
+    [isEditMode, sortedExistingChildren]
+  );
+
   // Financial document mode: 'split_per_portion' | 'merged_on_parent'
   const [invoiceSplitMode, setInvoiceSplitMode] = useState('split_per_portion');
 
-  // Dynamic portion columns: start with 2 portions
+  // Dynamic portion columns
   const [columns, setColumns] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
+  const [confirmUnsplit, setConfirmUnsplit] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Initialize 2 empty portion columns (putting all initial qty in column 1 by default OR balanced half/half? Start 50/50 split so user sees how it works immediately!)
+  // Initialize from existing child portions when editing an existing split, or 50/50 2-column split on create
   useEffect(() => {
     if (!isOpen || !order) return;
     setErrorMsg('');
+    setConfirmUnsplit(false);
+
+    if (order.isSplitParent && sortedExistingChildren.length > 0) {
+      setInvoiceSplitMode(order.invoiceSplitMode || 'split_per_portion');
+
+      const hydratedColumns = sortedExistingChildren.map((child) => {
+        const normStatus = child.fulfillmentStatus === 'out_for_delivery' ? 'shipped' : (child.fulfillmentStatus || 'not_yet');
+        const isLocked = normStatus !== 'not_yet';
+        const qtyByLine = {};
+        const lockedPaidByLine = {};
+        const lockedBonusByLine = {};
+
+        (order.lines || []).forEach((parentLine, idx) => {
+          const matched = (child.lines || []).find(
+            (cl) =>
+              (parentLine.productId && cl.productId === parentLine.productId) ||
+              (parentLine.productCode && cl.productCode === parentLine.productCode)
+          );
+          const paid = Math.max(0, Math.round(Number(matched?.qty) || 0));
+          const bonus = Math.max(0, Math.round(Number(matched?.bonus) || 0));
+          qtyByLine[idx] = paid + bonus;
+          if (isLocked) {
+            lockedPaidByLine[idx] = paid;
+            lockedBonusByLine[idx] = bonus;
+          }
+        });
+
+        return {
+          id: child.id,
+          existingChildId: child.id,
+          existingChild: child,
+          isLocked,
+          lockedStatus: normStatus,
+          lockedPaidByLine,
+          lockedBonusByLine,
+          vehicleId: child.assignedVehicleId || '',
+          assignTruckToOrder: Boolean(child.assignedVehicleId),
+          qtyByLine
+        };
+      });
+
+      setColumns(hydratedColumns);
+      return;
+    }
+
     setInvoiceSplitMode('split_per_portion');
 
     const col0Quantities = {};
@@ -71,18 +135,26 @@ export default function OrderSplitModal({
     setColumns([
       {
         id: 'col_1',
+        existingChildId: null,
+        existingChild: null,
+        isLocked: false,
+        lockedStatus: 'not_yet',
         vehicleId: '',
         assignTruckToOrder: false,
         qtyByLine: col0Quantities
       },
       {
         id: 'col_2',
+        existingChildId: null,
+        existingChild: null,
+        isLocked: false,
+        lockedStatus: 'not_yet',
         vehicleId: '',
         assignTruckToOrder: false,
         qtyByLine: col1Quantities
       }
     ]);
-  }, [isOpen, order]);
+  }, [isOpen, order, sortedExistingChildren]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -160,6 +232,8 @@ export default function OrderSplitModal({
   const totalOrderCartons = rowStats.reduce((s, r) => s + r.targetCartons, 0);
   const totalOrderWeightKg = rowStats.reduce((s, r) => s + r.targetCartons * r.unitWeightKg, 0);
 
+  const editableColumnsCount = columns.filter((c) => !c.isLocked).length;
+
   // Handlers
   const handleAddColumn = () => {
     if (columns.length >= 10) return;
@@ -171,6 +245,10 @@ export default function OrderSplitModal({
       ...prev,
       {
         id: `col_${Date.now()}_${prev.length + 1}`,
+        existingChildId: null,
+        existingChild: null,
+        isLocked: false,
+        lockedStatus: 'not_yet',
         vehicleId: '',
         assignTruckToOrder: false,
         qtyByLine: emptyQty
@@ -179,11 +257,12 @@ export default function OrderSplitModal({
   };
 
   const handleRemoveColumn = (colIdx) => {
-    if (columns.length <= 2) return;
+    if (columns.length <= 2 || columns[colIdx]?.isLocked) return;
     setColumns((prev) => prev.filter((_, idx) => idx !== colIdx));
   };
 
   const handleCellChange = (colIdx, lineIdx, rawVal) => {
+    if (columns[colIdx]?.isLocked) return;
     const num = Math.max(0, parseInt(rawVal, 10) || 0);
     setColumns((prev) =>
       prev.map((col, idx) =>
@@ -195,6 +274,7 @@ export default function OrderSplitModal({
   };
 
   const handleVehicleChange = (colIdx, vehicleId) => {
+    if (columns[colIdx]?.isLocked) return;
     setColumns((prev) =>
       prev.map((col, idx) =>
         idx === colIdx
@@ -209,6 +289,7 @@ export default function OrderSplitModal({
   };
 
   const handleToggleAssignTruck = (colIdx, checked) => {
+    if (columns[colIdx]?.isLocked) return;
     setColumns((prev) =>
       prev.map((col, idx) =>
         idx === colIdx ? { ...col, assignTruckToOrder: Boolean(checked) } : col
@@ -216,28 +297,45 @@ export default function OrderSplitModal({
     );
   };
 
-  // Helper: Evenly divide every SKU across all current columns
+  // Helper: Evenly divide unlocked pending SKU budget across unlocked columns (leaving locked portions untouched)
   const handleEvenSplit = () => {
-    const n = columns.length;
+    const unlockedIndices = columns.map((c, i) => (!c.isLocked ? i : -1)).filter((i) => i !== -1);
+    if (unlockedIndices.length === 0) return;
+    const nUnlocked = unlockedIndices.length;
+
     setColumns((prev) =>
       prev.map((col, colIdx) => {
+        if (col.isLocked) return col;
+        const posInUnlocked = unlockedIndices.indexOf(colIdx);
         const nextQty = {};
         lines.forEach((line, lineIdx) => {
           const totalCtn = Math.max(0, Math.round((Number(line.qty) || 0) + (Number(line.bonus) || 0)));
-          const base = Math.floor(totalCtn / n);
-          const rem = totalCtn % n;
-          nextQty[lineIdx] = base + (colIdx < rem ? 1 : 0);
+          const lockedSum = prev.reduce(
+            (sum, c) => (c.isLocked ? sum + Math.max(0, Math.round(Number(c.qtyByLine?.[lineIdx]) || 0)) : sum),
+            0
+          );
+          const remainingBudget = Math.max(0, totalCtn - lockedSum);
+          const base = Math.floor(remainingBudget / nUnlocked);
+          const rem = remainingBudget % nUnlocked;
+          nextQty[lineIdx] = base + (posInUnlocked < rem ? 1 : 0);
         });
         return { ...col, qtyByLine: nextQty };
       })
     );
   };
 
-  // Helper: Fill a row's remaining diff into the last column with 0 or target column
+  // Helper: Fill a row's remaining diff into the last UNLOCKED column
   const handleAutoBalanceRow = (lineIdx) => {
     const stat = rowStats[lineIdx];
     if (!stat || stat.diff === 0) return;
-    const targetColIdx = columns.length - 1;
+    let targetColIdx = -1;
+    for (let i = columns.length - 1; i >= 0; i--) {
+      if (!columns[i].isLocked) {
+        targetColIdx = i;
+        break;
+      }
+    }
+    if (targetColIdx === -1) return;
     setColumns((prev) =>
       prev.map((col, idx) => {
         if (idx !== targetColIdx) return col;
@@ -248,7 +346,70 @@ export default function OrderSplitModal({
     );
   };
 
-  // Commit Split via Atomic Firestore Batch
+  // Revert Split (Merge Back to single Pending order) — allowed strictly when ALL existing portions are still Pending
+  const handleRevertSplit = async () => {
+    if (!isEditMode || !allChildrenPending) return;
+    setErrorMsg('');
+    setIsSaving(true);
+    try {
+      const batch = writeBatch(db);
+      const now = new Date();
+
+      sortedExistingChildren.forEach((child) => {
+        batch.delete(doc(db, 'sales_orders', child.id));
+      });
+
+      const existingAudit = Array.isArray(order.auditTrail) ? order.auditTrail : [];
+      const revertAuditEntry = {
+        id: `AUD-${Date.now()}-REVERT`,
+        action: 'split_reverted',
+        performedBy: currentUserName,
+        performedById: currentUserId,
+        timestamp: now,
+        summaryAr: `تم إلغاء تقسيم الأمر #${baseSerial} وإرجاعه كأمر واحد (${sortedExistingChildren.length} أجزاء محذوفة)`,
+        summaryEn: `Reverted split of #${baseSerial} back to a single order (${sortedExistingChildren.length} pending portions merged back)`,
+        changes: {
+          metadata: [
+            {
+              labelAr: 'الأجزاء الملغاة',
+              labelEn: 'Removed Portions',
+              oldValue: `${sortedExistingChildren.length} portions`,
+              newValue: 'Merged into single order'
+            }
+          ],
+          lineChanges: []
+        }
+      };
+
+      batch.set(
+        doc(db, 'sales_orders', order.id),
+        {
+          isSplitParent: false,
+          splitCount: 0,
+          splitTotal: 0,
+          splitChildren: [],
+          invoiceSplitMode: null,
+          billingScope: 'standard',
+          updatedAt: serverTimestamp(),
+          updatedBy: currentUserName,
+          updatedById: currentUserId,
+          auditTrail: [...existingAudit, revertAuditEntry]
+        },
+        { merge: true }
+      );
+
+      await batch.commit();
+      if (onSplitSuccess) onSplitSuccess(order, []);
+      onClose();
+    } catch (err) {
+      console.error('Error reverting order split:', err);
+      setErrorMsg(isAr ? 'تعذر إلغاء التقسيم. يرجى المحاولة مرة أخرى.' : 'Failed to revert split. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Commit Create or Edit Split via Atomic Firestore Batch
   const handleConfirmSplit = async () => {
     setErrorMsg('');
     if (!allRowsAligned) {
@@ -275,27 +436,65 @@ export default function OrderSplitModal({
       const now = new Date();
       const vatMode = order.vatMode || 'none';
 
-      // Pre-compute exact integer paidQty & bonusQty allocation per SKU across columns
+      // Delete any Pending child docs removed by the user in Edit Mode
+      if (isEditMode) {
+        const survivingIds = new Set(columns.map((c) => c.existingChildId).filter(Boolean));
+        sortedExistingChildren.forEach((child) => {
+          if (!survivingIds.has(child.id)) {
+            batch.delete(doc(db, 'sales_orders', child.id));
+          }
+        });
+      }
+
+      // Compute exact paidQty & bonusQty allocation across unlocked columns, preserving locked columns verbatim
       const lineAllocationsByCol = columns.map(() => []);
 
       rowStats.forEach(({ line, lineIdx, paidQty, bonusQty }) => {
-        const colWeights = columns.map((c) => Math.max(0, Math.round(Number(c.qtyByLine?.[lineIdx]) || 0)));
-        const colTotalTarget = colWeights;
-        // Allocate paidQty & bonusQty independently via Largest Remainder so both sums match exactly,
-        // and guarantee paid + bonus for each column matches colTotalTarget[colIdx]
-        const paidAlloc = allocateIntegersProportionally(paidQty, colWeights);
-        const bonusAlloc = colTotalTarget.map((tot, idx) => Math.max(0, tot - paidAlloc[idx]));
-        // Verify bonus sum matches bonusQty (since sum(tot) === paidQty + bonusQty and sum(paidAlloc) === paidQty, sum(bonusAlloc) === bonusQty automatically!)
-        columns.forEach((_, colIdx) => {
-          const cPaid = paidAlloc[colIdx] || 0;
-          const cBonus = bonusAlloc[colIdx] || 0;
+        const unlockedIndices = columns.map((c, idx) => (!c.isLocked ? idx : -1)).filter((i) => i !== -1);
+
+        let lockedPaidSum = 0;
+        let lockedBonusSum = 0;
+        columns.forEach((col, colIdx) => {
+          if (!col.isLocked) return;
+          const exactPaid = Number(col.lockedPaidByLine?.[lineIdx] || 0);
+          const exactBonus = Number(col.lockedBonusByLine?.[lineIdx] || 0);
+          lockedPaidSum += exactPaid;
+          lockedBonusSum += exactBonus;
+          if (exactPaid + exactBonus > 0) {
+            // Preserve the exact existing calculated line from the locked child when possible
+            const existingMatchedLine = (col.existingChild?.lines || []).find(
+              (cl) =>
+                (line.productId && cl.productId === line.productId) ||
+                (line.productCode && cl.productCode === line.productCode)
+            );
+            lineAllocationsByCol[colIdx].push(
+              existingMatchedLine ||
+                calculateSalesOrderLineTotals(
+                  { ...line, qty: exactPaid, bonus: exactBonus },
+                  line.detectedUnitPrice || 0,
+                  Boolean(line.isPromotional),
+                  line.promoDiscountPct || 0,
+                  vatMode
+                )
+            );
+          }
+        });
+
+        const remainingPaid = Math.max(0, paidQty - lockedPaidSum);
+        const unlockedWeights = unlockedIndices.map((idx) =>
+          Math.max(0, Math.round(Number(columns[idx].qtyByLine?.[lineIdx]) || 0))
+        );
+        const unlockedTotalSum = unlockedWeights.reduce((s, w) => s + w, 0);
+        const clampedRemainingPaid = Math.min(remainingPaid, unlockedTotalSum);
+        const unlockedPaidAlloc = allocateIntegersProportionally(clampedRemainingPaid, unlockedWeights);
+
+        unlockedIndices.forEach((colIdx, pos) => {
+          const tot = unlockedWeights[pos] || 0;
+          const cPaid = unlockedPaidAlloc[pos] || 0;
+          const cBonus = Math.max(0, tot - cPaid);
           if (cPaid + cBonus > 0) {
             const calculated = calculateSalesOrderLineTotals(
-              {
-                ...line,
-                qty: cPaid,
-                bonus: cBonus
-              },
+              { ...line, qty: cPaid, bonus: cBonus },
               line.detectedUnitPrice || 0,
               Boolean(line.isPromotional),
               line.promoDiscountPct || 0,
@@ -306,12 +505,59 @@ export default function OrderSplitModal({
         });
       });
 
+      // Guarantee collision-free IDs when adding new columns to an already-split order
+      const takenIds = new Set(columns.map((c) => c.existingChildId).filter(Boolean));
+      const allocateNextNewChildId = () => {
+        let seq = 1;
+        while (takenIds.has(`${order.id}_split_${seq}`)) {
+          seq += 1;
+        }
+        const nextId = `${order.id}_split_${seq}`;
+        takenIds.add(nextId);
+        return nextId;
+      };
+
       const splitChildrenSummary = [];
+      const newBillingScope = invoiceSplitMode === 'merged_on_parent' ? 'covered_by_parent_invoice' : 'independent_portion';
 
       columns.forEach((col, colIdx) => {
         const portionIndex = colIdx + 1;
         const portionSerial = `${baseSerial} (${portionIndex}/${n})`;
-        const childId = `${order.id}_split_${portionIndex}`;
+
+        // Locked column (Preparing / Out for Delivery / Delivered / Paid): preserve lines, truck, trip, status verbatim;
+        // update only portion serial indexing & billing scope metadata if total portions or doc mode changed.
+        if (col.isLocked && col.existingChildId && col.existingChild) {
+          const ex = col.existingChild;
+          batch.set(
+            doc(db, 'sales_orders', col.existingChildId),
+            {
+              serial: portionSerial,
+              splitIndex: portionIndex,
+              splitTotal: n,
+              invoiceSplitMode,
+              billingScope: newBillingScope,
+              updatedAt: serverTimestamp(),
+              updatedBy: currentUserName,
+              updatedById: currentUserId
+            },
+            { merge: true }
+          );
+
+          splitChildrenSummary.push({
+            id: col.existingChildId,
+            serial: portionSerial,
+            splitIndex: portionIndex,
+            totalCartons: Number(ex.totalCartons || 0),
+            totalWeightKg: Number(ex.totalWeightKg || 0),
+            grandTotal: Number(ex.grandTotal || 0),
+            assignedVehicleId: ex.assignedVehicleId || '',
+            assignedVehicleName: ex.assignedVehicleName || ''
+          });
+          return;
+        }
+
+        const isExistingUnlocked = Boolean(col.existingChildId && col.existingChild);
+        const childId = isExistingUnlocked ? col.existingChildId : allocateNextNewChildId();
         const childLines = lineAllocationsByCol[colIdx];
         const financials = aggregateSalesOrderTotals(childLines, vatMode);
 
@@ -330,7 +576,46 @@ export default function OrderSplitModal({
 
         const assignedVehDisplayName = selectedVeh ? resolveVehicleDisplayName(selectedVeh) : '';
 
-        // Strip parent-only split metadata if any, set clean child doc
+        const auditEventForChild = {
+          id: `AUD-${Date.now()}-${portionIndex}`,
+          action: isExistingUnlocked ? 'split_child_updated' : 'split_child_created',
+          performedBy: currentUserName,
+          performedById: currentUserId,
+          timestamp: now,
+          summaryAr: isExistingUnlocked
+            ? `تم تعديل توزيع الجزء #${portionSerial} من الأمر #${baseSerial} (${financials.totalCartons} كرتونة${assignedVehDisplayName ? ` — شاحنة: ${assignedVehDisplayName}` : ''})`
+            : `تم إنشاء الجزء #${portionSerial} ناتج عن تقسيم الأمر #${baseSerial} (${financials.totalCartons} كرتونة${assignedVehDisplayName ? ` — شاحنة مبدئية: ${assignedVehDisplayName}` : ''})`,
+          summaryEn: isExistingUnlocked
+            ? `Updated split portion #${portionSerial} of order #${baseSerial} (${financials.totalCartons} ctn${assignedVehDisplayName ? ` — Truck: ${assignedVehDisplayName}` : ''})`
+            : `Created split portion #${portionSerial} from order #${baseSerial} (${financials.totalCartons} ctn${assignedVehDisplayName ? ` — Pre-selected truck: ${assignedVehDisplayName}` : ''})`,
+          changes: {
+            metadata: [
+              { labelAr: 'الأمر الأصلي', labelEn: 'Parent Order', newValue: `#${baseSerial}` },
+              { labelAr: 'الجزء', labelEn: 'Portion', newValue: `${portionIndex}/${n}` },
+              {
+                labelAr: 'نظام الفوترة',
+                labelEn: 'Financial Docs',
+                newValue: invoiceSplitMode === 'merged_on_parent' ? 'موحدة بالأصل' : 'مقسمة لكل شاحنة'
+              },
+              ...(assignedVehDisplayName
+                ? [{ labelAr: 'شاحنة مبدئية', labelEn: 'Assigned Truck', newValue: assignedVehDisplayName }]
+                : [])
+            ],
+            lineChanges: childLines.map((cl) => ({
+              productCode: cl.productCode,
+              productNameAr: cl.productNameAr,
+              productNameEn: cl.productNameEn,
+              type: isExistingUnlocked ? 'modified' : 'added',
+              detailAr: `${cl.qty + cl.bonus} كرتونة (${cl.qty} مدفوع + ${cl.bonus} بونص)`,
+              detailEn: `${cl.qty + cl.bonus} cartons (${cl.qty} paid + ${cl.bonus} bonus)`
+            }))
+          }
+        };
+
+        const existingChildAudit = isExistingUnlocked && Array.isArray(col.existingChild?.auditTrail)
+          ? col.existingChild.auditTrail
+          : [];
+
         const childDoc = {
           id: childId,
           serial: portionSerial,
@@ -341,7 +626,7 @@ export default function OrderSplitModal({
           splitParentSerial: baseSerial,
           isSplitParent: false,
           invoiceSplitMode,
-          billingScope: invoiceSplitMode === 'merged_on_parent' ? 'covered_by_parent_invoice' : 'independent_portion',
+          billingScope: newBillingScope,
 
           // Core customer, dates & commercial metadata inherited from Parent
           clientId: order.clientId || '',
@@ -351,7 +636,7 @@ export default function OrderSplitModal({
           region: order.region || '',
           deliveryAddress: order.deliveryAddress || '',
           invoiceDate: order.invoiceDate || '',
-          loadingDate: order.loadingDate || order.invoiceDate || '',
+          loadingDate: (isExistingUnlocked && col.existingChild?.loadingDate) || order.loadingDate || order.invoiceDate || '',
           isDatesLinked: Boolean(order.isDatesLinked),
           orderType: order.orderType || 'supply',
           isAdministrative: false,
@@ -361,7 +646,7 @@ export default function OrderSplitModal({
           revisedBy: order.revisedBy || null,
           revisedById: order.revisedById || null,
 
-          // Always stays Pending ('not_yet') when split from Sales Orders
+          // Always stays Pending ('not_yet') for Pending portions edited/created in Split Modal
           fulfillmentStatus: 'not_yet',
           loadingOrderNumber: null,
           assignedVehicleId: selectedVeh ? selectedVeh.id : '',
@@ -383,46 +668,14 @@ export default function OrderSplitModal({
           lines: childLines,
           ...financials,
 
-          createdAt: serverTimestamp(),
-          createdBy: currentUserName,
-          createdById: currentUserId,
+          createdAt: (isExistingUnlocked && col.existingChild?.createdAt) || serverTimestamp(),
+          createdBy: (isExistingUnlocked && col.existingChild?.createdBy) || currentUserName,
+          createdById: (isExistingUnlocked && col.existingChild?.createdById) || currentUserId,
           updatedAt: serverTimestamp(),
           updatedBy: currentUserName,
           updatedById: currentUserId,
 
-          auditTrail: [
-            {
-              id: `AUD-${Date.now()}-${portionIndex}`,
-              action: 'split_child_created',
-              performedBy: currentUserName,
-              performedById: currentUserId,
-              timestamp: now,
-              summaryAr: `تم إنشاء الجزء #${portionSerial} ناتج عن تقسيم الأمر #${baseSerial} (${financials.totalCartons} كرتونة${assignedVehDisplayName ? ` — شاحنة مبدئية: ${assignedVehDisplayName}` : ''})`,
-              summaryEn: `Created split portion #${portionSerial} from order #${baseSerial} (${financials.totalCartons} ctn${assignedVehDisplayName ? ` — Pre-selected truck: ${assignedVehDisplayName}` : ''})`,
-              changes: {
-                metadata: [
-                  { labelAr: 'الأمر الأصلي', labelEn: 'Parent Order', newValue: `#${baseSerial}` },
-                  { labelAr: 'الجزء', labelEn: 'Portion', newValue: `${portionIndex}/${n}` },
-                  {
-                    labelAr: 'نظام الفوترة',
-                    labelEn: 'Financial Docs',
-                    newValue: invoiceSplitMode === 'merged_on_parent' ? 'موحدة بالأصل' : 'مقسمة لكل شاحنة'
-                  },
-                  ...(assignedVehDisplayName
-                    ? [{ labelAr: 'شاحنة مبدئية', labelEn: 'Assigned Truck', newValue: assignedVehDisplayName }]
-                    : [])
-                ],
-                lineChanges: childLines.map((cl) => ({
-                  productCode: cl.productCode,
-                  productNameAr: cl.productNameAr,
-                  productNameEn: cl.productNameEn,
-                  type: 'added',
-                  detailAr: `${cl.qty + cl.bonus} كرتونة (${cl.qty} مدفوع + ${cl.bonus} بونص)`,
-                  detailEn: `${cl.qty + cl.bonus} cartons (${cl.qty} paid + ${cl.bonus} bonus)`
-                }))
-              }
-            }
-          ]
+          auditTrail: [...existingChildAudit, auditEventForChild]
         };
 
         batch.set(doc(db, 'sales_orders', childId), childDoc);
@@ -446,8 +699,12 @@ export default function OrderSplitModal({
         performedBy: currentUserName,
         performedById: currentUserId,
         timestamp: now,
-        summaryAr: `تم تقسيم الأمر #${baseSerial} إلى ${n} أجزاء (${invoiceSplitMode === 'merged_on_parent' ? 'مستند مالي موحد بالأصل' : 'مستند مالي منفصل لكل جزء'})`,
-        summaryEn: `Split order #${baseSerial} into ${n} portions (${invoiceSplitMode === 'merged_on_parent' ? 'Merged Parent Invoice' : 'Split Financial Docs'})`,
+        summaryAr: isEditMode
+          ? `تم تعديل تقسيم الأمر #${baseSerial} إلى ${n} أجزاء (${invoiceSplitMode === 'merged_on_parent' ? 'مستند مالي موحد بالأصل' : 'مستند مالي منفصل لكل جزء'})`
+          : `تم تقسيم الأمر #${baseSerial} إلى ${n} أجزاء (${invoiceSplitMode === 'merged_on_parent' ? 'مستند مالي موحد بالأصل' : 'مستند مالي منفصل لكل جزء'})`,
+        summaryEn: isEditMode
+          ? `Updated split of order #${baseSerial} into ${n} portions (${invoiceSplitMode === 'merged_on_parent' ? 'Merged Parent Invoice' : 'Split Financial Docs'})`
+          : `Split order #${baseSerial} into ${n} portions (${invoiceSplitMode === 'merged_on_parent' ? 'Merged Parent Invoice' : 'Split Financial Docs'})`,
         changes: {
           metadata: [
             { labelAr: 'عدد الأجزاء', labelEn: 'Portions Count', newValue: String(n) },
@@ -458,7 +715,7 @@ export default function OrderSplitModal({
             },
             {
               labelAr: 'الأجزاء الناتجة',
-              labelEn: 'Generated Portions',
+              labelEn: 'Resulting Portions',
               newValue: splitChildrenSummary.map((c) => `#${c.serial} (${c.totalCartons} ctn)`).join(' | ')
             }
           ],
@@ -473,12 +730,13 @@ export default function OrderSplitModal({
           isSplitParent: true,
           baseSerial,
           splitCount: n,
+          splitTotal: n,
           splitChildren: splitChildrenSummary,
           invoiceSplitMode,
           billingScope: invoiceSplitMode === 'merged_on_parent' ? 'merged_on_parent' : 'split_to_portions',
-          splitAt: serverTimestamp(),
-          splitBy: currentUserName,
-          splitById: currentUserId,
+          splitAt: order.splitAt || serverTimestamp(),
+          splitBy: order.splitBy || currentUserName,
+          splitById: order.splitById || currentUserId,
           updatedAt: serverTimestamp(),
           updatedBy: currentUserName,
           updatedById: currentUserId,
@@ -522,7 +780,9 @@ export default function OrderSplitModal({
                 )}
               </div>
               <h3 className="text-base font-black mt-0.5">
-                {isAr ? 'مصفوفة تقسيم أمر البيع إلى شحنات متعددة' : 'Split Sales Order Matrix Across Multiple Trucks'}
+                {isEditMode
+                  ? (isAr ? 'تعديل وإعادة توزيع تقسيم أمر البيع' : 'Edit & Reallocate Split Sales Order Matrix')
+                  : (isAr ? 'مصفوفة تقسيم أمر البيع إلى شحنات متعددة' : 'Split Sales Order Matrix Across Multiple Trucks')}
               </h3>
             </div>
           </div>
@@ -663,8 +923,14 @@ export default function OrderSplitModal({
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                disabled={editableColumnsCount === 0}
                 onClick={handleEvenSplit}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl font-bold transition cursor-pointer shadow-2xs"
+                title={
+                  editableColumnsCount < columns.length
+                    ? (isAr ? 'توزيع المتبقي بالتساوي على الأجزاء القابلة للتعديل فقط' : 'Evenly distribute pending cartons across unlocked portions only')
+                    : (isAr ? 'توزيع متساوٍ تلقائي لجميع الأصناف' : 'Evenly distribute all products')
+                }
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl font-bold transition cursor-pointer shadow-2xs disabled:opacity-45 disabled:cursor-not-allowed"
               >
                 <Scale className="w-3.5 h-3.5 text-indigo-600" />
                 <span>{isAr ? 'توزيع متساوٍ تلقائي' : 'Even Split'}</span>
@@ -698,15 +964,37 @@ export default function OrderSplitModal({
 
                   {columns.map((col, colIdx) => {
                     const cStat = columnStats[colIdx];
+                    const statusBadgeText = col.isLocked
+                      ? col.lockedStatus === 'prepare'
+                        ? (isAr ? 'جاري التجهيز' : 'Preparing')
+                        : col.lockedStatus === 'shipped'
+                        ? (isAr ? 'جاري التوصيل' : 'Out for Delivery')
+                        : col.lockedStatus === 'delivered'
+                        ? (isAr ? 'تم التسليم' : 'Delivered')
+                        : (isAr ? 'مدفوع' : 'Paid')
+                      : null;
+
                     return (
-                      <th key={col.id} className="p-2.5 min-w-[210px] border-e border-slate-200 text-start font-normal">
+                      <th key={col.id} className={`p-2.5 min-w-[210px] border-e border-slate-200 text-start font-normal ${col.isLocked ? 'bg-amber-50/40' : ''}`}>
                         <div className="space-y-2">
-                          {/* Portion Title & Remove */}
+                          {/* Portion Title & Lock / Remove */}
                           <div className="flex items-center justify-between gap-1">
                             <span className="font-mono text-xs font-black px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-900 border border-indigo-200">
                               #{cStat.serialPreview}
                             </span>
-                            {columns.length > 2 && (
+                            {col.isLocked ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300"
+                                title={
+                                  isAr
+                                    ? 'هذا الجزء خرج من حالة قيد الانتظار — مقفل لحماية التجهيز/التحميل الفعلي'
+                                    : 'Portion is no longer Pending — locked to protect live Loading Plan execution'
+                                }
+                              >
+                                <Lock className="w-2.5 h-2.5 text-amber-700 shrink-0" />
+                                <span>{statusBadgeText}</span>
+                              </span>
+                            ) : columns.length > 2 ? (
                               <button
                                 type="button"
                                 onClick={() => handleRemoveColumn(colIdx)}
@@ -715,15 +1003,18 @@ export default function OrderSplitModal({
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
-                            )}
+                            ) : null}
                           </div>
 
                           {/* Truck Capacity Estimator Dropdown */}
                           <div>
                             <select
                               value={col.vehicleId}
+                              disabled={col.isLocked}
                               onChange={(e) => handleVehicleChange(colIdx, e.target.value)}
-                              className="w-full py-1.5 px-2 bg-white border border-slate-300 rounded-xl text-[11px] font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                              className={`w-full py-1.5 px-2 border border-slate-300 rounded-xl text-[11px] font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
+                                col.isLocked ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-white cursor-pointer'
+                              }`}
                             >
                               <option value="">
                                 {isAr ? '— اختر شاحنة (اختياري للسعة) —' : '— Select Truck (Optional) —'}
@@ -742,28 +1033,34 @@ export default function OrderSplitModal({
                             {/* Checkbox right beside/under Truck selector asking whether to assign truck to order */}
                             <label
                               className={`mt-1.5 flex items-center gap-1.5 text-[10px] font-bold px-1.5 py-1 rounded-lg border transition ${
-                                col.vehicleId
+                                col.isLocked
+                                  ? 'bg-slate-100/80 border-slate-200 text-slate-400 cursor-not-allowed'
+                                  : col.vehicleId
                                   ? col.assignTruckToOrder
                                     ? 'bg-emerald-50 border-emerald-300 text-emerald-900 cursor-pointer'
                                     : 'bg-white border-slate-200 text-slate-600 cursor-pointer hover:border-slate-300'
                                   : 'bg-slate-100/60 border-slate-200/70 text-slate-400 cursor-not-allowed'
                               }`}
                               title={
-                                isAr
+                                col.isLocked
+                                  ? (isAr ? 'مثبت من خطة التحميل' : 'Managed in Loading Plan')
+                                  : isAr
                                   ? 'تحديد ما إذا كان سيتم تثبيت هذه الشاحنة على هذا الجزء أم استخدامها لحساب الوزن فقط'
                                   : 'Check to pre-assign this truck to the child order, or leave unchecked for capacity estimation only'
                               }
                             >
                               <input
                                 type="checkbox"
-                                disabled={!col.vehicleId}
+                                disabled={!col.vehicleId || col.isLocked}
                                 checked={Boolean(col.assignTruckToOrder)}
                                 onChange={(e) => handleToggleAssignTruck(colIdx, e.target.checked)}
                                 className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer disabled:cursor-not-allowed"
                               />
                               <Truck className="w-3 h-3 shrink-0 rtl:-scale-x-100" />
                               <span className="truncate">
-                                {isAr ? 'تعيين الشاحنة على الطلب' : 'Assign truck to order'}
+                                {col.existingChild?.loadingOrderNumber
+                                  ? (isAr ? `رحلة #${col.existingChild.loadingOrderNumber}` : `Trip #${col.existingChild.loadingOrderNumber}`)
+                                  : (isAr ? 'تعيين الشاحنة على الطلب' : 'Assign truck to order')}
                               </span>
                             </label>
                           </div>
@@ -855,17 +1152,20 @@ export default function OrderSplitModal({
                     {columns.map((col, colIdx) => {
                       const val = Math.max(0, Math.round(Number(col.qtyByLine?.[r.lineIdx]) || 0));
                       return (
-                        <td key={col.id} className="p-2.5 border-e border-slate-100 text-center">
+                        <td key={col.id} className={`p-2.5 border-e border-slate-100 text-center ${col.isLocked ? 'bg-amber-50/25' : ''}`}>
                           <div className="flex items-center justify-center gap-1.5">
                             <input
                               type="number"
                               min="0"
                               max={r.targetCartons}
                               step="1"
+                              disabled={col.isLocked}
                               value={val}
                               onChange={(e) => handleCellChange(colIdx, r.lineIdx, e.target.value)}
                               className={`w-24 py-1.5 px-2 text-center font-mono font-black text-sm rounded-xl border focus:outline-none focus:ring-2 ${
-                                r.isAligned
+                                col.isLocked
+                                  ? 'bg-slate-100 border-slate-300 text-slate-500 cursor-not-allowed'
+                                  : r.isAligned
                                   ? 'border-emerald-300 bg-emerald-50/30 text-slate-900 focus:ring-emerald-400'
                                   : 'border-amber-300 bg-white text-slate-900 focus:ring-indigo-500'
                               }`}
@@ -922,18 +1222,67 @@ export default function OrderSplitModal({
 
         {/* Footer */}
         <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
-          <div className="text-[11px] font-semibold text-slate-500">
+          <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-500">
             {!allColumnsNonEmpty ? (
               <span className="text-rose-600 font-bold">
                 {isAr ? '• كل جزء يجب أن يحتوي على كرتونة واحدة على الأقل' : '• Each portion must have ≥ 1 carton'}
               </span>
             ) : !allRowsAligned ? (
               <span className="text-amber-700 font-bold">
-                {isAr ? '• يرجى مطابقة مجموع الكميات لجميع الأصناف لتفعيل الاعتماد' : '• Align all product quantities to enable Split'}
+                {isAr ? '• يرجى مطابقة مجموع الكميات لجميع الأصناف لتفعيل الاعتماد' : '• Align all product quantities to enable Save'}
               </span>
             ) : (
               <span className="text-emerald-700 font-bold">
-                {isAr ? `جاهز لإنشاء ${columns.length} أجزاء من الأمر #${baseSerial}` : `Ready to create ${columns.length} portions from #${baseSerial}`}
+                {isEditMode
+                  ? (isAr ? `جاهز لحفظ تعديلات التقسيم (${columns.length} أجزاء) للأمر #${baseSerial}` : `Ready to save ${columns.length} portions for #${baseSerial}`)
+                  : (isAr ? `جاهز لإنشاء ${columns.length} أجزاء من الأمر #${baseSerial}` : `Ready to create ${columns.length} portions from #${baseSerial}`)}
+              </span>
+            )}
+
+            {isEditMode && allChildrenPending && (
+              confirmUnsplit ? (
+                <div className="inline-flex items-center gap-1.5 bg-rose-50 border border-rose-300 rounded-xl px-2.5 py-1">
+                  <span className="text-rose-800 font-bold text-[10px]">
+                    {isAr ? 'تأكيد إلغاء التقسيم بالكامل؟' : 'Merge all portions back?'}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={isSaving}
+                    onClick={handleRevertSplit}
+                    className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-black cursor-pointer"
+                  >
+                    {isAr ? 'نعم، إلغاء التقسيم' : 'Yes, Unsplit'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSaving}
+                    onClick={() => setConfirmUnsplit(false)}
+                    className="px-2 py-0.5 bg-white text-slate-600 border border-slate-300 rounded-lg text-[10px] font-bold cursor-pointer"
+                  >
+                    {isAr ? 'تراجع' : 'No'}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isSaving}
+                  onClick={() => setConfirmUnsplit(true)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-[11px] font-bold transition cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>{isAr ? 'إلغاء التقسيم ودمجه كأمر واحد' : 'Unsplit / Merge Back'}</span>
+                </button>
+              )
+            )}
+
+            {isEditMode && !allChildrenPending && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-lg">
+                <Lock className="w-3 h-3 text-amber-600 shrink-0" />
+                <span>
+                  {isAr
+                    ? 'الأجزاء التي دخلت التجهيز أو التوصيل مقفلة (لتعديلها أرجعها قيد الانتظار من خطة التحميل)'
+                    : 'Locked portions (Preparing+) stay protected; Pending portions remain editable'}
+                </span>
               </span>
             )}
           </div>
@@ -955,7 +1304,9 @@ export default function OrderSplitModal({
             >
               {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <GitFork className="w-4 h-4" />}
               <span>
-                {isAr ? `اعتماد وتقسيم الأمر (${columns.length} أجزاء)` : `Confirm Split (${columns.length} Portions)`}
+                {isEditMode
+                  ? (isAr ? `حفظ تعديلات التقسيم (${columns.length} أجزاء)` : `Save Split Changes (${columns.length} Portions)`)
+                  : (isAr ? `اعتماد وتقسيم الأمر (${columns.length} أجزاء)` : `Confirm Split (${columns.length} Portions)`)}
               </span>
             </button>
           </div>

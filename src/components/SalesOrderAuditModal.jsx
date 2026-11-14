@@ -54,6 +54,8 @@ export default function SalesOrderAuditModal({
           entry.action !== 'dispatch_assignment' &&
           entry.action !== 'split_parent' &&
           entry.action !== 'split_child_created' &&
+          entry.action !== 'split_child_updated' &&
+          entry.action !== 'split_reverted' &&
           entry.action !== 'partial_rejection_sync'
         ) {
           return false;
@@ -163,6 +165,18 @@ export default function SalesOrderAuditModal({
           bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
           icon: GitFork,
           label: isAr ? 'جزء ناتج عن تقسيم أمر' : 'Split Child Portion Created'
+        };
+      case 'split_child_updated':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: GitFork,
+          label: isAr ? 'تعديل كميات/شاحنة الجزء المقسم' : 'Split Portion Updated'
+        };
+      case 'split_reverted':
+        return {
+          bg: 'bg-amber-50 text-amber-800 border-amber-200',
+          icon: RotateCcw,
+          label: isAr ? 'إلغاء التقسيم ودمج الأمر' : 'Split Reverted (Merged Back)'
         };
       case 'partial_rejection_sync':
         return {

@@ -1256,13 +1256,38 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     };
   }, [filteredOrders]);
 
-  // Trigger Split Order Workflow with strict Pending ('not_yet') status guard & helpful user guidance
+  // Trigger Split Order Workflow (Create new split OR Edit/Reallocate existing split parent)
   const handleRequestSplitOrder = (order) => {
     if (!order) return;
-    if (order.isSplitParent || order.splitParentId) {
+    if (order.isSplitParent) {
+      if (!canSplitOrder) {
+        alert(
+          isAr
+            ? 'عذراً، لا تملك صلاحية تعديل تقسيم أوامر البيع. يرجى مراجعة مدير النظام لتفعيل صلاحية (تقسيم أمر البيع).'
+            : 'You do not have permission to edit split sales orders (canSplitOrder).'
+        );
+        return;
+      }
+      setSplitModalOrder(order);
+      return;
+    }
+    if (order.splitParentId) {
+      const parentOrder = orders.find((o) => o.id === order.splitParentId);
+      if (parentOrder) {
+        if (!canSplitOrder) {
+          alert(
+            isAr
+              ? 'عذراً، لا تملك صلاحية تعديل تقسيم أوامر البيع. يرجى مراجعة مدير النظام لتفعيل صلاحية (تقسيم أمر البيع).'
+              : 'You do not have permission to edit split sales orders (canSplitOrder).'
+          );
+          return;
+        }
+        setSplitModalOrder(parentOrder);
+        return;
+      }
       setSplitGuidanceOrder({
         order,
-        reason: order.isSplitParent ? 'already_parent' : 'already_child'
+        reason: 'already_child'
       });
       return;
     }
@@ -2548,6 +2573,19 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                                 </span>
                                               </div>
                                             </div>
+                                            {canSplitOrder && (
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleRequestSplitOrder(order);
+                                                }}
+                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-violet-600 text-violet-800 hover:text-white border border-violet-300 hover:border-violet-600 rounded-lg text-[11px] font-extrabold transition shadow-2xs cursor-pointer"
+                                              >
+                                                <GitFork className="w-3.5 h-3.5" />
+                                                <span>{isAr ? 'تعديل تقسيم الطلب' : 'Edit Split'}</span>
+                                              </button>
+                                            )}
                                           </div>
 
                                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
@@ -3111,10 +3149,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           </button>
 
           {!PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(activeOrderForMenu.orderType) &&
-            !activeOrderForMenu.isSplitParent &&
-            !activeOrderForMenu.splitParentId &&
             canSplitOrder && (() => {
-              const isPendingForSplit = !activeOrderForMenu.fulfillmentStatus || activeOrderForMenu.fulfillmentStatus === 'not_yet';
+              const isEditSplitAction = Boolean(activeOrderForMenu.isSplitParent || activeOrderForMenu.splitParentId);
+              const isPendingForSplit = isEditSplitAction || !activeOrderForMenu.fulfillmentStatus || activeOrderForMenu.fulfillmentStatus === 'not_yet';
+              const splitMenuLabel = activeOrderForMenu.isSplitParent
+                ? (isAr ? 'تعديل وإعادة توزيع التقسيم' : 'Edit / Reallocate Split')
+                : activeOrderForMenu.splitParentId
+                  ? (isAr ? 'تعديل تقسيم الطلب الأب' : 'Edit Parent Split')
+                  : (isAr ? 'تقسيم الطلب على عدة شاحنات' : 'Split Order Across Trucks');
               return (
                 <button
                   type="button"
@@ -3131,7 +3173,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                   }`}
                 >
                   <GitFork className={`w-3.5 h-3.5 ${isPendingForSplit ? 'text-violet-600' : 'text-slate-400'}`} />
-                  <span>{isAr ? 'تقسيم الطلب على عدة شاحنات' : 'Split Order Across Trucks'}</span>
+                  <span>{splitMenuLabel}</span>
                 </button>
               );
             })()}
@@ -3376,6 +3418,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           isOpen={Boolean(splitModalOrder)}
           onClose={() => setSplitModalOrder(null)}
           order={splitModalOrder}
+          existingChildren={
+            splitModalOrder.isSplitParent
+              ? orders.filter((o) => o.splitParentId === splitModalOrder.id)
+              : []
+          }
           baseSerial={resolveOrderSerial(splitModalOrder, orders).replace(/\s*\(.*/, '')}
           vehicles={vehicles}
           employees={[]}
