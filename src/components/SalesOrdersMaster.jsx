@@ -614,6 +614,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [activeActionsMenuOrderId, setActiveActionsMenuOrderId] = useState(null);
   const [actionsMenuAnchor, setActionsMenuAnchor] = useState(null);
 
+  // Split Portion Card Hover Tooltip (Portal-rendered for unclipped visibility)
+  const [hoveredPortionTooltip, setHoveredPortionTooltip] = useState(null);
+
   const activeOrderForMenu = useMemo(() => {
     if (!activeActionsMenuOrderId) return null;
     return orders.find((o) => o.id === activeActionsMenuOrderId) || null;
@@ -2547,35 +2550,75 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                             </div>
                                           </div>
 
-                                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+                                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
                                             {splitChildPortions.map((child) => {
                                               const childVeh = vehicles.find((v) => v.id === child.assignedVehicleId);
                                               const childVehName = resolveVehicleDisplayName(childVeh, child.assignedVehicleName);
-                                              const childFulf = FULFILLMENT_STATUSES.find((s) => s.id === (child.fulfillmentStatus || 'not_yet')) || FULFILLMENT_STATUSES[0];
+                                              const childSerial = resolveOrderSerial(child, orders);
+                                              const childStatusKey = (child.fulfillmentStatus === 'out_for_delivery' ? 'shipped' : child.fulfillmentStatus) || 'not_yet';
+                                              const childStyle = SALES_FULFILLMENT_STYLE_MAP[childStatusKey] || SALES_FULFILLMENT_STYLE_MAP.not_yet;
+                                              const childFulf = FULFILLMENT_STATUSES.find((s) => s.id === childStatusKey) || FULFILLMENT_STATUSES[0];
+
                                               return (
-                                                <div key={child.id} className="bg-white border border-violet-200/80 rounded-lg p-2.5 flex flex-col gap-1.5 shadow-2xs">
+                                                <div
+                                                  key={child.id}
+                                                  onMouseEnter={(e) => {
+                                                    const rect = e.currentTarget.getBoundingClientRect();
+                                                    setHoveredPortionTooltip({
+                                                      child,
+                                                      childSerial,
+                                                      childVehName,
+                                                      childStatusKey,
+                                                      childStyle,
+                                                      childFulf,
+                                                      rect
+                                                    });
+                                                  }}
+                                                  onMouseLeave={() => setHoveredPortionTooltip(null)}
+                                                  className={`rounded-xl border border-slate-200/90 ${childStyle.startBorderClasses} ${childStyle.rowClasses} p-2.5 flex flex-col gap-1.5 shadow-2xs transition cursor-default`}
+                                                >
                                                   <div className="flex items-center justify-between gap-2">
-                                                    <span className="font-mono font-black text-violet-900 text-xs">
-                                                      #{resolveOrderSerial(child, orders)}
+                                                    <span className="font-mono font-black text-slate-900 text-xs">
+                                                      #{childSerial}
                                                     </span>
-                                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
-                                                      {isAr ? childFulf.labelAr : childFulf.labelEn}
+                                                    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${childStyle.badgeClasses}`}>
+                                                      {childStatusKey === 'prepare' ? (
+                                                        <span className="relative flex h-2 w-2">
+                                                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75"></span>
+                                                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600"></span>
+                                                        </span>
+                                                      ) : childStatusKey === 'shipped' ? (
+                                                        <Truck className="w-3 h-3 text-sky-600 animate-pulse rtl:-scale-x-100 shrink-0" />
+                                                      ) : childStatusKey === 'delivered' ? (
+                                                        <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                                                      ) : childStatusKey === 'paid' ? (
+                                                        <Banknote className="w-3 h-3 text-indigo-600 shrink-0" />
+                                                      ) : (
+                                                        <Clock className="w-3 h-3 text-slate-600 shrink-0" />
+                                                      )}
+                                                      <span>{isAr ? childFulf.labelAr : childFulf.labelEn}</span>
                                                     </span>
                                                   </div>
                                                   <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono">
                                                     <span>{Number(child.totalCartons || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
                                                     <span>{((Number(child.totalWeightKg) || 0) / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'}</span>
-                                                    <span className="font-bold text-slate-800">{Number(child.grandTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} EGP</span>
+                                                    <span className="font-bold text-slate-900">{Number(child.grandTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} EGP</span>
                                                   </div>
-                                                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100 text-[10px]">
-                                                    <span className="text-slate-600 truncate flex items-center gap-1">
+                                                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-200/70 text-[10px]">
+                                                    <span className="text-slate-600 truncate flex items-center gap-1 font-medium">
                                                       <Truck className="w-3 h-3 text-indigo-500 shrink-0 rtl:-scale-x-100" />
                                                       <span className="truncate">{childVehName || (isAr ? 'بانتظار التسكين' : 'Awaiting Truck')}</span>
+                                                      {child.loadingOrderNumber && (
+                                                        <span className="font-mono font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1 rounded">
+                                                          #{child.loadingOrderNumber}
+                                                        </span>
+                                                      )}
                                                     </span>
                                                     <button
                                                       type="button"
                                                       onClick={(e) => {
                                                         e.stopPropagation();
+                                                        setHoveredPortionTooltip(null);
                                                         handleNavigateToLoadingPlan(child);
                                                       }}
                                                       className="text-indigo-600 hover:text-indigo-800 font-bold shrink-0 cursor-pointer"
@@ -3166,6 +3209,128 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         </div>,
         document.body
       )}
+
+      {/* Portal Tooltip for Split Portion Card Hover (Exact Assigned Products & Quantities) */}
+      {hoveredPortionTooltip && (() => {
+        const { child, childSerial, childVehName, childStyle, childFulf, rect } = hoveredPortionTooltip;
+        const lines = child.lines || [];
+        const tooltipWidth = 410;
+        const spaceBelow = typeof window !== 'undefined' ? window.innerHeight - rect.bottom : 400;
+        const showAbove = spaceBelow < 270 && rect.top > 240;
+        const rawLeft = isAr ? rect.right - tooltipWidth : rect.left;
+        const clampedLeft = typeof window !== 'undefined'
+          ? Math.max(12, Math.min(window.innerWidth - tooltipWidth - 12, rawLeft))
+          : rect.left;
+
+        return createPortal(
+          <div
+            dir={isAr ? 'rtl' : 'ltr'}
+            style={{
+              position: 'fixed',
+              top: showAbove ? rect.top - 8 : rect.bottom + 8,
+              left: clampedLeft,
+              width: tooltipWidth,
+              transform: showAbove ? 'translateY(-100%)' : 'none',
+              zIndex: 9999
+            }}
+            className={`pointer-events-none bg-white border border-slate-300/90 ${childStyle.startBorderClasses} rounded-2xl shadow-2xl overflow-hidden text-xs animate-in fade-in zoom-in-95 duration-100`}
+          >
+            {/* Header */}
+            <div className="px-3.5 py-2.5 bg-slate-900 text-white flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-black text-indigo-300 text-xs">#{childSerial}</span>
+                  <span className="text-[10px] text-slate-300 truncate flex items-center gap-1">
+                    <Truck className="w-3 h-3 text-indigo-400 shrink-0 rtl:-scale-x-100" />
+                    <span className="truncate">{childVehName || (isAr ? 'بانتظار التسكين' : 'Awaiting Truck')}</span>
+                    {child.loadingOrderNumber && (
+                      <span className="font-mono text-indigo-200">
+                        · {isAr ? `رحلة #${child.loadingOrderNumber}` : `Trip #${child.loadingOrderNumber}`}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              </div>
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shrink-0 ${childStyle.badgeClasses}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${childStyle.dotClasses}`}></span>
+                <span>{isAr ? childFulf.labelAr : childFulf.labelEn}</span>
+              </span>
+            </div>
+
+            {/* Assigned Products & Quantities Table */}
+            <div className="p-2.5">
+              {lines.length === 0 ? (
+                <p className="text-center text-slate-400 py-3 font-medium">
+                  {isAr ? 'لا توجد أصناف مسجلة' : 'No products assigned'}
+                </p>
+              ) : (
+                <>
+                  <table className="w-full text-[11px] border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+                        <th className="py-1.5 px-2 text-start">{isAr ? 'الصنف' : 'Product'}</th>
+                        <th className="py-1.5 px-2 text-center">{isAr ? 'الكمية' : 'Qty'}</th>
+                        <th className="py-1.5 px-2 text-center">{isAr ? 'البونص' : 'Bonus'}</th>
+                        <th className="py-1.5 px-2 text-end">{isAr ? 'الوزن' : 'Weight'}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {lines.slice(0, 12).map((ln, idx) => (
+                        <tr key={idx}>
+                          <td className="py-1.5 px-2 font-semibold text-slate-800">
+                            <div className="flex items-center gap-1.5">
+                              {ln.productCode && (
+                                <span className="font-mono text-[9px] text-indigo-700 bg-indigo-50 px-1 rounded border border-indigo-200 shrink-0">
+                                  {ln.productCode}
+                                </span>
+                              )}
+                              <span className="truncate max-w-[175px]">
+                                {isAr ? ln.productNameAr : (ln.productNameEn || ln.productNameAr)}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-1.5 px-2 text-center font-mono font-bold text-slate-900 whitespace-nowrap">
+                            {Number(ln.qty || 0).toLocaleString()} {ln.largeUnitName || (isAr ? 'كرتونة' : 'ctn')}
+                          </td>
+                          <td className="py-1.5 px-2 text-center font-mono whitespace-nowrap">
+                            {Number(ln.bonus || 0) > 0 ? (
+                              <span className="text-emerald-700 font-bold">+{Number(ln.bonus).toLocaleString()}</span>
+                            ) : (
+                              <span className="text-slate-300">—</span>
+                            )}
+                          </td>
+                          <td className="py-1.5 px-2 text-end font-mono text-slate-600 whitespace-nowrap">
+                            {Number(ln.lineWeightKg || 0).toFixed(1)} {isAr ? 'كجم' : 'kg'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {lines.length > 12 && (
+                    <div className="pt-1.5 text-center text-[10px] font-bold text-slate-500">
+                      {isAr ? `+ ${lines.length - 12} أصناف أخرى` : `+ ${lines.length - 12} more products`}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Footer Totals Strip */}
+            <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-[11px] font-mono">
+              <span className="font-bold text-slate-700">
+                {lines.length} {isAr ? 'صنف' : 'SKUs'} · {Number(child.totalCartons || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+              </span>
+              <span className="font-bold text-slate-700">
+                {((Number(child.totalWeightKg) || 0) / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'}
+              </span>
+              <span className="font-black text-emerald-700">
+                {Number(child.grandTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} EGP
+              </span>
+            </div>
+          </div>,
+          document.body
+        );
+      })()}
 
       {/* Sales Order / Administrative Order Editor Modal (Create / Edit) */}
       {isEditorOpen && (
