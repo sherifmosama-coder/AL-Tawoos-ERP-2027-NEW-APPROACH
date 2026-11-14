@@ -75,6 +75,7 @@ import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster';
 import { RowCommentButton } from './comments';
 import { PricingStrategyBadge } from './PricingStrategiesModal';
 import { DEFAULT_PRICING_STRATEGIES } from '../utils/pricingEngine';
+import { normalizeLocationUrl, extractCoordinates } from '../utils/locationUtils';
 
 // Helper to normalize phone numbers:
 // - Strips non-digits
@@ -3434,7 +3435,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                                       )}
                                       {b.gpsCoordinates && (
                                         <a
-                                          href={b.gpsCoordinates}
+                                          href={normalizeLocationUrl(b.gpsCoordinates)}
                                           target="_blank"
                                           rel="noreferrer"
                                           className="text-blue-600 hover:underline flex items-center gap-1 ms-auto"
@@ -4030,7 +4031,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                             {b.gpsCoordinates}
                           </span>
                           <a
-                            href={b.gpsCoordinates.startsWith('http') ? b.gpsCoordinates : `https://maps.google.com/?q=${encodeURIComponent(b.gpsCoordinates)}`}
+                            href={normalizeLocationUrl(b.gpsCoordinates)}
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-xs font-bold transition"
@@ -4781,9 +4782,22 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                           </div>
 
                           <div>
-                            <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                              {isAr ? 'موقع الخريطة (GPS Link)' : 'Google Maps Link'}
-                            </label>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-[11px] font-bold text-slate-600">
+                                {isAr ? 'موقع الخريطة (GPS Link)' : 'Google Maps Link'}
+                              </label>
+                              {branch.gpsCoordinates && (
+                                <a
+                                  href={normalizeLocationUrl(branch.gpsCoordinates)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[10px] text-blue-600 hover:text-blue-700 font-bold hover:underline inline-flex items-center gap-1"
+                                >
+                                  <Navigation className="w-2.5 h-2.5" />
+                                  <span>{isAr ? 'معاينة الموقع ↗' : 'Preview ↗'}</span>
+                                </a>
+                              )}
+                            </div>
                             <input
                               type="text"
                               value={branch.gpsCoordinates}
@@ -4792,6 +4806,18 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                               className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                               dir="ltr"
                             />
+                            {branch.gpsCoordinates && (() => {
+                              const coords = extractCoordinates(branch.gpsCoordinates);
+                              if (coords) {
+                                return (
+                                  <div className="mt-1 text-[10px] text-emerald-700 font-mono font-bold flex items-center gap-1">
+                                    <Check className="w-3 h-3 text-emerald-600 shrink-0" />
+                                    <span>{isAr ? `إحداثيات دقيقة: ${coords.latStr}, ${coords.lngStr}` : `Exact GPS: ${coords.latStr}, ${coords.lngStr}`}</span>
+                                  </div>
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
                         </div>
 

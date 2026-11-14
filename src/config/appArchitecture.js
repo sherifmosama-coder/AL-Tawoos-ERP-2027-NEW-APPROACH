@@ -345,6 +345,9 @@ export const APP_ARCHITECTURE = {
             makeModel: { labelAr: "الماركة والموديل", labelEn: "Make & Model", type: "string", required: true, sample: "سوزوكي فان 7 راكب" },
             category: { labelAr: "نوع واستخدام المركبة", labelEn: "Category", type: "enum", options: ["van", "pickup", "truck", "forklift", "car", "other"], sample: "van" },
             assignedDriverId: { labelAr: "السائق المسؤول", labelEn: "Assigned Driver", type: "string", sample: "EMP-1042" },
+            minCapacityKg: { labelAr: "سعة الحمولة الدنيا (كجم)", labelEn: "Min Load Capacity (kg)", type: "number", sample: 500 },
+            optimumCapacityKg: { labelAr: "سعة الحمولة المثالية (كجم)", labelEn: "Optimum Load Capacity (kg)", type: "number", sample: 1500 },
+            maxCapacityKg: { labelAr: "سعة الحمولة القصوى (كجم)", labelEn: "Max Load Capacity (kg)", type: "number", sample: 2500 },
             currentOdometer: { labelAr: "قراءة العداد الحالية (كم)", labelEn: "Odometer (km)", type: "number", sample: 45000 },
             licenseExpiry: { labelAr: "تاريخ انتهاء رخصة التسيير", labelEn: "License Expiry Date", type: "date", sample: "2027-06-30" },
           }
@@ -876,6 +879,10 @@ export const APP_ARCHITECTURE = {
             { key: "canEdit", labelAr: "تعديل أمر بيع", labelEn: "Edit Sales Order" },
             { key: "canDelete", labelAr: "حذف أو إلغاء أمر بيع", labelEn: "Delete Sales Order" },
             { key: "canExport", labelAr: "تصدير أوامر البيع (CSV)", labelEn: "Export Sales Orders" },
+            { key: "canSplitOrder", labelAr: "تقسيم أمر البيع إلى شحنات متعددة", labelEn: "Split Pending Sales Order" },
+            { key: "canAdjustDispatchedQuantities", labelAr: "تعديل ومزامنة الكميات المستلمة فعلياً بعد التحميل (المرتجع الجزئي)", labelEn: "Sync Actual Received Qty Post-Dispatch" },
+            { key: "canSettleRetailOrders", labelAr: "تأكيد وتسوية مبيعات التجزئة بعد العودة (الجرد والفواتير)", labelEn: "Confirm & Force-Sync Retail Van-Sales Settlement" },
+            { key: "canManageStdRetailList", labelAr: "إعداد وتعديل القائمة القياسية لتحميل التجزئة", labelEn: "Configure Standard Retail Load List" },
           ],
           fields: {
             serial: { labelAr: "مسلسل أمر البيع (#0001)", labelEn: "Order Serial", type: "string", required: true, sample: "0001" },
@@ -889,7 +896,32 @@ export const APP_ARCHITECTURE = {
             vatMode: { labelAr: "المعاملة الضريبية", labelEn: "Tax / VAT Mode", type: "enum", options: ["none", "exclusive", "exclusive_wht", "inclusive", "inclusive_wht"], sample: "none" },
             poTawoos: { labelAr: "أمر شراء طاووس", labelEn: "PO # Tawoos", type: "string", sample: "PO-TW-2026-01" },
             poPrivateLabel: { labelAr: "أمر شراء العلامة الخاصة", labelEn: "PO # Private Label", type: "string", sample: "PO-PL-4401" },
+            isSplitParent: { labelAr: "أمر رئيسي مقسّم إلى شحنات", labelEn: "Is Split Parent Order", type: "boolean", sample: false },
+            splitParentId: { labelAr: "معرف الأمر الرئيسي (للأجزاء المقسمة)", labelEn: "Split Parent Order ID", type: "string", sample: "SO-0001" },
+            splitMergeInvoices: { labelAr: "دمج الفواتير والمستندات المالية للأجزاء المقسمة", labelEn: "Merge Invoices Across Split Portions", type: "boolean", sample: true },
+            hasPartialRejection: { labelAr: "وجود مرتجع جزئي بعد التحميل", labelEn: "Has Post-Dispatch Partial Rejection", type: "boolean", sample: false },
+            returnedCartons: { labelAr: "إجمالي الكراتين المرتجعة / غير المباعة", labelEn: "Returned / Unsold Cartons", type: "number", sample: 0 },
+            isRetailRouteOrder: { labelAr: "أمر خط سير تجزئة (يتطلب تسوية بعد العودة)", labelEn: "Retail Van-Sales Route Order", type: "boolean", sample: true },
+            retailSettlementStatus: { labelAr: "حالة تسوية مبيعات التجزئة", labelEn: "Retail Settlement Status", type: "enum", options: ["not_required", "awaiting_settlement", "settled"], sample: "awaiting_settlement" },
+            retailSettlementRevision: { labelAr: "رقم مراجعة تسوية التجزئة", labelEn: "Retail Settlement Revision", type: "number", sample: 1 },
             grandTotal: { labelAr: "إجمالي أمر البيع (EGP)", labelEn: "Order Grand Total (EGP)", type: "number", sample: 45000.00 }
+          }
+        },
+        loading_plan: {
+          id: "loading_plan",
+          collection: "sales_orders",
+          labelAr: "خطة التحميل",
+          labelEn: "Loading Plan",
+          icon: "Truck",
+          actions: [
+            { key: "canManageLoadingPlan", labelAr: "إدارة واعتماد خطة التحميل وتوزيع الشاحنات", labelEn: "Manage Loading Plan" },
+            { key: "canModifyClosedOrders", labelAr: "تعديل الطلبات المسلمة والمسددة", labelEn: "Modify Delivered/Paid Orders" }
+          ],
+          fields: {
+            loadingOrderNumber: { labelAr: "رقم أمر التحميل", labelEn: "Loading Order #", type: "number", sample: 1 },
+            assignedVehicleId: { labelAr: "معرف الشاحنة / السيارة", labelEn: "Assigned Vehicle ID", type: "string", sample: "VEH-01" },
+            assignedDriverId: { labelAr: "معرف السائق", labelEn: "Assigned Driver ID", type: "string", sample: "EMP-101" },
+            loadingDate: { labelAr: "تاريخ التحميل المعتمد", labelEn: "Scheduled Loading Date", type: "date", sample: "2026-11-10" }
           }
         },
         price_lists: {
@@ -994,11 +1026,18 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       financial_statements: true,
       sales: true,
       sales_orders: true,
+      loading_plan: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: true
     },
     actions: {
+      canManageLoadingPlan: true,
+      canModifyClosedOrders: true,
+      canSplitOrder: true,
+      canAdjustDispatchedQuantities: true,
+      canSettleRetailOrders: true,
+      canManageStdRetailList: true,
       canCreate: true,
       canEdit: true,
       canApprove: true,
@@ -1101,11 +1140,18 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       financial_statements: true,
       sales: true,
       sales_orders: true,
+      loading_plan: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: false
     },
     actions: {
+      canManageLoadingPlan: true,
+      canModifyClosedOrders: false,
+      canSplitOrder: true,
+      canAdjustDispatchedQuantities: false,
+      canSettleRetailOrders: true,
+      canManageStdRetailList: false,
       canCreate: true,
       canEdit: true,
       canApprove: true,

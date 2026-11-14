@@ -55,7 +55,7 @@ import {
   canAuthorizeCashVoucher
 } from '../utils/cashLedgerEngine.js';
 import CashVoucherModal from './CashVoucherModal.jsx';
-import { RowCommentButton, RowCommentMenuItem } from './comments';
+import { RowCommentButton } from './comments';
 import CashChangeModal from './CashChangeModal.jsx';
 import CashCountAuditModal from './CashCountAuditModal.jsx';
 import CashVoucherPrintSlip from './CashVoucherPrintSlip.jsx';
@@ -1666,13 +1666,12 @@ export default function CashSafesMaster({
                                     </button>
                                   )}
 
-                                  {/* Quick Row Comment Button (Prominent on row only when thread exists) */}
+                                  {/* Quick Row Comment Button */}
                                   <RowCommentButton
                                     docId={tx.id}
                                     docNumber={tx.voucherNumber || tx.id}
                                     tab="cash_safes"
                                     module="finance"
-                                    hideIfEmpty
                                   />
 
                                   <div className="relative inline-block actions-menu-container">
@@ -1700,15 +1699,6 @@ export default function CashSafesMaster({
                                           isAr ? 'left-0' : 'right-0'
                                         } w-48 bg-white border border-slate-200 rounded-2xl shadow-2xl py-1.5 text-xs text-slate-700 animate-fadeIn`}
                                       >
-                                        {/* Quick Comment Trigger inside 3-dots (Grouped here when no comments yet) */}
-                                        <RowCommentMenuItem
-                                          docId={tx.id}
-                                          docNumber={tx.voucherNumber || tx.id}
-                                          tab="cash_safes"
-                                          module="finance"
-                                          onAction={() => setActiveActionsMenuTxId(null)}
-                                        />
-
                                         {/* Quick Approval / Rejection if pending approval */}
                                         {tx.status === 'pending_approval' && authCheck.canAuthorize && (
                                           <div className="pb-1 mb-1 border-b border-slate-100">

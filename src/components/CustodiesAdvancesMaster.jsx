@@ -63,7 +63,7 @@ import {
   updateCustodyOrAdvanceRecord
 } from '../utils/cashLedgerEngine.js';
 import AttachmentViewerModal from './AttachmentViewerModal.jsx';
-import { RowCommentButton, RowCommentMenuItem } from './comments';
+import { RowCommentButton } from './comments';
 import CustodyAcknowledgmentPrintSlip from './CustodyAcknowledgmentPrintSlip.jsx';
 import EditCustodyModal from './EditCustodyModal.jsx';
 import SearchableSelect from './SearchableSelect.jsx';
@@ -2118,13 +2118,12 @@ export default function CustodiesAdvancesMaster({
                             {/* Actions Grouped under 3 Vertical Dots */}
                             <td className="py-3 px-3 text-center relative">
                               <div className="flex items-center justify-center gap-1">
-                                {/* Quick Row Comment Button (Prominent on row only when thread exists) */}
+                                {/* Quick Row Comment Button */}
                                 <RowCommentButton
                                   docId={r.id}
                                   docNumber={r.id}
                                   tab="custodies_advances"
                                   module="finance"
-                                  hideIfEmpty
                                 />
 
                                 <div className="relative inline-block text-start">
@@ -2154,15 +2153,6 @@ export default function CustodiesAdvancesMaster({
                                         } w-60 bg-white rounded-xl shadow-xl border border-slate-200 py-1 text-xs divide-y divide-slate-100 animate-in fade-in-50 zoom-in-95`}
                                       >
                                         <div className="py-1">
-                                          {/* Quick Comment Trigger inside 3-dots (Grouped here when no comments yet) */}
-                                          <RowCommentMenuItem
-                                            docId={r.id}
-                                            docNumber={r.id}
-                                            tab="custodies_advances"
-                                            module="finance"
-                                            onAction={() => setActiveMenuRecordId(null)}
-                                          />
-
                                           {/* 1. Print A4 acknowledgment slip */}
                                         <button
                                           type="button"

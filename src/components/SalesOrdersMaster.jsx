@@ -60,12 +60,40 @@ import {
   Banknote,
   MessageSquare,
   Lock,
-  StickyNote
+  StickyNote,
+  Users,
+  PackageCheck,
+  Copy,
+  GitFork,
+  Printer,
+  PackageMinus,
+  Store,
+  ClipboardCheck,
+  ClipboardList,
+  FileImage
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
+import OrderSplitModal from './OrderSplitModal';
+import RetailSettlementModal from './RetailSettlementModal';
+import StandardRetailListModal from './StandardRetailListModal';
 import PeacockLoader from './PeacockLoader';
+import { canAccessAction } from '../config/appArchitecture';
+import {
+  PHYSICAL_DELIVERY_EXCLUDED_TYPES,
+  POST_DISPATCH_STATUSES,
+  parseOrderSerialParts,
+  compareOrdersBySerialAsc,
+  calculateSalesOrderLineTotals,
+  aggregateSalesOrderTotals,
+  openPrintableAdjustmentSlip,
+  isOrderRetailRoute,
+  isRetailSegmentRecord,
+  openPrintableRetailSettlementSlip
+} from '../utils/salesOrderUtils';
+import { normalizeLocationUrl } from '../utils/locationUtils';
 import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from './ClientSegmentsMaster';
+import { RowCommentButton, useRecordComments } from './comments';
 import {
   DEFAULT_PRICING_STRATEGIES,
   formatDateKey,
@@ -154,15 +182,70 @@ const CONFIRMATION_STATUSES = [
 ];
 
 /**
- * 5 Fulfillment Statuses Dictionary
+ * 5 Fulfillment Statuses Dictionary & Standardized Corporate Styles
  */
 const FULFILLMENT_STATUSES = [
   { id: 'not_yet', labelAr: 'قيد الانتظار', labelEn: 'Pending', color: 'slate', isDefault: true },
   { id: 'prepare', labelAr: 'جاري التجهيز', labelEn: 'Preparing', color: 'amber' },
-  { id: 'shipped', labelAr: 'جاري التوصيل', labelEn: 'Out for Delivery', color: 'emerald' },
-  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered', color: 'teal' },
-  { id: 'paid', labelAr: 'مدفوع', labelEn: 'Paid', color: 'blue' },
+  { id: 'shipped', labelAr: 'جاري التوصيل', labelEn: 'Out for Delivery', color: 'sky' },
+  { id: 'delivered', labelAr: 'تم التسليم', labelEn: 'Delivered', color: 'emerald' },
+  { id: 'paid', labelAr: 'مدفوع', labelEn: 'Paid', color: 'indigo' },
 ];
+
+const SALES_FULFILLMENT_STYLE_MAP = {
+  not_yet: {
+    badgeClasses: 'bg-slate-100 text-slate-800 border-slate-300 ring-1 ring-slate-300/35',
+    startBorderClasses: 'border-s-[4px] border-s-slate-400',
+    rowClasses: 'bg-white hover:bg-slate-50/90',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-100 via-slate-50 to-white border-slate-300 border-s-[4px] border-s-slate-500 text-slate-900',
+    dotClasses: 'bg-slate-500'
+  },
+  prepare: {
+    badgeClasses: 'bg-amber-100 text-amber-950 border-amber-400 ring-1 ring-amber-400/35',
+    startBorderClasses: 'border-s-[4px] border-s-amber-500',
+    rowClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-500/[0.085] via-amber-500/[0.03] to-white hover:from-amber-500/[0.14]',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-100/90 via-amber-50/75 to-white border-amber-300 border-s-[4px] border-s-amber-500 text-amber-950',
+    dotClasses: 'bg-amber-500'
+  },
+  shipped: {
+    badgeClasses: 'bg-sky-100 text-sky-950 border-sky-400 ring-1 ring-sky-400/35',
+    startBorderClasses: 'border-s-[4px] border-s-sky-500',
+    rowClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-sky-500/[0.085] via-sky-500/[0.03] to-white hover:from-sky-500/[0.14]',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-sky-100/90 via-sky-50/75 to-white border-sky-300 border-s-[4px] border-s-sky-600 text-sky-950',
+    dotClasses: 'bg-sky-600'
+  },
+  delivered: {
+    badgeClasses: 'bg-emerald-100 text-emerald-950 border-emerald-400 ring-1 ring-emerald-400/35',
+    startBorderClasses: 'border-s-[4px] border-s-emerald-600',
+    rowClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-emerald-500/[0.075] via-emerald-500/[0.025] to-white hover:from-emerald-500/[0.13]',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-emerald-100/90 via-emerald-50/75 to-white border-emerald-300 border-s-[4px] border-s-emerald-600 text-emerald-950',
+    dotClasses: 'bg-emerald-600'
+  },
+  paid: {
+    badgeClasses: 'bg-indigo-100 text-indigo-950 border-indigo-400 ring-1 ring-indigo-400/35',
+    startBorderClasses: 'border-s-[4px] border-s-indigo-600',
+    rowClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-indigo-500/[0.075] via-indigo-500/[0.025] to-white hover:from-indigo-500/[0.13]',
+    groupBannerClasses: 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-indigo-100/90 via-indigo-50/75 to-white border-indigo-300 border-s-[4px] border-s-indigo-600 text-indigo-950',
+    dotClasses: 'bg-indigo-600'
+  }
+};
+
+/**
+ * Standardizes Vehicle Name (`vehicleModel` / `name` / `nameAr`) as the main human-recognizable reference.
+ */
+const resolveVehicleDisplayName = (veh, fallbackName = '') => {
+  if (!veh && !fallbackName) return '';
+  return (
+    veh?.vehicleModel ||
+    veh?.name ||
+    veh?.nameAr ||
+    veh?.nameEn ||
+    fallbackName ||
+    veh?.code ||
+    veh?.id ||
+    ''
+  ).trim();
+};
 
 /**
  * 5 Tax / VAT Modes Dictionary (Legacy Matching)
@@ -181,7 +264,7 @@ const VAT_MODES = [
 const TAXABLE_VAT_MODES = VAT_MODES.filter((v) => v.id !== 'none');
 
 /**
- * Helper to resolve sequential 4-digit serial (e.g. 0001, 0002) starting at 0001
+ * Helper to resolve sequential 4-digit serial (e.g. 0001, 0002) or split serial (e.g. 0001 (2/3))
  */
 const resolveOrderSerial = (order, allOrders = []) => {
   if (!order) return '0001';
@@ -189,6 +272,9 @@ const resolveOrderSerial = (order, allOrders = []) => {
     const s = String(order.serial).trim();
     if (/^\d+$/.test(s)) return s.padStart(4, '0');
     return s;
+  }
+  if (order.baseSerial && order.splitIndex && order.splitTotal) {
+    return `${String(order.baseSerial).padStart(4, '0')} (${order.splitIndex}/${order.splitTotal})`;
   }
   const match = String(order.id || '').match(/^(?:SO-)?(\d+)$/i);
   if (match) {
@@ -198,15 +284,14 @@ const resolveOrderSerial = (order, allOrders = []) => {
 };
 
 /**
- * Helper to generate next sequential 4-digit serial starting at 0001
+ * Helper to generate next sequential 4-digit serial starting at 0001 (safe with split children like 0001 (2/3))
  */
 const generateNextOrderSerial = (allOrders = []) => {
   let max = 0;
   (allOrders || []).forEach((o) => {
-    const s = resolveOrderSerial(o, allOrders);
-    const n = parseInt(s, 10);
-    if (!isNaN(n) && n > max && n < 999999) {
-      max = n;
+    const { baseNum } = parseOrderSerialParts(o);
+    if (!isNaN(baseNum) && baseNum > max && baseNum < 999999) {
+      max = baseNum;
     }
   });
   return String(max + 1).padStart(4, '0');
@@ -266,16 +351,23 @@ const resolveBranchDisplayName = (b, isAr = true) => {
 };
 
 /**
- * Resolves a Google Maps / location URL for a branch or client
+ * Resolves a Google Maps / location URL for a branch, client, or order
  */
-const resolveLocationUrl = (branch, client) => {
-  const raw = branch?.gpsCoordinates || branch?.googleMapsUrl || branch?.locationUrl || client?.gpsCoordinates || client?.googleMapsUrl || '';
-  if (!raw || !String(raw).trim()) return null;
-  const trimmed = String(raw).trim();
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return trimmed;
-  }
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(trimmed)}`;
+const resolveLocationUrl = (branch, client, order = null) => {
+  const raw = (
+    order?.gpsCoordinates ||
+    order?.googleMapsUrl ||
+    order?.locationUrl ||
+    branch?.gpsCoordinates ||
+    branch?.googleMapsUrl ||
+    branch?.locationUrl ||
+    client?.gpsCoordinates ||
+    client?.googleMapsUrl ||
+    client?.locationUrl ||
+    ''
+  ).trim();
+  if (!raw) return null;
+  return normalizeLocationUrl(raw);
 };
 
 /**
@@ -350,8 +442,13 @@ const resolveOrderOperationalProfile = (order, client, isAr = true) => {
     thursday: 'الخميس'
   };
 
-  const holidaysDisplay = rawHolidays
-    .map((d) => (isAr ? (DAY_MAP_AR[d.toLowerCase()] || d) : d))
+  // Filter out Friday - only show weekly holidays if not Friday
+  const nonFridayHolidays = rawHolidays.filter(
+    (d) => String(d).toLowerCase().trim() !== 'friday' && d !== 5
+  );
+
+  const holidaysDisplay = nonFridayHolidays
+    .map((d) => (isAr ? (DAY_MAP_AR[String(d).toLowerCase().trim()] || d) : d))
     .join('، ');
 
   // Contact & Phones
@@ -379,7 +476,7 @@ const resolveOrderOperationalProfile = (order, client, isAr = true) => {
     scheduleDisplay,
     hasHours: Boolean(hoursFrom || hoursTo),
     holidaysDisplay,
-    hasHolidays: rawHolidays.length > 0,
+    hasHolidays: nonFridayHolidays.length > 0,
     address,
     hasAddress: Boolean(address && address !== '—' && address !== 'غير محدد'),
     contactPerson,
@@ -446,10 +543,39 @@ const renderVatAbbrChip = (vatMode, orderType, isAr = true) => {
   }
 };
 
+function CopyButton({ text, title, isAr = true, className = '' }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    if (!text) return;
+    navigator.clipboard.writeText(String(text).trim());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className={`inline-flex items-center justify-center p-0.5 rounded transition cursor-pointer text-slate-400 hover:text-indigo-600 hover:bg-slate-200/60 ${
+        copied ? 'text-emerald-600 hover:text-emerald-600 bg-emerald-50' : ''
+      } ${className}`}
+      title={copied ? (isAr ? 'تم النسخ!' : 'Copied!') : (title || (isAr ? 'نسخ' : 'Copy'))}
+    >
+      {copied ? <Check className="w-2.5 h-2.5 text-emerald-600 stroke-[3]" /> : <Copy className="w-2.5 h-2.5" />}
+    </button>
+  );
+}
+
 export default function SalesOrdersMaster({ currentUser = {}, permissions = null }) {
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
-  const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
+  const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin' || currentUser?.role === 'admin';
+  const canSplitOrder = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSplitOrder', currentUser);
+  const canAdjustDispatchedQty = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canAdjustDispatchedQuantities', currentUser);
+  const canSettleRetailOrders = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSettleRetailOrders', currentUser);
+  const canManageStdRetailList = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canManageStdRetailList', currentUser);
   const currentUserName = currentUser?.nameAr || currentUser?.name || 'مستخدم معتمد';
   const currentUserId = currentUser?.id || 'usr_unknown';
 
@@ -458,6 +584,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [clients, setClients] = useState([]);
   const [segments, setSegments] = useState([]);
   const [products, setProducts] = useState([]);
+  const [vehicles, setVehicles] = useState([]);
   const [productCategories, setProductCategories] = useState([]);
   const [priceLists, setPriceLists] = useState([]);
   const [strategies, setStrategies] = useState(DEFAULT_PRICING_STRATEGIES);
@@ -469,6 +596,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [orderTypeFilter, setOrderTypeFilter] = useState('all');
   const [confirmationFilter, setConfirmationFilter] = useState('all');
   const [fulfillmentFilter, setFulfillmentFilter] = useState('all');
+  const [assignmentFilter, setAssignmentFilter] = useState('all'); // 'all' | 'assigned' | 'unassigned' | vehicleId
   const [vatModeFilter, setVatModeFilter] = useState('all');
   const [dateFilterType, setDateFilterType] = useState('invoiceDate'); // 'invoiceDate' | 'loadingDate'
   const [startDateFilter, setStartDateFilter] = useState('');
@@ -482,8 +610,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   // Modal States
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState(null);
+  const [editorInitialAdjustmentMode, setEditorInitialAdjustmentMode] = useState(false);
   const [isAdminModal, setIsAdminModal] = useState(false);
   const [auditModalOrder, setAuditModalOrder] = useState(null);
+  const [splitModalOrder, setSplitModalOrder] = useState(null);
+  const [splitGuidanceOrder, setSplitGuidanceOrder] = useState(null);
+  const [retailSettlementModalOrder, setRetailSettlementModalOrder] = useState(null);
+  const [stdRetailListDoc, setStdRetailListDoc] = useState({ items: [], updatedAt: null, updatedBy: null });
+  const [isStdRetailModalOpen, setIsStdRetailModalOpen] = useState(false);
   const [deleteConfirmOrder, setDeleteConfirmOrder] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null);
   const [cancelModalOrder, setCancelModalOrder] = useState(null);
@@ -494,6 +628,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [activeActionsMenuOrderId, setActiveActionsMenuOrderId] = useState(null);
   const [actionsMenuAnchor, setActionsMenuAnchor] = useState(null);
 
+  // Split Portion Card Hover Tooltip (Portal-rendered for unclipped visibility)
+  const [hoveredPortionTooltip, setHoveredPortionTooltip] = useState(null);
+
   const activeOrderForMenu = useMemo(() => {
     if (!activeActionsMenuOrderId) return null;
     return orders.find((o) => o.id === activeActionsMenuOrderId) || null;
@@ -503,11 +640,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'sales_orders'), (snapshot) => {
       const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-      // Sort newest invoice date first, then serial descending
+      // Sort newest invoice date first, then base serial descending (with child split portions ascending under same base)
       loaded.sort((a, b) => {
         const dateComp = String(b.invoiceDate || '').localeCompare(String(a.invoiceDate || ''));
         if (dateComp !== 0) return dateComp;
-        return (Number(b.serial) || 0) - (Number(a.serial) || 0);
+        const pa = parseOrderSerialParts(a);
+        const pb = parseOrderSerialParts(b);
+        if (pa.baseNum !== pb.baseNum) return pb.baseNum - pa.baseNum;
+        return pa.splitIndex - pb.splitIndex;
       });
       setOrders(loaded);
       setLoading(false);
@@ -580,12 +720,128 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const segmentMap = useMemo(() => {
     const map = {};
     (segments.length > 0 ? segments : PRESET_DEFAULT_SEGMENTS).forEach((s) => {
-      map[s.id] = s;
+      if (s.id) map[s.id] = s;
+      if (s.code) map[s.code] = s;
       if (s.nameAr) map[s.nameAr] = s;
       if (s.nameEn) map[s.nameEn] = s;
     });
     return map;
   }, [segments]);
+
+  // 8. Subscribe to Fleet Vehicles
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'vehicles'), (snapshot) => {
+      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      loaded.sort((a, b) => (a.plateNumber || a.code || '').localeCompare(b.plateNumber || b.code || '', 'ar'));
+      setVehicles(loaded);
+    });
+    return () => unsub();
+  }, []);
+
+  // 9. Subscribe to Global Standard Retail Load List Config
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'system_config', 'retail_standard_load_list'), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() || {};
+        setStdRetailListDoc({
+          items: Array.isArray(data.items) ? data.items : [],
+          updatedAt: data.updatedAt || null,
+          updatedBy: data.updatedBy || null
+        });
+      } else {
+        setStdRetailListDoc({ items: [], updatedAt: null, updatedBy: null });
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // One-Click Navigation to Loading Plan focusing on that order
+  const handleNavigateToLoadingPlan = (order) => {
+    const date = order.loadingDate || order.invoiceDate || formatDateKey(new Date());
+    if (typeof window !== 'undefined') {
+      window.location.hash = `#loading_plan?module=sales&orderId=${order.id}&date=${date}`;
+      window.dispatchEvent(
+        new CustomEvent('app-navigate', {
+          detail: { tab: 'loading_plan', module: 'sales', orderId: order.id, date }
+        })
+      );
+    }
+  };
+
+  // Listen for Incoming Deep-Link Focus from Loading Plan
+  useEffect(() => {
+    const checkHashFocus = () => {
+      if (typeof window === 'undefined') return;
+      const rawHash = window.location.hash || '';
+      if (!rawHash.includes('sales_orders')) return;
+      const queryPart = rawHash.split('?')[1];
+      if (!queryPart) return;
+      const params = new URLSearchParams(queryPart);
+      const targetSerial = params.get('focusOrder');
+      if (targetSerial && orders.length > 0) {
+        const found = orders.find((o) => resolveOrderSerial(o, orders) === targetSerial || o.id === targetSerial);
+        const resolvedFound =
+          found && found.splitParentId && found.invoiceSplitMode === 'merged_on_parent'
+            ? orders.find((o) => o.id === found.splitParentId) || found
+            : found;
+        setSearchTerm(resolvedFound ? resolveOrderSerial(resolvedFound, orders) : targetSerial);
+        if (resolvedFound) {
+          setExpandedOrderIds((prev) => new Set([...prev, resolvedFound.id]));
+          setTimeout(() => {
+            const el = document.getElementById(`sales-order-row-${resolvedFound.id}`);
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              el.classList.add('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
+              setTimeout(() => {
+                el.classList.remove('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
+              }, 3000);
+            }
+          }, 400);
+        }
+      }
+    };
+
+    checkHashFocus();
+    window.addEventListener('hashchange', checkHashFocus);
+
+    const handleCustomNav = (e) => {
+      const { tab, focusOrder, orderId } = e.detail || {};
+      if (tab === 'sales_orders') {
+        const initialFound =
+          (orderId ? orders.find((o) => o.id === orderId) : null) ||
+          (focusOrder ? orders.find((o) => resolveOrderSerial(o, orders) === focusOrder) : null);
+        const resolvedFound =
+          initialFound && initialFound.splitParentId && initialFound.invoiceSplitMode === 'merged_on_parent'
+            ? orders.find((o) => o.id === initialFound.splitParentId) || initialFound
+            : initialFound;
+        if (resolvedFound) {
+          setSearchTerm(resolveOrderSerial(resolvedFound, orders));
+        } else if (focusOrder) {
+          setSearchTerm(focusOrder);
+        }
+        const targetId = resolvedFound?.id || orderId || null;
+        if (targetId) {
+          setExpandedOrderIds((prev) => new Set([...prev, targetId]));
+          setTimeout(() => {
+            const el = document.getElementById(`sales-order-row-${targetId}`);
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              el.classList.add('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
+              setTimeout(() => {
+                el.classList.remove('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
+              }, 3000);
+            }
+          }, 400);
+        }
+      }
+    };
+    window.addEventListener('app-navigate', handleCustomNav);
+
+    return () => {
+      window.removeEventListener('hashchange', checkHashFocus);
+      window.removeEventListener('app-navigate', handleCustomNav);
+    };
+  }, [orders]);
 
   // Close 3-dots actions menu on outside click or scroll
   useEffect(() => {
@@ -799,32 +1055,58 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     }
   };
 
-  // Helper to determine table row background based on status and fulfillment
+  // Helper to resolve inline-start status bar (applied to first <td> and <tr> so RTL/LTR renders cleanly in border-collapse tables)
+  const resolveRowStartBorder = (order, isExpanded) => {
+    if (order.confirmationStatus === 'canceled') return 'border-s-[4px] border-s-rose-400';
+    if (isExpanded) return 'border-s-[4px] border-s-indigo-600';
+    switch (order.fulfillmentStatus) {
+      case 'prepare':
+        return SALES_FULFILLMENT_STYLE_MAP.prepare.startBorderClasses;
+      case 'shipped':
+      case 'out_for_delivery':
+        return SALES_FULFILLMENT_STYLE_MAP.shipped.startBorderClasses;
+      case 'delivered':
+        return SALES_FULFILLMENT_STYLE_MAP.delivered.startBorderClasses;
+      case 'paid':
+        return SALES_FULFILLMENT_STYLE_MAP.paid.startBorderClasses;
+      default:
+        return SALES_FULFILLMENT_STYLE_MAP.not_yet.startBorderClasses;
+    }
+  };
+
+  // Helper to determine table row background and record separator based on status and fulfillment
   const resolveRowBackground = (order, isExpanded) => {
+    const startBorder = resolveRowStartBorder(order, isExpanded);
     if (order.confirmationStatus === 'canceled') {
-      return 'bg-slate-100/90 opacity-60 grayscale-[25%]';
+      return `${startBorder} bg-slate-100/90 opacity-60 grayscale-[25%] ${isExpanded ? 'border-b border-rose-200/70' : 'border-b-[3px] border-slate-200/90'}`;
     }
     if (isExpanded) {
-      return 'bg-slate-50/90 border-blue-200';
+      return `${startBorder} bg-indigo-50/35 border-b border-indigo-200/80`;
     }
     switch (order.fulfillmentStatus) {
       case 'prepare':
-        return 'bg-gradient-to-r from-amber-500/[0.05] via-amber-500/[0.02] to-transparent hover:from-amber-500/[0.09]';
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.prepare.rowClasses} border-b-[3px] border-slate-200/90`;
       case 'shipped':
       case 'out_for_delivery':
-        return 'bg-gradient-to-r from-emerald-500/[0.06] via-emerald-500/[0.02] to-transparent hover:from-emerald-500/[0.10]';
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.shipped.rowClasses} border-b-[3px] border-slate-200/90`;
       case 'delivered':
-        return 'bg-gradient-to-r from-teal-500/[0.05] via-teal-500/[0.02] to-transparent hover:from-teal-500/[0.09]';
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.delivered.rowClasses} border-b-[3px] border-slate-200/90`;
       case 'paid':
-        return 'bg-gradient-to-r from-blue-500/[0.05] via-blue-500/[0.02] to-transparent hover:from-blue-500/[0.09]';
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.paid.rowClasses} border-b-[3px] border-slate-200/90`;
       default:
-        return 'hover:bg-slate-50/80';
+        return `${startBorder} ${SALES_FULFILLMENT_STYLE_MAP.not_yet.rowClasses} border-b-[3px] border-slate-200/90`;
     }
   };
 
   // Filtered orders list
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
+      // When financial documents are merged on the parent order, collapse into ONE card on Sales Orders tab
+      // while Loading Plan keeps each split truck portion as an independent schedulable load.
+      if (order.splitParentId && order.invoiceSplitMode === 'merged_on_parent') {
+        return false;
+      }
+
       // 1. Search term
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase().trim();
@@ -882,6 +1164,21 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         return false;
       }
 
+      // 9. Assignment / Truck filter
+      if (assignmentFilter === 'assigned') {
+        if (!order.assignedVehicleId && !order.loadingOrderNumber) {
+          return false;
+        }
+      } else if (assignmentFilter === 'unassigned') {
+        if (order.assignedVehicleId || order.loadingOrderNumber) {
+          return false;
+        }
+      } else if (assignmentFilter !== 'all') {
+        if (order.assignedVehicleId !== assignmentFilter) {
+          return false;
+        }
+      }
+
       return true;
     });
   }, [
@@ -892,6 +1189,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     confirmationFilter,
     fulfillmentFilter,
     vatModeFilter,
+    assignmentFilter,
     dateFilterType,
     startDateFilter,
     endDateFilter,
@@ -932,19 +1230,33 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         key = o.orderType || 'supply';
         const item = ORDER_TYPES.find((t) => t.id === key);
         label = item ? (isAr ? item.labelAr : item.labelEn) : key;
+      } else if (groupBy === 'assignedVehicle') {
+        key = o.assignedVehicleId || 'unassigned';
+        const matchedVeh = vehicles.find((v) => v.id === o.assignedVehicleId);
+        const vName = resolveVehicleDisplayName(matchedVeh, o.assignedVehicleName);
+        const vPlate = o.assignedVehiclePlate || matchedVeh?.plateNumber || '';
+        label = vName
+          ? `${vName}${vPlate ? ` (${vPlate})` : ''}`
+          : (isAr ? 'أوامر غير مسكنة بشاحنة' : 'Unassigned Orders');
       }
 
       if (!groupsMap[key]) {
-        groupsMap[key] = { groupKey: key, groupLabel: label, items: [] };
+        groupsMap[key] = {
+          groupKey: key,
+          statusKey: groupBy === 'fulfillmentStatus' ? (key === 'out_for_delivery' ? 'shipped' : key) : null,
+          groupLabel: label,
+          items: []
+        };
       }
       groupsMap[key].items.push(o);
     });
 
     return Object.values(groupsMap);
-  }, [filteredOrders, groupBy, isAr]);
+  }, [filteredOrders, groupBy, isAr, vehicles]);
 
-  // KPI Summary Metrics
+  // KPI Summary Metrics: skip split parent reference ONLY when billed separately per portion (merged parents represent the sole row)
   const summaryMetrics = useMemo(() => {
+    let totalOrders = 0;
     let totalCartons = 0;
     let totalWeightKg = 0;
     let totalValue = 0;
@@ -952,6 +1264,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     let confirmedCount = 0;
 
     filteredOrders.forEach((o) => {
+      if (o.isSplitParent && o.invoiceSplitMode !== 'merged_on_parent') return;
+      totalOrders++;
       totalCartons += Number(o.totalCartons || o.totalQty || 0);
       totalWeightKg += Number(o.totalWeightKg || 0);
       totalValue += Number(o.grandTotal || 0);
@@ -964,7 +1278,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     });
 
     return {
-      totalOrders: filteredOrders.length,
+      totalOrders,
       totalCartons,
       totalWeightTons: (totalWeightKg / 1000).toFixed(2),
       totalValue,
@@ -972,6 +1286,61 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
       confirmedCount
     };
   }, [filteredOrders]);
+
+  // Trigger Split Order Workflow (Create new split OR Edit/Reallocate existing split parent)
+  const handleRequestSplitOrder = (order) => {
+    if (!order) return;
+    if (order.isSplitParent) {
+      if (!canSplitOrder) {
+        alert(
+          isAr
+            ? 'عذراً، لا تملك صلاحية تعديل تقسيم أوامر البيع. يرجى مراجعة مدير النظام لتفعيل صلاحية (تقسيم أمر البيع).'
+            : 'You do not have permission to edit split sales orders (canSplitOrder).'
+        );
+        return;
+      }
+      setSplitModalOrder(order);
+      return;
+    }
+    if (order.splitParentId) {
+      const parentOrder = orders.find((o) => o.id === order.splitParentId);
+      if (parentOrder) {
+        if (!canSplitOrder) {
+          alert(
+            isAr
+              ? 'عذراً، لا تملك صلاحية تعديل تقسيم أوامر البيع. يرجى مراجعة مدير النظام لتفعيل صلاحية (تقسيم أمر البيع).'
+              : 'You do not have permission to edit split sales orders (canSplitOrder).'
+          );
+          return;
+        }
+        setSplitModalOrder(parentOrder);
+        return;
+      }
+      setSplitGuidanceOrder({
+        order,
+        reason: 'already_child'
+      });
+      return;
+    }
+    const status = order.fulfillmentStatus || 'not_yet';
+    if (status !== 'not_yet') {
+      setSplitGuidanceOrder({
+        order,
+        reason: 'not_pending',
+        currentStatus: status
+      });
+      return;
+    }
+    if (!canSplitOrder) {
+      alert(
+        isAr
+          ? 'عذراً، لا تملك صلاحية تقسيم أوامر البيع. يرجى مراجعة مدير النظام لتفعيل صلاحية (تقسيم أمر البيع).'
+          : 'You do not have permission to split sales orders (canSplitOrder).'
+      );
+      return;
+    }
+    setSplitModalOrder(order);
+  };
 
   // Delete Order Handler
   const handleDeleteOrder = async (orderId) => {
@@ -1104,7 +1473,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                 {summaryMetrics.totalCartons.toLocaleString()}
               </span>
               <span className="text-xs text-slate-400 font-semibold">
-                ({summaryMetrics.totalWeightTons} t)
+                ({summaryMetrics.totalWeightTons} {isAr ? 'طن' : 'Ton'})
               </span>
             </div>
           </div>
@@ -1146,6 +1515,23 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
+            {canManageStdRetailList && (
+              <button
+                type="button"
+                onClick={() => setIsStdRetailModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition cursor-pointer"
+                title={isAr ? 'إعداد القائمة القياسية لتحميل التجزئة' : 'Configure Standard Retail Load List'}
+              >
+                <ClipboardList className="w-3.5 h-3.5 text-cyan-600" />
+                <span>{isAr ? 'قائمة التجزئة القياسية' : 'Std Retail List'}</span>
+                {(stdRetailListDoc.items || []).length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-md bg-slate-200/80 text-slate-700 text-[10px] font-black">
+                    {stdRetailListDoc.items.length}
+                  </span>
+                )}
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleExportCsv}
@@ -1187,7 +1573,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         </div>
 
         {/* Dropdown Filters Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 pt-2 border-t border-slate-100 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 xl:grid-cols-8 gap-2 pt-2 border-t border-slate-100 text-xs">
           {/* 1. Client SearchableSelect */}
           <div className="lg:col-span-2">
             <SearchableSelect
@@ -1264,7 +1650,25 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             </select>
           </div>
 
-          {/* 6. Group By */}
+          {/* 6. Assignment / Truck Filter */}
+          <div>
+            <select
+              value={assignmentFilter}
+              onChange={(e) => setAssignmentFilter(e.target.value)}
+              className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="all">{isAr ? 'شاحنة التوزيع: الكل' : 'Truck: All'}</option>
+              <option value="assigned">{isAr ? 'تم التسكين بشاحنة' : 'Assigned Only'}</option>
+              <option value="unassigned">{isAr ? 'غير مسكن بشاحنة' : 'Unassigned Only'}</option>
+              {vehicles.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {resolveVehicleDisplayName(v, v.plateNumber || (isAr ? 'شاحنة' : 'Truck'))}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 7. Group By */}
           <div>
             <select
               value={groupBy}
@@ -1272,6 +1676,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
             >
               <option value="none">{isAr ? 'تجميع: بدون تجميع' : 'Group: None'}</option>
+              <option value="assignedVehicle">{isAr ? 'تجميع: الشاحنة المخصصة' : 'Group: Assigned Truck'}</option>
               <option value="fulfillmentStatus">{isAr ? 'تجميع: حالة التنفيذ' : 'Group: Fulfillment'}</option>
               <option value="confirmationStatus">{isAr ? 'تجميع: حالة التأكيد' : 'Group: Confirmation'}</option>
               <option value="client">{isAr ? 'تجميع: العميل' : 'Group: Client'}</option>
@@ -1384,23 +1789,31 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                   <th className="py-3 px-3 text-center w-12">{isAr ? 'إجراءات' : 'Actions'}</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-xs">
+              <tbody className="text-xs">
                 {groupedOrders.map((group) => (
                   <React.Fragment key={group.groupKey}>
                     {/* Optional Group Header Row */}
-                    {groupBy !== 'none' && (
-                      <tr className="bg-slate-100/80 border-t border-b border-slate-200">
-                        <td colSpan={10} className="py-2 px-4 font-black text-slate-800 text-xs">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                            <span>{group.groupLabel}</span>
-                            <span className="text-[10px] text-slate-400 font-mono font-bold">
-                              ({group.items.length} {isAr ? 'أوامر' : 'orders'})
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
+                    {groupBy !== 'none' && (() => {
+                      const gStyle = group.statusKey ? (SALES_FULFILLMENT_STYLE_MAP[group.statusKey] || SALES_FULFILLMENT_STYLE_MAP.not_yet) : null;
+                      const gClasses = gStyle
+                        ? gStyle.groupBannerClasses
+                        : 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-100/95 via-slate-50 to-white border-slate-200 border-s-[4px] border-s-indigo-500 text-slate-900';
+                      return (
+                        <tr className={`border-t-2 border-b-2 ${gClasses}`}>
+                          <td colSpan={10} className={`py-2.5 px-4 font-black text-xs ${gStyle ? gStyle.startBorderClasses : 'border-s-[4px] border-s-indigo-500'}`}>
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <div className="flex items-center gap-2">
+                                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${gStyle ? gStyle.dotClasses : 'bg-indigo-500'}`}></span>
+                                <span className="text-sm font-black">{group.groupLabel}</span>
+                                <span className={`text-[10px] font-mono font-black px-2 py-0.5 rounded-lg border ${gStyle ? gStyle.badgeClasses : 'bg-slate-200/80 text-slate-700 border-slate-300'}`}>
+                                  {group.items.length} {isAr ? 'أوامر' : 'orders'}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })()}
 
                     {group.items.map((order) => {
                       const isExpanded = expandedOrderIds.has(order.id);
@@ -1409,28 +1822,43 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       const confStatusObj = CONFIRMATION_STATUSES.find((s) => s.id === order.confirmationStatus) || CONFIRMATION_STATUSES[0];
                       const fulfStatusObj = FULFILLMENT_STATUSES.find((s) => s.id === order.fulfillmentStatus) || FULFILLMENT_STATUSES[0];
                       const vatModeObj = VAT_MODES.find((v) => v.id === order.vatMode) || VAT_MODES[0];
+                      const matchedOrderVehicle = vehicles.find((v) => v.id === order.assignedVehicleId);
+                      const orderVehicleDisplayName = resolveVehicleDisplayName(matchedOrderVehicle, order.assignedVehicleName);
+                      const orderVehiclePlate = order.assignedVehiclePlate || matchedOrderVehicle?.plateNumber || '';
 
                       // Client and Branch resolution
                       const clientObj = clients.find((c) => c.id === order.clientId) || null;
                       const branchCount = (clientObj?.branches || []).length;
                       const showBranchName = branchCount > 1 && order.branchName;
-                      const targetBranch = (clientObj?.branches || []).find((b) => b.id === order.branchId) || clientObj?.branches?.[0] || null;
-                      const locationUrl = resolveLocationUrl(targetBranch, clientObj);
+                      const targetBranch = (clientObj?.branches || []).find((b) => 
+                        (b.id && order.branchId && b.id === order.branchId) ||
+                        (b.name && order.branchName && (b.name === order.branchName || b.nameAr === order.branchName)) ||
+                        (b.nameAr && order.branchName && b.nameAr === order.branchName)
+                      ) || clientObj?.branches?.[0] || null;
+                      const locationUrl = resolveLocationUrl(targetBranch, clientObj, order);
                       const profile = resolveOrderOperationalProfile(order, clientObj, isAr);
 
                       // Segment resolution
-                      const segObj = clientObj?.segmentId ? segmentMap[clientObj.segmentId] : null;
+                      const rawSegKey = clientObj?.segmentId || clientObj?.segment || order?.clientSegmentId || order?.segmentId || order?.segment || null;
+                      const segObj = rawSegKey ? (segmentMap[rawSegKey] || (segments.length > 0 ? segments : PRESET_DEFAULT_SEGMENTS).find((s) => s.id === rawSegKey || s.nameAr === rawSegKey || s.nameEn === rawSegKey || s.code === rawSegKey)) : null;
                       const SegIcon = (segObj?.icon && SEGMENT_ICON_MAP[segObj.icon]) ? SEGMENT_ICON_MAP[segObj.icon] : Building2;
                       const segColor = segObj?.color || '#64748b';
+                      const splitChildPortions = order.isSplitParent
+                        ? orders
+                            .filter((o) => o.splitParentId === order.id)
+                            .sort((a, b) => (Number(a.splitIndex) || 0) - (Number(b.splitIndex) || 0))
+                        : [];
 
                       return (
                         <React.Fragment key={order.id}>
                           <tr
+                            id={`sales-order-row-${order.id}`}
+                            data-comment-doc={order.id}
                             onClick={() => toggleRowExpand(order.id)}
                             className={`transition cursor-pointer select-none ${resolveRowBackground(order, isExpanded)}`}
                           >
                             {/* 1. Type & Serial */}
-                            <td className="py-3 px-3 whitespace-nowrap">
+                            <td className={`py-3 px-3 whitespace-nowrap ${resolveRowStartBorder(order, isExpanded)}`}>
                               <div className="flex flex-col gap-1 items-start">
                                 {/* Order Type Badge */}
                                 <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[11px] font-bold ${
@@ -1453,13 +1881,66 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                 </span>
 
                                 {/* Subtle Serial & Audit History */}
-                                <div className="flex items-center gap-1.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
                                   <span
-                                    className="font-mono text-[11px] text-slate-400 font-semibold tracking-tight select-all"
+                                    className="font-mono text-[11px] text-slate-500 font-bold tracking-tight select-all"
                                     title={isAr ? `مسلسل أمر البيع: #${orderSerial}` : `Order Serial: #${orderSerial}`}
                                   >
                                     #{orderSerial}
                                   </span>
+
+                                  {order.isSplitParent && (
+                                    <span
+                                      className="inline-flex items-center gap-0.5 text-[10px] font-black text-violet-800 bg-violet-50 border border-violet-200 px-1.5 py-0.2 rounded-md"
+                                      title={
+                                        isAr
+                                          ? 'طلب مقسّم على عدة شاحنات في خطة التحميل'
+                                          : 'Order split across multiple truck dispatches in Loading Plan'
+                                      }
+                                    >
+                                      <GitFork className="w-2.5 h-2.5 text-violet-600" />
+                                      <span>
+                                        {order.invoiceSplitMode === 'merged_on_parent'
+                                          ? (isAr
+                                              ? `مقسم (${order.splitTotal || splitChildPortions.length} شحنات)`
+                                              : `Split (${order.splitTotal || splitChildPortions.length} Trips)`)
+                                          : (isAr
+                                              ? `أمر أم مقسم (${order.splitTotal || splitChildPortions.length})`
+                                              : `Split Parent (${order.splitTotal || splitChildPortions.length})`)}
+                                      </span>
+                                    </span>
+                                  )}
+
+                                  {order.isSplitParent && (
+                                    <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border ${
+                                      order.invoiceSplitMode === 'merged_on_parent'
+                                        ? 'text-amber-800 bg-amber-50 border-amber-200'
+                                        : 'text-slate-600 bg-slate-100 border-slate-200'
+                                    }`}>
+                                      {order.invoiceSplitMode === 'merged_on_parent'
+                                        ? (isAr ? 'فاتورة موحدة' : 'Merged Invoice')
+                                        : (isAr ? 'مستندات منفصلة' : 'Split Docs')}
+                                    </span>
+                                  )}
+
+                                  {order.splitParentId && (
+                                    <span
+                                      className="inline-flex items-center gap-0.5 text-[10px] font-black text-blue-800 bg-blue-50 border border-blue-200 px-1.5 py-0.2 rounded-md"
+                                      title={isAr ? `جزء من الأمر #${order.baseSerial || ''}` : `Portion of #${order.baseSerial || ''}`}
+                                    >
+                                      <GitFork className="w-2.5 h-2.5 text-blue-600" />
+                                      <span>{isAr ? `جزء ${order.splitIndex}/${order.splitTotal}` : `Portion ${order.splitIndex}/${order.splitTotal}`}</span>
+                                    </span>
+                                  )}
+
+                                  {order.splitParentId && order.invoiceSplitMode === 'merged_on_parent' && (
+                                    <span
+                                      className="text-[9px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded"
+                                      title={isAr ? 'الفاتورة الضريبية مجمعة على الأمر الأصلي' : 'VAT Invoice covered under parent order'}
+                                    >
+                                      {isAr ? `مفوتر على #${order.baseSerial || ''}` : `Billed under #${order.baseSerial || ''}`}
+                                    </span>
+                                  )}
 
                                   {order.auditTrail?.length > 0 && (
                                     <button
@@ -1489,7 +1970,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     </span>
                                   ) : (
                                     <span
-                                      className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs"
+                                      className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
                                       style={{
                                         backgroundColor: `${segColor}18`,
                                         color: segColor,
@@ -1497,7 +1978,15 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       }}
                                       title={segObj ? (isAr ? segObj.nameAr : segObj.nameEn) : ''}
                                     >
-                                      <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                      {clientObj?.logo ? (
+                                        <img
+                                          src={clientObj.logo}
+                                          alt=""
+                                          className="w-full h-full object-contain p-0.5 rounded-md"
+                                        />
+                                      ) : (
+                                        <SegIcon className="w-3.5 h-3.5 shrink-0" />
+                                      )}
                                     </span>
                                   )}
                                   <span className="truncate max-w-[200px]">
@@ -1545,19 +2034,67 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 3. Dates */}
-                            <td className="py-3 px-3 whitespace-nowrap font-mono text-[11px]">
-                              <div className="flex flex-col gap-0.5">
-                                <div className="flex items-center gap-1 text-slate-700 font-bold">
+                            {/* 3. Dates & Preserved Truck Assignment */}
+                            <td className="py-3 px-3 whitespace-nowrap text-[11px]">
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-1 text-slate-700 font-bold font-mono">
                                   <Receipt className="w-3 h-3 text-emerald-600 shrink-0" />
                                   <span>{order.invoiceDate || '—'}</span>
                                 </div>
                                 {!['admin', 'collection'].includes(order.orderType) && (
-                                  <div className="flex items-center gap-1 text-slate-500 font-medium">
-                                    <Truck className="w-3 h-3 text-amber-500 shrink-0" />
+                                  <div className="flex items-center gap-1 text-slate-500 font-medium font-mono">
+                                    <Calendar className="w-3 h-3 text-amber-500 shrink-0" />
                                     <span>{order.loadingDate || order.invoiceDate || '—'}</span>
                                   </div>
                                 )}
+                                {/* Preserved Truck / Dispatch Badge */}
+                                {(orderVehicleDisplayName || order.loadingOrderNumber) ? (
+                                  <div className="flex flex-col gap-1 items-start">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleNavigateToLoadingPlan(order);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-black bg-indigo-50 text-indigo-800 hover:bg-indigo-100 hover:text-indigo-950 border border-indigo-200/90 shadow-2xs transition cursor-pointer max-w-[180px] truncate"
+                                      title={
+                                        isAr
+                                          ? `مُسكن في رحلة #${order.loadingOrderNumber || '—'} — سيارة: ${orderVehicleDisplayName || ''} (${orderVehiclePlate || ''}) — سائق: ${order.assignedDriverName || '—'} — انقر لفتح وتعديل خطة التحميل والتوزيع`
+                                          : `Assigned to Trip #${order.loadingOrderNumber || '—'} — Truck: ${orderVehicleDisplayName || ''} (${orderVehiclePlate || ''}) — Driver: ${order.assignedDriverName || '—'} — Click to open in Loading Plan`
+                                      }
+                                    >
+                                      <Truck className="w-3 h-3 text-indigo-600 shrink-0 rtl:-scale-x-100" />
+                                      <span className="truncate">{orderVehicleDisplayName || orderVehiclePlate || (isAr ? 'شاحنة' : 'Truck')}</span>
+                                      {order.loadingOrderNumber && (
+                                        <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-200/80 text-indigo-950 font-mono font-black shrink-0">
+                                          #{order.loadingOrderNumber}
+                                        </span>
+                                      )}
+                                    </button>
+                                    {orderVehiclePlate && (
+                                      <span
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-100 border border-slate-200 font-mono text-[9px] font-bold text-slate-600"
+                                      >
+                                        <span>{orderVehiclePlate}</span>
+                                        <CopyButton text={orderVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleNavigateToLoadingPlan(order);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-indigo-600 hover:bg-slate-100 px-1 py-0.5 rounded transition cursor-pointer"
+                                    title={isAr ? 'الطلب غير مسكن بشاحنة — انقر للتسكين في خطة التحميل' : 'Unassigned — Click to assign in Loading Plan'}
+                                  >
+                                    <Truck className="w-2.5 h-2.5 text-slate-300 rtl:-scale-x-100" />
+                                    <span className="italic">{isAr ? 'غير مسكن' : 'Unassigned'}</span>
+                                  </button>
+                                ) : null}
                               </div>
                             </td>
 
@@ -1593,7 +2130,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   </span>
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md text-[10px] font-mono font-bold bg-slate-100/90 text-slate-700 border border-slate-200 shadow-2xs">
                                     <Weight className="w-2.5 h-2.5 text-slate-500 shrink-0" />
-                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 't'}</span>
+                                    <span>{((order.totalWeightKg || 0) / 1000).toFixed(1)} {isAr ? 'طن' : 'Ton'}</span>
                                   </span>
                                 </div>
                               )}
@@ -1608,16 +2145,22 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                             <td className="py-3 px-3 whitespace-nowrap font-mono text-[11px]">
                               <div className="flex flex-col gap-0.5">
                                 {order.poTawoos && (
-                                  <span className="text-slate-800 font-bold" title={isAr ? 'أمر شراء طاووس' : 'Tawoos PO'}>
-                                    <span className="text-[9px] text-slate-400 font-sans me-0.5">{isAr ? 'طاووس:' : 'TW:'}</span>
-                                    {order.poTawoos}
-                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-slate-800 font-bold" title={isAr ? 'أمر شراء طاووس' : 'Tawoos PO'}>
+                                      <span className="text-[9px] text-slate-400 font-sans me-0.5">{isAr ? 'طاووس:' : 'TW:'}</span>
+                                      {order.poTawoos}
+                                    </span>
+                                    <CopyButton text={order.poTawoos} title={isAr ? 'نسخ أمر شراء طاووس' : 'Copy Tawoos PO #'} isAr={isAr} />
+                                  </div>
                                 )}
                                 {order.poPrivateLabel && (
-                                  <span className="text-purple-700 font-bold" title={isAr ? 'أمر شراء علامة خاصة' : 'PL PO'}>
-                                    <span className="text-[9px] text-purple-400 font-sans me-0.5">{isAr ? 'علامة:' : 'PL:'}</span>
-                                    {order.poPrivateLabel}
-                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-purple-700 font-bold" title={isAr ? 'أمر شراء علامة خاصة' : 'PL PO'}>
+                                      <span className="text-[9px] text-purple-400 font-sans me-0.5">{isAr ? 'علامة:' : 'PL:'}</span>
+                                      {order.poPrivateLabel}
+                                    </span>
+                                    <CopyButton text={order.poPrivateLabel} title={isAr ? 'نسخ أمر شراء العلامة الخاصة' : 'Copy Private Label PO #'} isAr={isAr} />
+                                  </div>
                                 )}
                                 {!order.poTawoos && !order.poPrivateLabel && (order.poAttachments || []).length === 0 && (
                                   <span className="text-slate-300 font-mono">—</span>
@@ -1734,69 +2277,166 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   )}
                                 </div>
 
-                                {/* Fulfillment Status (Pending is hidden; Preparing with flashing dot; Out for Delivery with moving truck animation; Delivered with teal check; Paid with blue banknote) */}
-                                {order.fulfillmentStatus === 'prepare' && (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 shadow-2xs">
-                                    <span className="relative flex h-2 w-2">
-                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                {/* Fulfillment Status (Prominent Corporate Badges matching Loading Plan) */}
+                                {order.isSplitParent && splitChildPortions.length > 0 ? (
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {Object.entries(
+                                      splitChildPortions.reduce((acc, ch) => {
+                                        const st = ch.fulfillmentStatus === 'out_for_delivery' ? 'shipped' : (ch.fulfillmentStatus || 'not_yet');
+                                        acc[st] = (acc[st] || 0) + 1;
+                                        return acc;
+                                      }, {})
+                                    ).map(([stKey, cnt]) => {
+                                      const stObj = FULFILLMENT_STATUSES.find((s) => s.id === stKey) || FULFILLMENT_STATUSES[0];
+                                      const stStyle = SALES_FULFILLMENT_STYLE_MAP[stKey] || SALES_FULFILLMENT_STYLE_MAP.not_yet;
+                                      return (
+                                        <span
+                                          key={stKey}
+                                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${stStyle.badgeClasses}`}
+                                          title={isAr ? 'توزيع حالات الشحنات الفرعية في خطة التحميل' : 'Dispatch portion status breakdown'}
+                                        >
+                                          <span className={`w-1.5 h-1.5 rounded-full ${stStyle.dotClasses}`}></span>
+                                          <span>
+                                            {cnt}/{splitChildPortions.length} {isAr ? stObj.labelAr : stObj.labelEn}
+                                          </span>
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <>
+                                    {(!order.fulfillmentStatus || order.fulfillmentStatus === 'not_yet') &&
+                                      !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.not_yet.badgeClasses}`}>
+                                        <Clock className="w-3 h-3 text-slate-600 shrink-0" />
+                                        <span>{isAr ? 'قيد الانتظار' : 'Pending'}</span>
+                                      </span>
+                                    )}
+                                    {order.fulfillmentStatus === 'prepare' && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.prepare.badgeClasses}`}>
+                                        <span className="relative flex h-2 w-2">
+                                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75"></span>
+                                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600"></span>
+                                        </span>
+                                        <span>{isAr ? 'جاري التجهيز' : 'Preparing'}</span>
+                                      </span>
+                                    )}
+                                    {(order.fulfillmentStatus === 'shipped' || order.fulfillmentStatus === 'out_for_delivery') && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.shipped.badgeClasses}`}>
+                                        <Truck className="w-3 h-3 text-sky-600 animate-pulse rtl:-scale-x-100 shrink-0" />
+                                        <span>{isAr ? 'جاري التوصيل' : 'Out for Delivery'}</span>
+                                      </span>
+                                    )}
+                                    {order.fulfillmentStatus === 'delivered' && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.delivered.badgeClasses}`}>
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                                        <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
+                                      </span>
+                                    )}
+                                    {order.fulfillmentStatus === 'paid' && (
+                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${SALES_FULFILLMENT_STYLE_MAP.paid.badgeClasses}`}>
+                                        <Banknote className="w-3 h-3 text-indigo-600 shrink-0" />
+                                        <span>{isAr ? 'مدفوع' : 'Paid'}</span>
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                                {order.hasPartialRejection && Number(order.returnedCartons || 0) > 0 && (
+                                  <span
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-rose-50 text-rose-800 border border-rose-200 shadow-2xs"
+                                    title={order.rejectionReason || (isAr ? 'مرتجع جزئي من العميل بعد التحميل' : 'Post-dispatch partial client rejection')}
+                                  >
+                                    <PackageMinus className="w-3 h-3 text-rose-600 shrink-0" />
+                                    <span>
+                                      {isAr
+                                        ? `مرتجع جزئي: -${Number(order.returnedCartons || 0)} كرتونة`
+                                        : `Partial Return: -${Number(order.returnedCartons || 0)} ctn`}
                                     </span>
-                                    <span>{isAr ? 'جاري التجهيز' : 'Preparing'}</span>
                                   </span>
                                 )}
-                                {(order.fulfillmentStatus === 'shipped' || order.fulfillmentStatus === 'out_for_delivery') && (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-2xs">
-                                    <Truck className="w-3 h-3 text-emerald-600 animate-pulse" />
-                                    <span>{isAr ? 'جاري التوصيل' : 'Out for Delivery'}</span>
-                                  </span>
-                                )}
-                                {order.fulfillmentStatus === 'delivered' && (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200 shadow-2xs">
-                                    <CheckCircle2 className="w-3 h-3 text-teal-600" />
-                                    <span>{isAr ? 'تم التسليم' : 'Delivered'}</span>
-                                  </span>
-                                )}
-                                {order.fulfillmentStatus === 'paid' && (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200 shadow-2xs">
-                                    <Banknote className="w-3 h-3 text-blue-600" />
-                                    <span>{isAr ? 'مدفوع' : 'Paid'}</span>
-                                  </span>
-                                )}
+                                {!order.isSplitParent && isOrderRetailRoute(order, clients, segments) && (() => {
+                                  const isSettled = order.retailSettlementStatus === 'settled';
+                                  const isPostDisp = POST_DISPATCH_STATUSES.includes(order.fulfillmentStatus);
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (isPostDisp || isSettled) {
+                                          setRetailSettlementModalOrder(order);
+                                        }
+                                      }}
+                                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs transition ${
+                                        isSettled
+                                          ? 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300 cursor-pointer'
+                                          : isPostDisp
+                                            ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 animate-pulse cursor-pointer'
+                                            : 'bg-cyan-50/70 text-cyan-800 border-cyan-200'
+                                      }`}
+                                      title={
+                                        isSettled
+                                          ? (isAr ? 'انقر لعرض أو تحديث تسوية مبيعات التجزئة' : 'Click to inspect or force-sync Retail settlement')
+                                          : isPostDisp
+                                            ? (isAr ? 'انقر لتأكيد الكميات المباعة بعد العودة' : 'Click to confirm post-arrival sold quantities')
+                                            : (isAr ? 'أمر تجزئة — تُؤكد الكميات المباعة بعد العودة' : 'Retail route order — confirm sold qty after return')
+                                      }
+                                    >
+                                      {isSettled ? <ClipboardCheck className="w-3 h-3 shrink-0" /> : <Store className="w-3 h-3 shrink-0" />}
+                                      <span>
+                                        {isSettled
+                                          ? (isAr
+                                              ? `تجزئة مسوّاة #${order.retailSettlementRevision || 1}`
+                                              : `Retail Settled #${order.retailSettlementRevision || 1}`)
+                                          : isPostDisp
+                                            ? (isAr ? 'بانتظار تأكيد المباع' : 'Awaiting Sold Settlement')
+                                            : (isAr ? 'خط سير تجزئة' : 'Retail Route')}
+                                      </span>
+                                    </button>
+                                  );
+                                })()}
                               </div>
                             </td>
 
-                            {/* 10. Actions Button (3-dots with Portal Menu) */}
+                            {/* 10. Actions Button (3-dots Portal Menu + Dynamic Row Comment) */}
                             <td className="py-3 px-3 text-center whitespace-nowrap">
-                              <button
-                                type="button"
-                                data-order-menu
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (activeActionsMenuOrderId === order.id) {
-                                    setActiveActionsMenuOrderId(null);
-                                    setActionsMenuAnchor(null);
-                                  } else {
-                                    const rect = e.currentTarget.getBoundingClientRect();
-                                    setActionsMenuAnchor({
-                                      top: rect.bottom + 4,
-                                      left: rect.left,
-                                      right: rect.right
-                                    });
-                                    setActiveActionsMenuOrderId(order.id);
-                                  }
-                                }}
-                                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
-                                title={isAr ? 'إجراءات الطلب' : 'Order Actions'}
-                              >
-                                <MoreVertical className="w-4 h-4" />
-                              </button>
+                              <div className="flex items-center justify-center gap-1">
+                                <RowCommentButton
+                                  docId={order.id}
+                                  docNumber={order.serial ? `SO-${order.serial}` : (order.id || 'Order')}
+                                  tab="sales_orders"
+                                  module="sales"
+                                />
+                                <button
+                                  type="button"
+                                  data-order-menu
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (activeActionsMenuOrderId === order.id) {
+                                      setActiveActionsMenuOrderId(null);
+                                      setActionsMenuAnchor(null);
+                                    } else {
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      setActionsMenuAnchor({
+                                        top: rect.bottom + 4,
+                                        left: rect.left,
+                                        right: rect.right
+                                      });
+                                      setActiveActionsMenuOrderId(order.id);
+                                    }
+                                  }}
+                                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                                  title={isAr ? 'إجراءات الطلب' : 'Order Actions'}
+                                >
+                                  <MoreVertical className="w-4 h-4" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
 
                           {/* Expandable Order Details Row */}
                           {isExpanded && (
-                            <tr className="bg-slate-50/70 border-b border-slate-200">
-                              <td colSpan={10} className="py-3 px-4 sm:ps-8 sm:pe-6">
+                            <tr className="bg-slate-50/75 border-b-[3px] border-slate-200/95">
+                              <td colSpan={10} className={`py-3 px-4 sm:ps-8 sm:pe-6 ${resolveRowStartBorder(order, isExpanded)}`}>
                                 <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
                                   {order.orderType === 'admin' ? (
                                     /* Administrative Directive Display */
@@ -1911,6 +2551,232 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   ) : (
                                     /* Sales Order / Invoice Only Display */
                                     <div className="space-y-3">
+                                      {/* Dedicated Dispatch & Loading Assignment Panel (hidden for split parent since dispatch lives on child portions) */}
+                                      {!order.isSplitParent && !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) && (
+                                        <div className="p-3 bg-gradient-to-r from-indigo-50/80 via-blue-50/50 to-indigo-50/80 border border-indigo-200/80 rounded-xl space-y-2.5 shadow-2xs">
+                                          <div className="flex items-center justify-between border-b border-indigo-200/70 pb-2">
+                                            <div className="flex items-center gap-2">
+                                              <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                                                <Truck className="w-4 h-4" />
+                                              </div>
+                                              <div>
+                                                <h5 className="font-extrabold text-xs text-indigo-950">
+                                                  {isAr ? 'بيانات شاحنة التوزيع وأمر التحميل المعتمد' : 'Dispatch Vehicle & Loading Order Details'}
+                                                </h5>
+                                                <span className="text-[10px] text-indigo-600 font-medium">
+                                                  {order.assignedVehicleName || order.loadingOrderNumber
+                                                    ? (isAr ? 'بيانات التسكين معتمدة وتُدار حصرياً من تبويب خطة التحميل' : 'Assignment is confirmed & managed in Loading Plan')
+                                                    : (isAr ? 'الطلب غير مسكن على شاحنة بعد' : 'Order is currently unassigned')}
+                                                </span>
+                                              </div>
+                                            </div>
+
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleNavigateToLoadingPlan(order);
+                                              }}
+                                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-indigo-600 hover:text-white border border-indigo-300 text-indigo-700 text-xs font-bold rounded-lg transition shadow-2xs cursor-pointer group"
+                                            >
+                                              <span>{order.assignedVehicleName || order.loadingOrderNumber ? (isAr ? 'فتح في خطة التحميل' : 'Open in Loading Plan') : (isAr ? 'تسكين في خطة التحميل' : 'Assign in Loading Plan')}</span>
+                                              <ExternalLink className="w-3 h-3 text-indigo-400 group-hover:text-white" />
+                                            </button>
+                                          </div>
+
+                                          {/* 4-Grid of Preserved Assignment Info */}
+                                          {(orderVehicleDisplayName || order.loadingOrderNumber) ? (
+                                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                                              <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'الشاحنة المخصصة:' : 'Assigned Truck:'}</span>
+                                                <span className="font-black text-slate-900 flex items-center gap-1 mt-0.5">
+                                                  <Truck className="w-3.5 h-3.5 text-indigo-600 shrink-0 rtl:-scale-x-100" />
+                                                  <span className="truncate">{orderVehicleDisplayName || (isAr ? 'غير محدد' : 'Unknown')}</span>
+                                                </span>
+                                                {orderVehiclePlate && (
+                                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-[10px] text-slate-600 font-mono mt-1">
+                                                    <span>{orderVehiclePlate}</span>
+                                                    <CopyButton text={orderVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                                                  </span>
+                                                )}
+                                              </div>
+
+                                              <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'السائق المعتمد:' : 'Assigned Driver:'}</span>
+                                                <span className="font-bold text-slate-800 flex items-center gap-1 mt-0.5">
+                                                  <User className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                                  <span className="truncate">{order.assignedDriverName || (isAr ? '—' : '—')}</span>
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'مندوب التسليم:' : 'Delivery Rep:'}</span>
+                                                <span className="font-bold text-slate-800 flex items-center gap-1 mt-0.5">
+                                                  <Users className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                                                  <span className="truncate">{order.assignedDeliveryRepName || (isAr ? '—' : '—')}</span>
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
+                                                <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'رقم وتاريخ الرحلة:' : 'Trip # & Loading Date:'}</span>
+                                                <span className="font-mono font-black text-indigo-700 text-xs flex items-center gap-1 mt-0.5">
+                                                  <PackageCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                                                  <span>{order.loadingOrderNumber ? (isAr ? `رحلة #${order.loadingOrderNumber}` : `Trip #${order.loadingOrderNumber}`) : '—'}</span>
+                                                </span>
+                                                <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{order.loadingDate || order.invoiceDate || '—'}</span>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="p-3 bg-white rounded-lg border border-indigo-100 text-center text-xs text-slate-500 font-medium">
+                                              {isAr
+                                                ? 'لم يتم ربط هذا الطلب بشاحنة أو أمر تحميل بعد. يمكنك التسكين مباشرة عبر الانتقال لخطة التحميل.'
+                                                : 'No truck or loading order assigned yet. You can assign it via the Loading Plan tab.'}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+
+                                      {/* Split Parent Portions Directory OR Child Lineage Notice */}
+                                      {order.isSplitParent && (
+                                        <div className="p-3 bg-violet-50/75 border border-violet-200 rounded-xl space-y-2 shadow-2xs">
+                                          <div className="flex items-center justify-between flex-wrap gap-2 border-b border-violet-200/70 pb-2">
+                                            <div className="flex items-center gap-2">
+                                              <div className="w-7 h-7 rounded-lg bg-violet-600 text-white flex items-center justify-center shadow-xs">
+                                                <GitFork className="w-4 h-4" />
+                                              </div>
+                                              <div>
+                                                <h5 className="font-extrabold text-xs text-violet-950">
+                                                  {isAr
+                                                    ? `دليل الشحنات الفرعية للأمر المقسم (${splitChildPortions.length} أجزاء)`
+                                                    : `Split Order Portions Directory (${splitChildPortions.length} Portions)`}
+                                                </h5>
+                                                <span className="text-[10px] text-violet-700 font-medium">
+                                                  {order.invoiceSplitMode === 'merged_on_parent'
+                                                    ? (isAr
+                                                        ? 'الفاتورة الضريبية والمستند المالي موحد على هذا الطلب، بينما تم تقسيم التحميل والتسليم إلى الشحنات التالية في خطة التحميل:'
+                                                        : 'Billing & financial documents remain consolidated on this order while Loading Plan dispatches it across these portions:')
+                                                    : (isAr
+                                                        ? 'هذا الأمر الأصلي مرجعي (مستبعد من الإجماليات لتجنب التكرار)، وكل جزء له مستند مالي منفصل.'
+                                                        : 'Immutable Parent Reference (excluded from KPI/Loading Plan totals to avoid double-counting). Each portion carries standalone billing.')}
+                                                </span>
+                                              </div>
+                                            </div>
+                                            {canSplitOrder && (
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleRequestSplitOrder(order);
+                                                }}
+                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-violet-600 text-violet-800 hover:text-white border border-violet-300 hover:border-violet-600 rounded-lg text-[11px] font-extrabold transition shadow-2xs cursor-pointer"
+                                              >
+                                                <GitFork className="w-3.5 h-3.5" />
+                                                <span>{isAr ? 'تعديل تقسيم الطلب' : 'Edit Split'}</span>
+                                              </button>
+                                            )}
+                                          </div>
+
+                                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
+                                            {splitChildPortions.map((child) => {
+                                              const childVeh = vehicles.find((v) => v.id === child.assignedVehicleId);
+                                              const childVehName = resolveVehicleDisplayName(childVeh, child.assignedVehicleName);
+                                              const childSerial = resolveOrderSerial(child, orders);
+                                              const childStatusKey = (child.fulfillmentStatus === 'out_for_delivery' ? 'shipped' : child.fulfillmentStatus) || 'not_yet';
+                                              const childStyle = SALES_FULFILLMENT_STYLE_MAP[childStatusKey] || SALES_FULFILLMENT_STYLE_MAP.not_yet;
+                                              const childFulf = FULFILLMENT_STATUSES.find((s) => s.id === childStatusKey) || FULFILLMENT_STATUSES[0];
+
+                                              return (
+                                                <div
+                                                  key={child.id}
+                                                  onMouseEnter={(e) => {
+                                                    const rect = e.currentTarget.getBoundingClientRect();
+                                                    setHoveredPortionTooltip({
+                                                      child,
+                                                      childSerial,
+                                                      childVehName,
+                                                      childStatusKey,
+                                                      childStyle,
+                                                      childFulf,
+                                                      rect
+                                                    });
+                                                  }}
+                                                  onMouseLeave={() => setHoveredPortionTooltip(null)}
+                                                  className={`rounded-xl border border-slate-200/90 ${childStyle.startBorderClasses} ${childStyle.rowClasses} p-2.5 flex flex-col gap-1.5 shadow-2xs transition cursor-default`}
+                                                >
+                                                  <div className="flex items-center justify-between gap-2">
+                                                    <span className="font-mono font-black text-slate-900 text-xs">
+                                                      #{childSerial}
+                                                    </span>
+                                                    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-black border shadow-2xs ${childStyle.badgeClasses}`}>
+                                                      {childStatusKey === 'prepare' ? (
+                                                        <span className="relative flex h-2 w-2">
+                                                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75"></span>
+                                                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600"></span>
+                                                        </span>
+                                                      ) : childStatusKey === 'shipped' ? (
+                                                        <Truck className="w-3 h-3 text-sky-600 animate-pulse rtl:-scale-x-100 shrink-0" />
+                                                      ) : childStatusKey === 'delivered' ? (
+                                                        <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                                                      ) : childStatusKey === 'paid' ? (
+                                                        <Banknote className="w-3 h-3 text-indigo-600 shrink-0" />
+                                                      ) : (
+                                                        <Clock className="w-3 h-3 text-slate-600 shrink-0" />
+                                                      )}
+                                                      <span>{isAr ? childFulf.labelAr : childFulf.labelEn}</span>
+                                                    </span>
+                                                  </div>
+                                                  <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono">
+                                                    <span>{Number(child.totalCartons || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
+                                                    <span>{((Number(child.totalWeightKg) || 0) / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'}</span>
+                                                    <span className="font-bold text-slate-900">{Number(child.grandTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} EGP</span>
+                                                  </div>
+                                                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-200/70 text-[10px]">
+                                                    <span className="text-slate-600 truncate flex items-center gap-1 font-medium">
+                                                      <Truck className="w-3 h-3 text-indigo-500 shrink-0 rtl:-scale-x-100" />
+                                                      <span className="truncate">{childVehName || (isAr ? 'بانتظار التسكين' : 'Awaiting Truck')}</span>
+                                                      {child.loadingOrderNumber && (
+                                                        <span className="font-mono font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1 rounded">
+                                                          #{child.loadingOrderNumber}
+                                                        </span>
+                                                      )}
+                                                    </span>
+                                                    <button
+                                                      type="button"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setHoveredPortionTooltip(null);
+                                                        handleNavigateToLoadingPlan(child);
+                                                      }}
+                                                      className="text-indigo-600 hover:text-indigo-800 font-bold shrink-0 cursor-pointer"
+                                                    >
+                                                      {isAr ? 'خطة التحميل' : 'Plan'} {isAr ? '←' : '→'}
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      {order.splitParentId && (
+                                        <div className="px-3 py-2 bg-blue-50/75 border border-blue-200 rounded-xl flex items-center justify-between flex-wrap gap-2 text-xs">
+                                          <div className="flex items-center gap-2 text-blue-900 font-bold">
+                                            <GitFork className="w-4 h-4 text-blue-600 shrink-0" />
+                                            <span>
+                                              {isAr
+                                                ? `شحنة فرعية (${order.splitIndex} من ${order.splitTotal}) للأمر الأصلي #${order.baseSerial || ''}`
+                                                : `Split Portion (${order.splitIndex} of ${order.splitTotal}) from parent order #${order.baseSerial || ''}`}
+                                            </span>
+                                          </div>
+                                          <span className="text-[11px] font-semibold text-blue-800 bg-white px-2 py-0.5 rounded-lg border border-blue-200">
+                                            {order.invoiceSplitMode === 'merged_on_parent'
+                                              ? (isAr ? `الفاتورة الضريبية مجمعة على #${order.baseSerial || ''}` : `Tax Invoice billed under parent #${order.baseSerial || ''}`)
+                                              : (isAr ? 'مستند مالي مستقل لهذا الجزء' : 'Standalone billing document')}
+                                          </span>
+                                        </div>
+                                      )}
+
                                       {/* Full Operating Schedule Card (Hiding Empty Fields) */}
                                       {(profile.hasHours || profile.hasHolidays || profile.hasAddress || profile.hasContact || locationUrl || profile.hasClientNotes || profile.hasBranchNotes || profile.hasNotes) && (
                                         <div className="p-3 bg-slate-50/90 border border-slate-200 rounded-xl space-y-2">
@@ -2004,14 +2870,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                               </div>
                                             )}
                                             {order.externalComments && (
-                                              <div className="text-slate-700">
-                                                <span className="text-slate-400 me-1">💬</span>
+                                              <div className="text-slate-700 flex items-start gap-1">
+                                                <MessageSquare className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
                                                 <span>{order.externalComments}</span>
                                               </div>
                                             )}
                                             {order.internalComments && (
-                                              <div className="text-amber-700">
-                                                <span className="text-slate-400 me-1">🔒</span>
+                                              <div className="text-amber-700 flex items-start gap-1">
+                                                <Lock className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
                                                 <span>{order.internalComments}</span>
                                               </div>
                                             )}
@@ -2106,6 +2972,347 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         </table>
                                       </div>
 
+                                      {/* Warehouse Return Estimate & Accountant Adjusted Invoice Reconciliation */}
+                                      {order.hasPartialRejection && (() => {
+                                        const snap = order.preAdjustmentSnapshot || {};
+                                        const origGrandTotal = Number(
+                                          snap.originalGrandTotal ?? (Number(order.grandTotal || 0) + Number(order.returnedAmount || 0))
+                                        );
+                                        const origTotalCartons = Number(
+                                          snap.originalTotalCartons ?? (Number(order.totalCartons || order.totalQty || 0) + Number(order.returnedCartons || 0))
+                                        );
+                                        const actualCartons = Number(order.totalCartons || order.totalQty || 0);
+                                        const actualGrandTotal = Number(order.grandTotal || 0);
+                                        const retCartons = Number(order.returnedCartons || 0);
+                                        const retWeightKg = Number(order.returnedWeightKg || 0);
+                                        const retAmount = Number(order.returnedAmount || 0);
+
+                                        return (
+                                          <div className="p-3.5 bg-gradient-to-r from-rose-50/90 via-amber-50/40 to-rose-50/80 border border-rose-200 rounded-xl space-y-3 shadow-2xs">
+                                            <div className="flex items-center justify-between flex-wrap gap-2 border-b border-rose-200/80 pb-2">
+                                              <div className="flex items-center gap-2">
+                                                <div className="w-7 h-7 rounded-lg bg-rose-600 text-white flex items-center justify-center shadow-xs">
+                                                  <PackageMinus className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                  <h5 className="font-extrabold text-xs text-rose-950">
+                                                    {isAr
+                                                      ? 'تقدير مرتجع المخزن وتسوية الفاتورة المعدلة (رفض جزئي من العميل)'
+                                                      : 'Warehouse Return Estimate & Accountant Adjusted Invoice'}
+                                                  </h5>
+                                                  <span className="text-[10px] text-rose-700 font-medium">
+                                                    {order.lastAdjustedBy
+                                                      ? (isAr
+                                                          ? `آخر مزامنة: ${order.lastAdjustedBy} ${order.lastAdjustedAt ? `(${new Date(order.lastAdjustedAt).toLocaleString('ar-EG')})` : ''}`
+                                                          : `Last synced by ${order.lastAdjustedBy} ${order.lastAdjustedAt ? `(${new Date(order.lastAdjustedAt).toLocaleString('en-US')})` : ''}`)
+                                                      : (isAr ? 'بيانات التسليم الفعلي والمرتجع متزامنة' : 'Synced actual received quantities vs dispatched baseline')}
+                                                  </span>
+                                                </div>
+                                              </div>
+
+                                              <div className="flex items-center gap-2">
+                                                {canAdjustDispatchedQty && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setEditingOrder(order);
+                                                      setIsAdminModal(false);
+                                                      setEditorInitialAdjustmentMode(true);
+                                                      setIsEditorOpen(true);
+                                                    }}
+                                                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-amber-50 border border-amber-300 text-amber-800 text-[11px] font-bold rounded-lg transition cursor-pointer shadow-2xs"
+                                                  >
+                                                    <Edit3 className="w-3 h-3 text-amber-600" />
+                                                    <span>{isAr ? 'تعديل المرتجع' : 'Adjust Sync'}</span>
+                                                  </button>
+                                                )}
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    openPrintableAdjustmentSlip(order, isAr);
+                                                  }}
+                                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold rounded-lg transition cursor-pointer shadow-2xs"
+                                                >
+                                                  <Printer className="w-3 h-3" />
+                                                  <span>{isAr ? 'طباعة إشعار المرتجع والفاتورة المعدلة' : 'Print Return & Adjusted Invoice Sheet'}</span>
+                                                </button>
+                                              </div>
+                                            </div>
+
+                                            {order.rejectionReason && (
+                                              <div className="px-2.5 py-1.5 bg-white/90 border border-rose-200 rounded-lg text-[11px] text-rose-900">
+                                                <strong className="font-extrabold">{isAr ? 'سبب الرفض الجزئي: ' : 'Rejection Reason: '}</strong>
+                                                <span>{order.rejectionReason}</span>
+                                              </div>
+                                            )}
+
+                                            {/* 4 KPI Summary Cards */}
+                                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                                              <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                                                <span className="text-[10px] text-slate-400 block font-semibold">{isAr ? 'المنصرف الأصلي (قبل الرفض):' : 'Original Dispatched:'}</span>
+                                                <span className="font-mono font-bold text-slate-800 block mt-0.5">
+                                                  {origTotalCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                                <span className="font-mono text-[11px] text-slate-500">
+                                                  {origGrandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-white p-2.5 rounded-lg border border-emerald-200">
+                                                <span className="text-[10px] text-emerald-700 block font-semibold">{isAr ? 'المستلم فعلياً (المعتمد):' : 'Actual Accepted:'}</span>
+                                                <span className="font-mono font-bold text-emerald-900 block mt-0.5">
+                                                  {actualCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                                <span className="font-mono text-[11px] font-bold text-emerald-700">
+                                                  {actualGrandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-300">
+                                                <span className="text-[10px] text-amber-900 block font-bold">{isAr ? 'تقدير المرتجع للمخزن:' : 'Estimated Warehouse Return:'}</span>
+                                                <span className="font-mono font-black text-amber-800 block mt-0.5">
+                                                  -{retCartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                                <span className="font-mono text-[11px] text-amber-700">
+                                                  {retWeightKg.toFixed(1)} {isAr ? 'كجم' : 'kg'} ({(retWeightKg / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'})
+                                                </span>
+                                              </div>
+
+                                              <div className="bg-rose-600 p-2.5 rounded-lg text-white">
+                                                <span className="text-[10px] text-rose-100 block font-bold">{isAr ? 'قيمة التسوية / إشعار الدائن:' : 'Accountant Invoice Credit:'}</span>
+                                                <span className="font-mono font-black text-sm block mt-0.5">
+                                                  -{retAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP
+                                                </span>
+                                                <span className="text-[10px] text-rose-100 block">
+                                                  {isAr ? 'صافي بعد التسوية في الفاتورة المعدلة' : 'Deducted in adjusted invoice'}
+                                                </span>
+                                              </div>
+                                            </div>
+
+                                            {/* Per-SKU Returned Reconciliation Table */}
+                                            <div className="overflow-x-auto bg-white border border-rose-200/80 rounded-lg">
+                                              <table className="w-full text-[11px]">
+                                                <thead>
+                                                  <tr className="bg-rose-50/70 text-rose-900 font-bold border-b border-rose-200/70">
+                                                    <th className="py-1.5 px-2.5 text-start">{isAr ? 'الصنف' : 'Product'}</th>
+                                                    <th className="py-1.5 px-2.5 text-center">{isAr ? 'المنصرف' : 'Dispatched'}</th>
+                                                    <th className="py-1.5 px-2.5 text-center">{isAr ? 'المستلم فعلياً' : 'Received'}</th>
+                                                    <th className="py-1.5 px-2.5 text-center text-rose-700">{isAr ? 'المرتجع للمخزن' : 'Returned'}</th>
+                                                    <th className="py-1.5 px-2.5 text-end">{isAr ? 'إجمالي أصلي' : 'Orig Total'}</th>
+                                                    <th className="py-1.5 px-2.5 text-end">{isAr ? 'إجمالي معدل' : 'Adj Total'}</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100 font-mono">
+                                                  {(order.lines || []).map((ln, idx) => {
+                                                    const dispCartons = Number(ln.dispatchedQty ?? ln.qty ?? 0) + Number(ln.dispatchedBonus ?? ln.bonus ?? 0);
+                                                    const recvCartons = Number(ln.qty || 0) + Number(ln.bonus || 0);
+                                                    const lineRetCartons = Number(ln.returnedCartons ?? Math.max(0, dispCartons - recvCartons));
+                                                    const lineAdjTotal = Number(ln.lineFinalTotal ?? ln.lineTotal ?? 0);
+                                                    const lineOrigTotal = lineAdjTotal + Number(ln.returnedLineTotal || 0);
+                                                    return (
+                                                      <tr key={idx} className={lineRetCartons > 0 ? 'bg-rose-50/30' : ''}>
+                                                        <td className="py-1.5 px-2.5 font-sans font-bold text-slate-800">
+                                                          <span className="text-[10px] font-mono text-indigo-700 me-1.5">{ln.productCode}</span>
+                                                          {isAr ? ln.productNameAr : (ln.productNameEn || ln.productNameAr)}
+                                                        </td>
+                                                        <td className="py-1.5 px-2.5 text-center text-slate-600">{dispCartons}</td>
+                                                        <td className="py-1.5 px-2.5 text-center font-bold text-emerald-700">{recvCartons}</td>
+                                                        <td className="py-1.5 px-2.5 text-center font-black text-rose-700">
+                                                          {lineRetCartons > 0 ? `-${lineRetCartons}` : '0'}
+                                                        </td>
+                                                        <td className="py-1.5 px-2.5 text-end text-slate-500">{lineOrigTotal.toFixed(2)}</td>
+                                                        <td className="py-1.5 px-2.5 text-end font-bold text-slate-900">{lineAdjTotal.toFixed(2)}</td>
+                                                      </tr>
+                                                    );
+                                                  })}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
+
+                                      {/* Retail Van-Sales Route Settlement & Buyer Proofs Panel */}
+                                      {!order.isSplitParent && isOrderRetailRoute(order, clients, segments) && (
+                                        order.retailSettlementStatus === 'settled' ||
+                                        POST_DISPATCH_STATUSES.includes(order.fulfillmentStatus)
+                                      ) && (() => {
+                                        const isSettled = order.retailSettlementStatus === 'settled';
+                                        const snap = order.preAdjustmentSnapshot || {};
+                                        const loadedCtn = Number(snap.originalTotalCartons ?? ((Number(order.totalCartons || order.totalQty || 0)) + Number(order.returnedCartons || 0)));
+                                        const soldCtn = Number(order.totalCartons ?? order.totalQty ?? 0);
+                                        const unsoldCtn = Number(order.returnedCartons ?? Math.max(0, loadedCtn - soldCtn));
+                                        const unsoldWeightKg = Number(order.returnedWeightKg || 0);
+                                        const soldGrand = Number(order.grandTotal || 0);
+                                        const buyerDocs = Array.isArray(order.retailSettlementAttachments) ? order.retailSettlementAttachments : [];
+
+                                        if (!isSettled) {
+                                          return (
+                                            <div className="p-3.5 bg-amber-50/90 border border-amber-300 rounded-xl flex items-center justify-between flex-wrap gap-3 shadow-2xs">
+                                              <div className="flex items-center gap-2.5">
+                                                <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
+                                                  <Store className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                  <h5 className="font-extrabold text-xs text-amber-950">
+                                                    {isAr
+                                                      ? 'رحلة مبيعات تجزئة — بانتظار جرد وتأكيد الكميات المباعة بعد العودة'
+                                                      : 'Retail Route Trip — Awaiting Post-Arrival Sold Quantity Settlement'}
+                                                  </h5>
+                                                  <p className="text-[11px] text-amber-800">
+                                                    {isAr
+                                                      ? 'بمجرد عودة الشاحنة، قم بمطابقة المباع الفعلي مع غير المباع العائد للمخزن وإرفاق مستندات المشترين.'
+                                                      : 'Confirm actual sold cartons vs unsold stock returning to warehouse and attach buyer reference documents.'}
+                                                  </p>
+                                                </div>
+                                              </div>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setRetailSettlementModalOrder(order);
+                                                }}
+                                                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-cyan-700 hover:bg-cyan-800 text-white rounded-xl text-xs font-extrabold transition cursor-pointer shadow-xs"
+                                              >
+                                                <ClipboardCheck className="w-3.5 h-3.5" />
+                                                <span>
+                                                  {canSettleRetailOrders
+                                                    ? (isAr ? 'تأكيد الكميات المباعة الآن' : 'Confirm Sold Quantities')
+                                                    : (isAr ? 'معاينة الجرد' : 'View Settlement')}
+                                                </span>
+                                              </button>
+                                            </div>
+                                          );
+                                        }
+
+                                        return (
+                                          <div className="p-3.5 bg-gradient-to-r from-cyan-50/90 via-teal-50/40 to-cyan-50/80 border border-cyan-200 rounded-xl space-y-3 shadow-2xs">
+                                            {/* Header */}
+                                            <div className="flex items-center justify-between flex-wrap gap-2 border-b border-cyan-200/80 pb-2">
+                                              <div className="flex items-center gap-2">
+                                                <div className="w-7 h-7 rounded-lg bg-cyan-700 text-white flex items-center justify-center shadow-xs">
+                                                  <Store className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                  <h5 className="font-extrabold text-xs text-cyan-950 flex items-center gap-2 flex-wrap">
+                                                    <span>
+                                                      {isAr
+                                                        ? `تسوية رحلة مبيعات التجزئة (مراجعة #${order.retailSettlementRevision || 1})`
+                                                        : `Retail Route Settlement & Invoice Reconciliation (Rev #${order.retailSettlementRevision || 1})`}
+                                                    </span>
+                                                  </h5>
+                                                  <span className="text-[10px] text-cyan-800 font-medium">
+                                                    {order.retailSettledBy
+                                                      ? (isAr
+                                                          ? `تمت التسوية بواسطة: ${order.retailSettledBy} ${order.retailSettledAt ? `(${new Date(order.retailSettledAt).toLocaleString('ar-EG')})` : ''}`
+                                                          : `Settled by ${order.retailSettledBy} ${order.retailSettledAt ? `(${new Date(order.retailSettledAt).toLocaleString('en-US')})` : ''}`)
+                                                      : ''}
+                                                  </span>
+                                                </div>
+                                              </div>
+
+                                              <div className="flex items-center gap-2">
+                                                {canSettleRetailOrders && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setRetailSettlementModalOrder(order);
+                                                    }}
+                                                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-indigo-50 border border-indigo-300 text-indigo-800 text-[11px] font-bold rounded-lg transition cursor-pointer shadow-2xs"
+                                                  >
+                                                    <RefreshCw className="w-3 h-3 text-indigo-600" />
+                                                    <span>{isAr ? 'تعديل ومزامنة قسرية (Force Sync)' : 'Edit / Force Sync'}</span>
+                                                  </button>
+                                                )}
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    openPrintableRetailSettlementSlip(order, isAr);
+                                                  }}
+                                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] font-bold rounded-lg transition cursor-pointer shadow-2xs"
+                                                >
+                                                  <Printer className="w-3 h-3" />
+                                                  <span>{isAr ? 'طباعة بيان تسوية التجزئة' : 'Print Retail Settlement'}</span>
+                                                </button>
+                                              </div>
+                                            </div>
+
+                                            {/* Notes */}
+                                            {order.retailSettlementNotes && (
+                                              <div className="px-2.5 py-1.5 bg-white/90 border border-cyan-200 rounded-lg text-[11px] text-cyan-950">
+                                                <strong className="font-extrabold">{isAr ? 'ملاحظات الرحلة والتسوية: ' : 'Settlement Notes: '}</strong>
+                                                <span>{order.retailSettlementNotes}</span>
+                                              </div>
+                                            )}
+
+                                            {/* 4 Summary Metrics */}
+                                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                                              <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                                                <span className="text-[10px] text-slate-500 block font-semibold">{isAr ? 'المحمل على الشاحنة:' : 'Loaded on Truck:'}</span>
+                                                <span className="font-mono font-bold text-slate-900 block mt-0.5">
+                                                  {loadedCtn.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                              </div>
+                                              <div className="bg-white p-2.5 rounded-lg border border-emerald-200">
+                                                <span className="text-[10px] text-emerald-700 block font-semibold">{isAr ? 'المباع الفعلي المعتمد:' : 'Confirmed Sold:'}</span>
+                                                <span className="font-mono font-black text-emerald-900 block mt-0.5">
+                                                  {soldCtn.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                </span>
+                                              </div>
+                                              <div className="bg-sky-50 p-2.5 rounded-lg border border-sky-200">
+                                                <span className="text-[10px] text-sky-900 block font-bold">{isAr ? 'غير المباع العائد للمخزن:' : 'Unsold Return to Warehouse:'}</span>
+                                                <span className="font-mono font-black text-sky-900 block mt-0.5">
+                                                  {unsoldCtn.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                                  {unsoldWeightKg > 0 ? ` (${(unsoldWeightKg / 1000).toFixed(2)} ${isAr ? 'طن' : 'Ton'})` : ''}
+                                                </span>
+                                              </div>
+                                              <div className="bg-indigo-700 p-2.5 rounded-lg text-white">
+                                                <span className="text-[10px] text-indigo-100 block font-bold">{isAr ? 'صافي الفاتورة النهائية:' : 'Settled Invoice Total:'}</span>
+                                                <span className="font-mono font-black text-sm block mt-0.5">
+                                                  {soldGrand.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP
+                                                </span>
+                                              </div>
+                                            </div>
+
+                                            {/* Buyer Reference Proofs Gallery */}
+                                            {buyerDocs.length > 0 && (
+                                              <div className="p-2.5 bg-white border border-cyan-200/80 rounded-xl space-y-2">
+                                                <div className="text-[11px] font-extrabold text-slate-800 flex items-center gap-1.5">
+                                                  <FileImage className="w-3.5 h-3.5 text-cyan-600" />
+                                                  <span>
+                                                    {isAr
+                                                      ? `مرفقات ومراجع المشترين على خط السير (${buyerDocs.length}):`
+                                                      : `Buyer Reference Documents (${buyerDocs.length}):`}
+                                                  </span>
+                                                </div>
+                                                <div className="flex flex-wrap gap-2">
+                                                  {buyerDocs.map((att, idx) => (
+                                                    <button
+                                                      key={att.id || idx}
+                                                      type="button"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (att.url) setLightboxImage({ url: att.url, title: att.buyerNote || att.name });
+                                                      }}
+                                                      className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-cyan-50 border border-slate-200 hover:border-cyan-300 text-xs transition cursor-pointer"
+                                                    >
+                                                      <Eye className="w-3.5 h-3.5 text-cyan-600 shrink-0" />
+                                                      <span className="font-bold text-slate-800 truncate max-w-[200px]">
+                                                        {att.buyerNote || att.name}
+                                                      </span>
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
+
                                       {/* Financial Totals Breakdown Strip (Moved to Expanded Footer) */}
                                       <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
                                         {/* Cartons */}
@@ -2121,8 +3328,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col justify-between">
                                           <span className="text-[10px] text-slate-500 font-semibold">{isAr ? 'إجمالي الوزن:' : 'Total Weight:'}</span>
                                           <span className="font-mono font-bold text-slate-900 text-xs">
-                                            {((order.totalWeightKg || 0) / 1000).toFixed(1)} <span className="text-[10px] text-slate-400 font-sans">{isAr ? 'طن' : 't'}</span>
-                                            <span className="text-[10px] text-slate-400 block font-normal">({Number(order.totalWeightKg || 0).toLocaleString()} kg)</span>
+                                            {((order.totalWeightKg || 0) / 1000).toFixed(1)} <span className="text-[10px] text-slate-400 font-sans">{isAr ? 'طن' : 'Ton'}</span>
+                                            <span className="text-[10px] text-slate-400 block font-normal">({Number(order.totalWeightKg || 0).toLocaleString()} {isAr ? 'كجم' : 'kg'})</span>
                                           </span>
                                         </div>
 
@@ -2190,7 +3397,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             right: !isAr ? `${window.innerWidth - actionsMenuAnchor.right}px` : undefined,
             zIndex: 9999
           }}
-          className="w-48 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
+          className="w-56 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
         >
           <button
             type="button"
@@ -2198,6 +3405,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               const isAdmin = ADMIN_ORDER_TYPES.some((t) => t.id === activeOrderForMenu.orderType) || Boolean(activeOrderForMenu.isAdministrative);
               setEditingOrder(activeOrderForMenu);
               setIsAdminModal(isAdmin);
+              setEditorInitialAdjustmentMode(false);
               setIsEditorOpen(true);
               setActiveActionsMenuOrderId(null);
             }}
@@ -2206,6 +3414,91 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             <Edit3 className="w-3.5 h-3.5 text-blue-600" />
             <span>{isAr ? 'تعديل الأمر' : 'Edit Order'}</span>
           </button>
+
+          {!PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(activeOrderForMenu.orderType) &&
+            canSplitOrder && (() => {
+              const isEditSplitAction = Boolean(activeOrderForMenu.isSplitParent || activeOrderForMenu.splitParentId);
+              const isPendingForSplit = isEditSplitAction || !activeOrderForMenu.fulfillmentStatus || activeOrderForMenu.fulfillmentStatus === 'not_yet';
+              const splitMenuLabel = activeOrderForMenu.isSplitParent
+                ? (isAr ? 'تعديل وإعادة توزيع التقسيم' : 'Edit / Reallocate Split')
+                : activeOrderForMenu.splitParentId
+                  ? (isAr ? 'تعديل تقسيم الطلب الأب' : 'Edit Parent Split')
+                  : (isAr ? 'تقسيم الطلب على عدة شاحنات' : 'Split Order Across Trucks');
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = activeOrderForMenu;
+                    setActiveActionsMenuOrderId(null);
+                    handleRequestSplitOrder(target);
+                  }}
+                  aria-disabled={!isPendingForSplit}
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl transition cursor-pointer font-bold text-start ${
+                    isPendingForSplit
+                      ? 'text-violet-800 hover:bg-violet-50'
+                      : 'text-slate-400 hover:bg-amber-50 hover:text-amber-700'
+                  }`}
+                >
+                  <GitFork className={`w-3.5 h-3.5 ${isPendingForSplit ? 'text-violet-600' : 'text-slate-400'}`} />
+                  <span>{splitMenuLabel}</span>
+                </button>
+              );
+            })()}
+
+          {!activeOrderForMenu.isSplitParent &&
+            isOrderRetailRoute(activeOrderForMenu, clients, segments) &&
+            (POST_DISPATCH_STATUSES.includes(activeOrderForMenu.fulfillmentStatus) ||
+              activeOrderForMenu.retailSettlementStatus === 'settled') && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setRetailSettlementModalOrder(activeOrderForMenu);
+                  setActiveActionsMenuOrderId(null);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-cyan-800 hover:bg-cyan-50 rounded-xl transition cursor-pointer font-bold text-start"
+              >
+                <Store className="w-3.5 h-3.5 text-cyan-600" />
+                <span>
+                  {activeOrderForMenu.retailSettlementStatus === 'settled'
+                    ? (isAr ? 'تعديل تسوية التجزئة (Force Sync)' : 'Edit Retail Settlement (Force Sync)')
+                    : (isAr ? 'تأكيد الكميات المباعة (تسوية التجزئة)' : 'Confirm Sold Qty (Retail Settlement)')}
+                </span>
+              </button>
+              {activeOrderForMenu.retailSettlementStatus === 'settled' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    openPrintableRetailSettlementSlip(activeOrderForMenu, isAr);
+                    setActiveActionsMenuOrderId(null);
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-teal-800 hover:bg-teal-50 rounded-xl transition cursor-pointer font-bold text-start"
+                >
+                  <Printer className="w-3.5 h-3.5 text-teal-600" />
+                  <span>{isAr ? 'طباعة بيان تسوية التجزئة' : 'Print Retail Settlement Sheet'}</span>
+                </button>
+              )}
+            </>
+          )}
+
+          {POST_DISPATCH_STATUSES.includes(activeOrderForMenu.fulfillmentStatus) &&
+            canAdjustDispatchedQty &&
+            !isOrderRetailRoute(activeOrderForMenu, clients, segments) && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingOrder(activeOrderForMenu);
+                setIsAdminModal(false);
+                setEditorInitialAdjustmentMode(true);
+                setIsEditorOpen(true);
+                setActiveActionsMenuOrderId(null);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-amber-800 hover:bg-amber-50 rounded-xl transition cursor-pointer font-bold text-start"
+            >
+              <PackageMinus className="w-3.5 h-3.5 text-amber-600" />
+              <span>{isAr ? 'تسجيل مرتجع / مزامنة المستلم' : 'Record Partial Return / Sync Qty'}</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -2264,6 +3557,128 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         document.body
       )}
 
+      {/* Portal Tooltip for Split Portion Card Hover (Exact Assigned Products & Quantities) */}
+      {hoveredPortionTooltip && (() => {
+        const { child, childSerial, childVehName, childStyle, childFulf, rect } = hoveredPortionTooltip;
+        const lines = child.lines || [];
+        const tooltipWidth = 410;
+        const spaceBelow = typeof window !== 'undefined' ? window.innerHeight - rect.bottom : 400;
+        const showAbove = spaceBelow < 270 && rect.top > 240;
+        const rawLeft = isAr ? rect.right - tooltipWidth : rect.left;
+        const clampedLeft = typeof window !== 'undefined'
+          ? Math.max(12, Math.min(window.innerWidth - tooltipWidth - 12, rawLeft))
+          : rect.left;
+
+        return createPortal(
+          <div
+            dir={isAr ? 'rtl' : 'ltr'}
+            style={{
+              position: 'fixed',
+              top: showAbove ? rect.top - 8 : rect.bottom + 8,
+              left: clampedLeft,
+              width: tooltipWidth,
+              transform: showAbove ? 'translateY(-100%)' : 'none',
+              zIndex: 9999
+            }}
+            className={`pointer-events-none bg-white border border-slate-300/90 ${childStyle.startBorderClasses} rounded-2xl shadow-2xl overflow-hidden text-xs animate-in fade-in zoom-in-95 duration-100`}
+          >
+            {/* Header */}
+            <div className="px-3.5 py-2.5 bg-slate-900 text-white flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-black text-indigo-300 text-xs">#{childSerial}</span>
+                  <span className="text-[10px] text-slate-300 truncate flex items-center gap-1">
+                    <Truck className="w-3 h-3 text-indigo-400 shrink-0 rtl:-scale-x-100" />
+                    <span className="truncate">{childVehName || (isAr ? 'بانتظار التسكين' : 'Awaiting Truck')}</span>
+                    {child.loadingOrderNumber && (
+                      <span className="font-mono text-indigo-200">
+                        · {isAr ? `رحلة #${child.loadingOrderNumber}` : `Trip #${child.loadingOrderNumber}`}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              </div>
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border shrink-0 ${childStyle.badgeClasses}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${childStyle.dotClasses}`}></span>
+                <span>{isAr ? childFulf.labelAr : childFulf.labelEn}</span>
+              </span>
+            </div>
+
+            {/* Assigned Products & Quantities Table */}
+            <div className="p-2.5">
+              {lines.length === 0 ? (
+                <p className="text-center text-slate-400 py-3 font-medium">
+                  {isAr ? 'لا توجد أصناف مسجلة' : 'No products assigned'}
+                </p>
+              ) : (
+                <>
+                  <table className="w-full text-[11px] border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+                        <th className="py-1.5 px-2 text-start">{isAr ? 'الصنف' : 'Product'}</th>
+                        <th className="py-1.5 px-2 text-center">{isAr ? 'الكمية' : 'Qty'}</th>
+                        <th className="py-1.5 px-2 text-center">{isAr ? 'البونص' : 'Bonus'}</th>
+                        <th className="py-1.5 px-2 text-end">{isAr ? 'الوزن' : 'Weight'}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {lines.slice(0, 12).map((ln, idx) => (
+                        <tr key={idx}>
+                          <td className="py-1.5 px-2 font-semibold text-slate-800">
+                            <div className="flex items-center gap-1.5">
+                              {ln.productCode && (
+                                <span className="font-mono text-[9px] text-indigo-700 bg-indigo-50 px-1 rounded border border-indigo-200 shrink-0">
+                                  {ln.productCode}
+                                </span>
+                              )}
+                              <span className="truncate max-w-[175px]">
+                                {isAr ? ln.productNameAr : (ln.productNameEn || ln.productNameAr)}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-1.5 px-2 text-center font-mono font-bold text-slate-900 whitespace-nowrap">
+                            {Number(ln.qty || 0).toLocaleString()} {ln.largeUnitName || (isAr ? 'كرتونة' : 'ctn')}
+                          </td>
+                          <td className="py-1.5 px-2 text-center font-mono whitespace-nowrap">
+                            {Number(ln.bonus || 0) > 0 ? (
+                              <span className="text-emerald-700 font-bold">+{Number(ln.bonus).toLocaleString()}</span>
+                            ) : (
+                              <span className="text-slate-300">—</span>
+                            )}
+                          </td>
+                          <td className="py-1.5 px-2 text-end font-mono text-slate-600 whitespace-nowrap">
+                            {Number(ln.lineWeightKg || 0).toFixed(1)} {isAr ? 'كجم' : 'kg'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {lines.length > 12 && (
+                    <div className="pt-1.5 text-center text-[10px] font-bold text-slate-500">
+                      {isAr ? `+ ${lines.length - 12} أصناف أخرى` : `+ ${lines.length - 12} more products`}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Footer Totals Strip */}
+            <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-[11px] font-mono">
+              <span className="font-bold text-slate-700">
+                {lines.length} {isAr ? 'صنف' : 'SKUs'} · {Number(child.totalCartons || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+              </span>
+              <span className="font-bold text-slate-700">
+                {((Number(child.totalWeightKg) || 0) / 1000).toFixed(2)} {isAr ? 'طن' : 'Ton'}
+              </span>
+              <span className="font-black text-emerald-700">
+                {Number(child.grandTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} EGP
+              </span>
+            </div>
+          </div>,
+          document.body
+        );
+      })()}
+
       {/* Sales Order / Administrative Order Editor Modal (Create / Edit) */}
       {isEditorOpen && (
         <SalesOrderEditorModal
@@ -2272,15 +3687,23 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             setIsEditorOpen(false);
             setEditingOrder(null);
             setIsAdminModal(false);
+            setEditorInitialAdjustmentMode(false);
           }}
           editingOrder={editingOrder}
           isAdminModal={isAdminModal}
+          canAdjustDispatchedQty={canAdjustDispatchedQty}
+          initialAdjustmentMode={editorInitialAdjustmentMode}
           clients={clients}
+          segments={segments}
           products={products}
           productCategories={productCategories}
           priceLists={priceLists}
           strategies={strategies}
+          vehicles={vehicles}
           allOrders={orders}
+          stdRetailList={stdRetailListDoc.items || []}
+          canManageStdRetailList={canManageStdRetailList}
+          onOpenStdRetailSetup={() => setIsStdRetailModalOpen(true)}
           isAr={isAr}
           currentUserName={currentUserName}
           currentUserId={currentUserId}
@@ -2296,6 +3719,139 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           order={auditModalOrder}
           isAr={isAr}
         />
+      )}
+
+      {/* Pending Order Split Matrix Modal */}
+      {splitModalOrder && (
+        <OrderSplitModal
+          isOpen={Boolean(splitModalOrder)}
+          onClose={() => setSplitModalOrder(null)}
+          order={splitModalOrder}
+          existingChildren={
+            splitModalOrder.isSplitParent
+              ? orders.filter((o) => o.splitParentId === splitModalOrder.id)
+              : []
+          }
+          baseSerial={resolveOrderSerial(splitModalOrder, orders).replace(/\s*\(.*/, '')}
+          vehicles={vehicles}
+          employees={[]}
+          resolveVehicleDisplayName={resolveVehicleDisplayName}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+          onSplitSuccess={() => {
+            setSplitModalOrder(null);
+          }}
+        />
+      )}
+
+      {/* Retail Van-Sales Post-Arrival Quantity Settlement & Force Sync Modal */}
+      {retailSettlementModalOrder && (
+        <RetailSettlementModal
+          isOpen={Boolean(retailSettlementModalOrder)}
+          onClose={() => setRetailSettlementModalOrder(null)}
+          order={retailSettlementModalOrder}
+          canSettleRetailOrders={canSettleRetailOrders}
+          allowDeferDelivery={false}
+          vehicles={vehicles}
+          resolveVehicleDisplayName={resolveVehicleDisplayName}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+          onSuccess={() => {
+            setRetailSettlementModalOrder(null);
+          }}
+        />
+      )}
+
+      {/* Standard Retail Load List Setup Modal */}
+      {isStdRetailModalOpen && (
+        <StandardRetailListModal
+          isOpen={isStdRetailModalOpen}
+          onClose={() => setIsStdRetailModalOpen(false)}
+          products={products}
+          productCategories={productCategories}
+          standardRetailList={stdRetailListDoc.items || []}
+          metadata={stdRetailListDoc}
+          canManageStdRetailList={canManageStdRetailList}
+          isAr={isAr}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+        />
+      )}
+
+      {/* Split Guidance Modal (When order is not Pending or already split) */}
+      {splitGuidanceOrder && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95 duration-100">
+            <div className="flex items-center gap-3 text-amber-700 border-b border-slate-100 pb-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                <Lock className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <h4 className="font-extrabold text-sm text-slate-900">
+                  {splitGuidanceOrder.reason === 'not_pending'
+                    ? (isAr ? 'يتعذر تقسيم الطلب حالياً' : 'Cannot Split Order in Current Status')
+                    : (isAr ? 'الطلب مقسم بالفعل' : 'Order Already Split')}
+                </h4>
+                <span className="text-xs text-slate-500 font-mono">
+                  #{resolveOrderSerial(splitGuidanceOrder.order, orders)} — {splitGuidanceOrder.order.clientName || ''}
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl text-xs text-amber-950 leading-relaxed space-y-1.5">
+              {splitGuidanceOrder.reason === 'not_pending' ? (
+                <>
+                  <p className="font-bold">
+                    {isAr
+                      ? 'لا يمكن تقسيم أمر البيع بعد دخوله في مرحلة التجهيز أو التحميل.'
+                      : 'Orders cannot be split once they enter Preparing or a later fulfillment stage.'}
+                  </p>
+                  <p className="text-amber-800">
+                    {isAr
+                      ? 'لتقسيم هذا الطلب على عدة شاحنات، يرجى الانتقال إلى تبويب (خطة التحميل) وإرجاع حالة الطلب إلى (قيد الانتظار / Pending) أولاً، ثم العودة للضغط على زر التقسيم.'
+                      : 'Please open the Loading Plan tab and revert this order status back to "Pending" first, then return here to split it across trucks.'}
+                  </p>
+                </>
+              ) : (
+                <p className="font-bold">
+                  {splitGuidanceOrder.reason === 'already_parent'
+                    ? (isAr
+                        ? 'هذا الأمر تم تقسيمه مسبقاً وهو الآن سجل أب مرجعي لا يقبل إعادة التقسيم.'
+                        : 'This order is already an immutable Split Parent Reference and cannot be split again.')
+                    : (isAr
+                        ? 'هذا السجل هو جزء فرعي من طلب مقسم بالفعل، ولا يمكن تقسيم الأجزاء الفرعية بشكل متداخل.'
+                        : 'This order is already a split child portion; nested splitting is disabled.')}
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setSplitGuidanceOrder(null)}
+                className="px-4 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition cursor-pointer"
+              >
+                {isAr ? 'إغلاق' : 'Close'}
+              </button>
+              {splitGuidanceOrder.reason === 'not_pending' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = splitGuidanceOrder.order;
+                    setSplitGuidanceOrder(null);
+                    handleNavigateToLoadingPlan(target);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition shadow-xs cursor-pointer"
+                >
+                  <span>{isAr ? 'فتح في خطة التحميل' : 'Open in Loading Plan'}</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Cancel Order Confirmation Modal */}
@@ -2438,12 +3994,19 @@ function SalesOrderEditorModal({
   onClose,
   editingOrder,
   isAdminModal = false,
+  canAdjustDispatchedQty = false,
+  initialAdjustmentMode = false,
   clients = [],
+  segments = [],
   products = [],
   productCategories = [],
   priceLists = [],
   strategies = [],
+  vehicles = [],
   allOrders = [],
+  stdRetailList = [],
+  canManageStdRetailList = false,
+  onOpenStdRetailSetup = null,
   isAr = true,
   currentUserName = 'مستخدم معتمد',
   currentUserId = 'usr_unknown',
@@ -2458,11 +4021,38 @@ function SalesOrderEditorModal({
   const initialOrderType = editingOrder?.orderType || defaultOrderType;
   const initialVatMode = editingOrder?.vatMode || (initialOrderType.startsWith('invoice_only') ? 'exclusive' : 'none');
 
+  const isSplitParentLocked = Boolean(editingOrder?.isSplitParent);
+  const isPostDispatch = Boolean(
+    editingOrder &&
+      !isSplitParentLocked &&
+      POST_DISPATCH_STATUSES.includes(editingOrder.fulfillmentStatus) &&
+      !isAdminModal &&
+      !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(editingOrder.orderType)
+  );
+  const isStructureLocked = isPostDispatch || isSplitParentLocked;
+  const [adjustmentMode, setAdjustmentMode] = useState(
+    Boolean(initialAdjustmentMode && isPostDispatch && canAdjustDispatchedQty)
+  );
+  const [rejectionReason, setRejectionReason] = useState(editingOrder?.rejectionReason || '');
+
+  // Dispatched baseline lines used when reconciling partial client rejections
+  const baselineLineMap = useMemo(() => {
+    const map = {};
+    const baseLines =
+      editingOrder?.preAdjustmentSnapshot?.originalLines || editingOrder?.lines || [];
+    baseLines.forEach((l) => {
+      map[l.productId] = l;
+    });
+    return map;
+  }, [editingOrder]);
+
   const [formData, setFormData] = useState({
     id: editingOrder?.id || `SO-${initialSerial}`,
     serial: initialSerial,
     clientId: editingOrder?.clientId || '',
     clientName: editingOrder?.clientName || '',
+    clientSegmentId: editingOrder?.clientSegmentId || editingOrder?.segmentId || '',
+    isRetailRouteOverride: typeof editingOrder?.isRetailRouteOverride === 'boolean' ? editingOrder.isRetailRouteOverride : null,
     branchId: editingOrder?.branchId || '',
     branchName: editingOrder?.branchName || '',
     region: editingOrder?.region || '',
@@ -2470,6 +4060,14 @@ function SalesOrderEditorModal({
     invoiceDate: editingOrder?.invoiceDate || todayStr,
     loadingDate: editingOrder?.loadingDate || todayStr,
     isDatesLinked: editingOrder ? Boolean(editingOrder.invoiceDate === editingOrder.loadingDate) : true,
+    loadingOrderNumber: editingOrder?.loadingOrderNumber ?? null,
+    assignedVehicleId: editingOrder?.assignedVehicleId || '',
+    assignedVehicleName: editingOrder?.assignedVehicleName || '',
+    assignedVehiclePlate: editingOrder?.assignedVehiclePlate || '',
+    assignedDriverId: editingOrder?.assignedDriverId || '',
+    assignedDriverName: editingOrder?.assignedDriverName || '',
+    assignedDeliveryRepId: editingOrder?.assignedDeliveryRepId || '',
+    assignedDeliveryRepName: editingOrder?.assignedDeliveryRepName || '',
     orderType: initialOrderType,
     isAdministrative: Boolean(editingOrder?.isAdministrative || isAdminModal),
     adminNotes: editingOrder?.adminNotes || editingOrder?.notes || '',
@@ -2517,6 +4115,24 @@ function SalesOrderEditorModal({
     return deliv.length > 0 ? deliv : selectedClient.branches;
   }, [selectedClient]);
 
+  // SearchableSelect options for Delivery Branch picker
+  const branchSelectOptions = useMemo(() => {
+    return deliveryBranches.map((b) => {
+      const id = b.id || 'br_main';
+      const label = resolveBranchDisplayName(b, isAr);
+      const altName = isAr ? (b.nameEn || '') : (b.nameAr || '');
+      const sublabel = [altName, b.region, b.address].filter(Boolean).join(' · ');
+      return {
+        value: id,
+        label,
+        sublabel,
+        specs: `${b.nameAr || ''} ${b.nameEn || ''} ${b.name || ''} ${b.code || ''} ${b.region || ''} ${b.address || ''} ${b.contactPerson || ''} ${id}`.toLowerCase(),
+        icon: MapPin,
+        iconColor: b.isMain ? '#6366f1' : '#059669'
+      };
+    });
+  }, [deliveryBranches, isAr]);
+
   // Allowed Order Types based on modal mode
   const availableOrderTypes = useMemo(() => {
     return isAdminModal ? ADMIN_ORDER_TYPES : SALES_ORDER_TYPES;
@@ -2544,6 +4160,34 @@ function SalesOrderEditorModal({
   const clientStrategy = useMemo(() => {
     return selectedClient?.pricingStrategy || 'wholesalers';
   }, [selectedClient]);
+
+  // Unified Retail Route detection + inline Std List UI state
+  const [confirmReplaceStdList, setConfirmReplaceStdList] = useState(false);
+  const [stdListFeedback, setStdListFeedback] = useState(null);
+
+  const retailContext = useMemo(() => {
+    const activeSegKey =
+      selectedClient?.segmentId ||
+      selectedClient?.segment ||
+      formData.clientSegmentId ||
+      editingOrder?.clientSegmentId ||
+      '';
+    const segObj =
+      (segments || []).find(
+        (s) => s.id === activeSegKey || s.code === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey
+      ) ||
+      PRESET_DEFAULT_SEGMENTS.find(
+        (s) => s.id === activeSegKey || s.nameAr === activeSegKey || s.nameEn === activeSegKey
+      );
+    const isSegRetail = isRetailSegmentRecord(segObj, activeSegKey);
+    const isAllowedOrderType = !isAdminModal && !PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(formData.orderType);
+    const isRetailEffective = isAllowedOrderType
+      ? typeof formData.isRetailRouteOverride === 'boolean'
+        ? formData.isRetailRouteOverride
+        : isSegRetail
+      : false;
+    return { activeSegKey, isSegRetail, isAllowedOrderType, isRetailEffective };
+  }, [selectedClient, segments, formData.clientSegmentId, formData.isRetailRouteOverride, formData.orderType, editingOrder, isAdminModal]);
 
   // Client Operational Profile (Schedule, Weekly Holidays, Address, Phones, Region & Conflicts)
   const clientOperationalProfile = useMemo(() => {
@@ -2791,6 +4435,8 @@ function SalesOrderEditorModal({
         ...prev,
         clientId: cl.id,
         clientName,
+        clientSegmentId: cl.segmentId || cl.segment || '',
+        isRetailRouteOverride: null,
         branchId,
         branchName,
         region,
@@ -2878,10 +4524,13 @@ function SalesOrderEditorModal({
     });
   };
 
-  // Handle invoice date change (auto-inherits to loadingDate if linked)
+  const hasActiveAssignment = Boolean(formData.assignedVehicleId || formData.loadingOrderNumber);
+
+  // Handle invoice date change (auto-inherits to loadingDate if linked and not assigned to truck)
   const handleInvoiceDateChange = (newDate) => {
     setFormData((prev) => {
-      const loadingDate = prev.isDatesLinked ? newDate : prev.loadingDate;
+      const hasAssignment = Boolean(prev.assignedVehicleId || prev.loadingOrderNumber);
+      const loadingDate = (prev.isDatesLinked && !hasAssignment) ? newDate : prev.loadingDate;
       const updatedLines = prev.lines.map((line) => {
         const resolved = detectProductPrice({
           clientId: prev.clientId,
@@ -3021,6 +4670,57 @@ function SalesOrderEditorModal({
     });
   }, [products, formData.clientId, formData.clientName, selectedCategory, isAr]);
 
+  // Shared line builder for single product addition & Standard Retail List population
+  const buildOrderLineFromProduct = (prod, qty = 1, bonus = 0) => {
+    const resolved = detectProductPrice({
+      clientId: formData.clientId,
+      clientName: formData.clientName,
+      branchId: formData.branchId,
+      branchName: formData.branchName,
+      strategy: clientStrategy,
+      invoiceDate: formData.invoiceDate,
+      productId: prod.id,
+      priceLists
+    });
+
+    const promoInfo = detectPromotionalDiscount({
+      clientId: formData.clientId,
+      clientName: formData.clientName,
+      branchId: formData.branchId,
+      branchName: formData.branchName,
+      strategy: clientStrategy,
+      invoiceDate: formData.invoiceDate,
+      productId: prod.id,
+      priceLists
+    });
+
+    const primaryOpt = (prod.packagingOptions || [])[0] || {};
+    const largeUnitWeightKg = Number(primaryOpt.largeUnitWeightKg || prod.weight || 0);
+    const packagingRatio = Number(primaryOpt.packagingRatio || prod.packagingRatio || 12);
+
+    return calculateLineTotals(
+      {
+        productId: prod.id,
+        productCode: prod.code || prod.id,
+        productNameAr: prod.nameAr,
+        productNameEn: prod.nameEn || prod.nameAr,
+        isPrivateLabel: isProductPrivateLabel(prod),
+        vatRate: prod.vatRate || '14%',
+        smallUnit: prod.smallUnit || 'زجاجة',
+        largeUnitName: prod.largeUnitName || 'كرتونة',
+        packagingRatio,
+        largeUnitWeightKg,
+        qty: Math.max(1, Math.floor(Number(qty) || 1)),
+        bonus: Math.max(0, Math.floor(Number(bonus) || 0)),
+        manualDiscountPerUnit: 0
+      },
+      resolved.price || 0,
+      resolved.isPromotional,
+      promoInfo.discountPct,
+      formData.vatMode
+    );
+  };
+
   // Add Product to Lines Handler
   const handleAddProduct = (productId) => {
     if (!productId) return;
@@ -3034,53 +4734,7 @@ function SalesOrderEditorModal({
       return;
     }
 
-    const resolved = detectProductPrice({
-      clientId: formData.clientId,
-      clientName: formData.clientName,
-      branchId: formData.branchId,
-      branchName: formData.branchName,
-      strategy: clientStrategy,
-      invoiceDate: formData.invoiceDate,
-      productId,
-      priceLists
-    });
-
-    const promoInfo = detectPromotionalDiscount({
-      clientId: formData.clientId,
-      clientName: formData.clientName,
-      branchId: formData.branchId,
-      branchName: formData.branchName,
-      strategy: clientStrategy,
-      invoiceDate: formData.invoiceDate,
-      productId,
-      priceLists
-    });
-
-    const primaryOpt = (prod.packagingOptions || [])[0] || {};
-    const largeUnitWeightKg = Number(primaryOpt.largeUnitWeightKg || prod.weight || 0);
-    const packagingRatio = Number(primaryOpt.packagingRatio || prod.packagingRatio || 12);
-
-    const newLine = calculateLineTotals(
-      {
-        productId: prod.id,
-        productCode: prod.code || prod.id,
-        productNameAr: prod.nameAr,
-        productNameEn: prod.nameEn || prod.nameAr,
-        isPrivateLabel: isProductPrivateLabel(prod),
-        vatRate: prod.vatRate || '14%',
-        smallUnit: prod.smallUnit || 'زجاجة',
-        largeUnitName: prod.largeUnitName || 'كرتونة',
-        packagingRatio,
-        largeUnitWeightKg,
-        qty: 1,
-        bonus: 0,
-        manualDiscountPerUnit: 0
-      },
-      resolved.price || 0,
-      resolved.isPromotional,
-      promoInfo.discountPct,
-      formData.vatMode
-    );
+    const newLine = buildOrderLineFromProduct(prod, 1, 0);
 
     setFormData((prev) => ({
       ...prev,
@@ -3089,11 +4743,93 @@ function SalesOrderEditorModal({
     setSelectedProductId('');
   };
 
+  // Populate lines from the saved Standard Retail Load List
+  const applyStandardRetailList = () => {
+    const prodMap = {};
+    products.forEach((p) => {
+      prodMap[p.id] = p;
+    });
+
+    const nextLines = [];
+    let skippedCount = 0;
+
+    (stdRetailList || []).forEach((item) => {
+      const prod = prodMap[item.productId];
+      if (!prod) {
+        skippedCount += 1;
+        return;
+      }
+      if (!isProductAllowedForClient(prod, formData.clientId, formData.clientName)) {
+        skippedCount += 1;
+        return;
+      }
+      nextLines.push(buildOrderLineFromProduct(prod, item.qty, item.bonus));
+    });
+
+    if (nextLines.length === 0) {
+      setConfirmReplaceStdList(false);
+      setStdListFeedback({
+        type: 'warning',
+        message: isAr
+          ? 'لا توجد أصناف متاحة للتحميل لهذا العميل ضمن القائمة القياسية.'
+          : 'No eligible products from the standard list apply to this client.'
+      });
+      return;
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      lines: nextLines
+    }));
+    setConfirmReplaceStdList(false);
+    setStdListFeedback({
+      type: skippedCount > 0 ? 'warning' : 'success',
+      message:
+        skippedCount > 0
+          ? isAr
+            ? `تم تحميل ${nextLines.length} صنفاً من القائمة القياسية (تم تخطي ${skippedCount} صنف غير متاح لهذا العميل). يمكنك تعديل الكميات بحرية.`
+            : `Loaded ${nextLines.length} items from Standard Retail List (${skippedCount} ineligible skipped). Feel free to adjust quantities.`
+          : isAr
+            ? `تم تحميل ${nextLines.length} صنفاً من القائمة القياسية للتجزئة. يمكنك تعديل الكميات أو الأصناف بحرية.`
+            : `Loaded ${nextLines.length} items from Standard Retail List. You can adjust any quantities freely.`
+    });
+  };
+
+  const handleRequestLoadStdRetailList = () => {
+    if (isStructureLocked) return;
+    if (!stdRetailList || stdRetailList.length === 0) {
+      setStdListFeedback({
+        type: 'warning',
+        message: isAr
+          ? 'القائمة القياسية للتجزئة فارغة حالياً.'
+          : 'Standard Retail List is currently empty.'
+      });
+      return;
+    }
+    if (formData.lines.length > 0) {
+      setConfirmReplaceStdList(true);
+      setStdListFeedback(null);
+      return;
+    }
+    applyStandardRetailList();
+  };
+
   // Line item change (qty, bonus, manualDiscount)
   const handleLineChange = (index, field, value) => {
     setFormData((prev) => {
       const updatedLines = [...prev.lines];
-      const target = { ...updatedLines[index], [field]: value };
+      const existing = updatedLines[index];
+      let nextVal = value;
+      if (isPostDispatch && adjustmentMode && (field === 'qty' || field === 'bonus')) {
+        const base = baselineLineMap[existing.productId] || existing;
+        const maxAllowed =
+          field === 'qty'
+            ? Number(base.dispatchedQty ?? base.qty ?? 0)
+            : Number(base.dispatchedBonus ?? base.bonus ?? 0);
+        const parsed = Math.max(0, Math.floor(Number(value) || 0));
+        nextVal = Math.min(parsed, maxAllowed);
+      }
+      const target = { ...existing, [field]: nextVal };
       updatedLines[index] = calculateLineTotals(
         target,
         target.detectedUnitPrice,
@@ -3107,6 +4843,7 @@ function SalesOrderEditorModal({
 
   // Remove line item
   const handleRemoveLine = (index) => {
+    if (isPostDispatch) return;
     setFormData((prev) => ({
       ...prev,
       lines: prev.lines.filter((_, idx) => idx !== index)
@@ -3115,6 +4852,7 @@ function SalesOrderEditorModal({
 
   // Recalculate all lines when VAT mode changes
   const handleVatModeChange = (newVatMode) => {
+    if (isPostDispatch) return;
     setFormData((prev) => {
       const updatedLines = prev.lines.map((line) =>
         calculateLineTotals(line, line.detectedUnitPrice, line.isPromotional, line.promoDiscountPct, newVatMode)
@@ -3240,6 +4978,99 @@ function SalesOrderEditorModal({
     if (isInvoiceOrSales && formData.lines.length === 0) {
       setErrorMsg(isAr ? 'يرجى إضافة صنف واحد على الأقل في أمر البيع.' : 'Please add at least one line item.');
       return;
+    }
+
+    // Post-dispatch partial rejection adjustment computation
+    let adjustmentFields = {};
+    let stampedLines = formData.lines;
+    const isSyncingPartialRejection = Boolean(isPostDispatch && adjustmentMode && canAdjustDispatchedQty);
+
+    if (isSyncingPartialRejection) {
+      const existingSnap = editingOrder?.preAdjustmentSnapshot;
+      const snapshotObj = existingSnap || {
+        capturedAt: new Date().toISOString(),
+        originalTotalQty: Number(editingOrder.totalQty || 0),
+        originalTotalBonus: Number(editingOrder.totalBonus || 0),
+        originalTotalCartons: Number(editingOrder.totalCartons || editingOrder.totalQty || 0),
+        originalTotalWeightKg: Number(editingOrder.totalWeightKg || 0),
+        originalGrandTotal: Number(editingOrder.grandTotal || 0),
+        originalNetPreTax: Number(editingOrder.netPreTaxSubtotal || 0),
+        originalVat: Number(editingOrder.totalVat || 0),
+        originalWht: Number(editingOrder.whtAmount || 0),
+        originalLines: (editingOrder.lines || []).map((l) => ({ ...l }))
+      };
+
+      const isWhtMode = formData.vatMode === 'exclusive_wht' || formData.vatMode === 'inclusive_wht';
+      let returnedQtySum = 0;
+      let returnedBonusSum = 0;
+      let returnedCartonsSum = 0;
+
+      stampedLines = formData.lines.map((l) => {
+        const base = baselineLineMap[l.productId] || l;
+        const dispatchedQty = Number(base.dispatchedQty ?? base.qty ?? 0);
+        const dispatchedBonus = Number(base.dispatchedBonus ?? base.bonus ?? 0);
+        const actualQty = Math.min(dispatchedQty, Math.max(0, Number(l.qty || 0)));
+        const actualBonus = Math.min(dispatchedBonus, Math.max(0, Number(l.bonus || 0)));
+        const returnedQty = Math.max(0, dispatchedQty - actualQty);
+        const returnedBonus = Math.max(0, dispatchedBonus - actualBonus);
+        const returnedCartons = returnedQty + returnedBonus;
+
+        const origLineEffTotal = isWhtMode
+          ? Number(base.lineFinalTotal ?? Math.max(0, Number(base.lineNet || 0) + Number(base.lineVat || 0) - Number(base.lineWht || 0)))
+          : Number(base.lineTotal || 0);
+        const currLineEffTotal = isWhtMode
+          ? Number(l.lineFinalTotal ?? Math.max(0, Number(l.lineNet || 0) + Number(l.lineVat || 0) - Number(l.lineWht || 0)))
+          : Number(l.lineTotal || 0);
+        const returnedLineTotal = Math.max(0, Math.round((origLineEffTotal - currLineEffTotal) * 100) / 100);
+
+        returnedQtySum += returnedQty;
+        returnedBonusSum += returnedBonus;
+        returnedCartonsSum += returnedCartons;
+
+        return {
+          ...l,
+          qty: actualQty,
+          bonus: actualBonus,
+          dispatchedQty,
+          dispatchedBonus,
+          returnedQty,
+          returnedBonus,
+          returnedCartons,
+          returnedLineTotal
+        };
+      });
+
+      if (returnedCartonsSum > 0 && !rejectionReason.trim()) {
+        setErrorMsg(
+          isAr
+            ? 'يرجى إدخال سبب الرفض الجزئي عند تسجيل كميات مرتجعة من العميل.'
+            : 'Please enter a rejection reason when recording returned cartons.'
+        );
+        return;
+      }
+
+      const returnedWeightKg = Math.max(
+        0,
+        Math.round((Number(snapshotObj.originalTotalWeightKg || 0) - Number(orderCalculations.totalWeightKg || 0)) * 100) / 100
+      );
+      const returnedAmount = Math.max(
+        0,
+        Math.round((Number(snapshotObj.originalGrandTotal || 0) - Number(orderCalculations.grandTotal || 0)) * 100) / 100
+      );
+
+      adjustmentFields = {
+        preAdjustmentSnapshot: snapshotObj,
+        hasPartialRejection: returnedCartonsSum > 0,
+        returnedQty: returnedQtySum,
+        returnedBonus: returnedBonusSum,
+        returnedCartons: returnedCartonsSum,
+        returnedWeightKg,
+        returnedAmount,
+        rejectionReason: returnedCartonsSum > 0 ? rejectionReason.trim() : '',
+        lastAdjustedBy: currentUserName,
+        lastAdjustedById: currentUserId,
+        lastAdjustedAt: new Date().toISOString()
+      };
     }
 
     // Confirmation if private label is unofficial
@@ -3395,14 +5226,37 @@ function SalesOrderEditorModal({
 
         auditEvent = {
           id: `AUD-${Date.now()}-${(old.auditTrail || []).length + 1}`,
-          action: 'edit',
+          action: isSyncingPartialRejection ? 'partial_rejection_sync' : 'edit',
           performedBy: currentUserName,
           performedById: currentUserId,
           timestamp: now,
-          summaryAr: `تم تعديل بيانات أمر البيع / الإجراء #${formData.serial}`,
-          summaryEn: `Updated order / action #${formData.serial}`,
+          summaryAr: isSyncingPartialRejection
+            ? `مزامنة الكميات المستلمة فعلياً بعد الرفض الجزئي للأمر #${formData.serial} (مرتجع: ${adjustmentFields.returnedCartons || 0} كرتونة | خصم تسوية: ${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} ج.م)`
+            : `تم تعديل بيانات أمر البيع / الإجراء #${formData.serial}`,
+          summaryEn: isSyncingPartialRejection
+            ? `Synced actual received quantities for #${formData.serial} (Returned: ${adjustmentFields.returnedCartons || 0} ctn | Invoice Credit: ${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} EGP)`
+            : `Updated order / action #${formData.serial}`,
           changes: {
-            metadata: metaDiffs,
+            metadata: isSyncingPartialRejection
+              ? [
+                  ...metaDiffs,
+                  {
+                    labelAr: 'إجمالي المرتجع للمخزن',
+                    labelEn: 'Warehouse Return Estimate',
+                    oldValue: `${adjustmentFields.preAdjustmentSnapshot?.originalTotalCartons || 0} ctn`,
+                    newValue: `${adjustmentFields.returnedCartons || 0} ctn (${Number(adjustmentFields.returnedWeightKg || 0).toFixed(1)} kg)`
+                  },
+                  {
+                    labelAr: 'تسوية الفاتورة',
+                    labelEn: 'Invoice Credit',
+                    oldValue: `${Number(adjustmentFields.preAdjustmentSnapshot?.originalGrandTotal || 0).toFixed(2)} EGP`,
+                    newValue: `${Number(financials.grandTotal || 0).toFixed(2)} EGP (-${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} EGP)`
+                  },
+                  ...(adjustmentFields.rejectionReason
+                    ? [{ labelAr: 'سبب الرفض', labelEn: 'Rejection Reason', newValue: adjustmentFields.rejectionReason }]
+                    : [])
+                ]
+              : metaDiffs,
             lineChanges
           }
         };
@@ -3413,7 +5267,24 @@ function SalesOrderEditorModal({
 
       const payload = {
         ...formData,
+        clientSegmentId: retailContext.activeSegKey,
+        isRetailRouteOrder: retailContext.isRetailEffective,
+        isRetailRouteOverride: formData.isRetailRouteOverride ?? null,
+        retailSettlementStatus: retailContext.isRetailEffective
+          ? (editingOrder?.retailSettlementStatus === 'settled' ? 'settled' : 'awaiting_settlement')
+          : 'not_required',
+        lines: stampedLines,
+        loadingOrderNumber: formData.loadingOrderNumber ?? null,
+        assignedVehicleId: formData.assignedVehicleId || '',
+        assignedVehicleName: formData.assignedVehicleName || '',
+        assignedVehiclePlate: formData.assignedVehiclePlate || '',
+        assignedDriverId: formData.assignedDriverId || '',
+        assignedDriverName: formData.assignedDriverName || '',
+        assignedDeliveryRepId: formData.assignedDeliveryRepId || '',
+        assignedDeliveryRepName: formData.assignedDeliveryRepName || '',
+        loadingDate: formData.loadingDate || '',
         ...financials,
+        ...adjustmentFields,
         isAdministrative: Boolean(isAdminModal || ADMIN_ORDER_TYPES.some((t) => t.id === formData.orderType)),
         auditTrail: updatedAuditTrail,
         updatedAt: serverTimestamp(),
@@ -3441,7 +5312,7 @@ function SalesOrderEditorModal({
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto font-sans">
       <div className="bg-white rounded-3xl max-w-5xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] my-4 animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className={`px-6 py-4 bg-gradient-to-r ${
+        <div className={`px-6 py-4 ltr:bg-gradient-to-r rtl:bg-gradient-to-l ${
           isAdminModal
             ? 'from-slate-900 via-purple-950 to-slate-900'
             : 'from-slate-900 via-indigo-950 to-slate-900'
@@ -3553,6 +5424,110 @@ function SalesOrderEditorModal({
             </div>
           )}
 
+          {/* Immutable Split Parent Reference Notice */}
+          {isSplitParentLocked && (
+            <div className="p-3.5 bg-violet-50 border border-violet-200 rounded-2xl flex items-start gap-3">
+              <div className="w-8 h-8 rounded-xl bg-violet-600 text-white flex items-center justify-center shrink-0">
+                <Lock className="w-4 h-4" />
+              </div>
+              <div className="text-xs text-violet-950 space-y-0.5">
+                <p className="font-extrabold">
+                  {isAr ? 'أمر أب مقسم (مرجعي فقط — مقفل ضد التعديل)' : 'Split Parent Reference (Immutable Structural Lock)'}
+                </p>
+                <p className="text-[11px] text-violet-800">
+                  {isAr
+                    ? 'تم تقسيم هذا الطلب إلى شحنات فرعية. لتعديل الأصناف أو الكميات أو التسليم، يرجى التعديل في الشحنات الفرعية المقسمة.'
+                    : 'This order has been split into child portions. Edit individual split child orders for dispatch or quantity adjustments.'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Post-Dispatch Lock & Partial Client Rejection Adjustment Bar */}
+          {isPostDispatch && (
+            <div className={`p-3.5 rounded-2xl border flex flex-wrap items-center justify-between gap-3 ${
+              adjustmentMode
+                ? 'bg-gradient-to-r from-amber-50 via-rose-50/60 to-amber-50 border-amber-300'
+                : 'bg-slate-100 border-slate-300'
+            }`}>
+              <div className="flex items-start gap-2.5">
+                <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                  adjustmentMode ? 'bg-amber-600 text-white' : 'bg-slate-700 text-white'
+                }`}>
+                  {adjustmentMode ? <PackageMinus className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                </div>
+                <div className="space-y-0.5">
+                  <p className="font-extrabold text-xs text-slate-900">
+                    {adjustmentMode
+                      ? (isAr ? 'وضع مزامنة الكميات المستلمة فعلياً (مرتجع جزئي من العميل)' : 'Post-Dispatch Actual Received Qty Sync Mode Active')
+                      : (isAr ? 'تم إقفال تعديل الأصناف والكميات والضريبة بعد خروج الشحنة' : 'Products, Quantities & Tax Treatment Locked (Post-Dispatch)')}
+                  </p>
+                  <p className="text-[11px] text-slate-600 leading-snug">
+                    {adjustmentMode
+                      ? (isAr
+                          ? 'أدخل الكميات التي استلمها العميل فعلياً (من 0 حتى الكمية المنصرفة). عند الحفظ سيتم حساب المرتجع للمخزن وتعديل إجمالي الفاتورة.'
+                          : 'Adjust Qty / Bonus down to what the client actually accepted (0 to dispatched). Saving updates warehouse return estimate & adjusted invoice.')
+                      : canAdjustDispatchedQty
+                      ? (isAr
+                          ? 'أمر البيع في مرحلة (جاري التوصيل / تم التسليم / مدفوع). يمكنك تعديل الملاحظات والمستندات فقط، أو تفعيل وضع تسجيل المرتجع الجزئي.'
+                          : 'Order is Out for Delivery or later. You can edit comments/PO attachments, or enable Partial Client Rejection Sync.')
+                      : (isAr
+                          ? 'أمر البيع في مرحلة (جاري التوصيل / تم التسليم / مدفوع). تعديل الكميات يتطلب صلاحية مزامنة المرتجع بعد التحميل.'
+                          : 'Order is Out for Delivery or later. Modifying quantities requires post-dispatch adjustment permission (canAdjustDispatchedQuantities).')}
+                  </p>
+                </div>
+              </div>
+
+              {canAdjustDispatchedQty && (
+                <div className="flex items-center gap-2 shrink-0">
+                  {adjustmentMode && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          lines: prev.lines.map((l) => {
+                            const base = baselineLineMap[l.productId] || l;
+                            return calculateLineTotals(
+                              {
+                                ...l,
+                                qty: Number(base.dispatchedQty ?? base.qty ?? 0),
+                                bonus: Number(base.dispatchedBonus ?? base.bonus ?? 0)
+                              },
+                              l.detectedUnitPrice,
+                              l.isPromotional,
+                              l.promoDiscountPct,
+                              prev.vatMode
+                            );
+                          })
+                        }));
+                      }}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 rounded-xl text-[11px] font-bold transition cursor-pointer"
+                    >
+                      {isAr ? 'استعادة الكمية المنصرفة' : 'Reset to Dispatched'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAdjustmentMode((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-[11px] font-extrabold transition cursor-pointer shadow-xs ${
+                      adjustmentMode
+                        ? 'bg-slate-800 hover:bg-slate-900 text-white'
+                        : 'bg-amber-600 hover:bg-amber-700 text-white'
+                    }`}
+                  >
+                    <PackageMinus className="w-3.5 h-3.5" />
+                    <span>
+                      {adjustmentMode
+                        ? (isAr ? 'إلغاء وضع التسوية' : 'Exit Adjustment Mode')
+                        : (isAr ? 'تفعيل تعديل الكميات المستلمة (رفض جزئي)' : 'Record Partial Rejection / Sync Qty')}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Section 1: Order Dates, Type, Client, Branch & Operational Profile */}
           <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
             <h4 className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5 border-b border-slate-200 pb-2">
@@ -3578,9 +5553,15 @@ function SalesOrderEditorModal({
                 <input
                   type="date"
                   required
+                  disabled={isStructureLocked}
                   value={formData.invoiceDate}
-                  onChange={(e) => handleInvoiceDateChange(e.target.value)}
-                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-mono font-bold text-slate-800 focus:outline-none"
+                  onChange={(e) => {
+                    if (isStructureLocked) return;
+                    handleInvoiceDateChange(e.target.value);
+                  }}
+                  className={`w-full py-2 px-3 border rounded-xl font-mono font-bold text-slate-800 focus:outline-none ${
+                    isStructureLocked ? 'bg-slate-100 border-slate-300 cursor-not-allowed opacity-75' : 'bg-white border-slate-300'
+                  }`}
                 />
               </div>
 
@@ -3588,38 +5569,62 @@ function SalesOrderEditorModal({
               {!isAdminModal && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="block text-[11px] font-bold text-slate-700">
-                      {isAr ? 'تاريخ التحميل *' : 'Loading Date *'}
+                    <label className="block text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                      <span>{isAr ? 'تاريخ التحميل *' : 'Loading Date *'}</span>
+                      {hasActiveAssignment && (
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded" title={isAr ? 'مُقيد بالشاحنة المخصصة' : 'Locked to truck'}>
+                          <Lock className="w-2.5 h-2.5" />
+                          <span>{isAr ? 'مثبت بالشاحنة' : 'Locked'}</span>
+                        </span>
+                      )}
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData((prev) => ({
-                          ...prev,
-                          isDatesLinked: true,
-                          loadingDate: prev.invoiceDate
-                        }));
-                      }}
-                      className="text-[10px] font-bold text-emerald-600 hover:underline cursor-pointer flex items-center gap-0.5"
-                      title={isAr ? 'مطابقة ومزامنة تاريخ التحميل مع تاريخ الفاتورة' : 'Sync with Invoice Date'}
-                    >
-                      <RefreshCw className="w-2.5 h-2.5" />
-                      <span>{isAr ? 'مطابقة الفاتورة' : 'Sync'}</span>
-                    </button>
+                    {!hasActiveAssignment && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormData((prev) => ({
+                            ...prev,
+                            isDatesLinked: true,
+                            loadingDate: prev.invoiceDate
+                          }));
+                        }}
+                        className="text-[10px] font-bold text-emerald-600 hover:underline cursor-pointer flex items-center gap-0.5"
+                        title={isAr ? 'مطابقة ومزامنة تاريخ التحميل مع تاريخ الفاتورة' : 'Sync with Invoice Date'}
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        <span>{isAr ? 'مطابقة الفاتورة' : 'Sync'}</span>
+                      </button>
+                    )}
                   </div>
                   <input
                     type="date"
                     required
+                    disabled={hasActiveAssignment}
                     value={formData.loadingDate}
                     onChange={(e) => {
+                      if (hasActiveAssignment) return;
                       setFormData({
                         ...formData,
                         loadingDate: e.target.value,
                         isDatesLinked: Boolean(e.target.value === formData.invoiceDate)
                       });
                     }}
-                    className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-mono font-bold text-slate-800 focus:outline-none"
+                    className={`w-full py-2 px-3 border rounded-xl font-mono font-bold text-slate-800 focus:outline-none ${
+                      hasActiveAssignment ? 'bg-slate-100/90 border-amber-300 text-slate-600 cursor-not-allowed' : 'bg-white border-slate-300'
+                    }`}
                   />
+                  {hasActiveAssignment && (() => {
+                    const matchedVehModal = vehicles.find((v) => v.id === formData.assignedVehicleId);
+                    const modalVehName = resolveVehicleDisplayName(matchedVehModal, formData.assignedVehicleName);
+                    const modalVehPlate = formData.assignedVehiclePlate || matchedVehModal?.plateNumber || '';
+                    return (
+                      <span className="text-[10px] text-amber-700 font-medium block mt-1 leading-tight">
+                        {isAr
+                          ? `الطلب مُسكن بشاحنة (${modalVehName || modalVehPlate || ''}) ورحلة #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
+                          : `Order assigned to ${modalVehName || ''} (Trip #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
+                      </span>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -3630,9 +5635,13 @@ function SalesOrderEditorModal({
                 </label>
                 <select
                   value={formData.orderType}
-                  onChange={(e) => handleOrderTypeChange(e.target.value)}
-                  className={`w-full py-2 px-2.5 bg-white border rounded-xl font-bold focus:outline-none cursor-pointer ${
-                    isAdminModal ? 'border-purple-300 text-purple-950 focus:ring-1 focus:ring-purple-400' : 'border-slate-300 text-slate-800'
+                  disabled={isStructureLocked}
+                  onChange={(e) => {
+                    if (isStructureLocked) return;
+                    handleOrderTypeChange(e.target.value);
+                  }}
+                  className={`w-full py-2 px-2.5 border rounded-xl font-bold focus:outline-none disabled:bg-slate-100 disabled:cursor-not-allowed ${
+                    isAdminModal ? 'bg-white border-purple-300 text-purple-950 focus:ring-1 focus:ring-purple-400' : 'bg-white border-slate-300 text-slate-800 cursor-pointer'
                   }`}
                 >
                   {availableOrderTypes.map((t) => (
@@ -3644,6 +5653,50 @@ function SalesOrderEditorModal({
               </div>
             </div>
 
+            {/* Read-Only Dispatch Assignment Card (if order is assigned) */}
+            {hasActiveAssignment && (() => {
+              const matchedVehModal = vehicles.find((v) => v.id === formData.assignedVehicleId);
+              const modalVehName = resolveVehicleDisplayName(matchedVehModal, formData.assignedVehicleName);
+              const modalVehPlate = formData.assignedVehiclePlate || matchedVehModal?.plateNumber || '';
+              return (
+              <div className="p-3 bg-gradient-to-r from-amber-50/90 via-indigo-50/60 to-amber-50/90 border border-amber-300/80 rounded-2xl flex items-center justify-between gap-3 shadow-2xs">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-400 text-amber-900 flex items-center justify-center shrink-0 shadow-2xs">
+                    <Truck className="w-4 h-4 rtl:-scale-x-100" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-black text-slate-900">
+                        {modalVehName || (isAr ? 'شاحنة معتمدة' : 'Assigned Truck')}
+                      </span>
+                      {modalVehPlate && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-white border border-slate-200 text-[10px] font-mono text-slate-700 font-bold">
+                          <span>{modalVehPlate}</span>
+                          <CopyButton text={modalVehPlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                        </span>
+                      )}
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 border border-indigo-200 font-mono">
+                        {isAr ? `رحلة #${formData.loadingOrderNumber}` : `Trip #${formData.loadingOrderNumber}`}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-600 font-medium flex items-center gap-2 mt-0.5 flex-wrap">
+                      {formData.assignedDriverName && (
+                        <span>{isAr ? 'السائق:' : 'Driver:'} <strong className="text-slate-800">{formData.assignedDriverName}</strong></span>
+                      )}
+                      {formData.assignedDeliveryRepName && (
+                        <span>{isAr ? 'المندوب:' : 'Rep:'} <strong className="text-slate-800">{formData.assignedDeliveryRepName}</strong></span>
+                      )}
+                      <span>{isAr ? 'تاريخ التحميل:' : 'Loading Date:'} <strong className="text-slate-800 font-mono">{formData.loadingDate}</strong></span>
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold text-amber-800 bg-amber-100/90 px-2.5 py-1 rounded-lg border border-amber-200 shrink-0">
+                  {isAr ? 'بيانات معتمدة للقراءة فقط' : 'Read-Only Assignment'}
+                </span>
+              </div>
+              );
+            })()}
+
             {/* Row 2: Client Name and Branch on next row */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-200/60">
               {/* Client SearchableSelect */}
@@ -3653,18 +5706,23 @@ function SalesOrderEditorModal({
                     ? (isAr ? 'العميل (اختياري للإجراءات العامة)' : 'Client (Optional)')
                     : (isAr ? 'العميل *' : 'Client *')}
                 </label>
-                <SearchableSelect
-                  options={clientSelectOptions}
-                  value={formData.clientId}
-                  onChange={handleClientChange}
-                  placeholder={
-                    formData.orderType === 'admin'
-                      ? (isAr ? '— اختياري (بدون تخصيص عميل) —' : '— Optional (General) —')
-                      : (isAr ? 'اختر العميل...' : 'Select Client...')
-                  }
-                  searchPlaceholder={isAr ? 'ابحث باسم العميل عربي / إنجليزي...' : 'Search client...'}
-                  isAr={isAr}
-                />
+                <div className={isStructureLocked ? 'pointer-events-none opacity-65' : ''}>
+                  <SearchableSelect
+                    options={clientSelectOptions}
+                    value={formData.clientId}
+                    onChange={(v) => {
+                      if (isStructureLocked) return;
+                      handleClientChange(v);
+                    }}
+                    placeholder={
+                      formData.orderType === 'admin'
+                        ? (isAr ? '— اختياري (بدون تخصيص عميل) —' : '— Optional (General) —')
+                        : (isAr ? 'اختر العميل...' : 'Select Client...')
+                    }
+                    searchPlaceholder={isAr ? 'ابحث باسم العميل عربي / إنجليزي...' : 'Search client...'}
+                    isAr={isAr}
+                  />
+                </div>
               </div>
 
               {/* Branch Selection or Locked HQ Info */}
@@ -3685,31 +5743,31 @@ function SalesOrderEditorModal({
                     </div>
                   </div>
                 ) : (
-                  <select
-                    value={formData.branchId}
-                    onChange={(e) => handleBranchChange(e.target.value)}
-                    disabled={!formData.clientId}
-                    className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer disabled:bg-slate-100 truncate"
-                  >
-                    {deliveryBranches.length === 0 ? (
-                      <option value="">
-                        {isAr ? '— لا توجد فروع تسليم مسجلة للعميل —' : '— No delivery branches found —'}
-                      </option>
-                    ) : (
-                      deliveryBranches.map((b) => (
-                        <option key={b.id || 'br_deliv'} value={b.id}>
-                          {resolveBranchDisplayName(b, isAr)}
-                        </option>
-                      ))
-                    )}
-                  </select>
+                  <div className={isStructureLocked || !formData.clientId ? 'pointer-events-none opacity-65' : ''}>
+                    <SearchableSelect
+                      options={branchSelectOptions}
+                      value={formData.branchId}
+                      onChange={(v) => {
+                        if (isStructureLocked || !formData.clientId) return;
+                        handleBranchChange(v);
+                      }}
+                      disabled={!formData.clientId || isStructureLocked}
+                      placeholder={
+                        !formData.clientId
+                          ? (isAr ? '— اختر العميل أولاً —' : '— Select client first —')
+                          : (isAr ? 'اختر فرع التسليم والمستودع...' : 'Select delivery branch...')
+                      }
+                      emptyText={isAr ? '— لا توجد فروع تسليم مسجلة للعميل —' : '— No delivery branches found —'}
+                      isAr={isAr}
+                    />
+                  </div>
                 )}
               </div>
             </div>
 
             {/* Row 3: Then the operational profile (Sales & Admin Modals) */}
             {clientOperationalProfile && (
-              <div className="mt-3 p-3.5 bg-gradient-to-r from-slate-50 to-indigo-50/30 border border-slate-200/90 rounded-xl space-y-2.5">
+              <div className="mt-3 p-3.5 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-50 to-indigo-50/30 border border-slate-200/90 rounded-xl space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
                   <div className="flex items-center gap-2">
                     <Building2 className="w-4 h-4 text-indigo-600 shrink-0" />
@@ -3823,6 +5881,65 @@ function SalesOrderEditorModal({
                 )}
               </div>
             )}
+
+            {/* Retail Van-Sales Route Settlement Auto-Detection + Optional Per-Order Override */}
+            {retailContext.isAllowedOrderType && (() => {
+              const { isSegRetail, isRetailEffective } = retailContext;
+
+              return (
+                <div className={`p-2.5 rounded-xl border flex items-center justify-between flex-wrap gap-2 text-xs transition ${
+                  isRetailEffective
+                    ? 'bg-cyan-50/90 border-cyan-300 text-cyan-950'
+                    : 'bg-white border-slate-200 text-slate-700'
+                }`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                      isRetailEffective ? 'bg-cyan-600 text-white' : 'bg-slate-100 text-slate-500'
+                    }`}>
+                      <Store className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-extrabold flex items-center gap-1.5 flex-wrap">
+                        <span>{isAr ? 'تسوية رحلة مبيعات التجزئة بعد العودة' : 'Retail Van-Sales Route Settlement'}</span>
+                        {isSegRetail && (
+                          <span className="px-1.5 py-0.2 rounded bg-cyan-200/70 text-cyan-900 text-[10px] font-black">
+                            {isAr ? 'مكتشف تلقائياً من قطاع التجزئة' : 'Auto-detected from Retail segment'}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-500 block">
+                        {isRetailEffective
+                          ? (isAr
+                              ? 'تُحمّل الكميات المبدئية وتُلزم الشاحنة بتأكيد المباع الفعلي والمرتجع غير المباع عند العودة.'
+                              : 'Truck loads standard stock and requires confirming actual sold qty vs unsold returns upon return.')
+                          : (isAr
+                              ? 'أمر بيع مباشر قياسي (لا يتطلب تسوية رحلة تجزئة عند الوصول).'
+                              : 'Standard pre-sold order (no van-sales route settlement gate on delivery).')}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isStructureLocked}
+                    onClick={() =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        isRetailRouteOverride: !isRetailEffective
+                      }))
+                    }
+                    className={`px-3 py-1.5 rounded-lg text-[11px] font-extrabold border transition cursor-pointer disabled:opacity-50 ${
+                      isRetailEffective
+                        ? 'bg-cyan-700 hover:bg-cyan-800 text-white border-cyan-800'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
+                    }`}
+                  >
+                    {isRetailEffective
+                      ? (isAr ? 'مفعّل — إيقاف لهذا الطلب' : 'Enabled — Disable Override')
+                      : (isAr ? 'معطّل — تفعيل كتجزئة' : 'Disabled — Mark as Retail Route')}
+                  </button>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Section 2: Tax / VAT Mode (Sales Orders & Invoice Only) */}
@@ -3871,10 +5988,11 @@ function SalesOrderEditorModal({
                     <button
                       key={v.id}
                       type="button"
+                      disabled={isStructureLocked}
                       onClick={() => handleVatModeChange(v.id)}
-                      className={`p-2.5 rounded-xl border text-start transition cursor-pointer flex flex-col justify-between gap-1 ${
+                      className={`p-2.5 rounded-xl border text-start transition flex flex-col justify-between gap-1 ${
                         isSelected ? activeClasses : inactiveClasses
-                      }`}
+                      } ${isStructureLocked ? 'opacity-65 cursor-not-allowed' : 'cursor-pointer'}`}
                     >
                       <div className="flex items-center justify-between gap-1 w-full">
                         <span className="font-extrabold text-xs truncate">
@@ -4019,34 +6137,172 @@ function SalesOrderEditorModal({
                 </div>
               </div>
 
-              {/* Add Product Search & Category Bar */}
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Category Filter */}
-                <select
-                  value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
-                >
-                  <option value="all">{isAr ? 'كافة تصنيفات الأصناف' : 'All Product Categories'}</option>
-                  {productCategories.map((cat) => (
-                    <option key={cat.id} value={cat.key || cat.id}>
-                      {isAr ? cat.nameAr : (cat.nameEn || cat.nameAr)}
-                    </option>
-                  ))}
-                </select>
+              {/* Add Product Search & Category Bar (hidden once post-dispatch locked or split parent) */}
+              {!isStructureLocked ? (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Category Filter */}
+                    <select
+                      value={selectedCategory}
+                      onChange={(e) => setSelectedCategory(e.target.value)}
+                      className="py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-700 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="all">{isAr ? 'كافة تصنيفات الأصناف' : 'All Product Categories'}</option>
+                      {productCategories.map((cat) => (
+                        <option key={cat.id} value={cat.key || cat.id}>
+                          {isAr ? cat.nameAr : (cat.nameEn || cat.nameAr)}
+                        </option>
+                      ))}
+                    </select>
 
-                {/* Product Selector */}
-                <div className="flex-1 min-w-[280px]">
-                  <SearchableSelect
-                    options={availableProductOptions}
-                    value={selectedProductId}
-                    onChange={handleAddProduct}
-                    placeholder={isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —'}
-                    searchPlaceholder={isAr ? 'ابحث باسم أو كود الصنف...' : 'Search product...'}
-                    isAr={isAr}
-                  />
+                    {/* Product Selector */}
+                    <div className="flex-1 min-w-[260px]">
+                      <SearchableSelect
+                        options={availableProductOptions}
+                        value={selectedProductId}
+                        onChange={handleAddProduct}
+                        placeholder={isAr ? '— اختر الصنف للإضافة —' : '— Select Product to Add —'}
+                        searchPlaceholder={isAr ? 'ابحث باسم أو كود الصنف...' : 'Search product...'}
+                        isAr={isAr}
+                      />
+                    </div>
+
+                    {/* Standard Retail Load List Quick Fill (Retail Route Orders only) */}
+                    {retailContext.isRetailEffective && (
+                      <button
+                        type="button"
+                        onClick={handleRequestLoadStdRetailList}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-300 rounded-xl text-xs font-extrabold transition cursor-pointer shrink-0"
+                        title={
+                          isAr
+                            ? 'تعبئة الأصناف والكميات من القائمة القياسية للتجزئة'
+                            : 'Populate lines from Standard Retail Load List'
+                        }
+                      >
+                        <ClipboardList className="w-3.5 h-3.5 text-cyan-700" />
+                        <span>{isAr ? 'قائمة التجزئة القياسية' : 'Std Retail List'}</span>
+                        {stdRetailList.length > 0 && (
+                          <span className="px-1.5 py-0.2 rounded bg-cyan-200/70 text-cyan-900 text-[10px] font-black">
+                            {stdRetailList.length}
+                          </span>
+                        )}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Inline Confirmation Prompt when Replacing Existing Lines */}
+                  {confirmReplaceStdList && (
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 text-amber-900 font-bold">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>
+                          {isAr
+                            ? `يحتوي الطلب حالياً على ${formData.lines.length} بنود. هل تريد استبدالها ببنود القائمة القياسية (${stdRetailList.length} صنف)؟`
+                            : `Order already has ${formData.lines.length} line(s). Replace them with Standard Retail List (${stdRetailList.length} items)?`}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={applyStandardRetailList}
+                          className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] transition cursor-pointer"
+                        >
+                          {isAr ? 'تأكيد الاستبدال' : 'Replace Lines'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmReplaceStdList(false)}
+                          className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-[11px] transition cursor-pointer"
+                        >
+                          {isAr ? 'إلغاء' : 'Cancel'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Feedback Notice after Loading / Empty Standard List */}
+                  {stdListFeedback && (
+                    <div
+                      className={`p-2.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold ${
+                        stdListFeedback.type === 'warning'
+                          ? 'bg-amber-50 border-amber-200 text-amber-900'
+                          : 'bg-cyan-50 border-cyan-200 text-cyan-900'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Info className="w-3.5 h-3.5 shrink-0" />
+                        <span>{stdListFeedback.message}</span>
+                        {stdRetailList.length === 0 && canManageStdRetailList && typeof onOpenStdRetailSetup === 'function' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setStdListFeedback(null);
+                              onOpenStdRetailSetup();
+                            }}
+                            className="underline font-extrabold text-cyan-800 hover:text-cyan-950 cursor-pointer"
+                          >
+                            {isAr ? 'إعداد القائمة الآن' : 'Configure List Now'}
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStdListFeedback(null)}
+                        className="p-0.5 rounded hover:bg-black/5 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
-              </div>
+              ) : isPostDispatch && adjustmentMode ? (
+                (() => {
+                  const snap = editingOrder?.preAdjustmentSnapshot || {};
+                  const origGrandTotal = Number(snap.originalGrandTotal ?? editingOrder?.grandTotal ?? 0);
+                  const origWeightKg = Number(snap.originalTotalWeightKg ?? editingOrder?.totalWeightKg ?? 0);
+                  const returnedCtnLive = formData.lines.reduce((sum, ln) => {
+                    const base = baselineLineMap[ln.productId] || ln;
+                    const dispCtn = Number(base.dispatchedQty ?? base.qty ?? 0) + Number(base.dispatchedBonus ?? base.bonus ?? 0);
+                    const recvCtn = Number(ln.qty || 0) + Number(ln.bonus || 0);
+                    return sum + Math.max(0, dispCtn - recvCtn);
+                  }, 0);
+                  const creditEgp = Math.max(0, origGrandTotal - orderCalculations.grandTotal);
+                  const returnKg = Math.max(0, origWeightKg - orderCalculations.totalWeightKg);
+
+                  return (
+                    <div className="p-3 bg-white border border-amber-300 rounded-xl space-y-2.5 shadow-2xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                        <span className="font-extrabold text-amber-900">
+                          {isAr ? 'ملخص التسوية الفورية للمستلم فعلياً:' : 'Live Partial Rejection Reconciliation:'}
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2 font-mono">
+                          <span className="px-2 py-0.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 font-bold">
+                            {isAr ? `مرتجع للمخزن: -${returnedCtnLive} كرتونة (${returnKg.toFixed(1)} كجم)` : `Warehouse Return: -${returnedCtnLive} ctn (${returnKg.toFixed(1)} kg)`}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-800 font-bold">
+                            {isAr ? `إجمالي معدل: ${orderCalculations.grandTotal.toFixed(2)} ج.م` : `Adjusted Total: ${orderCalculations.grandTotal.toFixed(2)} EGP`}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white font-black">
+                            {isAr ? `خصم تسوية الفاتورة: -${creditEgp.toFixed(2)} ج.م` : `Credit: -${creditEgp.toFixed(2)} EGP`}
+                          </span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          {isAr ? 'سبب الرفض الجزئي من العميل (إلزامي عند وجود مرتجع) *' : 'Client Rejection Reason (Required when returning cartons) *'}
+                        </label>
+                        <input
+                          type="text"
+                          value={rejectionReason}
+                          onChange={(e) => setRejectionReason(e.target.value)}
+                          placeholder={isAr ? 'مثال: رفض العميل ٢ كرتونة لتلف التغليف أو عدم مطابقة تاريخ الصلاحية...' : 'e.g. Client refused 2 damaged cartons upon delivery...'}
+                          className="w-full py-1.5 px-3 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                        />
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : null}
 
               {/* Line Items Table */}
               {formData.lines.length === 0 ? (
@@ -4072,11 +6328,18 @@ function SalesOrderEditorModal({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {formData.lines.map((line, idx) => {
+                        const base = baselineLineMap[line.productId] || line;
+                        const dispQty = Number(base.dispatchedQty ?? base.qty ?? 0);
+                        const dispBonus = Number(base.dispatchedBonus ?? base.bonus ?? 0);
+                        const retQtyLine = Math.max(0, dispQty - Number(line.qty || 0));
+                        const retBonusLine = Math.max(0, dispBonus - Number(line.bonus || 0));
+                        const qtyDisabled = isStructureLocked && !adjustmentMode;
+
                         return (
                           <tr key={idx} className="hover:bg-slate-50/50">
                             {/* Product Info + Promo Icon */}
                             <td className="py-2.5 px-3 font-bold text-slate-800">
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="font-mono text-[10px] text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
                                   {line.productCode}
                                 </span>
@@ -4099,27 +6362,61 @@ function SalesOrderEditorModal({
 
                             {/* Quantity */}
                             <td className="py-2 px-2 text-center">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={line.qty}
-                                onChange={(e) => handleLineChange(idx, 'qty', e.target.value)}
-                                className="w-20 p-1.5 text-center font-mono font-bold text-slate-900 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                              />
+                              <div className="flex flex-col items-center gap-0.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={adjustmentMode ? dispQty : undefined}
+                                  step="1"
+                                  disabled={qtyDisabled}
+                                  value={line.qty}
+                                  onChange={(e) => handleLineChange(idx, 'qty', e.target.value)}
+                                  className={`w-20 p-1.5 text-center font-mono font-bold border rounded-lg focus:outline-none ${
+                                    qtyDisabled
+                                      ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                                      : adjustmentMode
+                                      ? 'bg-amber-50/40 border-amber-300 text-slate-900 focus:ring-1 focus:ring-amber-500'
+                                      : 'text-slate-900 border-slate-300 focus:ring-1 focus:ring-emerald-500'
+                                  }`}
+                                />
+                                {isPostDispatch && (adjustmentMode || retQtyLine > 0) && (
+                                  <span className="text-[9px] font-mono text-slate-500">
+                                    {isAr ? `منصرف: ${dispQty}` : `Disp: ${dispQty}`}
+                                    {retQtyLine > 0 && (
+                                      <strong className="text-rose-600 ms-1">(-{retQtyLine})</strong>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
                             </td>
 
                             {/* Bonus Units */}
                             <td className="py-2 px-2 text-center">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={line.bonus}
-                                onChange={(e) => handleLineChange(idx, 'bonus', e.target.value)}
-                                placeholder="0"
-                                className="w-16 p-1.5 text-center font-mono font-bold text-emerald-700 bg-emerald-50/50 border border-emerald-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                              />
+                              <div className="flex flex-col items-center gap-0.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={adjustmentMode ? dispBonus : undefined}
+                                  step="1"
+                                  disabled={qtyDisabled}
+                                  value={line.bonus}
+                                  onChange={(e) => handleLineChange(idx, 'bonus', e.target.value)}
+                                  placeholder="0"
+                                  className={`w-16 p-1.5 text-center font-mono font-bold border rounded-lg focus:outline-none ${
+                                    qtyDisabled
+                                      ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                                      : 'text-emerald-700 bg-emerald-50/50 border-emerald-200 focus:ring-1 focus:ring-emerald-500'
+                                  }`}
+                                />
+                                {isPostDispatch && (adjustmentMode || retBonusLine > 0) && dispBonus > 0 && (
+                                  <span className="text-[9px] font-mono text-slate-500">
+                                    {dispBonus}
+                                    {retBonusLine > 0 && (
+                                      <strong className="text-rose-600 ms-1">(-{retBonusLine})</strong>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
                             </td>
 
                             {/* Unit Price (LOCKED) */}
@@ -4142,10 +6439,15 @@ function SalesOrderEditorModal({
                                 type="number"
                                 min="0"
                                 step="0.01"
+                                disabled={isStructureLocked}
                                 value={line.manualDiscountPerUnit}
                                 onChange={(e) => handleLineChange(idx, 'manualDiscountPerUnit', e.target.value)}
                                 placeholder="0.00"
-                                className="w-20 p-1.5 text-center font-mono font-semibold text-rose-600 bg-rose-50/30 border border-rose-200 rounded-lg focus:outline-none"
+                                className={`w-20 p-1.5 text-center font-mono font-semibold border rounded-lg focus:outline-none ${
+                                  isStructureLocked
+                                    ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                                    : 'text-rose-600 bg-rose-50/30 border-rose-200'
+                                }`}
                               />
                             </td>
 
@@ -4183,14 +6485,18 @@ function SalesOrderEditorModal({
 
                             {/* Remove */}
                             <td className="py-2 px-2 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveLine(idx)}
-                                className="p-1 text-slate-400 hover:text-rose-600 rounded transition cursor-pointer"
-                                title={isAr ? 'حذف البند' : 'Remove line'}
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
+                              {!isStructureLocked ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveLine(idx)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 rounded transition cursor-pointer"
+                                  title={isAr ? 'حذف البند' : 'Remove line'}
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              ) : (
+                                <Lock className="w-3 h-3 text-slate-300 mx-auto" />
+                              )}
                             </td>
                           </tr>
                         );
@@ -4297,20 +6603,44 @@ function SalesOrderEditorModal({
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  {isAr ? 'حالة التنفيذ والتحميل' : 'Fulfillment Status'}
+                <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center justify-between">
+                  <span>{isAr ? 'حالة التنفيذ والتحميل' : 'Fulfillment Status'}</span>
+                  <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
+                    <Lock className="w-2.5 h-2.5" />
+                    {isAr ? 'تُدار من خطة التحميل' : 'Managed in Loading Plan'}
+                  </span>
                 </label>
-                <select
-                  value={formData.fulfillmentStatus}
-                  onChange={(e) => setFormData({ ...formData, fulfillmentStatus: e.target.value })}
-                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
-                >
-                  {availableFulfillmentStatuses.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {isAr ? f.labelAr : f.labelEn}
-                    </option>
-                  ))}
-                </select>
+                {(() => {
+                  const currentFulfillment =
+                    availableFulfillmentStatuses.find((f) => f.id === formData.fulfillmentStatus) ||
+                    availableFulfillmentStatuses[0] || {
+                      id: 'not_yet',
+                      labelAr: 'قيد الانتظار',
+                      labelEn: 'Pending',
+                      color: 'bg-slate-100 text-slate-700 border-slate-300'
+                    };
+                  return (
+                    <div
+                      className="w-full py-2 px-3 bg-slate-100/80 border border-slate-200 rounded-xl flex items-center justify-between cursor-not-allowed select-none"
+                      title={
+                        isAr
+                          ? 'تُدار مراحل التحميل والتوصيل حصرياً من تبويب خطة التحميل'
+                          : 'Fulfillment stages are managed exclusively from the Loading Plan tab'
+                      }
+                    >
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-black border ${
+                          currentFulfillment.color || 'bg-slate-100 text-slate-700 border-slate-300'
+                        }`}
+                      >
+                        {isAr ? currentFulfillment.labelAr : currentFulfillment.labelEn}
+                      </span>
+                      <span className="text-[10px] font-medium text-slate-500">
+                        {isAr ? 'للقراءة فقط' : 'Read-only'}
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div>
@@ -4329,7 +6659,7 @@ function SalesOrderEditorModal({
               <div className="sm:col-span-3 grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center gap-1">
-                    <span>💬</span>
+                    <MessageSquare className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                     <span>{isAr ? 'ملاحظات خارجية (تظهر على الفاتورة / الإذن)' : 'External Comments (On Invoice)'}</span>
                   </label>
                   <textarea
@@ -4343,7 +6673,7 @@ function SalesOrderEditorModal({
 
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center gap-1">
-                    <span>🔒</span>
+                    <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                     <span>{isAr ? 'ملاحظات داخلية (خاصة بالإدارة)' : 'Internal Comments (Private)'}</span>
                   </label>
                   <textarea
@@ -4512,9 +6842,11 @@ function SalesOrderEditorModal({
               </button>
               <button
                 type="submit"
-                disabled={isSaving}
+                disabled={isSaving || isSplitParentLocked}
                 className={`px-6 py-2 rounded-xl text-xs font-bold shadow-xs hover:shadow transition cursor-pointer disabled:opacity-50 flex items-center gap-1.5 text-white ${
-                  formData.orderType === 'admin'
+                  adjustmentMode
+                    ? 'bg-amber-600 hover:bg-amber-700'
+                    : formData.orderType === 'admin'
                     ? 'bg-purple-600 hover:bg-purple-700'
                     : formData.orderType === 'collection'
                     ? 'bg-teal-600 hover:bg-teal-700'
@@ -4523,7 +6855,9 @@ function SalesOrderEditorModal({
               >
                 {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
                 <span>
-                  {formData.orderType === 'admin'
+                  {adjustmentMode
+                    ? (isAr ? 'مزامنة الكميات المستلمة وتحديث الفاتورة' : 'Force Sync Actual Received & Adjust Invoice')
+                    : formData.orderType === 'admin'
                     ? (isAr ? 'اعتماد وحفظ الإجراء الإداري' : 'Save Directive')
                     : formData.orderType === 'collection'
                     ? (isAr ? 'تسجيل واعتماد إذن التحصيل' : 'Save Collection')

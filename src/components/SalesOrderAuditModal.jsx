@@ -17,7 +17,12 @@ import {
   Receipt,
   FileCheck,
   XCircle,
-  RotateCcw
+  RotateCcw,
+  Truck,
+  GitFork,
+  PackageMinus,
+  ClipboardCheck,
+  Store
 } from 'lucide-react';
 
 export default function SalesOrderAuditModal({
@@ -39,13 +44,26 @@ export default function SalesOrderAuditModal({
     return list.filter((entry) => {
       if (actionFilter !== 'all') {
         if (actionFilter === 'create' && entry.action !== 'create') return false;
+        if (actionFilter === 'dispatch' && entry.action !== 'dispatch_plan_update' && entry.action !== 'dispatch_assignment') return false;
         if (
           actionFilter === 'edit' &&
           entry.action !== 'edit' &&
           entry.action !== 'status_change' &&
           entry.action !== 'toggle_revised' &&
           entry.action !== 'cancel_order' &&
-          entry.action !== 'restore_order'
+          entry.action !== 'restore_order' &&
+          entry.action !== 'dispatch_plan_update' &&
+          entry.action !== 'dispatch_assignment' &&
+          entry.action !== 'split_parent' &&
+          entry.action !== 'split_child_created' &&
+          entry.action !== 'split_child_updated' &&
+          entry.action !== 'split_reverted' &&
+          entry.action !== 'partial_rejection_sync' &&
+          entry.action !== 'retail_settlement_confirmed' &&
+          entry.action !== 'retail_settlement_force_synced' &&
+          entry.action !== 'retail_delivery_deferred' &&
+          entry.action !== 'retail_warehouse_acknowledged' &&
+          entry.action !== 'retail_accounting_acknowledged'
         ) {
           return false;
         }
@@ -135,6 +153,73 @@ export default function SalesOrderAuditModal({
           bg: 'bg-emerald-50 text-emerald-800 border-emerald-200',
           icon: RotateCcw,
           label: isAr ? 'استعادة وتفعيل الأمر' : 'Order Restored'
+        };
+      case 'dispatch_plan_update':
+      case 'dispatch_assignment':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: Truck,
+          label: isAr ? 'خطة التحميل والتوزيع' : 'Loading Plan & Dispatch'
+        };
+      case 'split_parent':
+        return {
+          bg: 'bg-purple-50 text-purple-800 border-purple-200',
+          icon: GitFork,
+          label: isAr ? 'تقسيم أمر البيع إلى شحنات' : 'Order Split into Portions'
+        };
+      case 'split_child_created':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: GitFork,
+          label: isAr ? 'جزء ناتج عن تقسيم أمر' : 'Split Child Portion Created'
+        };
+      case 'split_child_updated':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: GitFork,
+          label: isAr ? 'تعديل كميات/شاحنة الجزء المقسم' : 'Split Portion Updated'
+        };
+      case 'split_reverted':
+        return {
+          bg: 'bg-amber-50 text-amber-800 border-amber-200',
+          icon: RotateCcw,
+          label: isAr ? 'إلغاء التقسيم ودمج الأمر' : 'Split Reverted (Merged Back)'
+        };
+      case 'partial_rejection_sync':
+        return {
+          bg: 'bg-rose-50 text-rose-800 border-rose-200',
+          icon: PackageMinus,
+          label: isAr ? 'مزامنة الاستلام الفعلي والمرتجع' : 'Actual Qty Sync & Return'
+        };
+      case 'retail_settlement_confirmed':
+        return {
+          bg: 'bg-cyan-50 text-cyan-800 border-cyan-200',
+          icon: Store,
+          label: isAr ? 'تأكيد وتسوية مبيعات التجزئة' : 'Retail Trip Settled'
+        };
+      case 'retail_settlement_force_synced':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: Store,
+          label: isAr ? 'تحديث ومزامنة تسوية التجزئة' : 'Retail Settlement Force-Synced'
+        };
+      case 'retail_delivery_deferred':
+        return {
+          bg: 'bg-amber-50 text-amber-800 border-amber-200',
+          icon: Truck,
+          label: isAr ? 'تسجيل الوصول (بانتظار تسوية التجزئة)' : 'Arrived (Awaiting Retail Settlement)'
+        };
+      case 'retail_warehouse_acknowledged':
+        return {
+          bg: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+          icon: ClipboardCheck,
+          label: isAr ? 'اعتماد المخزن لمرتجع التجزئة' : 'Warehouse Ack (Return Stock)'
+        };
+      case 'retail_accounting_acknowledged':
+        return {
+          bg: 'bg-teal-50 text-teal-800 border-teal-200',
+          icon: ClipboardCheck,
+          label: isAr ? 'اعتماد الحسابات لفاتورة التجزئة' : 'Accounting Ack (Adjusted Invoice)'
         };
       case 'edit':
       default:
@@ -252,7 +337,8 @@ export default function SalesOrderAuditModal({
             {[
               { id: 'all', labelAr: 'الكل', labelEn: 'All' },
               { id: 'create', labelAr: 'الإنشاء', labelEn: 'Creation' },
-              { id: 'edit', labelAr: 'التعديلات', labelEn: 'Edits' }
+              { id: 'edit', labelAr: 'التعديلات', labelEn: 'Edits' },
+              { id: 'dispatch', labelAr: 'التحميل والتوزيع', labelEn: 'Dispatch' }
             ].map((tab) => (
               <button
                 key={tab.id}

@@ -99,7 +99,7 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { useRecordComments } from '../context/CommentContext';
-import { RowCommentButton, RowCommentMenuItem } from './comments';
+import { RowCommentButton } from './comments';
 import * as XLSX from 'xlsx';
 import { 
   getStoredPalletThermalConfig, 
@@ -9389,7 +9389,6 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                           docNumber={order.orderNumber || order.id}
                           tab="work_orders"
                           module="production"
-                          hideIfEmpty
                         />
 
                         <button
@@ -9471,13 +9470,12 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                   <div className="flex items-center gap-2">
                     {renderOrderStatusChip(order)}
 
-                    {/* Mobile Row Comment Button (prominent only when thread exists) */}
+                    {/* Mobile Row Comment Button */}
                     <RowCommentButton
                       docId={order.id}
                       docNumber={order.orderNumber || order.id}
                       tab="work_orders"
                       module="production"
-                      hideIfEmpty
                     />
 
                     {/* Mobile 3-Dots Action Button */}
@@ -16818,16 +16816,6 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
             className="bg-white rounded-2xl shadow-2xl border border-slate-200/90 py-1.5 animate-in fade-in zoom-in-95 duration-100 text-xs select-none"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Quick Comment Trigger inside 3-dots (Grouped here when no comments yet) */}
-            <RowCommentMenuItem
-              docId={activeActionMenu.order.id}
-              docNumber={activeActionMenu.order.orderNumber || activeActionMenu.order.id}
-              tab="work_orders"
-              module="production"
-              onAction={() => setActiveActionMenu(null)}
-              className="px-3.5"
-            />
-
             {isOrderLocked(activeActionMenu.order) ? (
               <div className="px-3.5 py-2 text-[11px] text-slate-400 flex items-center gap-2">
                 <Lock className="h-3.5 w-3.5 text-slate-400 shrink-0" />

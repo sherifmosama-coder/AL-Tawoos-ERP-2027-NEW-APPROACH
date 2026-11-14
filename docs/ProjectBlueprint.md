@@ -97,6 +97,9 @@
 26. [Relational Cascade Purge & Master Data Immunity Engine (`AdminControlPanel.jsx` — `factory_reset`)](#26-relational-cascade-purge--master-data-immunity-engine-admincontrolpaneljsx--factory_reset)
 27. [Universal Company Profile Single Source of Truth (SSOT) & Document Letterhead Architecture (`#system_config` & `useCompanyProfile`)](#27-universal-company-profile-single-source-of-truth-ssot--document-letterhead-architecture-system_config--usecompanyprofile)
 28. [Tri-Surface Navigation Alignment Standard (Home Page, Sidebar & Top Navbar)](#28-tri-surface-navigation-alignment-standard-home-page-sidebar--top-navbar)
+29. [Client Master & Dynamic Market Segmentation Architecture (`#clients` & `#client_segments`)](#29-client-master--dynamic-market-segmentation-architecture-clients--client_segments)
+30. [Zero Component Header Duplication Architecture (Page Header Banner SSOT)](#30-zero-component-header-duplication-architecture-page-header-banner-ssot)
+31. [Sales & Commercial Module Architecture (`sales_orders`, `loading_plan`, `price_lists`, `client_contracts`)](#31-sales--commercial-module-architecture-sales_orders-loading_plan-price_lists-client_contracts)
 
 ---
 
@@ -1425,6 +1428,11 @@ To eliminate user confusion, all three surfaces MUST remain 100% synchronized wi
   4. `party_statements` (Partner Statements: Supplier Statements, Client Statements)
   5. `accounts` (Chart of Accounts & GL: COA Tree, Journal Entries, Trial Balance)
   6. `financial_statements` (Financial Statements: P&L Income Statement, Vertical Balance Sheet, Cash Flow)
+- **Sales & Distribution (`sales` - 4 Tabs)**:
+  1. `sales_orders` (Sales Orders & Supply Orders)
+  2. `loading_plan` (Loading & Delivery Plan Execution)
+  3. `price_lists` (Price Lists & Pricing Policies)
+  4. `client_contracts` (Client Contracts & Discounts)
 
 ### 28.3 Dynamic Order & Appearance Recalibration (`tabAppearanceConfig.js`)
 All three navigation surfaces map their base tab definitions through `tabConfigs[tab.id]` and sort using `(Number(tab.order) || 99)`.
@@ -1505,5 +1513,104 @@ With the introduction of `TabPageHeaderBanner.jsx` dynamically rendered in `App.
    - **Purchases & Inventory**: `POCreation`, `GoodsReceipt`, `StockTransfers`, `StockBalances`, `StockCount`, `SparePartsConsumption`.
    - **Production**: `WorkOrdersMaster`, `LiquidTanksMaster`, `FloorLiquidStorage`, `FaultyFGReturnMaster`, `FinishedGoodsInward`, `ProductionPerformanceReports`.
    - **Finance**: `CashSafesMaster`, `DuesTrackingMaster`, `ChartOfAccountsMaster`, `PartnerStatementsMaster`, `FinancialStatementsMaster`.
+   - **Sales**: `SalesOrdersMaster`, `SalesLoadingPlanMaster`, `PriceListsMaster`, `ClientContractsMaster`.
+
+---
+
+## 31. Sales & Commercial Module Architecture (`sales_orders`, `loading_plan`, `price_lists`, `client_contracts`)
+
+### 31.1 Tri-Surface Synchronized Navigation Alignment
+The Sales & Distribution module (`sales`) is fully synchronized across all three ERP navigation surfaces adhering strictly to Section 28:
+1. **Home Page Hub (`LandingPage.jsx`)**: Active module card with interactive tab chips for `sales_orders`, `loading_plan`, `price_lists`, and `client_contracts`.
+2. **Sidebar Navigation (`App.jsx` — `MODULE_NAV_DEFINITIONS.sales`)**: Dock with dedicated navigation buttons, dynamic tab appearance badges, and permissions filtering.
+3. **Top Navbar Breadcrumbs Droplist (`TopNavbar.jsx` — `RAW_ERP_STRUCTURE`)**: Dynamic header dropdown reflecting all 4 tabs with matching icons, permissions, and localized titles.
+4. **Appearance & Order Registry (`src/utils/tabAppearanceConfig.js` — `DEFAULT_TABS_CONFIG`)**:
+   - `sales_orders` (Order 1, `#059669`, `ShoppingCart`)
+   - `loading_plan` (Order 2, `#2563eb`, `Truck`)
+   - `price_lists` (Order 3, `#d97706`, `BadgeDollarSign`)
+   - `client_contracts` (Order 4, `#0284c7`, `Handshake`)
+
+---
+
+### 31.2 Dedicated Dispatch & Loading Plan Tab (`SalesLoadingPlanMaster.jsx` — `loading_plan`)
+To prevent visual clutter in the Sales Orders master directory, dispatch execution and delivery scheduling are decoupled into a dedicated, clean tab:
+
+#### 1. Compound Alignment Validation by `(loadingDate + loadingOrderNumber)`
+- **Domain Rule**: Loading Order numbers (`loadingOrderNumber`, e.g. #1, #2) reset each calendar day.
+- **Validation Mechanics**: Conflicting truck/driver assignments are evaluated compoundly against `(loadingDate + loadingOrderNumber)`. LO #1 on Nov 10 and LO #1 on Nov 11 are completely independent and valid.
+- If discordant vehicles or drivers are assigned to the same LO # on the same date, the system triggers a warning: `⚠️ تعارض في أمر تحميل #X بتاريخ (YYYY-MM-DD)` and provides a 1-click **"مطابقة وتوحيد كافة الطلبات / Align All Orders"** action.
+
+#### 2. Target Planning Date & Date Scopes
+- A dedicated **Target Planning Date (`تاريخ التحميل المستهدف`)** picker in the top ribbon anchors all new assignments and validates against it.
+- **Scope Presets**: `اليوم / Today` (default), `غداً / Tomorrow`, `خلال 7 أيام / Next 7 Days`, and `تاريخ مخصص / Custom Scope`.
+- Live telemetry badge calculating total orders, total cartons, and total weight (tons) within the selected scope.
+
+#### 3. Animated 80/20 & 20/80 Space-Saving Cards
+- **Single Active Card**: Only one card can be in editing mode at any time, maintaining clean screen ergonomics.
+- **Editing Mode (`isEditing === true`)**:
+  - Transition extends smoothly from the click origin (`duration-700 ease-out origin-right rtl:origin-left`).
+  - Order details compress to **20%** width (Client, Branch, Cartons, Weight).
+  - Ultra-compact single-row assignment panel takes **80%** width. Bulky header/footer containers are removed.
+  - **Expanding Hover Action Buttons**:
+    - `Check` icon expands smoothly on hover to `حفظ` (`Save`).
+    - `X` icon expands smoothly on hover to `إلغاء` (`Cancel`).
+    - `RotateCcw` icon expands smoothly on hover to `مسح` (`Clear`).
+- **Assigned & Closed Mode (`isAssigned && !isEditing`)**:
+  - Order details take **80%** width with per-product quantity summary chips (`[صنف: X ك]`).
+  - Right strip takes **20%** width with a compact **2x2 summary grid** (`🚚 #LO`, `Plate`, `Driver`, `Rep`).
+- **Unassigned & Closed Mode (`!isAssigned && !isEditing`)**:
+  - Full-width card with a slim `+ تسكين` button on the end strip.
+
+#### 4. Fleet Capacity & Load Optimization Gauges
+- Integrated vehicle payload limits: `minCapacityKg`, `optimumCapacityKg`, `maxCapacityKg`.
+- Manifest dock displays per-truck load indicators (`مؤشر الحمولة`):
+  - Blue (`حمل خفيف`): Weight is below minimum threshold.
+  - Emerald (`حمولة مثالية`): Weight is within optimum range.
+  - Rose (`حمولة زائدة`): Weight exceeds maximum safety limit.
+
+#### 5. Map Location Pin vs Search Fallback
+- **Accurate Saved Coordinates**: Displays green `Map` icon (`الموقع مسجل`) opening exact GPS coordinates in Google Maps.
+- **Search Fallback**: If coordinates are missing, displays composite `MapPin + Search` in pale yellow (`bg-amber-50/90 text-amber-800 border-amber-200/90`) with label `بحث على الخريطة`. Hidden if accurate GPS coordinates exist.
+
+#### 6. RBAC, Scoped Permissions & Atomic Persistence
+- **Action Authority**: Evaluated via `canAccessAction(permissions, 'loading_plan', 'canManageLoadingPlan', currentUser)`.
+- **Cascade Compliance**: If `modules.loading_plan === false` in Scoped Permissions, all editing triggers and buttons are disabled.
+- **Atomic Commits**: Dispatches saved via Firestore `writeBatch` updating `sales_orders` documents and writing immutable audit trail entries (`action: 'dispatch_plan_update'`).
+
+---
+
+### 31.3 Fleet Dashboard, Corporate Fulfillment Progression & Bidirectional Sync (`SalesOrdersMaster.jsx` & `SalesLoadingPlanMaster.jsx`)
+- **Primary Vehicle Identity & Quick Copy**: Displays vehicle display name (`resolveVehicleDisplayName`) as the primary fleet identifier with 1-click copy chips for truck `plateNumber` and Purchase Order numbers (`PO #`).
+- **5-Stage Fulfillment Status Progression**: Unified styling and RTL/LTR directional gradients (`SALES_FULFILLMENT_STYLE_MAP`) across `not_yet` (Pending), `prepare` (Preparing), `shipped` (Dispatched), `delivered` (Delivered), and `paid` (Paid/Settled).
+- **Fleet Trips Carousel & Conflict Alignment**: Collapsible Trucks Fleet Dashboard in `loading_plan` with 3-slot trip carousel, light hover tooltips, bidirectional middle stepper controls, LO# conflict detection (`loadingOrderNumber`), and conflict filtering.
+- **Trip-Scoped Floating Manifest & Deep-Linking**: Floating manifest dock scopes dynamically to active triggered trips; bidirectional hash navigation links specific order rows between `sales_orders` and `loading_plan` while preserving full `RecordCommentAction` threads (`Section 23`).
+- **Tonnage Unit Standard**: Arabic UI labels consistently render `طن` (never `t`).
+
+---
+
+### 31.4 Order Splitting Engine & Portions Directory (`OrderSplitModal.jsx`)
+- **Eligibility & Guidance Gate**: Strictly restricted to `Pending` (`fulfillmentStatus === 'not_yet'`) orders; clicking Split on `Preparing+` orders guides the user to revert status to `Pending` first. Guarded by `canSplitOrder`.
+- **Interactive Truck Allocation Matrix**: Splits products/quantities into numbered child portions (`#0001 (1/3)`, `#0001 (2/3)`, ...) with real-time per-SKU sum validation against the parent baseline.
+- **Consolidated Financial Mode (`splitMergeInvoices`)**: When billing/financial documents are configured to remain merged, `SalesOrdersMaster` renders the parent order as a single unified card displaying an expandable **Split Order Portions Directory** with per-portion fulfillment badges and hover product breakdown tooltips, while `SalesLoadingPlanMaster` dispatches each child portion independently onto trucks.
+- **Full Split Reallocation & Unsplit**: Supports editing an existing split structure (adding/removing trips, reallocating quantities, or unsplitting back into a single unified order) atomically via Firestore batch writes.
+
+---
+
+### 31.5 Post-Dispatch Partial Rejection & Quantity Sync (`SalesOrderEditorModal` & `salesOrderUtils.js`)
+- **Authorized Post-Dispatch Adjustment (`canAdjustDispatchedQuantities`)**: Enables designated users to adjust quantities on already-dispatched (`shipped`, `delivered`, `paid`) orders to record client partial refusals (`returnedQty`, `returnedBonus`, `returnedCartons`, `returnedWeightKg`).
+- **Immutable Baseline Snapshot & Force Sync**: Captures `preAdjustmentSnapshot` on initial adjustment, force-syncs net client invoice totals and warehouse return metrics, logs granular per-line diffs in `auditTrail`, and provides `openPrintableAdjustmentSlip` for warehouse & accounting reconciliation.
+
+---
+
+### 31.6 Retail Van-Sales Route Settlement & Standard Retail Load List (`RetailSettlementModal.jsx` & `StandardRetailListModal.jsx`)
+- **Retail Route Auto-Detection & Override**: Automatically detects Retail segment orders (`isRetailSegmentRecord` / `isOrderRetailRoute`) with per-order `isRetailRouteOverride` toggle in `SalesOrderEditorModal` (plus `SearchableSelect` delivery branch picking).
+- **Global Standard Retail Load List (`system_config/retail_standard_load_list`)**:
+  - Configured once from a non-prominent toolbar button (`Std Retail List`) opening `StandardRetailListModal.jsx`, guarded by `canManageStdRetailList`.
+  - Stores default SKUs, carton `qty`, and optional `bonus`. On Retail sales orders, the **Std Retail List** button populates lines via `buildOrderLineFromProduct` (resolving 8-tier pricing, promotional discounts, VAT/WHT, weights, and `isProductAllowedForClient` checks), prompting before overwriting existing lines while keeping every populated quantity editable per trip/branch.
+- **Post-Arrival Retail Settlement & User Notification (`canSettleRetailOrders`)**:
+  - `RetailSettlementModal` reconciles loaded truck baseline against actual confirmed sold quantities and unsold warehouse returns, displaying live product breakdowns, buyer proof uploads (`retailSettlementAttachments`), printable trip settlement slips (`openPrintableRetailSettlementSlip`), and Force-Sync revision tracking (`retailSettlementRevision`).
+  - Upon settlement or Force-Sync commit, `createNotification` directly alerts relevant Sales, Warehouse, Accounting, and Admin users with sold/returned cartons (`طن`) and settled invoice totals—without intermediate pending-acknowledgment buttons or states.
+
+
 
 

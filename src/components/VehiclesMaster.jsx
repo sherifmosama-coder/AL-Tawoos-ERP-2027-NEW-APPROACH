@@ -18,7 +18,10 @@ import {
   X,
   Clock,
   Wrench,
-  Activity
+  Activity,
+  Weight,
+  Copy,
+  Check
 } from 'lucide-react';
 import {
   collection,
@@ -44,6 +47,31 @@ const FUEL_TYPES = [
   { id: 'diesel', labelAr: 'سولار (ديزل)', labelEn: 'Diesel' },
   { id: 'natural_gas', labelAr: 'غاز طبيعي', labelEn: 'Natural Gas' }
 ];
+
+function CopyButton({ text, title, isAr = true, className = '' }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    if (!text) return;
+    navigator.clipboard.writeText(String(text).trim());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className={`inline-flex items-center justify-center p-0.5 rounded transition cursor-pointer text-slate-400 hover:text-indigo-600 hover:bg-slate-200/60 ${
+        copied ? 'text-emerald-600 hover:text-emerald-600 bg-emerald-50' : ''
+      } ${className}`}
+      title={copied ? (isAr ? 'تم النسخ!' : 'Copied!') : (title || (isAr ? 'نسخ' : 'Copy'))}
+    >
+      {copied ? <Check className="w-3 h-3 text-emerald-600 stroke-[3]" /> : <Copy className="w-3 h-3" />}
+    </button>
+  );
+}
 
 export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
   const { i18n } = useTranslation();
@@ -75,6 +103,11 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
     motorNumber: '',
     currentOdometerKm: 0,
     status: 'active', // 'active' | 'maintenance' | 'inactive'
+    minCapacityKg: 0,
+    optimumCapacityKg: 0,
+    maxCapacityKg: 0,
+    minMarginPct: 5,
+    maxMarginPct: 5,
     notes: ''
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -139,6 +172,11 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
       motorNumber: '',
       currentOdometerKm: 0,
       status: 'active',
+      minCapacityKg: 0,
+      optimumCapacityKg: 0,
+      maxCapacityKg: 0,
+      minMarginPct: 5,
+      maxMarginPct: 5,
       notes: ''
     });
   };
@@ -161,6 +199,11 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
       motorNumber: v.motorNumber || '',
       currentOdometerKm: Number(v.currentOdometerKm) || 0,
       status: v.status || 'active',
+      minCapacityKg: Number(v.minCapacityKg) || 0,
+      optimumCapacityKg: Number(v.optimumCapacityKg) || 0,
+      maxCapacityKg: Number(v.maxCapacityKg) || 0,
+      minMarginPct: Number(v.minMarginPct) || 5,
+      maxMarginPct: Number(v.maxMarginPct) || 5,
       notes: v.notes || ''
     });
   };
@@ -200,6 +243,11 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
         motorNumber: vehicleModal.motorNumber.trim(),
         currentOdometerKm: Number(vehicleModal.currentOdometerKm) || 0,
         status: vehicleModal.status,
+        minCapacityKg: Number(vehicleModal.minCapacityKg) || 0,
+        optimumCapacityKg: Number(vehicleModal.optimumCapacityKg) || 0,
+        maxCapacityKg: Number(vehicleModal.maxCapacityKg) || 0,
+        minMarginPct: Number(vehicleModal.minMarginPct) || 5,
+        maxMarginPct: Number(vehicleModal.maxMarginPct) || 5,
         notes: vehicleModal.notes.trim(),
         updatedAt: nowIso
       };
@@ -380,8 +428,9 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
                         <div className="bg-sky-600 px-2 py-0.5 text-[9px] font-black text-white uppercase tracking-wider">
                           مصر
                         </div>
-                        <div className="px-2.5 py-0.5 font-black text-sm font-sans tracking-wide text-slate-900">
-                          {veh.plateNumber}
+                        <div className="px-2.5 py-0.5 font-black text-sm font-sans tracking-wide text-slate-900 flex items-center gap-1.5">
+                          <span>{veh.plateNumber}</span>
+                          <CopyButton text={veh.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
                         </div>
                       </div>
                       <div className="font-extrabold text-sm text-slate-900 mt-2 leading-tight">
@@ -464,6 +513,19 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
                         </span>
                         <span className="font-mono font-bold text-slate-800">
                           {Number(veh.currentOdometerKm).toLocaleString()} {isAr ? 'كم' : 'km'}
+                        </span>
+                      </div>
+                    )}
+
+                    {(Number(veh.optimumCapacityKg) > 0 || Number(veh.maxCapacityKg) > 0) && (
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-200/60">
+                        <span className="text-slate-500 text-[11px] flex items-center gap-1.5 font-bold">
+                          <Weight className="h-3.5 w-3.5 text-amber-600" />
+                          <span>{isAr ? 'سعة الحمولة:' : 'Capacity:'}</span>
+                        </span>
+                        <span className="font-mono text-[11px] font-bold text-amber-900 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                          {veh.optimumCapacityKg ? `${(veh.optimumCapacityKg / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'}` : ''}
+                          {veh.maxCapacityKg ? ` (${isAr ? 'أقصى' : 'max'} ${(veh.maxCapacityKg / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'})` : ''}
                         </span>
                       </div>
                     )}
@@ -658,6 +720,55 @@ export default function VehiclesMaster({ currentUser = {}, permissions = {} }) {
                     <option value="maintenance">{isAr ? 'تحت الصيانة' : 'Under maintenance'}</option>
                     <option value="inactive">{isAr ? 'متوقفة / خارج الخدمة' : 'Out of service'}</option>
                   </select>
+                </div>
+              </div>
+
+              {/* Load Capacity Parameters for Loading Plan Weight Gauge */}
+              <div className="p-3 bg-amber-50/60 rounded-2xl border border-amber-200/80 space-y-2">
+                <div className="flex items-center gap-1.5 text-amber-900 font-bold text-xs">
+                  <Weight className="w-3.5 h-3.5 text-amber-600" />
+                  <span>{isAr ? 'محددات سعة الحمولة (لمؤشر خطة التحميل - كجم)' : 'Load Capacity Limits (for Weight Gauge - kg)'}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                      {isAr ? 'الحد الأدنى (كجم):' : 'Min (kg):'}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={vehicleModal.minCapacityKg}
+                      onChange={(e) => setVehicleModal((prev) => ({ ...prev, minCapacityKg: e.target.value }))}
+                      placeholder="e.g. 500"
+                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                      {isAr ? 'الحمولة المثالية (كجم):' : 'Optimum (kg):'}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={vehicleModal.optimumCapacityKg}
+                      onChange={(e) => setVehicleModal((prev) => ({ ...prev, optimumCapacityKg: e.target.value }))}
+                      placeholder="e.g. 1500"
+                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                      {isAr ? 'الحد الأقصى (كجم):' : 'Max (kg):'}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={vehicleModal.maxCapacityKg}
+                      onChange={(e) => setVehicleModal((prev) => ({ ...prev, maxCapacityKg: e.target.value }))}
+                      placeholder="e.g. 2500"
+                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
                 </div>
               </div>
 

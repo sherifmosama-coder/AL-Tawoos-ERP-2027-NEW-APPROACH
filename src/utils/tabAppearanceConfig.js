@@ -1199,7 +1199,7 @@ export const DEFAULT_TABS_CONFIG = {
     categoryEn: 'Finance & Treasury'
   },
   // ==========================================
-  // SALES & COMMERCIAL MODULE (3 TABS)
+  // SALES & COMMERCIAL MODULE (4 TABS)
   // ==========================================
   sales_orders: {
     id: 'sales_orders',
@@ -1212,10 +1212,21 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'المبيعات والتوزيع',
     categoryEn: 'Sales & Distribution'
   },
+  loading_plan: {
+    id: 'loading_plan',
+    moduleKey: 'sales',
+    order: 2,
+    labelAr: 'خطة التحميل',
+    labelEn: 'Loading Plan',
+    iconName: 'Truck',
+    color: '#2563eb',
+    categoryAr: 'المبيعات والتوزيع',
+    categoryEn: 'Sales & Distribution'
+  },
   price_lists: {
     id: 'price_lists',
     moduleKey: 'sales',
-    order: 2,
+    order: 3,
     labelAr: 'قوائم الأسعار',
     labelEn: 'Price Lists',
     iconName: 'BadgeDollarSign',
@@ -1226,7 +1237,7 @@ export const DEFAULT_TABS_CONFIG = {
   client_contracts: {
     id: 'client_contracts',
     moduleKey: 'sales',
-    order: 3,
+    order: 4,
     labelAr: 'عقود وخصومات العملاء',
     labelEn: 'Client Contracts',
     iconName: 'Handshake',
