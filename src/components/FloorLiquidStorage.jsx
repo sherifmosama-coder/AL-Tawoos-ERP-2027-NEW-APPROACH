@@ -1341,7 +1341,7 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
                 title={isAr ? 'مزامنة فورية مع تبويب التانكات' : 'Force Sync with #liquid_tanks'}
                 className="p-1 hover:bg-slate-200 text-slate-600 rounded-lg cursor-pointer transition disabled:opacity-50"
               >
-                <RefreshCw className={`h-3 w-3 ${isSaving ? 'animate-spin' : ''}`} />
+                {isSaving ? <PeacockLoader size="xxs" inline /> : <RefreshCw className="h-3 w-3" />}
               </button>
             </div>
 

@@ -4572,7 +4572,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                 onClick={handleSaveAttachments}
                 className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold shadow-xs transition disabled:opacity-50 flex items-center gap-1.5"
               >
-                {savingAttachments ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                {savingAttachments ? <PeacockLoader size="xxs" inline variant="white" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
                 <span>{isAr ? 'حفظ وتحديث المرفقات' : 'Save Attachments'}</span>
               </button>
             </div>

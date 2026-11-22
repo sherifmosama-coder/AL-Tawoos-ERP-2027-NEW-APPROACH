@@ -7419,7 +7419,7 @@ export function SalesOrderEditorModal({
                     : 'bg-emerald-600 hover:bg-emerald-700'
                 }`}
               >
-                {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                {isSaving ? <PeacockLoader size="xxs" inline variant="white" /> : <Check className="w-4 h-4" />}
                 <span>
                   {adjustmentMode
                     ? (isAr ? 'مزامنة الكميات المستلمة وتحديث الفاتورة' : 'Force Sync Actual Received & Adjust Invoice')

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { doc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
+import PeacockLoader from './PeacockLoader';
 import {
   calculateSalesOrderLineTotals,
   aggregateSalesOrderTotals,
@@ -1302,7 +1303,7 @@ export default function OrderSplitModal({
               onClick={handleConfirmSplit}
               className="inline-flex items-center gap-1.5 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black shadow-xs transition cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
             >
-              {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <GitFork className="w-4 h-4" />}
+              {isSaving ? <PeacockLoader size="xxs" inline variant="white" /> : <GitFork className="w-4 h-4" />}
               <span>
                 {isEditMode
                   ? (isAr ? `حفظ تعديلات التقسيم (${columns.length} أجزاء)` : `Save Split Changes (${columns.length} Portions)`)

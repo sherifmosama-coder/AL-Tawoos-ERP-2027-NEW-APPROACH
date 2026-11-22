@@ -1422,7 +1422,7 @@ export default function BOMRecipesMaster({ currentUser = {}, permissions = null 
                                         onClick={() => handleSaveBreakdownChanges(recipe)}
                                         className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-xs disabled:opacity-50"
                                       >
-                                        {editState.isSaving ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                                        {editState.isSaving ? <PeacockLoader size="xxs" inline variant="white" /> : <Save className="h-3.5 w-3.5" />}
                                         <span>{isAr ? 'حفظ تعديلات المكونات' : 'Save Changes'}</span>
                                       </button>
                                     )}

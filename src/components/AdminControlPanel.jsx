@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
+import {
+  normalizeUserEmails,
+  findEmailConflictUser,
+  isGoogleEmailAddress,
+  detectNonGoogleEmails,
+  getDefaultPasswordProvisionEmail,
+} from '../schemas/personnelSchema';
 import {
   collection,
   doc,
@@ -1275,13 +1283,17 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const [userForm, setUserForm] = useState({
     id: '',
     email: '',
+    secondaryEmail: '',
     name: '',
     nameAr: '',
     department: 'المشتريات',
     role: 'standard', // 'general_admin' | 'standard'
     allowedModules: ['purchases'],
     status: 'active',
+    initialPassword: '',
+    passwordTargetEmail: '',
   });
+  const [showUserInitPassword, setShowUserInitPassword] = useState(false);
 
   // --- LIVE WAREHOUSES MASTER STATE ---
   const [warehousesList, setWarehousesList] = useState([]);
@@ -1635,39 +1647,76 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   // ==========================================
   // SUB-TAB 1: USER MANAGEMENT FUNCTIONS
   // ==========================================
+  const detectedUserNonGoogleEmails = useMemo(
+    () => detectNonGoogleEmails({ email: userForm.email, secondaryEmail: userForm.secondaryEmail }),
+    [userForm.email, userForm.secondaryEmail]
+  );
+
   const handleOpenCreateUser = () => {
     setEditingUser(null);
+    setShowUserInitPassword(false);
     setUserForm({
       id: `usr_${Date.now().toString().slice(-6)}`,
       email: '',
+      secondaryEmail: '',
       name: '',
       nameAr: '',
       department: 'المشتريات',
       role: 'standard',
       allowedModules: ['purchases'],
       status: 'active',
+      initialPassword: '',
+      passwordTargetEmail: '',
     });
     setUserModalOpen(true);
   };
 
   const handleOpenEditUser = (user) => {
     setEditingUser(user);
+    setShowUserInitPassword(false);
+    const email1 = user.email || (Array.isArray(user.loginEmails) ? user.loginEmails[0] : '') || '';
+    const email2 = user.secondaryEmail || (Array.isArray(user.loginEmails) ? user.loginEmails[1] : '') || '';
     setUserForm({
       ...user,
-      email: user.email || '',
+      email: email1,
+      secondaryEmail: email2,
       role: user.role === 'general_admin' || user.isGeneralAdmin ? 'general_admin' : 'standard',
       allowedModules: user.allowedModules || ['purchases'],
+      initialPassword: '',
+      passwordTargetEmail: getDefaultPasswordProvisionEmail({ email: email1, secondaryEmail: email2 }),
     });
     setUserModalOpen(true);
   };
 
   const handleSaveUser = async (e) => {
     e.preventDefault();
-    const cleanEmail = String(userForm.email || '').trim().toLowerCase();
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    let normalizedEmails;
+    try {
+      normalizedEmails = normalizeUserEmails({
+        email: userForm.email,
+        secondaryEmail: userForm.secondaryEmail,
+      });
+    } catch {
+      alert(isAr ? 'يرجى إدخال صيغة بريد إلكتروني صحيحة.' : 'Please enter a valid email address format.');
+      return;
+    }
 
-    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
-      alert(isAr ? 'يرجى إدخال بريد إلكتروني صحيح ومعتمد لتسجيل الدخول.' : 'Please enter a valid login email address.');
+    if (normalizedEmails.loginEmails.length === 0) {
+      alert(
+        isAr
+          ? 'يلزم إدخال بريد إلكتروني واحد على الأقل لتسجيل الدخول.'
+          : 'At least 1 valid login email address is required to create a user.'
+      );
+      return;
+    }
+
+    const trimmedInitPwd = String(userForm.initialPassword || '').trim();
+    if (trimmedInitPwd.length > 0 && trimmedInitPwd.length < 6) {
+      alert(
+        isAr
+          ? 'كلمة المرور الأولية يجب أن لا تقل عن 6 أحرف.'
+          : 'Initial password must be at least 6 characters.'
+      );
       return;
     }
 
@@ -1676,30 +1725,36 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       return;
     }
 
-    // Unique Email Check across live user list
-    const existingDuplicate = usersList.find(
-      (u) => u.id !== userForm.id && String(u.email || '').toLowerCase() === cleanEmail
+    const isGeneralAdminUser = userForm.role === 'general_admin';
+    const userDocId =
+      userForm.id || `usr_${normalizedEmails.primaryEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+    // Unique Email Check across primary + secondary + loginEmails[]
+    const existingDuplicate = findEmailConflictUser(
+      usersList,
+      normalizedEmails.loginEmails,
+      userDocId
     );
     if (existingDuplicate) {
       alert(
         isAr
-          ? `البريد الإلكتروني (${cleanEmail}) مسجل بالفعل لمستخدم آخر (${existingDuplicate.nameAr || existingDuplicate.name}).`
-          : `Email (${cleanEmail}) is already assigned to another user.`
+          ? `أحد عناوين البريد الإلكتروني مسجل بالفعل لمستخدم آخر (${existingDuplicate.nameAr || existingDuplicate.name}).`
+          : `One of the email addresses is already assigned to another user (${existingDuplicate.name || existingDuplicate.nameAr}).`
       );
       return;
     }
 
     setIsSavingUser(true);
     try {
-      const isGeneralAdminUser = userForm.role === 'general_admin';
-      const userDocId = userForm.id || `usr_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
+      const { initialPassword: _dropPwd, passwordTargetEmail: _dropTarget, ...restForm } = userForm;
       await setDoc(
         doc(db, 'users', userDocId),
         {
-          ...userForm,
+          ...restForm,
           id: userDocId,
-          email: cleanEmail,
+          email: normalizedEmails.primaryEmail,
+          secondaryEmail: normalizedEmails.secondaryEmail,
+          loginEmails: normalizedEmails.loginEmails,
           role: isGeneralAdminUser ? 'general_admin' : 'standard',
           isGeneralAdmin: isGeneralAdminUser,
           isPurchasingAdmin: isGeneralAdminUser || (userForm.allowedModules || []).includes('purchases'),
@@ -1710,6 +1765,29 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
         },
         { merge: true }
       );
+
+      if (trimmedInitPwd.length >= 6) {
+        const pwdEmail =
+          (userForm.passwordTargetEmail && detectedUserNonGoogleEmails.includes(userForm.passwordTargetEmail.trim().toLowerCase()))
+            ? userForm.passwordTargetEmail.trim().toLowerCase()
+            : (detectedUserNonGoogleEmails[0] || normalizedEmails.primaryEmail);
+        if (pwdEmail) {
+          try {
+            const provisionFn = httpsCallable(functions, 'createEmployeeAuthAccount');
+            await provisionFn({ email: pwdEmail, password: trimmedInitPwd, userId: userDocId });
+          } catch (pwdErr) {
+            console.warn('User password provisioning failed:', pwdErr?.message);
+            alert(pwdErr?.message || (isAr ? 'تم حفظ الحساب ولكن تعذر ربط كلمة المرور' : 'Saved user, but password link failed'));
+          }
+        }
+      }
+
+      try {
+        const syncClaimsFn = httpsCallable(functions, 'syncErpUserClaims');
+        await syncClaimsFn({ userId: userDocId, extraEmails: normalizedEmails.loginEmails });
+      } catch (syncErr) {
+        console.warn('Non-blocking Auth claims sync notice:', syncErr?.message);
+      }
 
       setUserModalOpen(false);
     } catch (err) {
@@ -1738,6 +1816,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const filteredUsers = usersList.filter(
     (u) =>
       u.email?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
+      u.secondaryEmail?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
       u.name?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
       u.nameAr?.includes(userSearchTerm) ||
       u.id?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
@@ -4670,6 +4749,9 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                     <td className="p-3">
                       <div className="font-bold text-slate-900">{isAr ? u.nameAr : (u.name || u.nameAr)}</div>
                       <div className="font-mono text-[11px] text-indigo-700 font-semibold">{u.email || u.id}</div>
+                      {u.secondaryEmail && (
+                        <div className="font-mono text-[10px] text-amber-800 font-semibold">{u.secondaryEmail}</div>
+                      )}
                     </td>
                     <td className="p-3">
                       {u.role === 'general_admin' || u.isGeneralAdmin ? (
@@ -4761,19 +4843,121 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
             </div>
 
             <div className="space-y-3.5 text-xs">
-              {/* Primary Unique Identifier: Email Address */}
-              <div>
-                <label className="block font-bold text-slate-800 mb-1">
-                  {isAr ? 'البريد الإلكتروني لتسجيل الدخول (Login Email) *' : 'Login Email Address *'}
-                </label>
-                <input
-                  type="email"
-                  required
-                  placeholder="user@altawoos.com"
-                  value={userForm.email}
-                  onChange={(e) => setUserForm({ ...userForm, email: e.target.value.toLowerCase().trim() })}
-                  className="w-full p-2 border border-slate-300 rounded-lg font-mono font-bold bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
+              {/* Primary & Secondary Login Emails (at least 1 required) */}
+              <div className="space-y-2.5">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-800">
+                      {isAr ? 'البريد الإلكتروني الأساسي (دخول 1)' : 'Primary Login Email (1)'}
+                      {!userForm.secondaryEmail?.trim() && <span className="text-rose-600 ms-1">*</span>}
+                    </label>
+                    {userForm.email?.trim().includes('@') && (
+                      <span
+                        className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          isGoogleEmailAddress(userForm.email)
+                            ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}
+                      >
+                        {isGoogleEmailAddress(userForm.email) ? 'Google' : (isAr ? 'نطاق غير Google' : 'Non-Google')}
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="email"
+                    dir="ltr"
+                    required={!userForm.secondaryEmail?.trim()}
+                    placeholder="user@gmail.com"
+                    value={userForm.email}
+                    onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
+                    className="w-full p-2 border border-slate-300 rounded-lg font-mono font-bold bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-800">
+                      {isAr ? 'البريد البديل للشركة (دخول 2 — اختياري)' : 'Secondary Company Email (2 — Optional)'}
+                    </label>
+                    {userForm.secondaryEmail?.trim().includes('@') && (
+                      <span
+                        className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          isGoogleEmailAddress(userForm.secondaryEmail)
+                            ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}
+                      >
+                        {isGoogleEmailAddress(userForm.secondaryEmail) ? 'Google' : (isAr ? 'نطاق غير Google' : 'Non-Google')}
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="email"
+                    dir="ltr"
+                    required={!userForm.email?.trim()}
+                    placeholder="user@altawoos.com"
+                    value={userForm.secondaryEmail || ''}
+                    onChange={(e) => setUserForm({ ...userForm, secondaryEmail: e.target.value })}
+                    className="w-full p-2 border border-slate-300 rounded-lg font-mono font-bold bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                {!userForm.email?.trim() && !userForm.secondaryEmail?.trim() && (
+                  <div className="px-2.5 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-bold">
+                    {isAr
+                      ? 'مطلوب بريد إلكتروني واحد على الأقل لإنشاء المستخدم.'
+                      : 'At least 1 valid email address is required to create a user.'}
+                  </div>
+                )}
+
+                {detectedUserNonGoogleEmails.length > 0 && (
+                  <div className="p-2.5 rounded-xl bg-amber-50/90 border border-amber-200 space-y-2">
+                    <div className="flex items-center gap-1.5 text-[11px] font-black text-amber-950">
+                      <KeyRound className="w-3.5 h-3.5 text-amber-700" />
+                      <span>
+                        {isAr
+                          ? 'تم اكتشاف بريد غير Google — تعيين كلمة مرور أولية'
+                          : 'Non-Google Email Detected — Initial Password'}
+                      </span>
+                    </div>
+                    {detectedUserNonGoogleEmails.length > 1 && (
+                      <select
+                        value={
+                          detectedUserNonGoogleEmails.includes(userForm.passwordTargetEmail)
+                            ? userForm.passwordTargetEmail
+                            : detectedUserNonGoogleEmails[0]
+                        }
+                        onChange={(e) => setUserForm({ ...userForm, passwordTargetEmail: e.target.value })}
+                        className="w-full p-1.5 rounded-lg border border-amber-300 bg-white font-mono text-[11px] font-bold"
+                      >
+                        {detectedUserNonGoogleEmails.map((em) => (
+                          <option key={em} value={em}>
+                            {em}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <div className="relative">
+                      <input
+                        type={showUserInitPassword ? 'text' : 'password'}
+                        dir="ltr"
+                        minLength={6}
+                        value={userForm.initialPassword || ''}
+                        onChange={(e) => setUserForm({ ...userForm, initialPassword: e.target.value })}
+                        placeholder={isAr ? 'كلمة المرور الأولية (6 أحرف فأكثر — اختياري عند التعديل)' : 'Initial password (min 6 chars)'}
+                        className="w-full pe-8 ps-2.5 py-1.5 rounded-lg border border-amber-300 bg-white font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowUserInitPassword((v) => !v)}
+                        className="p-1 text-slate-400 hover:text-slate-700 absolute end-1.5 top-1/2 -translate-y-1/2 cursor-pointer"
+                        aria-label="Toggle password visibility"
+                      >
+                        {showUserInitPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -4892,9 +5076,11 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
               </button>
               <button
                 type="submit"
-                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs"
+                disabled={isSavingUser}
+                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg text-xs font-bold shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
               >
-                {isAr ? 'حفظ الحساب' : 'Save User'}
+                {isSavingUser && <PeacockLoader size="xxs" inline variant="white" />}
+                <span>{isSavingUser ? (isAr ? 'جاري الحفظ...' : 'Saving...') : (isAr ? 'حفظ الحساب' : 'Save User')}</span>
               </button>
             </div>
           </form>
@@ -5247,7 +5433,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                 disabled={isSavingPerms}
                 className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition cursor-pointer shadow-xs"
               >
-                {isSavingPerms ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                {isSavingPerms ? <PeacockLoader size="xxs" inline variant="white" /> : <Save className="h-3.5 w-3.5" />}
                 <span>{isAr ? 'حفظ وتطبيق الصلاحيات' : 'Save Changes'}</span>
               </button>
             </div>
@@ -5307,7 +5493,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
               >
                 {isSavingPasscode ? (
                   <>
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <PeacockLoader size="xxs" inline variant="white" />
                     <span>{isAr ? 'جاري الحفظ...' : 'Saving...'}</span>
                   </>
                 ) : (
@@ -5752,7 +5938,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                           : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                       }`}
                     >
-                      {isImporting ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <CheckSquare className="h-3.5 w-3.5" />}
+                      {isImporting ? <PeacockLoader size="xxs" inline variant="white" /> : <CheckSquare className="h-3.5 w-3.5" />}
                       <span>
                         {errorCount > 0
                           ? (isAr ? 'تأكيد وحفظ الكل (تجاوز الأخطاء)' : 'Force Commit All')
@@ -6396,7 +6582,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                 disabled={isPatchingLots}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
               >
-                {isPatchingLots ? <Sparkles className="h-4 w-4 animate-spin" /> : <Tag className="h-4 w-4" />}
+                {isPatchingLots ? <PeacockLoader size="xxs" inline variant="white" /> : <Tag className="h-4 w-4" />}
                 <span>{isAr ? 'بدء فحص وتدقيق اللوطات' : 'Run Lot Audit Now'}</span>
               </button>
             </div>
@@ -7433,7 +7619,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                   disabled={isSavingDoc}
                   className="px-5 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl font-bold shadow-xs flex items-center gap-1.5"
                 >
-                  {isSavingDoc ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  {isSavingDoc ? <PeacockLoader size="xxs" inline variant="white" /> : <Save className="h-3.5 w-3.5" />}
                   <span>{isAr ? 'حفظ وتحديث المستند' : 'Save Document'}</span>
                 </button>
               </div>
@@ -7523,7 +7709,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                 onClick={handleExecuteDynamicPurge}
                 className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs flex items-center gap-1.5"
               >
-                {isPurging ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                {isPurging ? <PeacockLoader size="xxs" inline variant="white" /> : <Trash2 className="h-3.5 w-3.5" />}
                 <span>{isAr ? 'تأكيد المسح النهائي' : 'Confirm Permanent Purge'}</span>
               </button>
             </div>

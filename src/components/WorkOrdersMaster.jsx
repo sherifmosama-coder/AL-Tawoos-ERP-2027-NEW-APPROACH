@@ -19627,7 +19627,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
                   }`}
                 >
                   {isSealingShift ? (
-                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    <PeacockLoader size="xs" inline variant="white" />
                   ) : (
                     <PowerOff className="h-4 w-4" />
                   )}

@@ -772,7 +772,7 @@ export default function OpeningStockSeederModal({
                   disabled={isCommitting || fastAutoCandidateCount === 0}
                   className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-extrabold shadow-sm transition cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
                 >
-                  {isCommitting ? <Sparkles className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4 text-amber-300" />}
+                  {isCommitting ? <PeacockLoader size="xxs" inline variant="white" /> : <Zap className="h-4 w-4 text-amber-300" />}
                   <span>{isAr ? 'ضخ وتوليد الأرصدة الافتتاحية فوراً' : 'Seed Opening Stock Now'}</span>
                 </button>
               </div>
@@ -1017,7 +1017,7 @@ export default function OpeningStockSeederModal({
                   disabled={isCommitting}
                   className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-extrabold shadow-xs transition cursor-pointer flex items-center gap-2 disabled:opacity-50"
                 >
-                  {isCommitting ? <Sparkles className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  {isCommitting ? <PeacockLoader size="xxs" inline variant="white" /> : <Save className="h-4 w-4" />}
                   <span>{isAr ? 'حفظ وتطبيق مصفوفة الأرصدة' : 'Save & Commit Matrix'}</span>
                 </button>
               </div>

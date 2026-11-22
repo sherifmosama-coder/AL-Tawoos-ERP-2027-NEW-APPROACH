@@ -11,6 +11,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import PeacockLoader from './PeacockLoader';
 import {
   AlertOctagon,
   RotateCcw,
@@ -1441,8 +1442,7 @@ export default function FaultyFGReturnMaster({ currentUser = {}, permissions = n
               {isLoading ? (
                 <tr>
                   <td colSpan="7" className="p-8 text-center text-slate-400">
-                    <div className="inline-block animate-spin rounded-full h-6 w-6 border-2 border-rose-500 border-t-transparent mb-2"></div>
-                    <p>{isAr ? 'جاري تحميل سجلات المرتجعات...' : 'Loading return vouchers...'}</p>
+                    <PeacockLoader size="md" text={isAr ? 'جاري تحميل سجلات المرتجعات...' : 'Loading return vouchers...'} />
                   </td>
                 </tr>
               ) : filteredReturns.length === 0 ? (

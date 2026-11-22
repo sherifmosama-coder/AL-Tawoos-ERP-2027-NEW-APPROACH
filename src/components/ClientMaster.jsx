@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { db, fileToDataUrl, openBase64Document } from '../firebase';
+import PeacockLoader from './PeacockLoader';
 import {
   collection,
   onSnapshot,
@@ -3655,7 +3656,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               onClick={handleApplyBulkEdit}
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
             >
-              {isApplyingBulkEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              {isApplyingBulkEdit ? <PeacockLoader size="xxs" inline variant="white" /> : <Check className="w-3.5 h-3.5" />}
               <span>{isAr ? 'تطبيق' : 'Apply'}</span>
             </button>
           </div>
@@ -3671,7 +3672,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               className="px-3.5 py-1.5 bg-rose-600/90 hover:bg-rose-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
               title={isAr ? 'حذف جميع العملاء المحددين نهائياً' : 'Permanently delete all selected clients'}
             >
-              {isDeletingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              {isDeletingBulk ? <PeacockLoader size="xxs" inline variant="white" /> : <Trash2 className="w-3.5 h-3.5" />}
               <span>{isAr ? 'حذف المحدد' : 'Delete Selected'}</span>
             </button>
           )}
@@ -3733,7 +3734,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 onClick={handleBulkDelete}
                 className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-md cursor-pointer flex items-center gap-1.5"
               >
-                {isDeletingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                {isDeletingBulk ? <PeacockLoader size="xxs" inline variant="white" /> : <Trash2 className="w-3.5 h-3.5" />}
                 <span>{isAr ? `تأكيد حذف (${selectedClientIds.size}) عميل` : `Confirm Delete (${selectedClientIds.size})`}</span>
               </button>
             </div>
@@ -6032,7 +6033,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                   className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md transition disabled:opacity-50 flex items-center gap-2 cursor-pointer"
                 >
                   {isCommittingImport ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <PeacockLoader size="xxs" inline variant="white" />
                   ) : (
                     <CheckCircle2 className="w-4 h-4" />
                   )}
@@ -6053,8 +6054,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             {isCommittingImport && (
               <div className="absolute inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
                 <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 max-w-md w-full space-y-4 text-center">
-                  <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mx-auto">
-                    <RefreshCw className="w-6 h-6 animate-spin" />
+                  <div className="flex items-center justify-center mx-auto">
+                    <PeacockLoader size="md" />
                   </div>
                   <div>
                     <h3 className="text-base font-bold text-slate-800">

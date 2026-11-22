@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import PeacockLoader from './PeacockLoader';
 import {
   BadgeDollarSign,
   BookOpen,
@@ -4698,7 +4699,7 @@ export default function ChartOfAccountsMaster({
                 >
                   {reversalModal.isSubmitting ? (
                     <>
-                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      <PeacockLoader size="xxs" inline variant="white" />
                       <span>{isAr ? 'جاري العكس...' : 'Reversing...'}</span>
                     </>
                   ) : (

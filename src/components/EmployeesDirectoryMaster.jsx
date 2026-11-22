@@ -27,6 +27,8 @@ import {
   ChevronUp,
   Briefcase,
   KeyRound,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../firebase.js';
@@ -38,6 +40,12 @@ import {
   normalizeUserEmails,
   findEmailConflictUser,
 } from '../utils/personnelDirectory.js';
+import {
+  isGoogleEmailAddress,
+  detectNonGoogleEmails,
+  getDefaultPasswordProvisionEmail,
+} from '../schemas/personnelSchema.js';
+import PeacockLoader from './PeacockLoader.jsx';
 import ScopedPermissionMatrixModal from './ScopedPermissionMatrixModal.jsx';
 
 const TAG_META_BY_ID = Object.fromEntries(OPERATIONAL_TAGS.map((t) => [t.id, t]));
@@ -82,6 +90,7 @@ export default function EmployeesDirectoryMaster({
   const [authModalEmp, setAuthModalEmp] = useState(null);
   const [authProvisionForm, setAuthProvisionForm] = useState({ email: '', password: '' });
   const [isProvisioningAuth, setIsProvisioningAuth] = useState(false);
+  const [showInitialPassword, setShowInitialPassword] = useState(false);
 
   const [formData, setFormData] = useState({
     employeeCode: '',
@@ -97,6 +106,8 @@ export default function EmployeesDirectoryMaster({
     linkedUserId: '',
     role: 'standard',
     status: 'active',
+    initialPassword: '',
+    passwordTargetEmail: '',
     hrProfile: {
       nationalId: '',
       hireDate: '',
@@ -189,6 +200,7 @@ export default function EmployeesDirectoryMaster({
     const nextCode = `EMP-${String(employees.length + 1).padStart(3, '0')}`;
     setEditingEmpId(null);
     setShowHrSection(false);
+    setShowInitialPassword(false);
     setFormData({
       employeeCode: nextCode,
       nameAr: '',
@@ -203,6 +215,8 @@ export default function EmployeesDirectoryMaster({
       linkedUserId: '',
       role: 'standard',
       status: 'active',
+      initialPassword: '',
+      passwordTargetEmail: '',
       hrProfile: {
         nationalId: '',
         hireDate: '',
@@ -217,13 +231,16 @@ export default function EmployeesDirectoryMaster({
   const openEditModal = (emp) => {
     setEditingEmpId(emp.id);
     setShowHrSection(Boolean(emp.hrProfile?.nationalId || emp.hrProfile?.hireDate || emp.hrProfile?.notes));
+    setShowInitialPassword(false);
+    const email1 = emp.email || (Array.isArray(emp.loginEmails) ? emp.loginEmails[0] : '') || '';
+    const email2 = emp.secondaryEmail || (Array.isArray(emp.loginEmails) ? emp.loginEmails[1] : '') || '';
     setFormData({
       employeeCode: emp.employeeCode || '',
       nameAr: emp.nameAr || '',
       nameEn: emp.nameEn || '',
       phone: emp.phone || '',
-      email: emp.email || (Array.isArray(emp.loginEmails) ? emp.loginEmails[0] : '') || '',
-      secondaryEmail: emp.secondaryEmail || (Array.isArray(emp.loginEmails) ? emp.loginEmails[1] : '') || '',
+      email: email1,
+      secondaryEmail: email2,
       departmentIds: getRecordDepartmentIds(emp, departments),
       jobTitle: emp.jobTitle || '',
       operationalTags: Array.isArray(emp.operationalTags) ? emp.operationalTags : [],
@@ -231,6 +248,8 @@ export default function EmployeesDirectoryMaster({
       linkedUserId: emp.linkedUserId || '',
       role: emp.isGeneralAdmin || emp.role === 'general_admin' ? 'general_admin' : 'standard',
       status: emp.status === 'inactive' ? 'inactive' : 'active',
+      initialPassword: '',
+      passwordTargetEmail: getDefaultPasswordProvisionEmail({ email: email1, secondaryEmail: email2 }),
       hrProfile: {
         nationalId: emp.hrProfile?.nationalId || '',
         hireDate: emp.hrProfile?.hireDate || '',
@@ -241,6 +260,11 @@ export default function EmployeesDirectoryMaster({
     });
     setIsModalOpen(true);
   };
+
+  const detectedNonGoogleEmails = useMemo(
+    () => detectNonGoogleEmails({ email: formData.email, secondaryEmail: formData.secondaryEmail }),
+    [formData.email, formData.secondaryEmail]
+  );
 
   const toggleTag = (tagId) => {
     setFormData((prev) => {
@@ -286,6 +310,17 @@ export default function EmployeesDirectoryMaster({
         isAr
           ? 'يرجى إدخال بريد إلكتروني واحد على الأقل لتفعيل دخول مستخدم النظام.'
           : 'Please enter at least one email address for a System User.',
+        'error'
+      );
+      return;
+    }
+
+    const trimmedInitPwd = String(formData.initialPassword || '').trim();
+    if (isSys && trimmedInitPwd.length > 0 && trimmedInitPwd.length < 6) {
+      showToast(
+        isAr
+          ? 'كلمة المرور الأولية يجب أن لا تقل عن 6 أحرف.'
+          : 'Initial password must be at least 6 characters.',
         'error'
       );
       return;
@@ -392,6 +427,28 @@ export default function EmployeesDirectoryMaster({
 
       await batch.commit();
       if (linkedUid) {
+        if (isSys && trimmedInitPwd.length >= 6 && isGeneralAdmin) {
+          const resolvedPwdEmail =
+            (formData.passwordTargetEmail && detectedNonGoogleEmails.includes(formData.passwordTargetEmail.trim().toLowerCase()))
+              ? formData.passwordTargetEmail.trim().toLowerCase()
+              : (detectedNonGoogleEmails[0] || normalizedEmails.primaryEmail);
+          if (resolvedPwdEmail) {
+            try {
+              const provisionFn = httpsCallable(functions, 'createEmployeeAuthAccount');
+              await provisionFn({
+                email: resolvedPwdEmail,
+                password: trimmedInitPwd,
+                userId: linkedUid,
+              });
+            } catch (pwdErr) {
+              console.warn('Password provisioning notice:', pwdErr?.message);
+              showToast(
+                pwdErr?.message || (isAr ? 'تم حفظ الموظف ولكن تعذر ربط كلمة المرور' : 'Saved user, but password link failed'),
+                'error'
+              );
+            }
+          }
+        }
         try {
           const syncClaimsFn = httpsCallable(functions, 'syncErpUserClaims');
           await syncClaimsFn({ userId: linkedUid, extraEmails: normalizedEmails.loginEmails });
@@ -897,12 +954,31 @@ export default function EmployeesDirectoryMaster({
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    {isAr ? 'البريد الإلكتروني الأساسي (دخول 1 — مثل Gmail)' : 'Primary Login Email (1 — e.g. Gmail)'}
-                  </label>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="font-bold text-slate-700">
+                      {isAr ? 'البريد الإلكتروني الأساسي (دخول 1)' : 'Primary Login Email (1)'}
+                      {formData.isSystemUser && !formData.secondaryEmail.trim() && (
+                        <span className="text-rose-600 ms-1">*</span>
+                      )}
+                    </label>
+                    {formData.email.trim().includes('@') && (
+                      <span
+                        className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          isGoogleEmailAddress(formData.email)
+                            ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}
+                      >
+                        {isGoogleEmailAddress(formData.email)
+                          ? (isAr ? 'Google' : 'Google')
+                          : (isAr ? 'نطاق غير Google' : 'Non-Google')}
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="email"
                     dir="ltr"
+                    required={formData.isSystemUser && !formData.secondaryEmail.trim()}
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                     placeholder="user@gmail.com"
@@ -910,19 +986,43 @@ export default function EmployeesDirectoryMaster({
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    {isAr ? 'البريد البديل للشركة (دخول 2 — اختياري)' : 'Secondary Company Email (2 — Optional)'}
-                  </label>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="font-bold text-slate-700">
+                      {isAr ? 'البريد البديل للشركة (دخول 2 — اختياري)' : 'Secondary Email (2 — Optional)'}
+                    </label>
+                    {formData.secondaryEmail.trim().includes('@') && (
+                      <span
+                        className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          isGoogleEmailAddress(formData.secondaryEmail)
+                            ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}
+                      >
+                        {isGoogleEmailAddress(formData.secondaryEmail)
+                          ? (isAr ? 'Google' : 'Google')
+                          : (isAr ? 'نطاق غير Google' : 'Non-Google')}
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="email"
                     dir="ltr"
+                    required={formData.isSystemUser && !formData.email.trim()}
                     value={formData.secondaryEmail}
                     onChange={(e) => setFormData({ ...formData, secondaryEmail: e.target.value })}
-                    placeholder="user@company-domain.com"
+                    placeholder="user@altawoos.com"
                     className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono"
                   />
                 </div>
               </div>
+
+              {formData.isSystemUser && !formData.email.trim() && !formData.secondaryEmail.trim() && (
+                <div className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-bold">
+                  {isAr
+                    ? 'يلزم إدخال بريد إلكتروني واحد على الأقل (الأساسي أو البديل) لإنشاء مستخدم نظام.'
+                    : 'At least 1 valid email address (Primary or Secondary) is required to create a system user.'}
+                </div>
+              )}
 
               {/* Operational Tags */}
               <div>
@@ -995,6 +1095,75 @@ export default function EmployeesDirectoryMaster({
                       {isAr
                         ? 'يرث المستخدم صلاحيات قسمه تلقائياً، ويمكن تخصيص أي صلاحية فردية له من مصفوفة الصلاحيات.'
                         : 'Automatically inherits Department permissions; individual overrides can be customized anytime.'}
+                    </div>
+                  </div>
+                )}
+
+                {isGeneralAdmin && formData.isSystemUser && detectedNonGoogleEmails.length > 0 && (
+                  <div className="mt-2 p-3 rounded-xl bg-amber-50/90 border border-amber-200 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-black text-amber-950">
+                        <KeyRound className="w-3.5 h-3.5 text-amber-700" />
+                        <span>
+                          {isAr
+                            ? 'تم اكتشاف بريد شركة (غير Google) — ربط كلمة مرور الدخول'
+                            : 'Non-Google Company Email Detected — Link Initial Password'}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] font-bold text-amber-900 mb-1">
+                          {isAr ? 'البريد المستهدف لكلمة المرور' : 'Password Login Email'}
+                        </label>
+                        {detectedNonGoogleEmails.length > 1 ? (
+                          <select
+                            value={
+                              detectedNonGoogleEmails.includes(formData.passwordTargetEmail)
+                                ? formData.passwordTargetEmail
+                                : detectedNonGoogleEmails[0]
+                            }
+                            onChange={(e) => setFormData({ ...formData, passwordTargetEmail: e.target.value })}
+                            className="w-full px-2.5 py-1.5 rounded-xl border border-amber-300 bg-white font-mono text-[11px] font-bold"
+                          >
+                            {detectedNonGoogleEmails.map((em) => (
+                              <option key={em} value={em}>
+                                {em}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="px-2.5 py-1.5 rounded-xl border border-amber-200 bg-white/80 font-mono text-[11px] font-bold text-slate-800 truncate" dir="ltr">
+                            {detectedNonGoogleEmails[0]}
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-amber-900 mb-1">
+                          {isAr
+                            ? (editingEmpId ? 'كلمة مرور جديدة (اختياري، ≥6 أحرف)' : 'كلمة المرور الأولية (≥6 أحرف)')
+                            : (editingEmpId ? 'Reset Password (optional, min 6)' : 'Initial Password (min 6 chars)')}
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showInitialPassword ? 'text' : 'password'}
+                            dir="ltr"
+                            minLength={6}
+                            value={formData.initialPassword}
+                            onChange={(e) => setFormData({ ...formData, initialPassword: e.target.value })}
+                            placeholder={editingEmpId ? '••••••••' : 'Min 6 chars'}
+                            className="w-full pe-8 ps-2.5 py-1.5 rounded-xl border border-amber-300 bg-white font-mono text-[11px]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowInitialPassword((v) => !v)}
+                            className="p-1 text-slate-400 hover:text-slate-700 absolute end-1.5 top-1/2 -translate-y-1/2 cursor-pointer"
+                            aria-label="Toggle password visibility"
+                          >
+                            {showInitialPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1092,9 +1261,10 @@ export default function EmployeesDirectoryMaster({
               <button
                 type="submit"
                 disabled={isSaving}
-                className="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-black shadow-sm cursor-pointer"
+                className="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-black shadow-sm inline-flex items-center gap-2 cursor-pointer"
               >
-                {isSaving ? (isAr ? 'جاري الحفظ...' : 'Saving...') : (isAr ? 'حفظ البيانات' : 'Save Staff Profile')}
+                {isSaving && <PeacockLoader size="xxs" inline variant="white" />}
+                <span>{isSaving ? (isAr ? 'جاري الحفظ...' : 'Saving...') : (isAr ? 'حفظ البيانات' : 'Save Staff Profile')}</span>
               </button>
             </div>
           </form>

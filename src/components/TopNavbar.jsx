@@ -57,6 +57,7 @@ import {
   Handshake
 } from 'lucide-react';
 import { HeaderPresencePill } from './UIUXComponents';
+import PeacockLoader from './PeacockLoader';
 import { useRecordComments } from '../context/CommentContext';
 import {
   getStoredTabConfigs,
@@ -1186,7 +1187,7 @@ export default function TopNavbar({
                           }}
                           className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-bold shrink-0 transition cursor-pointer shadow-xs flex items-center gap-1 disabled:opacity-50"
                         >
-                          {isLinkingDevice ? <Sparkles className="h-3 w-3 animate-spin" /> : null}
+                          {isLinkingDevice ? <PeacockLoader size="xxs" inline variant="white" /> : null}
                           <span>{isLinkingDevice ? (isAr ? 'جاري الربط...' : 'Linking...') : (isAr ? 'ربط الآن' : 'Link Now')}</span>
                         </button>
                       </div>

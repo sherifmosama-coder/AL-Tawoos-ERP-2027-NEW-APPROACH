@@ -33,6 +33,51 @@ export function normalizeUserEmails({ email = '', secondaryEmail = '', loginEmai
   };
 }
 
+const GOOGLE_CONSUMER_DOMAINS = new Set(['gmail.com', 'googlemail.com']);
+
+/**
+ * Returns true if the address uses a standard personal Google account domain.
+ * Custom company domains (e.g. user@altawoos.com) return false so Admin forms can auto-offer
+ * initial password provisioning.
+ */
+export function isGoogleEmailAddress(rawEmail = '') {
+  const clean = String(rawEmail || '').trim().toLowerCase();
+  const atIdx = clean.lastIndexOf('@');
+  if (atIdx < 1) return false;
+  const domain = clean.slice(atIdx + 1);
+  return GOOGLE_CONSUMER_DOMAINS.has(domain);
+}
+
+/**
+ * Returns normalized valid email addresses from a user/employee record that are non-Google.
+ */
+export function detectNonGoogleEmails({ email = '', secondaryEmail = '', loginEmails = [] } = {}) {
+  const rawList = [
+    email,
+    secondaryEmail,
+    ...(Array.isArray(loginEmails) ? loginEmails : []),
+  ]
+    .map((v) => String(v || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  return Array.from(new Set(rawList))
+    .filter((addr) => emailFormatSchema.safeParse(addr).success && !isGoogleEmailAddress(addr))
+    .slice(0, 2);
+}
+
+/**
+ * Picks the best target email for Email/Password provisioning (preferring custom company domains).
+ */
+export function getDefaultPasswordProvisionEmail({ email = '', secondaryEmail = '', loginEmails = [] } = {}) {
+  const nonGoogle = detectNonGoogleEmails({ email, secondaryEmail, loginEmails });
+  if (nonGoogle.length > 0) return nonGoogle[0];
+
+  const allValid = [secondaryEmail, email, ...(Array.isArray(loginEmails) ? loginEmails : [])]
+    .map((v) => String(v || '').trim().toLowerCase())
+    .filter((addr) => emailFormatSchema.safeParse(addr).success);
+  return allValid[0] || '';
+}
+
 /**
  * Matches an active ERP user against primary email, secondaryEmail, or loginEmails[].
  */
