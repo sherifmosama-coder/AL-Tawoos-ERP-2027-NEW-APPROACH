@@ -330,3 +330,58 @@ export const createEmployeeAuthAccount = onCall(
     };
   }
 );
+
+/**
+ * Ensures an active allowlisted ERP email has a backing Firebase Auth user before
+ * Firebase Client SDK `sendPasswordResetEmail` is called (otherwise Firebase Auth's
+ * Email Enumeration Protection silently drops password resets for newly-added company emails).
+ * Returns neutral response for non-allowlisted emails to prevent enumeration.
+ */
+export const prepareErpPasswordReset = onCall(
+  {
+    region: "me-central1",
+    cors: true,
+    maxInstances: 10,
+  },
+  async (request) => {
+    const email = normalizeEmailAddr(request.data?.email);
+    if (!email || !email.includes("@")) {
+      throw new HttpsError("invalid-argument", "Valid email address is required.");
+    }
+
+    const db = getFirestore();
+    const auth = getAuth();
+    const erpUser = await findActiveErpUserByEmail(db, email);
+    if (!erpUser) {
+      return { ok: true };
+    }
+
+    try {
+      await auth.getUserByEmail(email);
+    } catch (err) {
+      if (err?.code === "auth/user-not-found") {
+        const created = await auth.createUser({
+          email,
+          emailVerified: true,
+          disabled: false,
+          displayName: erpUser.nameAr || erpUser.name || email,
+        });
+        const claims = buildErpCustomClaims(erpUser);
+        await auth.setCustomUserClaims(created.uid, claims);
+        await db
+          .collection("users")
+          .doc(erpUser.id)
+          .set(
+            {
+              firebaseAuthUids: FieldValue.arrayUnion(created.uid),
+            },
+            { merge: true }
+          );
+      } else {
+        throw err;
+      }
+    }
+
+    return { ok: true };
+  }
+);

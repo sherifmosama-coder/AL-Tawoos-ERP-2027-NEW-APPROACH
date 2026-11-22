@@ -7,6 +7,7 @@ import {
   claimUserClaimsOnLogin,
   syncErpUserClaims,
   createEmployeeAuthAccount,
+  prepareErpPasswordReset,
 } from "./auth/userClaimsEngine.js";
 
 initializeApp();
@@ -16,6 +17,7 @@ export {
   claimUserClaimsOnLogin,
   syncErpUserClaims,
   createEmployeeAuthAccount,
+  prepareErpPasswordReset,
 };
 
 // Note: Firestore Eventarc triggers (onDocumentCreated / onDocumentWritten) require co-located

@@ -4,6 +4,7 @@ import {
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
 } from 'firebase/auth';
+import { httpsCallable } from 'firebase/functions';
 import {
   Mail,
   Lock,
@@ -16,7 +17,7 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react';
-import { auth, googleProvider } from '../firebase';
+import { auth, googleProvider, functions } from '../firebase';
 import PeacockLoader from './PeacockLoader';
 
 export default function AuthLoginGate({
@@ -106,15 +107,25 @@ export default function AuthLoginGate({
       return;
     }
     setLocalError('');
+    setResetMsg('');
+    setIsSubmitting(true);
     try {
+      try {
+        const prepareFn = httpsCallable(functions, 'prepareErpPasswordReset');
+        await prepareFn({ email: cleanEmail });
+      } catch (prepErr) {
+        console.warn('Password reset prep fallback:', prepErr?.message);
+      }
       await sendPasswordResetEmail(auth, cleanEmail);
       setResetMsg(
         isAr
-          ? `تم إرسال رابط تعيين / استعادة كلمة المرور إلى ${cleanEmail}`
-          : `Password reset link sent to ${cleanEmail}`
+          ? `إذا كان البريد (${cleanEmail}) مفعلاً بالمنظومة فسيصلك رابط التعيين من noreply@al-tawoos-erp.firebaseapp.com — يرجى مراجعة البريد الوارد والرسائل غير المرغوب فيها (Spam/Junk)، أو الدخول بـ Google إذا كان حساب Gmail.`
+          : `If ${cleanEmail} is an active ERP account, a reset link was dispatched from noreply@al-tawoos-erp.firebaseapp.com. Please check Inbox & Spam/Junk (or use Sign in with Google for Gmail).`
       );
     } catch (err) {
       setLocalError(err?.message || 'Could not send reset email.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -127,7 +138,7 @@ export default function AuthLoginGate({
       style={{
         fontFamily: "'Cairo', sans-serif",
         background:
-          'linear-gradient(90deg, #062147 0%, rgba(6, 33, 71, 0.72) 5%, rgba(6, 33, 71, 0.38) 12%, rgba(6, 33, 71, 0.14) 22%, rgba(6, 33, 71, 0.04) 36%, #ffffff 55%, #ffffff 100%)',
+          'linear-gradient(90deg, #062147 0%, rgba(6, 33, 71, 0.25) 5%, rgba(6, 33, 71, 0.05) 14%, #ffffff 26%, #ffffff 100%)',
       }}
       className="min-h-screen flex items-center justify-center p-4 sm:p-6"
     >
