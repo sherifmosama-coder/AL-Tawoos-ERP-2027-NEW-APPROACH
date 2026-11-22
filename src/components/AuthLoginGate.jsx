@@ -127,7 +127,7 @@ export default function AuthLoginGate({
       style={{
         fontFamily: "'Cairo', sans-serif",
         background:
-          'linear-gradient(155deg, #062147 0%, rgba(6, 33, 71, 0.22) 15%, #ffffff 34%, #ffffff 100%)',
+          'linear-gradient(90deg, #062147 0%, rgba(6, 33, 71, 0.22) 15%, #ffffff 34%, #ffffff 100%)',
       }}
       className="min-h-screen flex items-center justify-center p-4 sm:p-6"
     >
