@@ -53,6 +53,7 @@ import {
   Truck,
   MessageSquare,
   Receipt,
+  LogOut,
   Handshake
 } from 'lucide-react';
 import { HeaderPresencePill } from './UIUXComponents';
@@ -81,6 +82,7 @@ export default function TopNavbar({
   currentUser,
   testUsers,
   onSelectUser,
+  onSignOut = null,
   effectivePermissions = null,
   isSidebarVisible = true,
   onToggleSidebarVisibility = () => {},
@@ -1289,8 +1291,8 @@ export default function TopNavbar({
             </button>
           )}
 
-          {/* 3. Header User Persona Switcher */}
-          {onSelectUser && testUsers && testUsers.length > 0 && (
+          {/* 3. Header User Persona Switcher (Admin Only) or Active User Badge */}
+          {onSelectUser && testUsers && testUsers.length > 0 ? (
             <div className="flex items-center gap-1.5 bg-slate-100/90 hover:bg-slate-200/80 px-2 py-1.5 rounded-xl border border-slate-200/80 shadow-2xs transition">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
               <select
@@ -1314,6 +1316,22 @@ export default function TopNavbar({
                 })}
               </select>
             </div>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-slate-100/90 px-2.5 py-1.5 rounded-xl border border-slate-200/80 text-xs font-bold text-slate-800 max-w-[160px]">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              <span className="truncate">{isAr ? (currentUser.nameAr || currentUser.name) : (currentUser.name || currentUser.nameAr)}</span>
+            </div>
+          )}
+
+          {onSignOut && (
+            <button
+              type="button"
+              onClick={onSignOut}
+              title={isAr ? 'تسجيل الخروج' : 'Sign Out'}
+              className="p-2 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-700 text-slate-600 border border-slate-200/80 transition cursor-pointer"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </button>
           )}
 
           {/* 4. Online Teammates Header Presence Pill */}

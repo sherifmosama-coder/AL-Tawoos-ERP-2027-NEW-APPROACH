@@ -44,8 +44,10 @@ import {
   FileText,
   Receipt,
   Truck,
-  Handshake
+  Handshake,
+  LogOut
 } from 'lucide-react';
+import AuthLoginGate from './components/AuthLoginGate';
 import LandingPage from './components/LandingPage';
 import TopNavbar from './components/TopNavbar';
 import TabPageHeaderBanner from './components/TabPageHeaderBanner';
@@ -106,7 +108,9 @@ import PeacockLoader from './components/PeacockLoader';
 import { DEFAULT_ROLE_PERMISSIONS, resolveEffectivePermissions } from './config/appArchitecture';
 import { getRecordDepartmentIds } from './utils/personnelDirectory';
 import { collection, doc, onSnapshot, getDocs, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from './firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { httpsCallable } from 'firebase/functions';
+import { auth, db, functions } from './firebase';
 import { CommentProvider } from './context/CommentContext';
 import CommentContextMenu from './components/comments/CommentContextMenu';
 import CommentThreadPopover from './components/comments/CommentThreadPopover';
@@ -251,6 +255,116 @@ export default function App() {
     setCurrentUserId(userId);
     if (typeof window !== 'undefined') {
       localStorage.setItem('tawoos_current_user_id', userId);
+    }
+  };
+
+  const [authState, setAuthState] = useState({
+    status: 'checking', // 'checking' | 'unauthenticated' | 'unauthorized' | 'authenticated'
+    firebaseUser: null,
+    claims: null,
+    erpUserId: '',
+    fallbackUser: null,
+    unauthorizedEmail: '',
+    error: '',
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const claimLoginFn = httpsCallable(functions, 'claimUserClaimsOnLogin');
+
+    const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
+      if (cancelled) return;
+      if (!fbUser) {
+        setAuthState({
+          status: 'unauthenticated',
+          firebaseUser: null,
+          claims: null,
+          erpUserId: '',
+          fallbackUser: null,
+          unauthorizedEmail: '',
+          error: '',
+        });
+        setIsBooting(false);
+        return;
+      }
+
+      setAuthState((prev) => ({
+        ...prev,
+        status: 'checking',
+        firebaseUser: fbUser,
+        unauthorizedEmail: '',
+        error: '',
+      }));
+
+      try {
+        const res = await claimLoginFn();
+        if (cancelled) return;
+        const payload = res?.data || {};
+        const tokenResult = await fbUser.getIdTokenResult(true);
+        if (cancelled) return;
+
+        const resolvedClaims = tokenResult?.claims || payload.claims || {};
+        const resolvedErpUserId = payload.erpUserId || resolvedClaims.erpUserId || '';
+
+        if (!resolvedClaims.erpActive || !resolvedErpUserId) {
+          setAuthState({
+            status: 'unauthorized',
+            firebaseUser: fbUser,
+            claims: null,
+            erpUserId: '',
+            fallbackUser: null,
+            unauthorizedEmail: fbUser.email || '',
+            error: 'Account is not authorized for ERP access.',
+          });
+          setIsBooting(false);
+          return;
+        }
+
+        const allowSwitch = Boolean(resolvedClaims.allowDevPersonaSwitch);
+        if (!allowSwitch) {
+          setCurrentUserId(resolvedErpUserId);
+        } else if (typeof window !== 'undefined' && !localStorage.getItem('tawoos_current_user_id')) {
+          setCurrentUserId(resolvedErpUserId);
+        }
+
+        setAuthState({
+          status: 'authenticated',
+          firebaseUser: fbUser,
+          claims: resolvedClaims,
+          erpUserId: resolvedErpUserId,
+          fallbackUser: payload.userSummary ? { id: resolvedErpUserId, ...payload.userSummary } : null,
+          unauthorizedEmail: '',
+          error: '',
+        });
+      } catch (err) {
+        if (cancelled) return;
+        const msg = String(err?.message || '');
+        const code = String(err?.code || '');
+        const isDenied = code.includes('permission-denied') || msg.toLowerCase().includes('not linked');
+        setAuthState({
+          status: 'unauthorized',
+          firebaseUser: fbUser,
+          claims: null,
+          erpUserId: '',
+          fallbackUser: null,
+          unauthorizedEmail: isDenied ? (fbUser.email || '') : '',
+          error: isDenied ? '' : (msg || 'Failed verifying ERP permissions.'),
+        });
+        setIsBooting(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unsubAuth();
+    };
+  }, []);
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error('Sign out error:', err);
     }
   };
   const [cloudPermissions, setCloudPermissions] = useState({});
@@ -437,8 +551,10 @@ export default function App() {
     }
   }, [activeTab, activeModule]);
 
-  // 1. Subscribe to Live Cloud Users & Auto-Seed on initial startup
+  // 1. Subscribe to Live Cloud Users, Permissions & Departments ONLY after Firebase Auth + Claims verification
   useEffect(() => {
+    if (authState.status !== 'authenticated') return undefined;
+
     const unsubUsers = onSnapshot(
       collection(db, 'users'),
       async (snap) => {
@@ -492,25 +608,51 @@ export default function App() {
       unsubDepts();
       if (typeof unsubTabAppearance === 'function') unsubTabAppearance();
     };
-  }, []);
+  }, [authState.status]);
 
-  // Compute Active User Persona
+  // Compute Authenticated Identity + Admin-Only Dev Persona Switcher
+  const authenticatedErpUser = useMemo(() => {
+    if (!authState.erpUserId) return INITIAL_SEED_USERS[0];
+    return (
+      usersList.find((u) => u.id === authState.erpUserId) ||
+      authState.fallbackUser || {
+        id: authState.erpUserId,
+        name: authState.firebaseUser?.displayName || authState.firebaseUser?.email || authState.erpUserId,
+        nameAr: authState.firebaseUser?.displayName || authState.firebaseUser?.email || authState.erpUserId,
+        role: authState.claims?.role || 'standard',
+        isGeneralAdmin: Boolean(authState.claims?.isGeneralAdmin),
+      }
+    );
+  }, [usersList, authState]);
+
+  const canUsePersonaSwitcher = Boolean(
+    authState.status === 'authenticated' &&
+      authState.claims?.allowDevPersonaSwitch &&
+      (authenticatedErpUser?.isGeneralAdmin || authenticatedErpUser?.role === 'general_admin')
+  );
+
   const currentUser = useMemo(() => {
-    return usersList.find((u) => u.id === currentUserId) || usersList[0] || INITIAL_SEED_USERS[0];
-  }, [usersList, currentUserId]);
+    if (!canUsePersonaSwitcher) return authenticatedErpUser;
+    return usersList.find((u) => u.id === currentUserId) || authenticatedErpUser;
+  }, [canUsePersonaSwitcher, authenticatedErpUser, usersList, currentUserId]);
 
   // Sync active user persona with OneSignal for targeted mobile web push
   useEffect(() => {
-    if (currentUser?.id) {
+    if (authState.status === 'authenticated' && currentUser?.id) {
       syncOneSignalUser(currentUser);
     }
-  }, [currentUser?.id]);
+  }, [authState.status, currentUser?.id]);
 
-  // Silent Hybrid In-App Automated System Restore Scheduler (Spark-compatible single-writer lease)
+  // Silent Hybrid In-App Automated System Restore Scheduler (General Admin sessions + 24/7 Cloud Function)
   useEffect(() => {
-    if (!currentUser?.id) return undefined;
-    return startAutoRestoreScheduler({ currentUser });
-  }, [currentUser?.id]);
+    if (
+      authState.status !== 'authenticated' ||
+      !(authState.claims?.isGeneralAdmin || authenticatedErpUser?.isGeneralAdmin)
+    ) {
+      return undefined;
+    }
+    return startAutoRestoreScheduler({ currentUser: authenticatedErpUser });
+  }, [authState.status, authState.claims?.isGeneralAdmin, authenticatedErpUser]);
 
   // Live Real-Time Actions Required & Notifications Hub (Multi-Department Aware)
   const headerAlerts = useHeaderAlerts(currentUser, departmentsList);
@@ -735,6 +877,30 @@ export default function App() {
     });
   };
 
+  if (authState.status === 'checking' && !authState.firebaseUser) {
+    return (
+      <PeacockLoader
+        fullScreen
+        size="xl"
+        text={isAr ? 'جاري التحقق من جلسة الدخول...' : 'Checking authentication session...'}
+      />
+    );
+  }
+
+  if (authState.status !== 'authenticated') {
+    return (
+      <AuthLoginGate
+        isAr={isAr}
+        onToggleLanguage={toggleLanguage}
+        authError={authState.error}
+        isVerifying={authState.status === 'checking' && Boolean(authState.firebaseUser)}
+        unauthorizedEmail={authState.unauthorizedEmail}
+        onSignOutUnauthorized={handleSignOut}
+        useEmulators={Boolean(import.meta?.env?.VITE_USE_EMULATORS === 'true')}
+      />
+    );
+  }
+
   return (
     <CommentProvider
       currentUser={currentUser}
@@ -755,12 +921,33 @@ export default function App() {
         onSelectModule={handleSelectModule}
         currentUser={currentUser}
         testUsers={usersList}
-        onSelectUser={handleSwitchUser}
+        onSelectUser={canUsePersonaSwitcher ? handleSwitchUser : null}
+        onSignOut={handleSignOut}
         effectivePermissions={effectivePermissions}
         isSidebarVisible={isSidebarVisible}
         onToggleSidebarVisibility={() => setIsSidebarVisible(!isSidebarVisible)}
         headerAlerts={headerAlerts}
       />
+
+      {canUsePersonaSwitcher && currentUser.id !== authenticatedErpUser.id && (
+        <div
+          dir={isAr ? 'rtl' : 'ltr'}
+          className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-xs font-bold text-amber-950 flex flex-wrap items-center justify-between gap-2"
+        >
+          <span>
+            {isAr
+              ? `معاينة بصلاحيات: ${currentUser.nameAr || currentUser.name} (${currentUser.role || 'standard'})`
+              : `Developer Persona Preview: ${currentUser.name || currentUser.nameAr} (${currentUser.role || 'standard'})`}
+          </span>
+          <button
+            type="button"
+            onClick={() => handleSwitchUser(authenticatedErpUser.id)}
+            className="px-2.5 py-0.5 rounded-lg bg-amber-900 hover:bg-amber-800 text-white text-[11px] font-black cursor-pointer"
+          >
+            {isAr ? 'العودة لحساب المدير العام' : 'Return to General Admin'}
+          </button>
+        </div>
+      )}
 
       {/* 15-Second Auto-Dismissing In-App Alert Popup */}
       <InAppAlertToast
@@ -968,35 +1155,54 @@ export default function App() {
                   </button>
                 )}
 
-                {/* 2. User Persona Selector */}
-                <div className="flex items-center gap-2.5 bg-slate-100 px-3 py-2 rounded-xl border border-slate-200 min-h-[44px]">
-                  <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-[10px] text-slate-400 block font-medium leading-none mb-1">
-                      {isAr ? 'المستخدم النشط:' : 'Active Persona:'}
-                    </span>
-                    <select
-                      value={currentUser.id}
-                      onChange={(e) => handleSwitchUser(e.target.value)}
-                      className="w-full bg-transparent text-xs text-slate-900 font-extrabold focus:outline-none cursor-pointer truncate"
-                      title={isAr ? 'تبديل المستخدم' : 'Switch live user persona'}
-                    >
-                      {usersList.map((u) => {
-                        const displayName = isAr
-                          ? (u.nameAr || u.name || u.id)
-                          : (u.name || u.nameAr || u.id);
-                        const roleBadge = u.isGeneralAdmin || u.role === 'general_admin'
-                          ? (isAr ? 'مسؤول عام' : 'Admin')
-                          : (isAr ? 'مستخدم' : 'User');
-                        return (
-                          <option key={u.id} value={u.id}>
-                            {displayName} ({roleBadge})
-                          </option>
-                        );
-                      })}
-                    </select>
+                {/* 2. User Persona Selector (Admin Only) or Authenticated Identity */}
+                {canUsePersonaSwitcher ? (
+                  <div className="flex items-center gap-2.5 bg-slate-100 px-3 py-2 rounded-xl border border-slate-200 min-h-[44px]">
+                    <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[10px] text-slate-400 block font-medium leading-none mb-1">
+                        {isAr ? 'المستخدم النشط (تبديل المطور):' : 'Active Persona (Dev Preview):'}
+                      </span>
+                      <select
+                        value={currentUser.id}
+                        onChange={(e) => handleSwitchUser(e.target.value)}
+                        className="w-full bg-transparent text-xs text-slate-900 font-extrabold focus:outline-none cursor-pointer truncate"
+                        title={isAr ? 'تبديل المستخدم' : 'Switch live user persona'}
+                      >
+                        {usersList.map((u) => {
+                          const displayName = isAr
+                            ? (u.nameAr || u.name || u.id)
+                            : (u.name || u.nameAr || u.id);
+                          const roleBadge = u.isGeneralAdmin || u.role === 'general_admin'
+                            ? (isAr ? 'مسؤول عام' : 'Admin')
+                            : (isAr ? 'مستخدم' : 'User');
+                          return (
+                            <option key={u.id} value={u.id}>
+                              {displayName} ({roleBadge})
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-2 bg-slate-100 px-3 py-2 rounded-xl border border-slate-200 min-h-[44px]">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
+                      <span className="text-xs font-extrabold text-slate-900 truncate">
+                        {isAr ? (currentUser.nameAr || currentUser.name) : (currentUser.name || currentUser.nameAr)}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSignOut}
+                      className="p-1.5 rounded-lg bg-white hover:bg-rose-50 text-rose-600 border border-slate-200 cursor-pointer"
+                      title={isAr ? 'تسجيل الخروج' : 'Sign Out'}
+                    >
+                      <LogOut className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
 
                 {/* 3. Language Toggle */}
                 <button
@@ -1047,7 +1253,8 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 2. User Persona Switcher */}
+                {/* 2. User Persona Switcher (Admin Only) */}
+                {canUsePersonaSwitcher && (
                 <div className="relative" ref={collapsedUserMenuRef}>
                   {isSidebarExpanded ? (
                     <div className="flex items-center gap-2 bg-slate-100 px-2.5 py-1.5 rounded-xl border border-slate-200">
@@ -1126,6 +1333,7 @@ export default function App() {
                     </>
                   )}
                 </div>
+                )}
 
                 {/* 3. Language Toggle Button */}
                 <div className="relative group">
@@ -1193,7 +1401,8 @@ export default function App() {
                     onSelectModule={handleSelectModule}
                     onOpenAdminPermissions={handleOpenScopedMatrix}
                     usersList={usersList}
-                    onSelectUser={handleSwitchUser}
+                    onSelectUser={canUsePersonaSwitcher ? handleSwitchUser : null}
+                    onSignOut={handleSignOut}
                     onToggleLanguage={toggleLanguage}
                     onOpenAdminPanel={() => {
                       setAdminPanelSubTab('users');

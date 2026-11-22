@@ -1,5 +1,12 @@
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  connectFirestoreEmulator,
+} from 'firebase/firestore';
+import { getAuth, GoogleAuthProvider, connectAuthEmulator } from 'firebase/auth';
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 import { getMessaging, isSupported } from 'firebase/messaging';
 
 // Your live Firebase configuration (Connected to me-central2)
@@ -21,6 +28,28 @@ export const db = initializeFirestore(app, {
     tabManager: persistentMultipleTabManager()
   })
 });
+
+export const auth = getAuth(app);
+export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+export const functions = getFunctions(app, 'me-central2');
+
+// Optional Firebase Local Emulator Suite hook (zero-cost local dev & rules/functions testing)
+const useEmulatorsFlag =
+  typeof import.meta !== 'undefined' && import.meta?.env?.VITE_USE_EMULATORS === 'true';
+
+if (useEmulatorsFlag && typeof window !== 'undefined' && !window.__TAWOOS_EMULATORS_CONNECTED__) {
+  try {
+    connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+    connectFirestoreEmulator(db, '127.0.0.1', 8080);
+    connectFunctionsEmulator(functions, '127.0.0.1', 5001);
+    window.__TAWOOS_EMULATORS_CONNECTED__ = true;
+    console.info('[Firebase] Connected to Local Emulator Suite (Auth:9099, Firestore:8080, Functions:5001)');
+  } catch (emuErr) {
+    console.warn('[Firebase] Emulator connection warning:', emuErr?.message);
+  }
+}
 
 let messagingInstance = null;
 export async function getFirebaseMessaging() {

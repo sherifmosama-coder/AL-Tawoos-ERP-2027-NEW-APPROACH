@@ -26,13 +26,17 @@ import {
   ChevronDown,
   ChevronUp,
   Briefcase,
+  KeyRound,
 } from 'lucide-react';
-import { db } from '../firebase.js';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../firebase.js';
 import { canAccessAction } from '../config/appArchitecture.js';
 import {
   OPERATIONAL_TAGS,
   DEPARTMENT_COLOR_MAP,
   getRecordDepartmentIds,
+  normalizeUserEmails,
+  findEmailConflictUser,
 } from '../utils/personnelDirectory.js';
 import ScopedPermissionMatrixModal from './ScopedPermissionMatrixModal.jsx';
 
@@ -75,6 +79,9 @@ export default function EmployeesDirectoryMaster({
   const [toastMsg, setToastMsg] = useState(null);
   const [permModalUserId, setPermModalUserId] = useState(null);
   const [isFullMatrixOpen, setIsFullMatrixOpen] = useState(false);
+  const [authModalEmp, setAuthModalEmp] = useState(null);
+  const [authProvisionForm, setAuthProvisionForm] = useState({ email: '', password: '' });
+  const [isProvisioningAuth, setIsProvisioningAuth] = useState(false);
 
   const [formData, setFormData] = useState({
     employeeCode: '',
@@ -82,6 +89,7 @@ export default function EmployeesDirectoryMaster({
     nameEn: '',
     phone: '',
     email: '',
+    secondaryEmail: '',
     departmentIds: [],
     jobTitle: '',
     operationalTags: [],
@@ -154,6 +162,7 @@ export default function EmployeesDirectoryMaster({
           emp.nameEn,
           emp.phone,
           emp.email,
+          emp.secondaryEmail,
           emp.jobTitle,
           emp.departmentNameAr,
         ]
@@ -186,6 +195,7 @@ export default function EmployeesDirectoryMaster({
       nameEn: '',
       phone: '',
       email: '',
+      secondaryEmail: '',
       departmentIds: departments[0]?.id ? [departments[0].id] : [],
       jobTitle: '',
       operationalTags: [],
@@ -212,7 +222,8 @@ export default function EmployeesDirectoryMaster({
       nameAr: emp.nameAr || '',
       nameEn: emp.nameEn || '',
       phone: emp.phone || '',
-      email: emp.email || '',
+      email: emp.email || (Array.isArray(emp.loginEmails) ? emp.loginEmails[0] : '') || '',
+      secondaryEmail: emp.secondaryEmail || (Array.isArray(emp.loginEmails) ? emp.loginEmails[1] : '') || '',
       departmentIds: getRecordDepartmentIds(emp, departments),
       jobTitle: emp.jobTitle || '',
       operationalTags: Array.isArray(emp.operationalTags) ? emp.operationalTags : [],
@@ -257,16 +268,55 @@ export default function EmployeesDirectoryMaster({
   const handleSaveEmployee = async (e) => {
     e.preventDefault();
     if (!formData.nameAr.trim()) return;
+
+    let normalizedEmails;
+    try {
+      normalizedEmails = normalizeUserEmails({
+        email: formData.email,
+        secondaryEmail: formData.secondaryEmail,
+      });
+    } catch (emailErr) {
+      showToast(emailErr.message, 'error');
+      return;
+    }
+
+    const isSys = Boolean(formData.isSystemUser);
+    if (isSys && normalizedEmails.loginEmails.length === 0) {
+      showToast(
+        isAr
+          ? 'يرجى إدخال بريد إلكتروني واحد على الأقل لتفعيل دخول مستخدم النظام.'
+          : 'Please enter at least one email address for a System User.',
+        'error'
+      );
+      return;
+    }
+
+    const empId = editingEmpId || `EMP-${Date.now()}`;
+    const linkedUid = isSys ? (formData.linkedUserId || `USR-${Date.now()}`) : (formData.linkedUserId || null);
+
+    const conflictUser = findEmailConflictUser(
+      users,
+      normalizedEmails.loginEmails,
+      linkedUid || '',
+      empId
+    );
+    if (conflictUser) {
+      showToast(
+        isAr
+          ? `البريد الإلكتروني مسجل بالفعل لحساب آخر (${conflictUser.nameAr || conflictUser.name || conflictUser.id}).`
+          : `Email is already linked to another user (${conflictUser.name || conflictUser.nameAr || conflictUser.id}).`,
+        'error'
+      );
+      return;
+    }
+
     setIsSaving(true);
     try {
       const selectedDeptIds = Array.isArray(formData.departmentIds) ? formData.departmentIds.filter(Boolean) : [];
       const selectedDepts = selectedDeptIds.map((id) => deptById[id]).filter(Boolean);
       const primaryDept = selectedDepts[0] || null;
       const joinedDeptNamesAr = selectedDepts.map((d) => d.nameAr).filter(Boolean).join(' + ');
-      const empId = editingEmpId || `EMP-${Date.now()}`;
-      const isSys = Boolean(formData.isSystemUser);
       const isAdminRole = formData.role === 'general_admin';
-      const linkedUid = isSys ? (formData.linkedUserId || `USR-${Date.now()}`) : (formData.linkedUserId || null);
 
       const batch = writeBatch(db);
 
@@ -276,7 +326,9 @@ export default function EmployeesDirectoryMaster({
         nameAr: formData.nameAr.trim(),
         nameEn: formData.nameEn.trim() || formData.nameAr.trim(),
         phone: formData.phone.trim(),
-        email: formData.email.trim(),
+        email: normalizedEmails.primaryEmail,
+        secondaryEmail: normalizedEmails.secondaryEmail,
+        loginEmails: normalizedEmails.loginEmails,
         departmentId: primaryDept?.id || '',
         departmentIds: selectedDeptIds,
         departmentNameAr: joinedDeptNamesAr,
@@ -309,7 +361,9 @@ export default function EmployeesDirectoryMaster({
             employeeId: empId,
             nameAr: empPayload.nameAr,
             name: empPayload.nameEn,
-            email: empPayload.email,
+            email: normalizedEmails.primaryEmail,
+            secondaryEmail: normalizedEmails.secondaryEmail,
+            loginEmails: normalizedEmails.loginEmails,
             phone: empPayload.phone,
             departmentId: empPayload.departmentId,
             departmentIds: selectedDeptIds,
@@ -365,6 +419,41 @@ export default function EmployeesDirectoryMaster({
       showToast(isAr ? 'تم حذف السجل' : 'Record deleted');
     } catch (err) {
       console.error('Failed deleting employee:', err);
+    }
+  };
+
+  const openProvisionAuthModal = (emp) => {
+    const firstEmail = emp.secondaryEmail || emp.email || (Array.isArray(emp.loginEmails) ? emp.loginEmails[0] : '') || '';
+    setAuthModalEmp(emp);
+    setAuthProvisionForm({ email: firstEmail, password: '' });
+  };
+
+  const handleProvisionAuthPassword = async (e) => {
+    e.preventDefault();
+    if (!authModalEmp) return;
+    if (authProvisionForm.password.length < 6) {
+      showToast(isAr ? 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' : 'Password must be at least 6 characters', 'error');
+      return;
+    }
+    setIsProvisioningAuth(true);
+    try {
+      const fn = httpsCallable(functions, 'createEmployeeAuthAccount');
+      await fn({
+        email: authProvisionForm.email,
+        password: authProvisionForm.password,
+        userId: authModalEmp.linkedUserId || '',
+      });
+      setAuthModalEmp(null);
+      showToast(
+        isAr
+          ? `تم تفعيل الدخول بكلمة المرور للبريد ${authProvisionForm.email} ✓`
+          : `Password login provisioned for ${authProvisionForm.email} ✓`
+      );
+    } catch (err) {
+      console.error('Provision auth failed:', err);
+      showToast(err?.message || (isAr ? 'تعذر تفعيل كلمة المرور' : 'Failed provisioning login'), 'error');
+    } finally {
+      setIsProvisioningAuth(false);
     }
   };
 
@@ -613,10 +702,27 @@ export default function EmployeesDirectoryMaster({
                           <span className="truncate max-w-[160px]">{emp.email}</span>
                         </div>
                       )}
+                      {emp.secondaryEmail && (
+                        <div className="flex items-center gap-1 font-mono text-[10px] text-indigo-700" dir="ltr">
+                          <Mail className="w-3 h-3 text-indigo-400" />
+                          <span className="truncate max-w-[160px]">{emp.secondaryEmail}</span>
+                        </div>
+                      )}
                     </td>
 
                     <td className="py-3 px-4">
                       <div className="flex items-center justify-end gap-1.5">
+                        {emp.isSystemUser && emp.linkedUserId && (emp.email || emp.secondaryEmail) && isGeneralAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => openProvisionAuthModal(emp)}
+                            className="px-2 py-1 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 text-[10px] font-black inline-flex items-center gap-1 transition cursor-pointer"
+                            title={isAr ? 'تعيين كلمة مرور لبريد الشركة/الدخول' : 'Set Email/Password login'}
+                          >
+                            <KeyRound className="w-3.5 h-3.5" />
+                            <span>{isAr ? 'كلمة المرور' : 'Pass'}</span>
+                          </button>
+                        )}
                         {emp.isSystemUser && emp.linkedUserId && !emp.isGeneralAdmin && isGeneralAdmin && (
                           <button
                             type="button"
@@ -761,7 +867,7 @@ export default function EmployeesDirectoryMaster({
               </div>
 
               {/* Title & Contact */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">{isAr ? 'المسمى الوظيفي' : 'Job Title'}</label>
                   <input
@@ -783,12 +889,28 @@ export default function EmployeesDirectoryMaster({
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">{isAr ? 'البريد الإلكتروني' : 'Email'}</label>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isAr ? 'البريد الإلكتروني الأساسي (دخول 1 — مثل Gmail)' : 'Primary Login Email (1 — e.g. Gmail)'}
+                  </label>
                   <input
                     type="email"
                     dir="ltr"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    placeholder="user@gmail.com"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isAr ? 'البريد البديل للشركة (دخول 2 — اختياري)' : 'Secondary Company Email (2 — Optional)'}
+                  </label>
+                  <input
+                    type="email"
+                    dir="ltr"
+                    value={formData.secondaryEmail}
+                    onChange={(e) => setFormData({ ...formData, secondaryEmail: e.target.value })}
+                    placeholder="user@company-domain.com"
                     className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono"
                   />
                 </div>
@@ -998,6 +1120,81 @@ export default function EmployeesDirectoryMaster({
           usersList={users}
           departmentsList={departments}
         />
+      )}
+
+      {/* Email/Password Provisioning Modal (Custom Domain & Gmail Password Setup) */}
+      {authModalEmp && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4" onClick={() => setAuthModalEmp(null)}>
+          <form
+            dir={isAr ? 'rtl' : 'ltr'}
+            onSubmit={handleProvisionAuthPassword}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden text-xs"
+          >
+            <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2 font-black text-sm">
+                <KeyRound className="w-4 h-4 text-amber-300" />
+                <span>{isAr ? 'تعيين كلمة مرور الدخول' : 'Provision Email/Password Login'}</span>
+              </div>
+              <button type="button" onClick={() => setAuthModalEmp(null)} className="text-slate-300 hover:text-white cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <div className="font-bold text-slate-800">
+                {authModalEmp.nameAr || authModalEmp.name}
+              </div>
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  {isAr ? 'اختر البريد المرتبط:' : 'Select Linked Email:'}
+                </label>
+                <select
+                  value={authProvisionForm.email}
+                  onChange={(e) => setAuthProvisionForm((p) => ({ ...p, email: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono bg-white font-bold"
+                >
+                  {[authModalEmp.email, authModalEmp.secondaryEmail]
+                    .filter(Boolean)
+                    .map((em) => (
+                      <option key={em} value={em}>
+                        {em}
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  {isAr ? 'كلمة المرور (6 أحرف فأكثر):' : 'Password (min 6 characters):'}
+                </label>
+                <input
+                  type="password"
+                  dir="ltr"
+                  required
+                  minLength={6}
+                  value={authProvisionForm.password}
+                  onChange={(e) => setAuthProvisionForm((p) => ({ ...p, password: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono"
+                />
+              </div>
+            </div>
+            <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setAuthModalEmp(null)}
+                className="px-4 py-2 rounded-xl bg-slate-200 text-slate-800 font-bold cursor-pointer"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={isProvisioningAuth}
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-black cursor-pointer disabled:opacity-50"
+              >
+                {isProvisioningAuth ? (isAr ? 'جاري التفعيل...' : 'Saving...') : (isAr ? 'تفعيل كلمة المرور' : 'Save Password')}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
     </div>
   );

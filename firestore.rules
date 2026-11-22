@@ -1,0 +1,745 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model — Al-Tawoos ERP (al-tawoos-erp)
+// ===============================================================
+//
+// Custom Claims minted server-side by `claimUserClaimsOnLogin` / `syncUserClaimsOnWrite`:
+//   - erpActive: bool (must be true for any active ERP user)
+//   - erpUserId: string (ERP user document ID in `users/{userId}`)
+//   - role: string ('general_admin' | 'standard' | 'none')
+//   - isGeneralAdmin: bool
+//   - allowDevPersonaSwitch: bool
+//   - departmentIds: list<string>
+//
+// Collections:
+//
+// 1. system_restore_points, system_restore_blobs, system_restore_config, system_restore_logs
+//    - Access: General Admin only (read & write).
+//    - Fields: Backup/snapshot manifests, content-addressed gzip+base64 chunks (<700KB),
+//              scheduler configuration, and restore execution logs.
+//
+// 2. audit_logs/{logId}
+//    - Access: General Admin read-only; all client writes denied (Admin SDK / Cloud Functions only).
+//
+// 3. users/{userId}
+//    - Document ID: ERP user ID (e.g., 'usr_general_admin', 'usr_...').
+//    - Access: Active ERP users (`isSignedIn()`) can read directory for task routing/mentions.
+//              Create/Delete: General Admin only.
+//              Update: General Admin (with validation) OR self-update restricted strictly to
+//              FCM push token & timestamp fields (`fcmTokens`, `updatedAt`, `lastPushTokenRefresh`).
+//    - Fields: id, name, nameAr, email, secondaryEmail, loginEmails, role, isGeneralAdmin,
+//              isPurchasingAdmin, isActive, disabled, status, department, departmentId,
+//              departmentIds, allowedModules, permissions, defaultModuleTabs, fcmTokens,
+//              createdAt (immutable after create), updatedAt, lastPushTokenRefresh.
+//
+// 4. departments/{deptId}
+//    - Document ID: Department ID.
+//    - Access: Read by active ERP users; Create/Update/Delete by General Admin only.
+//    - Fields: id, code, nameAr, nameEn, description, headEmployeeId, headEmployeeName,
+//              color, isActive, createdAt, updatedAt.
+//
+// 5. system_config/{docId}
+//    - Access: Read by active ERP users.
+//              Write by General Admin, OR active ERP users ONLY for non-privileged operational
+//              config documents (explicitly excluding 'permissions', 'app_architecture',
+//              'notifications_config', 'ledger_security', and 'company_profile').
+//
+// 6. record_comments/{commentId}
+//    - Document ID: `th_<tab>_<docId>_<field>_<ts>`.
+//    - Access: Read/Create/Update by active ERP users (immutable metadata fields protected on update).
+//              Delete by General Admin or original thread author (`createdBy` / `authorId`).
+//    - Fields: id, targetModule, targetTab, targetDocId, targetDocNumber, targetFieldKey,
+//              targetFieldLabel, targetContextType, isSensitive, status ('open' | 'resolved'),
+//              isActionRequired, assignedUserIds, assignedUserNames, actionQueueIds,
+//              createdBy, createdByName, createdByRole, createdAt, updatedAt,
+//              resolvedBy, resolvedByName, resolvedAt, resolutionNote, messages.
+//
+// 7. user_actions_queue/{actionId}
+//    - Document ID: `<actionType>_<docId>`.
+//    - Access: Read/Create/Update by active ERP users; Delete by General Admin only.
+//    - Fields: id, actionType, docId, docNumber, title, titleEn, message, messageEn,
+//              targetTab, targetModule, highlightId, createdBy, createdByName,
+//              targetUserId, targetUserIds, targetDepartmentIds, targetRoles,
+//              includeGeneralAdmins, status ('pending' | 'completed' | 'cancelled'),
+//              createdAt, completedBy, completedByName, completedAt, cancelledBy,
+//              cancelledAt, resolutionNote, metadata.
+//
+// 8. system_notifications/{notifId}
+//    - Document ID: `notif_<ts>_<rand>`.
+//    - Access: Read/Create/Update by active ERP users; Delete by General Admin only.
+//    - Fields: id, type, title, titleEn, message, messageEn, targetUserId, targetUserIds,
+//              targetDepartmentIds, targetRoles, includeGeneralAdmins, targetTab,
+//              targetModule, highlightId, createdBy, createdByName, readBy, createdAt, metadata.
+//
+// 9. Master Collections (19) & Operational ERP Collections (34)
+//    - Explicitly scoped by collection name; read/write restricted to active allowlisted ERP users
+//      (`isSignedIn()`) with structural anti-DoS validation on all creates and updates.
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Authentication & Custom Claims Helpers
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSignedIn() {
+      return isAuthenticated() && request.auth.token.erpActive == true;
+    }
+
+    function isGeneralAdmin() {
+      return isSignedIn() && (
+        request.auth.token.isGeneralAdmin == true ||
+        request.auth.token.role == 'general_admin'
+      );
+    }
+
+    function erpUserId() {
+      return request.auth.token.erpUserId;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && erpUserId() == userId;
+    }
+
+    function isDocOwner() {
+      return isSignedIn() && resource != null && resource.data != null && (
+        ('createdBy' in resource.data && resource.data.createdBy == erpUserId()) ||
+        ('authorId' in resource.data && resource.data.authorId == erpUserId())
+      );
+    }
+
+    function uidUnchanged() {
+      return !('createdBy' in request.resource.data) ||
+        request.resource.data.createdBy == erpUserId();
+    }
+
+    // ===============================================================
+    // Generic Validation & Anti-DoS Helpers
+    // ===============================================================
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function isValidOptionalString(data, field, minLen, maxLen) {
+      return !(field in data) ||
+        (data[field] is string &&
+         data[field].size() >= minLen &&
+         data[field].size() <= maxLen);
+    }
+
+    function isValidOptionalStringOrNull(data, field, minLen, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is string &&
+         data[field].size() >= minLen &&
+         data[field].size() <= maxLen);
+    }
+
+    function isValidOptionalStringOrNumberOrNull(data, field, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        data[field] is number ||
+        (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isValidOptionalBool(data, field) {
+      return !(field in data) || data[field] is bool;
+    }
+
+    function isValidOptionalNumber(data, field) {
+      return !(field in data) || data[field] == null || data[field] is number;
+    }
+
+    function isValidList(listVal, maxSize) {
+      return listVal is list && listVal.size() <= maxSize;
+    }
+
+    function isValidOptionalList(data, field, maxSize) {
+      return !(field in data) ||
+        data[field] == null ||
+        isValidList(data[field], maxSize);
+    }
+
+    function isValidOptionalMap(data, field, maxKeys) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is map && data[field].keys().size() <= maxKeys);
+    }
+
+    function isValidTimestampOrIso(val) {
+      return val == null ||
+        val is timestamp ||
+        (val is string && val.size() >= 10 && val.size() <= 40);
+    }
+
+    function isValidOptionalTimestampOrIso(data, field) {
+      return !(field in data) || isValidTimestampOrIso(data[field]);
+    }
+
+    // ===============================================================
+    // Domain Validators (Called on BOTH create and update)
+    // ===============================================================
+
+    function isValidSystemRestoreDoc(data) {
+      return data is map &&
+        data.keys().size() <= 100 &&
+        isValidOptionalStringOrNull(data, 'id', 1, 200) &&
+        isValidOptionalStringOrNull(data, 'encoding', 0, 50) &&
+        isValidOptionalStringOrNull(data, 'encoded', 0, 1000000) &&
+        isValidOptionalStringOrNull(data, 'payload', 0, 1000000);
+    }
+
+    function isValidUserAdminWrite(data) {
+      return data is map &&
+        data.keys().size() <= 80 &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalStringOrNull(data, 'name', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'nameAr', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'email', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'secondaryEmail', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'role', 1, 50) &&
+        isValidOptionalStringOrNull(data, 'status', 1, 30) &&
+        isValidOptionalStringOrNull(data, 'department', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'departmentId', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'employeeId', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'jobTitle', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'phone', 0, 50) &&
+        isValidOptionalBool(data, 'isGeneralAdmin') &&
+        isValidOptionalBool(data, 'isPurchasingAdmin') &&
+        isValidOptionalBool(data, 'isActive') &&
+        isValidOptionalBool(data, 'disabled') &&
+        isValidOptionalBool(data, 'pushEnabled') &&
+        isValidOptionalList(data, 'loginEmails', 10) &&
+        isValidOptionalList(data, 'departmentIds', 30) &&
+        isValidOptionalList(data, 'allowedModules', 30) &&
+        isValidOptionalList(data, 'fcmTokens', 50) &&
+        isValidOptionalMap(data, 'permissions', 100) &&
+        isValidOptionalMap(data, 'defaultModuleTabs', 30) &&
+        isValidOptionalStringOrNull(data, 'onesignalSubscriptionId', 0, 256) &&
+        isValidOptionalStringOrNull(data, 'onesignalPushToken', 0, 512) &&
+        isValidOptionalStringOrNull(data, 'deviceType', 0, 128) &&
+        isValidOptionalTimestampOrIso(data, 'deviceLastActive') &&
+        isValidOptionalTimestampOrIso(data, 'createdAt') &&
+        isValidOptionalTimestampOrIso(data, 'updatedAt') &&
+        isValidOptionalTimestampOrIso(data, 'lastPushTokenRefresh');
+    }
+
+    function isValidUserSelfUpdate(userId) {
+      return isOwner(userId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'fcmTokens',
+          'updatedAt',
+          'lastPushTokenRefresh',
+          'defaultModuleTabs',
+          'onesignalSubscriptionId',
+          'onesignalPushToken',
+          'pushEnabled',
+          'deviceType',
+          'deviceLastActive'
+        ]) &&
+        isValidOptionalList(request.resource.data, 'fcmTokens', 50) &&
+        isValidOptionalTimestampOrIso(request.resource.data, 'updatedAt') &&
+        isValidOptionalTimestampOrIso(request.resource.data, 'lastPushTokenRefresh') &&
+        isValidOptionalMap(request.resource.data, 'defaultModuleTabs', 30) &&
+        isValidOptionalStringOrNull(request.resource.data, 'onesignalSubscriptionId', 0, 256) &&
+        isValidOptionalStringOrNull(request.resource.data, 'onesignalPushToken', 0, 512) &&
+        isValidOptionalBool(request.resource.data, 'pushEnabled') &&
+        isValidOptionalStringOrNull(request.resource.data, 'deviceType', 0, 128) &&
+        isValidOptionalTimestampOrIso(request.resource.data, 'deviceLastActive') &&
+        areImmutableFieldsUnchanged([
+          'id',
+          'role',
+          'isGeneralAdmin',
+          'isPurchasingAdmin',
+          'email',
+          'secondaryEmail',
+          'loginEmails',
+          'status',
+          'isActive',
+          'disabled',
+          'permissions',
+          'allowedModules',
+          'departmentIds',
+          'departmentId',
+          'createdAt'
+        ]);
+    }
+
+    function isValidDepartment(data) {
+      return data is map &&
+        data.keys().size() <= 40 &&
+        isValidOptionalStringOrNull(data, 'id', 1, 128) &&
+        isValidOptionalStringOrNull(data, 'code', 0, 50) &&
+        isValidOptionalStringOrNull(data, 'nameAr', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'nameEn', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'description', 0, 2000) &&
+        isValidOptionalStringOrNull(data, 'headEmployeeId', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'headEmployeeName', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'color', 0, 50) &&
+        isValidOptionalBool(data, 'isActive') &&
+        isValidOptionalTimestampOrIso(data, 'createdAt') &&
+        isValidOptionalTimestampOrIso(data, 'updatedAt');
+    }
+
+    function isValidSystemConfig(data) {
+      return data is map &&
+        data.keys().size() <= 200 &&
+        isValidOptionalNumber(data, 'lastSeq') &&
+        isValidOptionalStringOrNull(data, 'lastDocNumber', 0, 100) &&
+        isValidOptionalTimestampOrIso(data, 'updatedAt');
+    }
+
+    function isValidCommentThread(data) {
+      return data is map &&
+        data.keys().size() <= 50 &&
+        isValidOptionalString(data, 'id', 1, 250) &&
+        isValidOptionalString(data, 'targetModule', 0, 100) &&
+        isValidOptionalString(data, 'targetTab', 0, 100) &&
+        isValidOptionalString(data, 'targetDocId', 1, 200) &&
+        isValidOptionalStringOrNull(data, 'targetDocNumber', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'targetFieldKey', 0, 150) &&
+        isValidOptionalStringOrNull(data, 'targetFieldLabel', 0, 300) &&
+        isValidOptionalStringOrNull(data, 'targetContextType', 0, 100) &&
+        isValidOptionalBool(data, 'isSensitive') &&
+        isValidOptionalBool(data, 'isActionRequired') &&
+        (!('status' in data) || data.status in ['open', 'resolved']) &&
+        isValidOptionalList(data, 'assignedUserIds', 100) &&
+        isValidOptionalList(data, 'assignedUserNames', 100) &&
+        isValidOptionalList(data, 'actionQueueIds', 50) &&
+        isValidOptionalList(data, 'messages', 500) &&
+        isValidOptionalStringOrNull(data, 'createdBy', 1, 128) &&
+        isValidOptionalStringOrNull(data, 'createdByName', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'createdByRole', 0, 50) &&
+        isValidOptionalStringOrNull(data, 'resolvedBy', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'resolvedByName', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'resolutionNote', 0, 2000) &&
+        isValidOptionalTimestampOrIso(data, 'createdAt') &&
+        isValidOptionalTimestampOrIso(data, 'updatedAt') &&
+        isValidOptionalTimestampOrIso(data, 'resolvedAt');
+    }
+
+    function isValidActionQueueItem(data) {
+      return data is map &&
+        data.keys().size() <= 50 &&
+        isValidOptionalStringOrNull(data, 'id', 1, 250) &&
+        isValidOptionalStringOrNull(data, 'actionType', 1, 100) &&
+        isValidOptionalStringOrNull(data, 'docId', 1, 200) &&
+        isValidOptionalStringOrNull(data, 'docNumber', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'title', 0, 500) &&
+        isValidOptionalStringOrNull(data, 'titleEn', 0, 500) &&
+        isValidOptionalStringOrNull(data, 'message', 0, 5000) &&
+        isValidOptionalStringOrNull(data, 'messageEn', 0, 5000) &&
+        isValidOptionalStringOrNull(data, 'targetTab', 0, 100) &&
+        isValidOptionalStringOrNull(data, 'targetModule', 0, 100) &&
+        isValidOptionalStringOrNull(data, 'highlightId', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'createdBy', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'createdByName', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'targetUserId', 0, 128) &&
+        isValidOptionalList(data, 'targetUserIds', 200) &&
+        isValidOptionalList(data, 'targetDepartmentIds', 50) &&
+        isValidOptionalList(data, 'targetRoles', 50) &&
+        isValidOptionalBool(data, 'includeGeneralAdmins') &&
+        (!('status' in data) || data.status in ['pending', 'completed', 'cancelled']) &&
+        isValidOptionalStringOrNull(data, 'completedBy', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'completedByName', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'cancelledBy', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'resolutionNote', 0, 2000) &&
+        isValidOptionalMap(data, 'metadata', 50) &&
+        isValidOptionalTimestampOrIso(data, 'createdAt') &&
+        isValidOptionalTimestampOrIso(data, 'completedAt') &&
+        isValidOptionalTimestampOrIso(data, 'cancelledAt');
+    }
+
+    function isValidSystemNotification(data) {
+      return data is map &&
+        data.keys().size() <= 50 &&
+        isValidOptionalStringOrNull(data, 'id', 1, 250) &&
+        isValidOptionalStringOrNull(data, 'type', 1, 100) &&
+        isValidOptionalStringOrNull(data, 'title', 0, 500) &&
+        isValidOptionalStringOrNull(data, 'titleEn', 0, 500) &&
+        isValidOptionalStringOrNull(data, 'message', 0, 5000) &&
+        isValidOptionalStringOrNull(data, 'messageEn', 0, 5000) &&
+        isValidOptionalStringOrNull(data, 'targetUserId', 0, 128) &&
+        isValidOptionalList(data, 'targetUserIds', 500) &&
+        isValidOptionalList(data, 'targetDepartmentIds', 50) &&
+        isValidOptionalList(data, 'targetRoles', 50) &&
+        isValidOptionalBool(data, 'includeGeneralAdmins') &&
+        isValidOptionalStringOrNull(data, 'targetTab', 0, 100) &&
+        isValidOptionalStringOrNull(data, 'targetModule', 0, 100) &&
+        isValidOptionalStringOrNull(data, 'highlightId', 0, 200) &&
+        isValidOptionalStringOrNull(data, 'createdBy', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'createdByName', 0, 200) &&
+        isValidOptionalList(data, 'readBy', 500) &&
+        isValidOptionalMap(data, 'metadata', 50) &&
+        isValidOptionalTimestampOrIso(data, 'createdAt');
+    }
+
+    function isValidErpRecord(data) {
+      return data is map &&
+        data.keys().size() <= 200 &&
+        isValidOptionalStringOrNumberOrNull(data, 'id', 250) &&
+        isValidOptionalStringOrNull(data, 'name', 0, 500) &&
+        isValidOptionalStringOrNull(data, 'nameAr', 0, 500) &&
+        isValidOptionalStringOrNull(data, 'nameEn', 0, 500) &&
+        isValidOptionalStringOrNumberOrNull(data, 'code', 150) &&
+        isValidOptionalStringOrNull(data, 'status', 0, 100) &&
+        isValidOptionalStringOrNull(data, 'notes', 0, 20000) &&
+        isValidOptionalStringOrNull(data, 'description', 0, 20000) &&
+        isValidOptionalStringOrNull(data, 'createdBy', 0, 128) &&
+        isValidOptionalStringOrNull(data, 'updatedBy', 0, 128);
+    }
+
+    // ===============================================================
+    // Explicit Default-Deny Baseline
+    // ===============================================================
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // 1. Strict General-Admin-Only Collections (System Restore)
+    // ===============================================================
+
+    match /system_restore_points/{docId} {
+      allow read, delete: if isGeneralAdmin();
+      allow create, update: if isGeneralAdmin() && isValidSystemRestoreDoc(request.resource.data);
+    }
+
+    match /system_restore_blobs/{docId} {
+      allow read, delete: if isGeneralAdmin();
+      allow create, update: if isGeneralAdmin() && isValidSystemRestoreDoc(request.resource.data);
+    }
+
+    match /system_restore_config/{docId} {
+      allow read, delete: if isGeneralAdmin();
+      allow create, update: if isGeneralAdmin() && isValidSystemRestoreDoc(request.resource.data);
+    }
+
+    match /system_restore_logs/{docId} {
+      allow read, delete: if isGeneralAdmin();
+      allow create, update: if isGeneralAdmin() && isValidSystemRestoreDoc(request.resource.data);
+    }
+
+    // ===============================================================
+    // 2. Immutable Server-Only Audit Logs
+    // ===============================================================
+
+    match /audit_logs/{logId} {
+      allow read: if isGeneralAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // ===============================================================
+    // 3. Organization & Access Control
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isGeneralAdmin() && isValidUserAdminWrite(request.resource.data);
+      allow update: if (isGeneralAdmin() && isValidUserAdminWrite(request.resource.data)) ||
+        isValidUserSelfUpdate(userId);
+      allow delete: if isGeneralAdmin();
+    }
+
+    match /departments/{deptId} {
+      allow read: if isSignedIn();
+      allow create, update: if isGeneralAdmin() && isValidDepartment(request.resource.data);
+      allow delete: if isGeneralAdmin();
+    }
+
+    match /system_config/{docId} {
+      allow read: if isSignedIn();
+      allow create, update: if (isGeneralAdmin() ||
+        (isSignedIn() && !(docId in [
+          'permissions',
+          'app_architecture',
+          'notifications_config',
+          'ledger_security',
+          'company_profile'
+        ]))) && isValidSystemConfig(request.resource.data);
+      allow delete: if isGeneralAdmin() ||
+        (isSignedIn() && !(docId in [
+          'permissions',
+          'app_architecture',
+          'notifications_config',
+          'ledger_security',
+          'company_profile'
+        ]));
+    }
+
+    // ===============================================================
+    // 4. Collaborative Comments (`record_comments`)
+    // ===============================================================
+
+    match /record_comments/{commentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        isValidCommentThread(request.resource.data) &&
+        (isGeneralAdmin() || uidUnchanged());
+      allow update: if isSignedIn() &&
+        isValidCommentThread(request.resource.data) &&
+        areImmutableFieldsUnchanged([
+          'id',
+          'createdBy',
+          'createdAt',
+          'targetModule',
+          'targetTab',
+          'targetDocId'
+        ]);
+      allow delete: if isGeneralAdmin() || isDocOwner();
+    }
+
+    // ===============================================================
+    // 5. Pending Actions & Notifications
+    // ===============================================================
+
+    match /user_actions_queue/{actionId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidActionQueueItem(request.resource.data);
+      allow update: if isSignedIn() &&
+        isValidActionQueueItem(request.resource.data) &&
+        areImmutableFieldsUnchanged(['id', 'docId', 'createdAt']);
+      allow delete: if isGeneralAdmin();
+    }
+
+    match /system_notifications/{notifId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidSystemNotification(request.resource.data);
+      allow update: if isSignedIn() &&
+        isValidSystemNotification(request.resource.data) &&
+        areImmutableFieldsUnchanged(['id', 'type', 'createdBy', 'createdAt']);
+      allow delete: if isGeneralAdmin();
+    }
+
+    // ===============================================================
+    // 6. Active Master ERP Collections (19)
+    // ===============================================================
+
+    match /employees/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /items/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /suppliers/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /clients/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /client_segments/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /categories/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /finished_products/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /finished_product_categories/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /warehouses/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /bom_recipes/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /intermediate_recipes/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /production_processes/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /production_workers/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /cash_safes/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /corporate_banks/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /bank_accounts/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /vehicles/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /chart_of_accounts/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /floor_liquid_vessels/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+
+    // ===============================================================
+    // 7. Active Operational ERP Collections (34)
+    // ===============================================================
+
+    match /purchase_orders/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /goods_receipts/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /stock_transfers/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /transfers/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /stock_ledger/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /stock_counts/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /spare_parts_issues/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /work_orders/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /production_work_orders/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /staged_floor_pallets/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /staged_floor_materials/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /production_breaks/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /production_shifts/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /liquid_tanks/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /production_transformations/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /shift_handovers/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /faulty_fg_returns/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /fg_receipts/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /cash_transactions/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /cash_count_sessions/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /journal_entries/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /custody_ledger/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /custody_advance_drafts/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /custodies_and_advances/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /dues_settlements/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /dues_batches/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /wht_notes/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /sales_orders/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /truck_dispatches/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /dispatch_documents/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /price_lists/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /pricing_strategies/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /client_contracts/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+    match /aggregates/{docId} {
+      allow read, delete: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+    }
+  }
+}

@@ -41,7 +41,8 @@ import {
   Truck,
   FileText,
   Receipt,
-  Handshake
+  Handshake,
+  LogOut
 } from 'lucide-react';
 import {
   getStoredTabConfigs,
@@ -55,7 +56,8 @@ export default function LandingPage({
   onSelectModule,
   onOpenAdminPermissions,
   usersList = [],
-  onSelectUser = () => {},
+  onSelectUser = null,
+  onSignOut = null,
   onToggleLanguage = () => {},
   onOpenAdminPanel = () => {},
   onUpdateDefaultTab = () => {}
@@ -291,30 +293,49 @@ export default function LandingPage({
             </button>
           )}
 
-          {/* User Persona Switcher */}
-          <div className="flex items-center gap-1.5 bg-slate-100 px-2.5 py-1.5 rounded-xl border border-slate-200 shadow-2xs">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-            <select
-              value={currentUser.id}
-              onChange={(e) => onSelectUser(e.target.value)}
-              className="bg-transparent text-xs text-slate-800 font-bold focus:outline-none cursor-pointer max-w-[170px] truncate"
-              title={isAr ? 'تبديل المستخدم' : 'Switch live user persona'}
+          {/* User Persona Switcher (Admin Only) or Authenticated Identity Pill */}
+          {typeof onSelectUser === 'function' ? (
+            <div className="flex items-center gap-1.5 bg-slate-100 px-2.5 py-1.5 rounded-xl border border-slate-200 shadow-2xs">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              <select
+                value={currentUser.id}
+                onChange={(e) => onSelectUser(e.target.value)}
+                className="bg-transparent text-xs text-slate-800 font-bold focus:outline-none cursor-pointer max-w-[170px] truncate"
+                title={isAr ? 'تبديل المستخدم' : 'Switch live user persona'}
+              >
+                {usersList.map((u) => {
+                  const displayName = isAr
+                    ? (u.nameAr || u.name || u.id)
+                    : (u.name || u.nameAr || u.id);
+                  const roleBadge = u.isGeneralAdmin || u.role === 'general_admin'
+                    ? (isAr ? 'مسؤول عام' : 'Admin')
+                    : (isAr ? 'مستخدم' : 'User');
+                  return (
+                    <option key={u.id} value={u.id}>
+                      {displayName} ({roleBadge})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-800">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              <span>{isAr ? (currentUser.nameAr || currentUser.name) : (currentUser.name || currentUser.nameAr)}</span>
+            </div>
+          )}
+
+          {onSignOut && (
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="flex items-center gap-1.5 bg-slate-100 hover:bg-rose-50 hover:text-rose-700 px-2.5 py-1.5 rounded-xl border border-slate-200 text-xs font-bold transition cursor-pointer text-slate-700 shadow-2xs"
+              title={isAr ? 'تسجيل الخروج' : 'Sign Out'}
             >
-              {usersList.map((u) => {
-                const displayName = isAr
-                  ? (u.nameAr || u.name || u.id)
-                  : (u.name || u.nameAr || u.id);
-                const roleBadge = u.isGeneralAdmin || u.role === 'general_admin'
-                  ? (isAr ? 'مسؤول عام' : 'Admin')
-                  : (isAr ? 'مستخدم' : 'User');
-                return (
-                  <option key={u.id} value={u.id}>
-                    {displayName} ({roleBadge})
-                  </option>
-                );
-              })}
-            </select>
-          </div>
+              <LogOut className="h-3.5 w-3.5 shrink-0" />
+              <span>{isAr ? 'خروج' : 'Sign Out'}</span>
+            </button>
+          )}
 
           {/* Language Toggle */}
           <button

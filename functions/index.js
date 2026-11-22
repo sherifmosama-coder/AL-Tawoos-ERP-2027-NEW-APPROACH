@@ -5,10 +5,21 @@ import { getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
+import {
+  claimUserClaimsOnLogin,
+  syncUserClaimsOnWrite,
+  createEmployeeAuthAccount,
+} from "./auth/userClaimsEngine.js";
 
 initializeApp();
 const db = getFirestore();
 const messaging = getMessaging();
+
+export {
+  claimUserClaimsOnLogin,
+  syncUserClaimsOnWrite,
+  createEmployeeAuthAccount,
+};
 
 /**
  * Resolves all valid FCM device tokens for a given set of targetUserIds and targetRoles.
