@@ -51,6 +51,13 @@ import {
   inventoryRegisterWorkOrderPallet,
   inventoryReverseWorkOrderPallet,
 } from "./inventory/productionInventoryEngine.js";
+import {
+  salesConfirmTruckDispatch,
+  salesSubmitReturnStep,
+  salesFinalizeReturnHandshake,
+  salesMintPrintDocNumber,
+  salesCommitPrintedDocument,
+} from "./sales/truckDispatchEngine.js";
 
 initializeApp();
 const db = getFirestore();
@@ -88,6 +95,11 @@ export {
   inventoryCancelSparePartsConsumption,
   inventoryRegisterWorkOrderPallet,
   inventoryReverseWorkOrderPallet,
+  salesConfirmTruckDispatch,
+  salesSubmitReturnStep,
+  salesFinalizeReturnHandshake,
+  salesMintPrintDocNumber,
+  salesCommitPrintedDocument,
 };
 
 // Note: Firestore Eventarc triggers (onDocumentCreated / onDocumentWritten) require co-located

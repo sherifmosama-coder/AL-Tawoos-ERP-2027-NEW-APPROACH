@@ -11,16 +11,13 @@ import {
   doc,
   getDocs,
   query,
-  runTransaction,
   setDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { formatDispatchDocNumber } from './dispatchDocumentRegistry.js';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../firebase.js';
 
-const COUNTER_COLLECTION = 'system_config';
-const COUNTER_DOC_ID = 'dispatch_doc_counter';
-const RETURN_COUNTER_DOC_ID = 'return_doc_counter';
 export const DISPATCH_DOCUMENTS_COLLECTION = 'dispatch_documents';
 
 export function formatReturnDocNumber(seq) {
@@ -31,55 +28,25 @@ export function formatReturnDocNumber(seq) {
 /**
  * Atomically mints the next unique sequential Return Document number (RET-00001, RET-00002, ...).
  */
-export async function mintReturnDocNumber(db) {
-  const counterRef = doc(db, COUNTER_COLLECTION, RETURN_COUNTER_DOC_ID);
-  const nextSeq = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(counterRef);
-    const currentSeq = snap.exists() ? Number(snap.data()?.lastSeq || 0) : 0;
-    const incremented = currentSeq + 1;
-    tx.set(
-      counterRef,
-      {
-        lastSeq: incremented,
-        lastDocNumber: formatReturnDocNumber(incremented),
-        updatedAt: new Date().toISOString(),
-      },
-      { merge: true }
-    );
-    return incremented;
-  });
-
+export async function mintReturnDocNumber(_db, currentUser = null) {
+  const fn = httpsCallable(functions, 'salesMintPrintDocNumber');
+  const res = await fn({ kind: 'return', currentUser });
   return {
-    returnDocSeq: nextSeq,
-    returnDocNumber: formatReturnDocNumber(nextSeq),
+    returnDocSeq: Number(res?.data?.returnDocSeq || 0),
+    returnDocNumber: String(res?.data?.returnDocNumber || ''),
   };
 }
 
 /**
  * Atomically mints the next unique sequential Dispatch Document number (DD-00001, DD-00002, ...).
- * Guaranteed intact and monotonic even under concurrent printing.
+ * Guaranteed intact and monotonic via server Cloud Function even under concurrent printing.
  */
-export async function mintDispatchDocNumber(db) {
-  const counterRef = doc(db, COUNTER_COLLECTION, COUNTER_DOC_ID);
-  const nextSeq = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(counterRef);
-    const currentSeq = snap.exists() ? Number(snap.data()?.lastSeq || 0) : 0;
-    const incremented = currentSeq + 1;
-    tx.set(
-      counterRef,
-      {
-        lastSeq: incremented,
-        lastDocNumber: formatDispatchDocNumber(incremented),
-        updatedAt: new Date().toISOString(),
-      },
-      { merge: true }
-    );
-    return incremented;
-  });
-
+export async function mintDispatchDocNumber(_db, currentUser = null) {
+  const fn = httpsCallable(functions, 'salesMintPrintDocNumber');
+  const res = await fn({ kind: 'dispatch', currentUser });
   return {
-    docSeq: nextSeq,
-    docNumber: formatDispatchDocNumber(nextSeq),
+    docSeq: Number(res?.data?.docSeq || 0),
+    docNumber: String(res?.data?.docNumber || ''),
   };
 }
 

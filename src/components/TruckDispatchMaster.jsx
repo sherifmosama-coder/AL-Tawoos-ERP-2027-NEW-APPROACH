@@ -45,7 +45,8 @@ import {
   ExternalLink,
   ListChecks,
 } from 'lucide-react';
-import { db } from '../firebase.js';
+import { db, functions } from '../firebase.js';
+import { httpsCallable } from 'firebase/functions';
 import PeacockLoader from './PeacockLoader.jsx';
 import SalesOrderAuditModal from './SalesOrderAuditModal.jsx';
 import { RowCommentButton } from './comments';
@@ -740,28 +741,19 @@ function TruckDispatchModal({
         updatedAt: nowIso,
       };
 
-      batch.set(dispRef, payload, { merge: true });
-
-      // Stamp FG Warehouse Gate confirmation flag on each order in the trip (does NOT bypass financial docs gate to `shipped`)
-      trip.orders.forEach((o) => {
-        const oRef = doc(db, 'sales_orders', o.id);
-        batch.update(oRef, {
-          fgWarehouseDispatched: true,
-          fgWarehouseDispatchId: trip.id,
-          fgWarehouseDispatchedAt: existing?.dispatchedAt || nowIso,
-          fgWarehouseDispatchedByName: existing?.dispatchedByName || actorName,
-        });
+      const confirmDispatchFn = httpsCallable(functions, 'salesConfirmTruckDispatch');
+      await confirmDispatchFn({
+        tripId: trip.id,
+        payload,
+        isEditDispatch,
+        supersedureMeta: isEditDispatch
+          ? {
+              reasonAr: planDrift.hasPlanDrift ? planDrift.summaryAr : 'تم تعديل بيان الصرف بعد الطباعة',
+              reasonEn: planDrift.hasPlanDrift ? planDrift.summaryEn : 'Dispatch slip modified after printing',
+            }
+          : {},
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
       });
-
-      await batch.commit();
-      if (isEditDispatch) {
-        markTripRegistryDocsSuperseded(db, trip.id, {
-          reasonAr: planDrift.hasPlanDrift ? planDrift.summaryAr : 'تم تعديل بيان الصرف بعد الطباعة',
-          reasonEn: planDrift.hasPlanDrift ? planDrift.summaryEn : 'Dispatch slip modified after printing',
-          actorName,
-          nowIso,
-        }).catch((err) => console.warn('Could not mark prior registry docs superseded:', err));
-      }
       if (onSaved) onSaved(payload);
       onClose();
     } catch (err) {
@@ -1476,21 +1468,19 @@ function TruckReturnReceivingModal({
         changes: { metadata: [], lineChanges: [] },
       };
 
-      await setDoc(
-        doc(db, 'truck_dispatches', trip.id),
-        {
-          id: trip.id,
+      const submitStepFn = httpsCallable(functions, 'salesSubmitReturnStep');
+      await submitStepFn({
+        mode: 'assign_task',
+        tripId: trip.id,
+        payload: {
           tripKey: trip.tripKey,
           loadingDate: trip.loadingDate,
           loadingOrderNumber: trip.loadingOrderNumber,
-          returnSettlementTasks: [...prevTasks, taskEntry],
-          auditTrail: [...(Array.isArray(dispatchDoc?.auditTrail) ? dispatchDoc.auditTrail : []), taskAuditEntry],
-          updatedAt: nowIso,
-          updatedBy: actorId,
-          updatedByName: actorName,
         },
-        { merge: true }
-      );
+        taskEntry,
+        taskAuditEntry,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
       await dispatchWorkflowEvent({
         eventKey: 'trip_return_order_settlement_task',
@@ -1675,22 +1665,21 @@ function TruckReturnReceivingModal({
         },
       };
 
-      await setDoc(
-        doc(db, 'truck_dispatches', trip.id),
-        {
+      const submitStepFn = httpsCallable(functions, 'salesSubmitReturnStep');
+      await submitStepFn({
+        mode: 'auto_clear',
+        tripId: trip.id,
+        payload: {
           returnHandshakeStatus: 'pending_wh_confirm',
           returnByCol: postEval.normalizedByCol,
           returnContentUpdatedAt: nowIso,
           accountantReturnSubmittedBy: dispatchDoc?.accountantReturnSubmittedBy || actorId,
           accountantReturnSubmittedByName: dispatchDoc?.accountantReturnSubmittedByName || actorName,
           accountantReturnSubmittedAt: dispatchDoc?.accountantReturnSubmittedAt || nowIso,
-          auditTrail: [...(Array.isArray(dispatchDoc?.auditTrail) ? dispatchDoc.auditTrail : []), clearAudit],
-          updatedAt: nowIso,
-          updatedBy: actorId,
-          updatedByName: actorName,
         },
-        { merge: true }
-      );
+        clearAudit,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
       await Promise.all([
         completeActionRequired({
@@ -1784,22 +1773,14 @@ function TruckReturnReceivingModal({
           lineChanges: [],
         },
       };
-      await setDoc(
-        doc(db, 'truck_dispatches', trip.id),
-        {
-          returnHandshakeStatus: 'discrepancy_pending_accounting',
-          dispatchStatus: 'dispatched',
-          adminReopenReason: adminReopenReason.trim(),
-          adminReopenedBy: actorId,
-          adminReopenedByName: actorName,
-          adminReopenedAt: nowIso,
-          auditTrail: [...(Array.isArray(dispatchDoc?.auditTrail) ? dispatchDoc.auditTrail : []), reopenAudit],
-          updatedBy: actorId,
-          updatedByName: actorName,
-          updatedAt: nowIso,
-        },
-        { merge: true }
-      );
+      const finalizeFn = httpsCallable(functions, 'salesFinalizeReturnHandshake');
+      await finalizeFn({
+        tripId: trip.id,
+        actionType: 'admin_reopen',
+        reason: adminReopenReason.trim(),
+        auditEntry: reopenAudit,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
       setAdminReopenOpen(false);
       setAdminReopenReason('');
     } catch (err) {
@@ -2084,8 +2065,28 @@ function TruckReturnReceivingModal({
         );
       }
 
-      batch.set(dispRef, payload, { merge: true });
-      await batch.commit();
+      const { auditTrail: _unusedAudit, ...payloadWithoutAudit } = payload;
+      if (submitRole === 'admin_settle_both' || submitRole === 'admin_writeoff') {
+        const finalizeFn = httpsCallable(functions, 'salesFinalizeReturnHandshake');
+        await finalizeFn({
+          tripId: trip.id,
+          actionType: submitRole,
+          reason: adminWriteOffReason.trim(),
+          payload: payloadWithoutAudit,
+          auditEntry: returnAuditEntry,
+          currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+        });
+      } else {
+        const submitStepFn = httpsCallable(functions, 'salesSubmitReturnStep');
+        await submitStepFn({
+          mode: 'submit_step',
+          submitRole,
+          tripId: trip.id,
+          payload: payloadWithoutAudit,
+          returnAuditEntry,
+          currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+        });
+      }
 
       // Automate Phase 2A Permission-Aware Warehouse <-> Accountant Handshake & Tasks
       const tripLabel = `#${trip.loadingOrderNumber} (${trip.loadingDate})`;
@@ -3935,18 +3936,23 @@ export default function TruckDispatchMaster({
             printedBy: actorName,
             printedById: actorId,
           });
-          await saveDispatchDocumentToRegistry(db, registryEntry);
-          await markTripRegistryDocsSuperseded(db, trip.id, {
-            reasonAr: `تم إصدار مستند صرف أحدث (${assignedDocNumber})`,
-            reasonEn: `Superseded by newer dispatch document (${assignedDocNumber})`,
-            actorName,
-            supersededByDocNumber: assignedDocNumber,
-            excludeDocNumber: assignedDocNumber,
-            nowIso,
-          }).catch((err) => console.warn('Could not supersede prior registry docs:', err));
+          const commitPrintFn = httpsCallable(functions, 'salesCommitPrintedDocument');
+          await commitPrintFn({
+            tripId: trip.id,
+            kind: 'dispatch',
+            printPayload,
+            registryEntry,
+            currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+          });
+        } else {
+          const commitPrintFn = httpsCallable(functions, 'salesCommitPrintedDocument');
+          await commitPrintFn({
+            tripId: trip.id,
+            kind: 'dispatch',
+            printPayload,
+            currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+          });
         }
-
-        await setDoc(doc(db, 'truck_dispatches', trip.id), printPayload, { merge: true });
       } catch (err) {
         console.error('Failed building dispatch document:', err);
         if (win) win.close();
@@ -4010,16 +4016,18 @@ export default function TruckDispatchMaster({
       const actorName = isAr
         ? (currentUser?.nameAr || currentUser?.name || currentUser?.id || 'system')
         : (currentUser?.name || currentUser?.nameAr || currentUser?.id || 'system');
-      await setDoc(
-        doc(db, 'truck_dispatches', trip.id),
-        {
+      const commitPrintFn = httpsCallable(functions, 'salesCommitPrintedDocument');
+      await commitPrintFn({
+        tripId: trip.id,
+        kind: 'return',
+        printPayload: {
           returnPrintedAt: nowIso,
           returnPrintedBy: actorName,
           latestReturnDocNumber: assignedRetNumber,
           returnDocSeq: assignedRetSeq,
         },
-        { merge: true }
-      );
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
     } catch (err) {
       console.error('Failed building return document:', err);
       if (retWin) retWin.close();
