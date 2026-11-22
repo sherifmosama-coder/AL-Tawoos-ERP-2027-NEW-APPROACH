@@ -105,6 +105,7 @@ import { highlightTargetRow, resolveModuleAndTab } from './utils/notificationEng
 import { syncOneSignalUser } from './utils/oneSignalEngine';
 import { startAutoRestoreScheduler } from './utils/systemRestoreEngine';
 import PeacockLoader from './components/PeacockLoader';
+import AuthActionPage from './components/AuthActionPage';
 import { DEFAULT_ROLE_PERMISSIONS, resolveEffectivePermissions } from './config/appArchitecture';
 import { getRecordDepartmentIds } from './utils/personnelDirectory';
 import { collection, doc, onSnapshot, getDocs, setDoc, serverTimestamp } from 'firebase/firestore';
@@ -257,6 +258,21 @@ export default function App() {
       localStorage.setItem('tawoos_current_user_id', userId);
     }
   };
+
+  const [authActionParams, setAuthActionParams] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    const params = new URLSearchParams(window.location.search || '');
+    const mode = params.get('mode') || '';
+    const oobCode = params.get('oobCode') || '';
+    if (oobCode && (mode === 'resetPassword' || mode === 'verifyEmail')) {
+      return {
+        mode,
+        oobCode,
+        continueUrl: params.get('continueUrl') || '',
+      };
+    }
+    return null;
+  });
 
   const [authState, setAuthState] = useState({
     status: 'checking', // 'checking' | 'unauthenticated' | 'unauthorized' | 'authenticated'
@@ -876,6 +892,19 @@ export default function App() {
       targetKey
     });
   };
+
+  if (authActionParams) {
+    return (
+      <AuthActionPage
+        mode={authActionParams.mode}
+        oobCode={authActionParams.oobCode}
+        continueUrl={authActionParams.continueUrl}
+        isAr={isAr}
+        onToggleLanguage={toggleLanguage}
+        onReturnToLogin={() => setAuthActionParams(null)}
+      />
+    );
+  }
 
   if (authState.status === 'checking' && !authState.firebaseUser) {
     return (

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { auth, googleProvider, functions } from '../firebase';
 import PeacockLoader from './PeacockLoader';
+import AuthPortalBackdrop from './AuthPortalBackdrop';
 
 export default function AuthLoginGate({
   isAr = true,
@@ -133,16 +134,8 @@ export default function AuthLoginGate({
   const busy = isSubmitting || isVerifying;
 
   return (
-    <div
-      dir={isAr ? 'rtl' : 'ltr'}
-      style={{
-        fontFamily: "'Cairo', sans-serif",
-        background:
-          'linear-gradient(90deg, #062147 0%, rgba(6, 33, 71, 0.25) 5%, rgba(6, 33, 71, 0.05) 14%, #ffffff 26%, #ffffff 100%)',
-      }}
-      className="min-h-screen flex items-center justify-center p-4 sm:p-6"
-    >
-      <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200/90 shadow-[0_20px_50px_-15px_rgba(2,42,99,0.16)] p-6 sm:p-8 space-y-5">
+    <AuthPortalBackdrop isAr={isAr}>
+      <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200/90 shadow-[0_20px_50px_-15px_rgba(2,42,99,0.14)] p-6 sm:p-8 space-y-5">
         {/* Compact Brand Header with Animated Partial Peacock Logo */}
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -352,6 +345,6 @@ export default function AuthLoginGate({
           </button>
         </form>
       </div>
-    </div>
+    </AuthPortalBackdrop>
   );
 }
