@@ -43,7 +43,11 @@ rules_version = '2';
 //    - Access: Read by active ERP users.
 //              Write by General Admin, OR active ERP users ONLY for non-privileged operational
 //              config documents (explicitly excluding 'permissions', 'app_architecture',
-//              'notifications_config', 'ledger_security', and 'company_profile').
+//              'notifications_config', 'ledger_security', 'company_profile',
+//              'dispatch_doc_counter', 'return_doc_counter', and 'smtp_config').
+//
+// 5b. system_counters/{counterId}
+//    - Access: General Admin read-only; all client writes denied (Cloud Functions only).
 //
 // 6. record_comments/{commentId}
 //    - Document ID: `th_<tab>_<docId>_<field>_<ts>`.
@@ -297,6 +301,19 @@ service cloud.firestore {
         isValidOptionalTimestampOrIso(data, 'updatedAt');
     }
 
+    function isPrivilegedSystemConfigDoc(docId) {
+      return docId in [
+        'permissions',
+        'app_architecture',
+        'notifications_config',
+        'ledger_security',
+        'company_profile',
+        'dispatch_doc_counter',
+        'return_doc_counter',
+        'smtp_config'
+      ];
+    }
+
     function isValidCommentThread(data) {
       return data is map &&
         data.keys().size() <= 50 &&
@@ -397,6 +414,49 @@ service cloud.firestore {
         isValidOptionalStringOrNull(data, 'updatedBy', 0, 128);
     }
 
+    function isValidWhtNoteDeliveryUpdate(data) {
+      return data is map &&
+        data.keys().size() <= 200 &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'isDeliveredToSupplier',
+          'deliveredAt',
+          'deliveredBy'
+        ]) &&
+        isValidOptionalBool(data, 'isDeliveredToSupplier') &&
+        isValidOptionalTimestampOrIso(data, 'deliveredAt') &&
+        isValidOptionalStringOrNull(data, 'deliveredBy', 0, 200);
+    }
+
+    function isValidJournalEntryMetadataUpdate(data) {
+      return data is map &&
+        data.keys().size() <= 200 &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'attachments',
+          'updatedAt'
+        ]) &&
+        isValidOptionalList(data, 'attachments', 50) &&
+        isValidOptionalTimestampOrIso(data, 'updatedAt');
+    }
+
+    function isValidCashTransactionMetadataUpdate(data) {
+      return data is map &&
+        data.keys().size() <= 200 &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'description',
+          'attachments',
+          'auditLog',
+          'updatedAt',
+          'balanceAfter',
+          'targetBalanceAfter'
+        ]) &&
+        isValidOptionalStringOrNull(data, 'description', 0, 20000) &&
+        isValidOptionalList(data, 'attachments', 50) &&
+        isValidOptionalList(data, 'auditLog', 200) &&
+        isValidOptionalTimestampOrIso(data, 'updatedAt') &&
+        isValidOptionalNumber(data, 'balanceAfter') &&
+        isValidOptionalNumber(data, 'targetBalanceAfter');
+    }
+
     // ===============================================================
     // Explicit Default-Deny Baseline
     // ===============================================================
@@ -459,21 +519,15 @@ service cloud.firestore {
     match /system_config/{docId} {
       allow read: if isSignedIn();
       allow create, update: if (isGeneralAdmin() ||
-        (isSignedIn() && !(docId in [
-          'permissions',
-          'app_architecture',
-          'notifications_config',
-          'ledger_security',
-          'company_profile'
-        ]))) && isValidSystemConfig(request.resource.data);
+        (isSignedIn() && !isPrivilegedSystemConfigDoc(docId))) &&
+        isValidSystemConfig(request.resource.data);
       allow delete: if isGeneralAdmin() ||
-        (isSignedIn() && !(docId in [
-          'permissions',
-          'app_architecture',
-          'notifications_config',
-          'ledger_security',
-          'company_profile'
-        ]));
+        (isSignedIn() && !isPrivilegedSystemConfigDoc(docId));
+    }
+
+    match /system_counters/{counterId} {
+      allow read: if isGeneralAdmin();
+      allow create, update, delete: if false;
     }
 
     // ===============================================================
@@ -630,8 +684,9 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
     }
     match /spare_parts_issues/{docId} {
-      allow read, delete: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+      allow read: if isSignedIn();
+      allow create, update: if false;
+      allow delete: if isGeneralAdmin();
     }
     match /work_orders/{docId} {
       allow read, delete: if isSignedIn();
@@ -678,16 +733,21 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
     }
     match /cash_transactions/{docId} {
-      allow read, delete: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+      allow read: if isSignedIn();
+      allow create: if false;
+      allow update: if isSignedIn() && isValidCashTransactionMetadataUpdate(request.resource.data);
+      allow delete: if isGeneralAdmin();
     }
     match /cash_count_sessions/{docId} {
-      allow read, delete: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+      allow read: if isSignedIn();
+      allow create, update: if false;
+      allow delete: if isGeneralAdmin();
     }
     match /journal_entries/{docId} {
-      allow read, delete: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+      allow read: if isSignedIn();
+      allow create: if false;
+      allow update: if isSignedIn() && isValidJournalEntryMetadataUpdate(request.resource.data);
+      allow delete: if isGeneralAdmin();
     }
     match /custody_ledger/{docId} {
       allow read, delete: if isSignedIn();
@@ -706,12 +766,15 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
     }
     match /dues_batches/{docId} {
-      allow read, delete: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+      allow read: if isSignedIn();
+      allow create, update: if false;
+      allow delete: if isGeneralAdmin();
     }
     match /wht_notes/{docId} {
-      allow read, delete: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+      allow read: if isSignedIn();
+      allow create: if false;
+      allow update: if isSignedIn() && isValidWhtNoteDeliveryUpdate(request.resource.data);
+      allow delete: if isGeneralAdmin();
     }
     match /sales_orders/{docId} {
       allow read, delete: if isSignedIn();
@@ -722,8 +785,9 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
     }
     match /dispatch_documents/{docId} {
-      allow read, delete: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+      allow read: if isSignedIn();
+      allow create, update: if false;
+      allow delete: if isGeneralAdmin();
     }
     match /price_lists/{docId} {
       allow read, delete: if isSignedIn();
