@@ -33,7 +33,7 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-export const functions = getFunctions(app, 'me-central2');
+export const functions = getFunctions(app, 'me-central1');
 
 // Optional Firebase Local Emulator Suite hook (zero-cost local dev & rules/functions testing)
 const useEmulatorsFlag =

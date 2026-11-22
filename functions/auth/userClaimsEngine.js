@@ -7,7 +7,6 @@
  */
 
 import { onCall, HttpsError } from "firebase-functions/v2/https";
-import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 
@@ -88,7 +87,7 @@ async function findActiveErpUserByEmail(db, email) {
 
 export const claimUserClaimsOnLogin = onCall(
   {
-    region: "me-central2",
+    region: "me-central1",
     cors: true,
     maxInstances: 10,
   },
@@ -154,37 +153,51 @@ export const claimUserClaimsOnLogin = onCall(
   }
 );
 
-export const syncUserClaimsOnWrite = onDocumentWritten(
+/**
+ * Explicit Admin-triggered callable to synchronize Firebase Auth Custom Claims
+ * immediately after creating, updating, disabling, or deleting an ERP user.
+ * Deployed in me-central1 alongside login/provisioning callables (because me-central2
+ * Eventarc triggers require CNTXT / invoiced billing).
+ */
+export const syncErpUserClaims = onCall(
   {
-    document: "users/{userId}",
-    region: "me-central2",
+    region: "me-central1",
+    cors: true,
     maxInstances: 10,
   },
-  async (event) => {
-    const afterExists = event.data?.after?.exists;
-    const beforeData = event.data?.before?.exists
-      ? { id: event.params.userId, ...event.data.before.data() }
-      : null;
-    const afterData = afterExists
-      ? { id: event.params.userId, ...event.data.after.data() }
-      : null;
+  async (request) => {
+    const callerClaims = request.auth?.token || {};
+    if (!request.auth?.uid || !callerClaims.erpActive || !callerClaims.isGeneralAdmin) {
+      throw new HttpsError(
+        "permission-denied",
+        "Only General Admin can synchronize user authentication claims."
+      );
+    }
 
+    const userId = String(request.data?.userId || "").trim();
+    if (!userId) {
+      throw new HttpsError("invalid-argument", "userId is required.");
+    }
+
+    const extraEmails = Array.isArray(request.data?.extraEmails)
+      ? request.data.extraEmails.map((e) => normalizeEmailAddr(e)).filter(Boolean)
+      : [];
+
+    const db = getFirestore();
     const auth = getAuth();
-    const targetUids = new Set();
+    const userSnap = await db.collection("users").doc(userId).get();
+    const afterData = userSnap.exists ? { id: userSnap.id, ...userSnap.data() } : null;
 
-    [beforeData, afterData].forEach((rec) => {
-      if (!rec) return;
-      if (Array.isArray(rec.firebaseAuthUids)) {
-        rec.firebaseAuthUids.filter(Boolean).forEach((u) => targetUids.add(u));
+    const targetUids = new Set();
+    if (afterData) {
+      if (Array.isArray(afterData.firebaseAuthUids)) {
+        afterData.firebaseAuthUids.filter(Boolean).forEach((u) => targetUids.add(u));
       }
-      if (rec.lastAuthUid) targetUids.add(rec.lastAuthUid);
-    });
+      if (afterData.lastAuthUid) targetUids.add(afterData.lastAuthUid);
+    }
 
     const emailsToResolve = Array.from(
-      new Set([
-        ...extractUserLoginEmails(beforeData || {}),
-        ...extractUserLoginEmails(afterData || {}),
-      ])
+      new Set([...extraEmails, ...(afterData ? extractUserLoginEmails(afterData) : [])])
     );
 
     for (const emailAddr of emailsToResolve) {
@@ -196,13 +209,16 @@ export const syncUserClaimsOnWrite = onDocumentWritten(
       }
     }
 
-    if (targetUids.size === 0) return;
+    if (targetUids.size === 0) {
+      return { syncedCount: 0, active: Boolean(afterData && isUserRecordActive(afterData)) };
+    }
 
-    const activeAfter = afterData && isUserRecordActive(afterData);
+    const activeAfter = Boolean(afterData && isUserRecordActive(afterData));
     const claimsToApply = activeAfter
       ? buildErpCustomClaims(afterData)
       : REVOKED_ERP_CLAIMS;
 
+    let syncedCount = 0;
     await Promise.all(
       Array.from(targetUids).map(async (uid) => {
         try {
@@ -210,17 +226,20 @@ export const syncUserClaimsOnWrite = onDocumentWritten(
           if (!activeAfter) {
             await auth.revokeRefreshTokens(uid);
           }
+          syncedCount += 1;
         } catch (err) {
           console.warn(`[AuthSync] Unable to update claims for UID ${uid}:`, err.message);
         }
       })
     );
+
+    return { syncedCount, active: activeAfter };
   }
 );
 
 export const createEmployeeAuthAccount = onCall(
   {
-    region: "me-central2",
+    region: "me-central1",
     cors: true,
     maxInstances: 5,
   },

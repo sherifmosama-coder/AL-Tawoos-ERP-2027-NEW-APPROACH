@@ -391,6 +391,14 @@ export default function EmployeesDirectoryMaster({
       }
 
       await batch.commit();
+      if (linkedUid) {
+        try {
+          const syncClaimsFn = httpsCallable(functions, 'syncErpUserClaims');
+          await syncClaimsFn({ userId: linkedUid, extraEmails: normalizedEmails.loginEmails });
+        } catch (syncErr) {
+          console.warn('Non-blocking Auth claims sync notice:', syncErr?.message);
+        }
+      }
       setIsModalOpen(false);
       showToast(
         editingEmpId
