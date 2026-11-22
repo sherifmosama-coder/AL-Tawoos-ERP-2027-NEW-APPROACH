@@ -9,6 +9,13 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
+import {
+  resolveSmtpConfig,
+  createNodemailerTransport,
+  buildCustomResetActionUrl,
+  buildBrandedPasswordResetEmail,
+  resolveSafeActionOrigin,
+} from "./brandedMailer.js";
 
 export function normalizeEmailAddr(raw = "") {
   return String(raw || "").trim().toLowerCase();
@@ -332,9 +339,10 @@ export const createEmployeeAuthAccount = onCall(
 );
 
 /**
- * Ensures an active allowlisted ERP email has a backing Firebase Auth user before
- * Firebase Client SDK `sendPasswordResetEmail` is called (otherwise Firebase Auth's
- * Email Enumeration Protection silently drops password resets for newly-added company emails).
+ * Ensures an active allowlisted ERP email has a backing Firebase Auth user, and if
+ * Corporate SMTP is configured in `system_private_config/smtp`, sends a branded
+ * Password Reset email pointing directly to our custom `/auth/action` UI.
+ * Otherwise falls back cleanly so the client triggers Firebase's default reset email.
  * Returns neutral response for non-allowlisted emails to prevent enumeration.
  */
 export const prepareErpPasswordReset = onCall(
@@ -345,6 +353,9 @@ export const prepareErpPasswordReset = onCall(
   },
   async (request) => {
     const email = normalizeEmailAddr(request.data?.email);
+    const isAr = request.data?.isAr !== false;
+    const origin = resolveSafeActionOrigin(request.data?.origin || "");
+
     if (!email || !email.includes("@")) {
       throw new HttpsError("invalid-argument", "Valid email address is required.");
     }
@@ -353,7 +364,7 @@ export const prepareErpPasswordReset = onCall(
     const auth = getAuth();
     const erpUser = await findActiveErpUserByEmail(db, email);
     if (!erpUser) {
-      return { ok: true };
+      return { ok: true, delivery: "silent" };
     }
 
     try {
@@ -382,6 +393,32 @@ export const prepareErpPasswordReset = onCall(
       }
     }
 
-    return { ok: true };
+    const smtpCfg = await resolveSmtpConfig(db);
+    if (smtpCfg.configured) {
+      const firebaseLink = await auth.generatePasswordResetLink(email, {
+        url: origin,
+      });
+      const brandedUrl = buildCustomResetActionUrl(firebaseLink, origin);
+      const recipientName = erpUser.nameAr || erpUser.name || email;
+      const { subject, text, html } = buildBrandedPasswordResetEmail({
+        actionUrl: brandedUrl,
+        recipientName,
+        email,
+        isAr,
+      });
+
+      const transporter = createNodemailerTransport(smtpCfg);
+      await transporter.sendMail({
+        from: `"${smtpCfg.fromName}" <${smtpCfg.fromEmail}>`,
+        to: email,
+        subject,
+        text,
+        html,
+      });
+
+      return { ok: true, delivery: "corporate_smtp" };
+    }
+
+    return { ok: true, delivery: "firebase_default_fallback" };
   }
 );

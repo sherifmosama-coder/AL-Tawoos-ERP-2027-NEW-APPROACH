@@ -111,18 +111,37 @@ export default function AuthLoginGate({
     setResetMsg('');
     setIsSubmitting(true);
     try {
+      let deliveryMode = 'firebase_default_fallback';
       try {
         const prepareFn = httpsCallable(functions, 'prepareErpPasswordReset');
-        await prepareFn({ email: cleanEmail });
+        const prepRes = await prepareFn({
+          email: cleanEmail,
+          isAr,
+          origin: typeof window !== 'undefined' ? window.location.origin : 'https://al-tawoos-erp.web.app',
+        });
+        deliveryMode = prepRes?.data?.delivery || 'firebase_default_fallback';
       } catch (prepErr) {
         console.warn('Password reset prep fallback:', prepErr?.message);
       }
-      await sendPasswordResetEmail(auth, cleanEmail);
-      setResetMsg(
-        isAr
-          ? `إذا كان البريد (${cleanEmail}) مفعلاً بالمنظومة فسيصلك رابط التعيين من noreply@al-tawoos-erp.firebaseapp.com — يرجى مراجعة البريد الوارد والرسائل غير المرغوب فيها (Spam/Junk)، أو الدخول بـ Google إذا كان حساب Gmail.`
-          : `If ${cleanEmail} is an active ERP account, a reset link was dispatched from noreply@al-tawoos-erp.firebaseapp.com. Please check Inbox & Spam/Junk (or use Sign in with Google for Gmail).`
-      );
+
+      if (deliveryMode === 'corporate_smtp') {
+        setResetMsg(
+          isAr
+            ? `تم إرسال رابط تعيين كلمة المرور من خادم الشركة الرسمي إلى ${cleanEmail} — يرجى مراجعة البريد الوارد.`
+            : `A corporate-branded password reset link was dispatched to ${cleanEmail}. Please check your inbox.`
+        );
+      } else {
+        if (deliveryMode === 'firebase_default_fallback') {
+          await sendPasswordResetEmail(auth, cleanEmail, {
+            url: typeof window !== 'undefined' ? window.location.origin : 'https://al-tawoos-erp.web.app',
+          });
+        }
+        setResetMsg(
+          isAr
+            ? `إذا كان البريد (${cleanEmail}) مفعلاً بالمنظومة فسيصلك رابط تعيين كلمة المرور — يرجى مراجعة البريد الوارد و(Spam/Junk).`
+            : `If ${cleanEmail} is an active ERP account, a password reset link has been dispatched. Please check your Inbox and Spam/Junk.`
+        );
+      }
     } catch (err) {
       setLocalError(err?.message || 'Could not send reset email.');
     } finally {

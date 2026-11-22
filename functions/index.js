@@ -9,6 +9,11 @@ import {
   createEmployeeAuthAccount,
   prepareErpPasswordReset,
 } from "./auth/userClaimsEngine.js";
+import {
+  getSmtpConfigStatus,
+  saveSmtpConfig,
+  sendTestSmtpEmail,
+} from "./auth/brandedMailer.js";
 
 initializeApp();
 const db = getFirestore();
@@ -18,6 +23,9 @@ export {
   syncErpUserClaims,
   createEmployeeAuthAccount,
   prepareErpPasswordReset,
+  getSmtpConfigStatus,
+  saveSmtpConfig,
+  sendTestSmtpEmail,
 };
 
 // Note: Firestore Eventarc triggers (onDocumentCreated / onDocumentWritten) require co-located
