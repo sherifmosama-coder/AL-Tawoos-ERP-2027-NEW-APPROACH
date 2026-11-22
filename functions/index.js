@@ -34,6 +34,23 @@ import {
   financeReleaseDuesBatchPayment,
   financeIssueWhtNote,
 } from "./finance/duesSettlementEngine.js";
+import {
+  inventoryPostGoodsReceiptOrReturn,
+  inventoryReverseGoodsReceipt,
+} from "./inventory/goodsReceiptEngine.js";
+import {
+  inventoryCreateStockTransfer,
+  inventoryRespondStockTransfer,
+  inventoryExecuteFloorCleanout,
+  inventoryPostDirectStockAdjustment,
+  inventoryApproveStockCountLines,
+  inventoryPostSparePartsConsumption,
+  inventoryCancelSparePartsConsumption,
+} from "./inventory/stockControlEngine.js";
+import {
+  inventoryRegisterWorkOrderPallet,
+  inventoryReverseWorkOrderPallet,
+} from "./inventory/productionInventoryEngine.js";
 
 initializeApp();
 const db = getFirestore();
@@ -60,6 +77,17 @@ export {
   financeReverseJournalEntry,
   financeReleaseDuesBatchPayment,
   financeIssueWhtNote,
+  inventoryPostGoodsReceiptOrReturn,
+  inventoryReverseGoodsReceipt,
+  inventoryCreateStockTransfer,
+  inventoryRespondStockTransfer,
+  inventoryExecuteFloorCleanout,
+  inventoryPostDirectStockAdjustment,
+  inventoryApproveStockCountLines,
+  inventoryPostSparePartsConsumption,
+  inventoryCancelSparePartsConsumption,
+  inventoryRegisterWorkOrderPallet,
+  inventoryReverseWorkOrderPallet,
 };
 
 // Note: Firestore Eventarc triggers (onDocumentCreated / onDocumentWritten) require co-located

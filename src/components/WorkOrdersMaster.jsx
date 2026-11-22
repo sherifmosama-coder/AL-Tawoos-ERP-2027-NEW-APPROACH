@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
 import {
   collection,
   onSnapshot,
@@ -15,6 +15,7 @@ import {
   writeBatch,
   serverTimestamp
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import {
   Factory,
   Plus,
@@ -5626,22 +5627,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       const costPerLarge = pQtyLarge > 0 ? Number((palletTotalCost / pQtyLarge).toFixed(2)) : 0;
       const costPerSmall = pQtySmall > 0 ? Number((palletTotalCost / pQtySmall).toFixed(4)) : 0;
 
-      // Update floor_liquid_vessels
-      for (const [matCode, vCopy] of Object.entries(vesselWorkingCopies)) {
-        const vRef = doc(db, 'floor_liquid_vessels', matCode);
-        const newVol = vCopy.activeTanks.reduce((s, t) => s + (Number(t.remainingVolume) || 0), 0);
-        await setDoc(vRef, {
-          ...vCopy.originalData,
-          activeTanks: vCopy.activeTanks,
-          historyTanks: vCopy.historyTanks,
-          currentVolume: newVol,
-          updatedAt: serverTimestamp(),
-        }, { merge: true });
-      }
-
-      // Write production transformation
       const pTransId = `TRANS-PAL-${palletId}`;
-      await setDoc(doc(db, 'production_transformations', pTransId), {
+      const transformationDoc = {
         id: pTransId,
         palletId,
         workOrderId: order.id,
@@ -5662,13 +5649,9 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         intermediateLiquidTanks: palletIntermediateTanks,
         status: 'completed',
         registeredBy: currentUserName,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+      };
 
-      // Write to staged_floor_pallets with staged_on_floor status
-      const stagedDocRef = doc(db, 'staged_floor_pallets', palletId);
-      await setDoc(stagedDocRef, {
+      const stagedPalletDoc = {
         ...pallet,
         id: palletId,
         palletId,
@@ -5696,8 +5679,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         intermediateLiquidTanksDisplay: palletIntermediateTanks.map((t) => `#${t.tankNumber}`).join(' + '),
         materializedAt: nowIso,
         materializedBy: currentUserName,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+      };
 
       // Update pallet in work_orders and production_work_orders
       const updatedPallets = (order.pallets || []).map((pl, idx) => {
@@ -5722,14 +5704,16 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         return pl;
       });
 
-      for (const col of ['work_orders', 'production_work_orders']) {
-        try {
-          await updateDoc(doc(db, col, order.id), {
-            pallets: updatedPallets,
-            updatedAt: serverTimestamp(),
-          });
-        } catch (_) {}
-      }
+      const registerPalletFn = httpsCallable(functions, 'inventoryRegisterWorkOrderPallet');
+      await registerPalletFn({
+        workOrderId: order.id,
+        palletId,
+        vesselPatches: vesselWorkingCopies,
+        transformationDoc,
+        stagedPalletDoc,
+        updatedPallets,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
       if (inspectPalletModal) {
         setInspectPalletModal(null);
@@ -6110,7 +6094,8 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         )),
       ];
 
-      // 2. Reverse intermediate liquid consumption back to floor_liquid_vessels
+      // 2. Compute intermediate liquid consumption reversal back to floor_liquid_vessels
+      const vesselUpdates = {};
       try {
         const vesselsSnap = await getDocs(collection(db, 'floor_liquid_vessels'));
         for (const vDoc of vesselsSnap.docs) {
@@ -6165,44 +6150,14 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           historyTanks.forEach(processTankReversal);
 
           if (modified) {
-            const updatedPoolVolume = activeTanks.reduce((sum, t) => sum + (Number(t.remainingVolume) || 0), 0);
-            await updateDoc(doc(db, 'floor_liquid_vessels', vId), {
-              ...vData,
-              activeTanks,
-              historyTanks,
-              currentVolume: updatedPoolVolume,
-              updatedAt: serverTimestamp(),
-            });
+            vesselUpdates[vId] = { activeTanks, historyTanks };
           }
         }
       } catch (vErr) {
-        console.error('Error reversing floor liquid vessels:', vErr);
+        console.error('Error computing floor liquid vessels reversal:', vErr);
       }
 
-      // 3. Mark transformation as reversed in production_transformations (restores raw material stock in buildLiveStockMatrix)
-      await setDoc(doc(db, 'production_transformations', transId), {
-        status: 'reversed',
-        isReversed: true,
-        reversalReason: reason.trim(),
-        reversedBy: currentUserName,
-        reversedById: currentUser?.id || currentUser?.uid || '',
-        reversedAt: nowIso,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-
-      // 4. Update staged_floor_pallets (mark reversed)
-      await setDoc(doc(db, 'staged_floor_pallets', palletId), {
-        status: 'reversed',
-        stagingStatus: 'reversed',
-        isReversed: true,
-        reversalReason: reason.trim(),
-        reversedBy: currentUserName,
-        reversedById: currentUser?.id || currentUser?.uid || '',
-        reversedAt: nowIso,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-
-      // 5. Update order.pallets: filter out or mark reversed
+      // Update order.pallets and compute completion percentage
       const existingPallets = order.pallets || [];
       const updatedPallets = existingPallets.filter((_, idx) => idx !== palletIndex);
       const ratio = Number(order.packagingRatio) || 12;
@@ -6229,6 +6184,25 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         timestamp: nowIso,
       };
       const existingAudit = Array.isArray(order.auditTrail) ? order.auditTrail : [];
+      const reversePalletFn = httpsCallable(functions, 'inventoryReverseWorkOrderPallet');
+
+      const commitReversalWithStatus = async (chosenStatus) => {
+        await reversePalletFn({
+          workOrderId: order.id,
+          palletId,
+          reason: reason.trim(),
+          vesselUpdates,
+          updatedPallets,
+          orderSummaryUpdates: {
+            totalProducedQtySmall: totalProducedSmall,
+            totalProducedQtyLarge: totalProducedLarge,
+            completionPercentage: completionPct,
+            status: chosenStatus,
+            auditTrail: [reversalAuditEntry, ...existingAudit].slice(0, 40),
+          },
+          currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+        });
+      };
 
       if (wasCompleted && completionPct < 100) {
         // Trigger Adaptive Order Status Prompt Modal
@@ -6237,15 +6211,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
           order,
           newCompletionPct: completionPct,
           onChoice: async (chosenStatus) => {
-            await updateDoc(doc(db, 'work_orders', order.id), {
-              pallets: updatedPallets,
-              totalProducedQtySmall: totalProducedSmall,
-              totalProducedQtyLarge: totalProducedLarge,
-              completionPercentage: completionPct,
-              status: chosenStatus,
-              auditTrail: [reversalAuditEntry, ...existingAudit].slice(0, 40),
-              updatedAt: serverTimestamp(),
-            });
+            await commitReversalWithStatus(chosenStatus);
             setAdminOrderStatusPromptModal({ open: false, order: null, newCompletionPct: 0, onChoice: null });
             toast.success(
               isAr ? 'تم الإلغاء الإداري للباليتة بنجاح وتحديث حالة أمر التشغيل.' : 'Admin pallet reversal completed successfully.',
@@ -6255,15 +6221,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
         });
       } else {
         const newOrderStatus = completionPct >= 100 ? 'completed' : (totalProducedLarge > 0 ? 'in_progress' : 'planned');
-        await updateDoc(doc(db, 'work_orders', order.id), {
-          pallets: updatedPallets,
-          totalProducedQtySmall: totalProducedSmall,
-          totalProducedQtyLarge: totalProducedLarge,
-          completionPercentage: completionPct,
-          status: newOrderStatus,
-          auditTrail: [reversalAuditEntry, ...existingAudit].slice(0, 40),
-          updatedAt: serverTimestamp(),
-        });
+        await commitReversalWithStatus(newOrderStatus);
         toast.success(
           isAr ? 'تم الإلغاء الإداري للباليتة واسترجاع الخامات والسوائل بنجاح.' : 'Admin pallet reversal completed successfully.',
           isAr ? 'إلغاء إداري معتمد' : 'Authorized Reversal'
