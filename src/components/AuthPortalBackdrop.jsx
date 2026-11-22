@@ -33,23 +33,8 @@ export default function AuthPortalBackdrop({ isAr = true, children }) {
           <path
             d={PEACOCK_PARTIAL_PATH}
             fill="none"
-            stroke="rgba(1, 78, 168, 0.16)"
+            stroke="rgba(1, 78, 168, 0.08)"
             strokeWidth="1.6"
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
-
-        {/* Secondary Whisper Partial Peacock Outline — Opposite Top Corner */}
-        <svg
-          viewBox="0 0 676.63 348.84"
-          className="absolute -top-12 -start-24 w-[420px] sm:w-[580px] h-auto -rotate-12"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <path
-            d={PEACOCK_PARTIAL_PATH}
-            fill="none"
-            stroke="rgba(6, 33, 71, 0.12)"
-            strokeWidth="1.35"
             vectorEffect="non-scaling-stroke"
           />
         </svg>
