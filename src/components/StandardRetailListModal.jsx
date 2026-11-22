@@ -43,19 +43,29 @@ export default function StandardRetailListModal({
   // Sync draft state whenever the modal opens or remote list changes
   useEffect(() => {
     if (!isOpen) return;
+    const prodLookup = {};
+    (products || []).forEach((p) => {
+      prodLookup[p.id] = p;
+    });
     const normalized = (Array.isArray(standardRetailList) ? standardRetailList : [])
-      .map((item) => ({
-        productId: item.productId,
-        qty: Math.max(1, Math.floor(Number(item.qty) || 1)),
-        bonus: Math.max(0, Math.floor(Number(item.bonus) || 0))
-      }))
+      .map((item) => {
+        const prod = prodLookup[item.productId];
+        const opts = prod?.packagingOptions || [];
+        const defaultSuffix = opts.length > 1 ? 'any' : (opts[0]?.suffix || 'A');
+        return {
+          productId: item.productId,
+          packagingOptionSuffix: item.packagingOptionSuffix || defaultSuffix,
+          qty: Math.max(1, Math.floor(Number(item.qty) || 1)),
+          bonus: Math.max(0, Math.floor(Number(item.bonus) || 0))
+        };
+      })
       .filter((item) => Boolean(item.productId));
     setDraftItems(normalized);
     setSelectedCategory('all');
     setSelectedProductId('');
     setErrorMsg('');
     setSavedNotice(false);
-  }, [isOpen, standardRetailList]);
+  }, [isOpen, standardRetailList, products]);
 
   const productMap = useMemo(() => {
     const map = {};
@@ -104,8 +114,13 @@ export default function StandardRetailListModal({
       const prod = productMap[item.productId];
       const qty = Math.max(0, Number(item.qty) || 0);
       const bonus = Math.max(0, Number(item.bonus) || 0);
-      const primaryOpt = (prod?.packagingOptions || [])[0] || {};
-      const unitWeightKg = Number(primaryOpt.largeUnitWeightKg || prod?.weight || 0);
+      const opts = prod?.packagingOptions || [];
+      const primaryOpt = opts[0] || {};
+      const matchedOpt =
+        item.packagingOptionSuffix && item.packagingOptionSuffix !== 'any'
+          ? opts.find((o) => o.suffix === item.packagingOptionSuffix) || primaryOpt
+          : primaryOpt;
+      const unitWeightKg = Number(matchedOpt.largeUnitWeightKg || primaryOpt.largeUnitWeightKg || prod?.weight || 0);
 
       totalQty += qty;
       totalBonus += bonus;
@@ -128,10 +143,23 @@ export default function StandardRetailListModal({
       setSelectedProductId('');
       return;
     }
-    setDraftItems((prev) => [...prev, { productId, qty: 1, bonus: 0 }]);
+    const prod = productMap[productId];
+    const opts = prod?.packagingOptions || [];
+    const defaultSuffix = opts.length > 1 ? 'any' : (opts[0]?.suffix || 'A');
+    setDraftItems((prev) => [...prev, { productId, packagingOptionSuffix: defaultSuffix, qty: 1, bonus: 0 }]);
     setSelectedProductId('');
     setSavedNotice(false);
     setErrorMsg('');
+  };
+
+  const handleItemPackingChange = (productId, suffix) => {
+    if (!canManageStdRetailList) return;
+    setDraftItems((prev) =>
+      prev.map((item) =>
+        item.productId === productId ? { ...item, packagingOptionSuffix: suffix || 'any' } : item
+      )
+    );
+    setSavedNotice(false);
   };
 
   const handleItemQtyChange = (productId, field, rawVal) => {
@@ -163,6 +191,7 @@ export default function StandardRetailListModal({
         .filter((i) => Boolean(i.productId) && Number(i.qty) > 0)
         .map((i) => ({
           productId: i.productId,
+          packagingOptionSuffix: i.packagingOptionSuffix || 'any',
           qty: Math.max(1, Math.floor(Number(i.qty) || 1)),
           bonus: Math.max(0, Math.floor(Number(i.bonus) || 0))
         }));
@@ -310,29 +339,63 @@ export default function StandardRetailListModal({
                 <tbody className="divide-y divide-slate-100 bg-white">
                   {draftItems.map((item) => {
                     const prod = productMap[item.productId];
-                    const primaryOpt = (prod?.packagingOptions || [])[0] || {};
-                    const unitWeightKg = Number(primaryOpt.largeUnitWeightKg || prod?.weight || 0);
+                    const opts = prod?.packagingOptions || [];
+                    const primaryOpt = opts[0] || {};
+                    const matchedOpt =
+                      item.packagingOptionSuffix && item.packagingOptionSuffix !== 'any'
+                        ? opts.find((o) => o.suffix === item.packagingOptionSuffix) || primaryOpt
+                        : primaryOpt;
+                    const unitWeightKg = Number(matchedOpt.largeUnitWeightKg || primaryOpt.largeUnitWeightKg || prod?.weight || 0);
                     const rowTons = ((Number(item.qty) + Number(item.bonus || 0)) * unitWeightKg) / 1000;
                     const displayName = prod
                       ? isAr
                         ? prod.nameAr || prod.nameEn
                         : prod.nameEn || prod.nameAr
                       : item.productId;
+                    const hasMultiOptions = opts.length > 1;
 
                     return (
                       <tr key={item.productId} className="hover:bg-slate-50/80 transition">
                         <td className="py-2 px-3">
-                          <div className="font-extrabold text-slate-800 flex items-center gap-1.5 flex-wrap">
-                            <span>{displayName}</span>
-                            {!prod && (
-                              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
-                                {isAr ? 'غير موجود بالكتالوج' : 'Missing SKU'}
-                              </span>
+                          <div className="flex items-start gap-2">
+                            {prod?.imageFile && (
+                              <img
+                                src={prod.imageFile}
+                                alt={displayName}
+                                className="w-8 h-8 rounded-lg border border-slate-200 bg-white object-contain p-0.5 shrink-0"
+                              />
                             )}
+                            <div className="min-w-0 flex-1">
+                              <div className="font-extrabold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                                <span>{displayName}</span>
+                                {!prod && (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
+                                    {isAr ? 'غير موجود بالكتالوج' : 'Missing SKU'}
+                                  </span>
+                                )}
+                              </div>
+                              {prod?.code && (
+                                <span className="text-[10px] font-mono text-slate-400">{prod.code}</span>
+                              )}
+                              {hasMultiOptions && (
+                                <div className="mt-1">
+                                  <select
+                                    disabled={!canManageStdRetailList}
+                                    value={item.packagingOptionSuffix || 'any'}
+                                    onChange={(e) => handleItemPackingChange(item.productId, e.target.value)}
+                                    className="px-2 py-1 text-[11px] font-bold border border-cyan-300 rounded-lg bg-cyan-50/60 text-slate-800 focus:outline-none focus:border-cyan-600 disabled:bg-slate-100"
+                                  >
+                                    <option value="any">{isAr ? 'أي تعبئة (Any)' : 'Any Packing'}</option>
+                                    {opts.map((opt) => (
+                                      <option key={opt.suffix} value={opt.suffix}>
+                                        {isAr ? (opt.nameAr || `تعبئة ${opt.suffix}`) : (opt.nameEn || opt.nameAr || `Option ${opt.suffix}`)} ({opt.optionCode || `${prod.code}-${opt.suffix}`})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              )}
+                            </div>
                           </div>
-                          {prod?.code && (
-                            <span className="text-[10px] font-mono text-slate-400">{prod.code}</span>
-                          )}
                         </td>
                         <td className="py-2 px-3 text-center">
                           <input

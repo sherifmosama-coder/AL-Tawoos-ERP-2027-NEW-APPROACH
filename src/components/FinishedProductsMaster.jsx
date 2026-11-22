@@ -11,6 +11,7 @@ import {
   serverTimestamp
 } from 'firebase/firestore';
 import { isFractionalUnit, resolveItemAllowFractions } from '../utils/stockResolver';
+import { buildFgStockMatrix } from '../utils/fgStockEngine';
 import {
   Plus,
   Search,
@@ -119,8 +120,10 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
   const [products, setProducts] = useState([]);
   const [clientsList, setClientsList] = useState([]);
   const [warehousesList, setWarehousesList] = useState([]);
-  const [goodsReceiptsList, setGoodsReceiptsList] = useState([]);
-  const [transfersList, setTransfersList] = useState([]);
+  const [stagedPalletsList, setStagedPalletsList] = useState([]);
+  const [faultyReturnsList, setFaultyReturnsList] = useState([]);
+  const [salesOrdersList, setSalesOrdersList] = useState([]);
+  const [truckDispatchesList, setTruckDispatchesList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -245,12 +248,20 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
       setWarehousesList(list);
     });
 
-    const unsubGrns = onSnapshot(collection(db, 'goods_receipts'), (snap) => {
-      setGoodsReceiptsList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    const unsubStaged = onSnapshot(collection(db, 'staged_floor_pallets'), (snap) => {
+      setStagedPalletsList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
-    const unsubTransfers = onSnapshot(collection(db, 'stock_transfers'), (snap) => {
-      setTransfersList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    const unsubFaulty = onSnapshot(collection(db, 'faulty_fg_returns'), (snap) => {
+      setFaultyReturnsList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
+    const unsubSales = onSnapshot(collection(db, 'sales_orders'), (snap) => {
+      setSalesOrdersList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+
+    const unsubDispatches = onSnapshot(collection(db, 'truck_dispatches'), (snap) => {
+      setTruckDispatchesList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
     const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
@@ -263,8 +274,10 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
       unsubProducts();
       unsubCategories();
       unsubWh();
-      unsubGrns();
-      unsubTransfers();
+      unsubStaged();
+      unsubFaulty();
+      unsubSales();
+      unsubDispatches();
       unsubClients();
     };
   }, []);
@@ -292,25 +305,21 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
     ];
   }, [clientsList, isAr]);
 
-  // Compute Live Physical Stock Balance per Product
+  // Compute Live Physical Stock Balance per Product using Unified FG SSOT Engine
   const liveStockMap = useMemo(() => {
-    const map = {};
-
-    goodsReceiptsList.forEach((grn) => {
-      if (grn.status === 'cancelled' || grn.status === 'rejected') return;
-      const isRet = grn.docType === 'return' || grn.id?.startsWith('RTN');
-
-      (grn.lines || []).forEach((l) => {
-        const pCode = l.itemId || (l.code ? l.code.split('-')[0] + '-' + l.code.split('-')[1] : '');
-        const qty = (Number(l.receivedSmallUnits) || 0) * (isRet ? -1 : 1);
-        if (pCode) {
-          map[pCode] = (map[pCode] || 0) + qty;
-        }
-      });
+    const { skuList } = buildFgStockMatrix({
+      finishedProducts: products,
+      stagedPallets: stagedPalletsList,
+      faultyReturns: faultyReturnsList,
+      salesOrders: salesOrdersList,
+      truckDispatches: truckDispatchesList,
     });
-
+    const map = {};
+    skuList.forEach((sku) => {
+      map[sku.code] = sku.physicalOnHandSmall;
+    });
     return map;
-  }, [goodsReceiptsList]);
+  }, [products, stagedPalletsList, faultyReturnsList, salesOrdersList, truckDispatchesList]);
 
   // Sequential Next SKU Code Generator
   const generateNextProductCode = () => {
@@ -492,11 +501,11 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
         ? product.packagingOptions.map((opt) => ({
             ...opt,
             openingWarehouse: opt.openingWarehouse || defaultWh,
-            openingQtySmall: '',
-            openingQtyLarge: '',
-            openingBatchNo: '',
-            openingProdDate: '',
-            openingExpDate: '',
+            openingQtySmall: Number(opt.openingQtySmall || 0) > 0 ? opt.openingQtySmall : '',
+            openingQtyLarge: Number(opt.openingQtyLarge || 0) > 0 ? opt.openingQtyLarge : '',
+            openingBatchNo: opt.openingBatchNo || '',
+            openingProdDate: opt.openingProdDate || '',
+            openingExpDate: opt.openingExpDate || '',
           }))
         : [
             {
@@ -669,10 +678,6 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
 
     setIsSaving(true);
     try {
-      const batch = writeBatch(db);
-      const todayStr = new Date().toISOString().split('T')[0];
-      const todayCompact = todayStr.replace(/-/g, '');
-
       const payload = {
         id: targetCode,
         code: targetCode,
@@ -726,78 +731,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
         payload.createdAt = serverTimestamp();
       }
 
-      batch.set(doc(db, 'finished_products', targetCode), payload, { merge: true });
-
-      formData.packagingOptions.forEach((opt) => {
-        const openQty = Number(opt.openingQtySmall || 0);
-        if (openQty > 0 && opt.openingWarehouse) {
-          const obId = `OB-FG-${todayCompact}-${targetCode}-${opt.suffix}`;
-          const obLotNo = `FG-LOT-${todayCompact}-${targetCode}-${opt.suffix}`;
-          const ratio = Number(opt.packagingRatio) || Number(formData.packagingRatio) || 1;
-          const expDate = opt.openingExpDate || calculateExpiryDate(opt.openingProdDate || todayStr, formData.shelfLifeMonths);
-
-          const receiptRef = doc(db, 'goods_receipts', obId);
-          batch.set(receiptRef, {
-            id: obId,
-            docType: 'opening_balance',
-            status: 'approved',
-            supplierId: 'FINISHED_GOODS_OPENING',
-            supplierName: isAr ? 'رصيد افتتاحي منتج تام' : 'Finished Goods Opening Stock',
-            receiptDate: todayStr,
-            targetWarehouse: opt.openingWarehouse,
-            lines: [
-              {
-                lotNumber: obLotNo,
-                itemId: targetCode,
-                code: `${targetCode}-${opt.suffix}`,
-                variantCode: `${targetCode}-${opt.suffix}`,
-                variantSuffix: opt.suffix,
-                nameAr: formData.nameAr.trim(),
-                nameEn: formData.nameEn.trim(),
-                specs: opt.nameAr || '',
-                targetWarehouse: opt.openingWarehouse,
-                largeUnitName: formData.largeUnitName,
-                receivedLargeUnits: Number((openQty / ratio).toFixed(2)),
-                packagingRatio: ratio,
-                smallUnit: formData.smallUnit,
-                receivedSmallUnits: openQty,
-                unitPrice: 0,
-                currency: 'EGP',
-                hasBatchTracking: Boolean(opt.openingBatchNo),
-                supplierBatchNo: opt.openingBatchNo || 'OB-LOT',
-                productionDate: opt.openingProdDate || todayStr,
-                expiryDate: expDate,
-                qcStatus: 'accepted',
-              },
-            ],
-            receivedBy: currentUser?.nameAr || currentUser?.name || 'General Admin',
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          const ledgerRef = doc(collection(db, 'stock_ledger'));
-          batch.set(ledgerRef, {
-            grnId: obId,
-            lotNumber: obLotNo,
-            action: 'fg_opening_balance',
-            docType: 'opening_balance',
-            itemId: targetCode,
-            variantCode: `${targetCode}-${opt.suffix}`,
-            materialNameAr: formData.nameAr.trim(),
-            qty: openQty,
-            unit: formData.smallUnit,
-            warehouse: opt.openingWarehouse,
-            receiptDate: todayStr,
-            batchNo: opt.openingBatchNo || 'OB-LOT',
-            productionDate: opt.openingProdDate || null,
-            expiryDate: expDate || null,
-            receivedBy: currentUser?.nameAr || currentUser?.name || 'General Admin',
-            timestamp: serverTimestamp(),
-          });
-        }
-      });
-
-      await batch.commit();
+      await setDoc(doc(db, 'finished_products', targetCode), payload, { merge: true });
       setShowModal(false);
     } catch (err) {
       console.error('Error saving finished product:', err);

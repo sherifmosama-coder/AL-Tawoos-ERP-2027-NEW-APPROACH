@@ -31,8 +31,16 @@ import {
   Database,
   ExternalLink,
   ClipboardCheck,
-  Info
+  Info,
+  Building2,
+  Users,
+  Save
 } from 'lucide-react';
+import {
+  WORKFLOW_MODULE_GROUPS,
+  WORKFLOW_EVENT_CATALOG,
+  resolveTargetUsers,
+} from '../utils/routingEngine';
 import {
   ONESIGNAL_APP_ID,
   ONESIGNAL_REST_API_KEY,
@@ -93,6 +101,15 @@ export default function NotificationControlCenter({ currentUser }) {
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [configSaveSuccess, setConfigSaveSuccess] = useState(false);
 
+  // Smart Workflow Event Routing Matrix State (Phase 2A)
+  const [departmentsList, setDepartmentsList] = useState([]);
+  const [employeesList, setEmployeesList] = useState([]);
+  const [permsConfig, setPermsConfig] = useState({ departmentOverrides: {}, userOverrides: {} });
+  const [eventRoutingOverrides, setEventRoutingOverrides] = useState({});
+  const [routingModuleFilter, setRoutingModuleFilter] = useState('dispatch');
+  const [isSavingRouting, setIsSavingRouting] = useState(false);
+  const [routingSaveSuccess, setRoutingSaveSuccess] = useState(false);
+
   // 1. Live Firestore Users Subscription Listener
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -112,18 +129,87 @@ export default function NotificationControlCenter({ currentUser }) {
       if (sub?.permission) setDevicePermission('granted');
     });
 
-    // 2. Subscribe to general system notification configuration
+    // 2. Subscribe to general system notification configuration + routing overrides
     const unsubConfig = onSnapshot(doc(db, 'system_config', 'notifications_config'), (snap) => {
       if (snap.exists()) {
-        setGeneralConfig((prev) => ({ ...prev, ...snap.data() }));
+        const data = snap.data() || {};
+        setGeneralConfig((prev) => ({ ...prev, ...data }));
+        if (data.eventRoutingOverrides && typeof data.eventRoutingOverrides === 'object') {
+          setEventRoutingOverrides(data.eventRoutingOverrides);
+        }
+      }
+    });
+
+    const unsubDepts = onSnapshot(collection(db, 'departments'), (snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => String(a.code || a.id).localeCompare(String(b.code || b.id)));
+      setDepartmentsList(list);
+    });
+
+    const unsubEmps = onSnapshot(collection(db, 'employees'), (snap) => {
+      setEmployeesList(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+
+    const unsubPerms = onSnapshot(doc(db, 'system_config', 'permissions'), (snap) => {
+      if (snap.exists()) {
+        setPermsConfig({
+          departmentOverrides: snap.data().departmentOverrides || {},
+          userOverrides: snap.data().userOverrides || {},
+        });
       }
     });
 
     return () => {
       unsub();
       unsubConfig();
+      unsubDepts();
+      unsubEmps();
+      unsubPerms();
     };
   }, []);
+
+  const updateEventRule = (eventKey, patch) => {
+    setEventRoutingOverrides((prev) => ({
+      ...prev,
+      [eventKey]: {
+        ...(prev[eventKey] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const toggleEventDept = (eventKey, deptId) => {
+    setEventRoutingOverrides((prev) => {
+      const curr = prev[eventKey] || {};
+      const list = Array.isArray(curr.departmentIds) ? curr.departmentIds : [];
+      const nextList = list.includes(deptId) ? list.filter((id) => id !== deptId) : [...list, deptId];
+      return {
+        ...prev,
+        [eventKey]: { ...curr, departmentIds: nextList },
+      };
+    });
+  };
+
+  const handleSaveRoutingMatrix = async () => {
+    setIsSavingRouting(true);
+    try {
+      await setDoc(
+        doc(db, 'system_config', 'notifications_config'),
+        {
+          eventRoutingOverrides,
+          updatedAt: serverTimestamp(),
+          updatedBy: currentUser?.nameAr || currentUser?.name || currentUser?.id || 'admin',
+        },
+        { mergeFields: ['eventRoutingOverrides', 'updatedAt', 'updatedBy'] }
+      );
+      setRoutingSaveSuccess(true);
+      setTimeout(() => setRoutingSaveSuccess(false), 3000);
+    } catch (e) {
+      alert(`Error saving event routing matrix: ${e.message}`);
+    } finally {
+      setIsSavingRouting(false);
+    }
+  };
 
   const handleSaveGeneralConfig = async () => {
     setIsSavingConfig(true);
@@ -1221,6 +1307,215 @@ export default function NotificationControlCenter({ currentUser }) {
               Lock your iPhone screen immediately after clicking dispatch. OneSignal pushes via Apple APNs to wake the device with ring and vibration.
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* ===================================================================== */}
+      {/* WORKFLOW EVENT ROUTING MATRIX (5 OPERATIONAL MODULES — PHASE 2A)      */}
+      {/* ===================================================================== */}
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+              <Building2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-black text-slate-900">
+                {isAr ? 'مصفوفة توجيه الإشعارات والمهام الذكية (حسب الصلاحيات والأقسام)' : 'Smart Workflow Event Routing Matrix (Permissions & Departments)'}
+              </h3>
+              <p className="text-xs text-slate-500 font-medium">
+                {isAr
+                  ? 'توجيه تلقائي للمستخدمين النشطين أصحاب الصلاحية أو تخصيص لأقسام محددة مع تحكم مستقل في تضمين المدير العام لكل حدث.'
+                  : 'Auto-route to active system users holding the required 3-layer permission, or override per department with per-event General Admin toggles.'}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={isSavingRouting}
+            onClick={handleSaveRoutingMatrix}
+            className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-black inline-flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+          >
+            {routingSaveSuccess ? <CheckCircle2 className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+            <span>
+              {isSavingRouting
+                ? (isAr ? 'جاري الحفظ...' : 'Saving...')
+                : routingSaveSuccess
+                ? (isAr ? 'تم حفظ مصفوفة التوجيه ✓' : 'Routing Saved ✓')
+                : (isAr ? 'حفظ قواعد التوجيه' : 'Save Routing Rules')}
+            </span>
+          </button>
+        </div>
+
+        {/* 5 Module Filter Pills */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {WORKFLOW_MODULE_GROUPS.map((grp) => {
+            const active = routingModuleFilter === grp.id;
+            const count = WORKFLOW_EVENT_CATALOG.filter((ev) => ev.module === grp.id).length;
+            return (
+              <button
+                key={grp.id}
+                type="button"
+                onClick={() => setRoutingModuleFilter(grp.id)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-black border transition cursor-pointer inline-flex items-center gap-1.5 ${
+                  active
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-2xs'
+                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                }`}
+              >
+                <span>{isAr ? grp.labelAr : grp.labelEn}</span>
+                <span className={`px-1.5 py-0.2 rounded-md font-mono text-[10px] ${active ? 'bg-white/20 text-white' : 'bg-white text-slate-500'}`}>
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Events List */}
+        <div className="space-y-2.5">
+          {WORKFLOW_EVENT_CATALOG.filter((ev) => ev.module === routingModuleFilter).map((ev) => {
+            const rule = eventRoutingOverrides[ev.key] || {};
+            const isEnabled = rule.enabled !== false;
+            const mode = rule.mode || 'auto_permission';
+            const includeGM =
+              rule.includeGeneralAdmins !== undefined
+                ? Boolean(rule.includeGeneralAdmins)
+                : Boolean(ev.defaultIncludeGeneralAdmins);
+            const selectedDepts = Array.isArray(rule.departmentIds) ? rule.departmentIds : [];
+
+            const preview = resolveTargetUsers({
+              eventKey: ev.key,
+              users: usersList,
+              employees: employeesList,
+              departments: departmentsList,
+              departmentOverrides: permsConfig.departmentOverrides,
+              userOverrides: permsConfig.userOverrides,
+              eventRoutingOverrides,
+            });
+
+            return (
+              <div
+                key={ev.key}
+                className={`p-3.5 rounded-2xl border transition space-y-2.5 ${
+                  isEnabled ? 'bg-slate-50/70 border-slate-200' : 'bg-slate-100/60 border-slate-200 opacity-60'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-black border ${
+                          ev.kind === 'action_required'
+                            ? 'bg-amber-100 text-amber-900 border-amber-300'
+                            : 'bg-sky-100 text-sky-900 border-sky-300'
+                        }`}
+                      >
+                        {ev.kind === 'action_required'
+                          ? (isAr ? 'مهمة مطلوبة (Task)' : 'Action Required')
+                          : (isAr ? 'إشعار (Notification)' : 'Notification')}
+                      </span>
+                      <span className="text-xs font-black text-slate-900">
+                        {isAr ? ev.labelAr : ev.labelEn}
+                      </span>
+                      {ev.requiredPermission && (
+                        <span className="font-mono text-[10px] text-slate-400">
+                          ({ev.requiredPermission.tabId}.{ev.requiredPermission.actionKey})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Live Resolved Audience Preview */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      title={
+                        preview.resolvedUsers.length > 0
+                          ? preview.resolvedUsers.map((u) => (isAr ? u.nameAr : u.name)).join(' • ')
+                          : (isAr ? 'لا يوجد مستلمون حالياً' : 'No resolved recipients')
+                      }
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-black border ${
+                        preview.resolvedUsers.length > 0
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          : 'bg-rose-50 text-rose-700 border-rose-200'
+                      }`}
+                    >
+                      <Users className="w-3 h-3" />
+                      <span>
+                        {preview.resolvedUsers.length}{' '}
+                        {isAr ? 'مستلم نشط' : 'active recipients'}
+                      </span>
+                    </span>
+
+                    <label className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isEnabled}
+                        onChange={(e) => updateEventRule(ev.key, { enabled: e.target.checked })}
+                        className="rounded border-slate-300 text-indigo-600"
+                      />
+                      <span>{isAr ? 'مفعّل' : 'Active'}</span>
+                    </label>
+                  </div>
+                </div>
+
+                {isEnabled && (
+                  <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-slate-200/70">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Routing Mode Switch */}
+                      <select
+                        value={mode}
+                        onChange={(e) => updateEventRule(ev.key, { mode: e.target.value })}
+                        className="px-2.5 py-1 rounded-xl border border-slate-300 bg-white text-[11px] font-bold text-slate-800"
+                      >
+                        <option value="auto_permission">
+                          {isAr ? 'تلقائي حسب الصلاحية (3-Layer)' : 'Auto by 3-Layer Permission'}
+                        </option>
+                        <option value="custom">
+                          {isAr ? 'توجيه مخصص لأقسام محددة' : 'Custom Department Override'}
+                        </option>
+                      </select>
+
+                      {/* Per-Event Include General Admins Toggle */}
+                      <label className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-[11px] font-bold text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={includeGM}
+                          onChange={(e) => updateEventRule(ev.key, { includeGeneralAdmins: e.target.checked })}
+                          className="rounded border-slate-300 text-indigo-600"
+                        />
+                        <span>{isAr ? 'تضمين المدير العام' : 'Include General Admins'}</span>
+                      </label>
+                    </div>
+
+                    {/* Department Selector Pills (for Custom Override or additional dept scoping) */}
+                    {mode === 'custom' && (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {departmentsList.map((d) => {
+                          const picked = selectedDepts.includes(d.id);
+                          return (
+                            <button
+                              key={d.id}
+                              type="button"
+                              onClick={() => toggleEventDept(ev.key, d.id)}
+                              className={`px-2 py-0.5 rounded-lg border text-[10px] font-bold transition cursor-pointer ${
+                                picked
+                                  ? 'bg-indigo-600 text-white border-indigo-600'
+                                  : 'bg-white hover:bg-slate-100 text-slate-600 border-slate-200'
+                              }`}
+                            >
+                              {isAr ? d.nameAr : d.nameEn || d.nameAr}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

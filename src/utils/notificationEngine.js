@@ -14,6 +14,7 @@ import {
   serverTimestamp,
   arrayUnion
 } from 'firebase/firestore';
+import { resolveTargetUsers, WORKFLOW_EVENTS_BY_KEY } from './routingEngine';
 
 // =========================================================================
 // 1. SOUND & AUDIO ALERT (Web Audio API Synthesizer)
@@ -78,8 +79,13 @@ export function highlightTargetRow(highlightId) {
 
   // Run DOM check with slight delays to accommodate React tab render cycles
   const attemptHighlight = (attemptsLeft) => {
-    const selector = `#${highlightId}, [data-row-id="${highlightId}"], [data-id="${highlightId}"]`;
-    const el = document.querySelector(selector);
+    const cleanId = String(highlightId).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const el =
+      document.getElementById(String(highlightId)) ||
+      document.getElementById(`row-${String(highlightId)}`) ||
+      document.querySelector(
+        `[data-highlight-id="${cleanId}"], [data-row-id="${cleanId}"], [data-id="${cleanId}"]`
+      );
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       el.classList.add('ring-4', 'ring-amber-400', 'bg-amber-50', 'transition-all', 'duration-500');
@@ -104,7 +110,7 @@ export function resolveModuleAndTab(targetModule, targetTab) {
 
   // If targetModule is explicitly master_data, preserve master_data for safes, bank_accounts, and vehicles
   if (targetModule === 'master_data') {
-    if (['safes', 'banks', 'bank_accounts', 'corporate_banks', 'vehicles', 'items', 'suppliers', 'clients', 'client_segments', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'production_workers', 'users', 'system_config'].includes(tab)) {
+    if (['safes', 'banks', 'bank_accounts', 'corporate_banks', 'vehicles', 'items', 'suppliers', 'clients', 'client_segments', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'departments', 'employees', 'production_workers', 'users', 'system_config'].includes(tab)) {
       return { module: 'master_data', tab: (tab === 'banks' || tab === 'corporate_banks') ? 'bank_accounts' : tab };
     }
   }
@@ -119,6 +125,9 @@ export function resolveModuleAndTab(targetModule, targetTab) {
   } else if (tab === 'finished_goods_inward' || tab === 'finished_goods_inwards' || tab === 'fg_inward' || tab === 'fg_inwards') {
     mod = 'production';
     tab = 'fg_inward';
+  } else if (tab === 'fg_balances' || tab === 'fg_stock' || tab === 'finished_goods_stock') {
+    mod = 'production';
+    tab = 'fg_balances';
   } else if (tab === 'transfers' || tab === 'stock_transfers') {
     mod = 'purchases';
     tab = 'transfers';
@@ -172,6 +181,9 @@ export function resolveModuleAndTab(targetModule, targetTab) {
   } else if (tab === 'loading_plan' || tab === 'delivery_plan' || tab === 'dispatch_plan') {
     mod = 'sales';
     tab = 'loading_plan';
+  } else if (tab === 'truck_dispatch' || tab === 'truck_dispatches') {
+    mod = 'sales';
+    tab = 'truck_dispatch';
   } else if (tab === 'price_lists' || tab === 'pricing_strategies') {
     mod = 'sales';
     tab = 'price_lists';
@@ -189,10 +201,10 @@ export function resolveModuleAndTab(targetModule, targetTab) {
   // Infer module if missing or general/landing
   if (!mod || mod === 'landing') {
     const purchasesTabs = ['orders', 'receipts', 'transfers', 'stock', 'stock_count', 'spare_parts'];
-    const productionTabs = ['work_orders', 'liquid_tanks', 'liquid_storage', 'faulty_fg', 'fg_inward', 'production_reports'];
-    const masterTabs = ['items', 'suppliers', 'clients', 'client_segments', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'safes', 'banks', 'vehicles', 'production_workers', 'users', 'system_config'];
+    const productionTabs = ['work_orders', 'liquid_tanks', 'liquid_storage', 'faulty_fg', 'fg_inward', 'fg_balances', 'production_reports'];
+    const masterTabs = ['items', 'suppliers', 'clients', 'client_segments', 'categories', 'finished_products', 'finished_product_categories', 'bom', 'intermediate_bom', 'production_processes', 'warehouses', 'safes', 'banks', 'vehicles', 'departments', 'employees', 'production_workers', 'users', 'system_config'];
     const financeTabs = ['cash_safes', 'cash_safes_hub', 'custodies_advances', 'dues_tracking', 'banks', 'accounts', 'party_statements', 'financial_statements'];
-    const salesTabs = ['sales_orders', 'loading_plan', 'delivery_plan', 'dispatch_plan', 'price_lists', 'client_contracts', 'contracts'];
+    const salesTabs = ['sales_orders', 'loading_plan', 'truck_dispatch', 'delivery_plan', 'dispatch_plan', 'price_lists', 'client_contracts', 'contracts'];
 
     if (purchasesTabs.includes(tab)) {
       mod = 'purchases';
@@ -525,7 +537,9 @@ export async function createActionRequired({
   createdByName,
   targetUserId = null,
   targetUserIds = [],
+  targetDepartmentIds = [],
   targetRoles = [],
+  includeGeneralAdmins = true,
   createdAt = null,
   metadata = {}
 }) {
@@ -560,9 +574,15 @@ export async function createActionRequired({
           targetUserIds: Array.isArray(targetUserIds) && targetUserIds.length > 0
             ? targetUserIds
             : (existingData.targetUserIds || []),
+          targetDepartmentIds: Array.isArray(targetDepartmentIds) && targetDepartmentIds.length > 0
+            ? targetDepartmentIds
+            : (existingData.targetDepartmentIds || []),
           targetRoles: Array.isArray(targetRoles) && targetRoles.length > 0
             ? targetRoles
             : existingData.targetRoles,
+          includeGeneralAdmins: includeGeneralAdmins !== undefined
+            ? Boolean(includeGeneralAdmins)
+            : (existingData.includeGeneralAdmins !== false),
           metadata: { ...(existingData.metadata || {}), ...(metadata || {}) }
         },
         { merge: true }
@@ -591,7 +611,9 @@ export async function createActionRequired({
       createdByName: createdByName || 'System',
       targetUserId: targetUserId || null,
       targetUserIds: resolvedUserIds,
+      targetDepartmentIds: Array.isArray(targetDepartmentIds) ? targetDepartmentIds : [],
       targetRoles: Array.isArray(targetRoles) ? targetRoles : [],
+      includeGeneralAdmins: includeGeneralAdmins !== false,
       status: 'pending',
       createdAt: createdAt || serverTimestamp(),
       completedBy: null,
@@ -743,7 +765,9 @@ export async function createNotification({
   messageEn = '',
   targetUserId = null,
   targetUserIds = [],
+  targetDepartmentIds = [],
   targetRoles = [],
+  includeGeneralAdmins = true,
   targetTab = '',
   targetModule = '',
   highlightId = '',
@@ -767,7 +791,9 @@ export async function createNotification({
     messageEn: messageEn || '',
     targetUserId: targetUserId || (resolvedUserIds[0] || null),
     targetUserIds: resolvedUserIds,
+    targetDepartmentIds: Array.isArray(targetDepartmentIds) ? targetDepartmentIds : [],
     targetRoles: Array.isArray(targetRoles) ? targetRoles : [],
+    includeGeneralAdmins: includeGeneralAdmins !== false,
     targetTab: targetTab || '',
     targetModule: targetModule || '',
     highlightId: highlightId || '',
@@ -942,6 +968,56 @@ export async function reconcilePendingActions() {
         }
       }
 
+      // 3b. Truck Dispatch Return Handshake Actions
+      else if (
+        act.actionType === 'truck_return_wh_confirm' ||
+        act.actionType === 'truck_return_accountant_review' ||
+        act.actionType === 'trip_return_expected_warehouse' ||
+        act.actionType === 'trip_return_alignment_accounting' ||
+        act.actionType === 'trip_return_variance_accounting' ||
+        act.actionType === 'trip_return_order_settlement_task' ||
+        act.targetTab === 'truck_dispatch'
+      ) {
+        try {
+          const tdSnap = await getDoc(doc(db, 'truck_dispatches', docId));
+          if (!tdSnap.exists()) {
+            await setDoc(actionDoc.ref, { status: 'cancelled', resolutionNote: 'Truck dispatch no longer exists' }, { merge: true });
+            continue;
+          }
+          const td = tdSnap.data();
+          const isWhTask =
+            act.actionType === 'truck_return_wh_confirm' ||
+            act.actionType === 'trip_return_expected_warehouse';
+          const isSettlementTask = act.actionType === 'trip_return_order_settlement_task';
+          const allTasksClosed =
+            Array.isArray(td.returnSettlementTasks) &&
+            td.returnSettlementTasks.length > 0 &&
+            td.returnSettlementTasks.every((t) => t.status === 'completed');
+
+          if (td.returnHandshakeStatus === 'reconciled') {
+            await setDoc(actionDoc.ref, {
+              status: 'completed',
+              completedAt: new Date().toISOString(),
+              resolutionNote: 'Auto-reconciled: Truck return reconciled',
+            }, { merge: true });
+          } else if (isWhTask && (Boolean(td.whReturnConfirmedAt) || td.returnHandshakeStatus === 'discrepancy_pending_accounting' || td.returnHandshakeStatus === 'pending_accounting_confirm')) {
+            await setDoc(actionDoc.ref, {
+              status: 'completed',
+              completedAt: new Date().toISOString(),
+              resolutionNote: 'Auto-reconciled: WH physical receipt confirmed',
+            }, { merge: true });
+          } else if (isSettlementTask && allTasksClosed) {
+            await setDoc(actionDoc.ref, {
+              status: 'completed',
+              completedAt: new Date().toISOString(),
+              resolutionNote: 'Auto-reconciled: All settlement tasks closed',
+            }, { merge: true });
+          }
+        } catch (e) {
+          console.debug('[Reconcile] Error checking truck dispatch doc:', e);
+        }
+      }
+
       // 3. Faulty FG Returns
       else if (act.actionType === 'faulty_fg_floor_confirm' || act.targetTab === 'faulty_fg') {
         try {
@@ -1102,5 +1178,114 @@ export async function backfillPendingActions() {
     console.debug('[ActionQueue] Backfill & reconciliation completed successfully.');
   } catch (error) {
     console.debug('[ActionQueue] Backfill notice:', error);
+  }
+}
+
+/**
+ * Smart Permission-Aware & Department-Aware Workflow Event Dispatcher.
+ * Loads live routing overrides, 3-layer permissions, and active system users,
+ * then creates the Action Required task or Notification for the resolved audience.
+ */
+export async function dispatchWorkflowEvent({
+  eventKey,
+  docId,
+  docNumber = '',
+  titleAr,
+  titleEn = '',
+  messageAr,
+  messageEn = '',
+  targetModule = '',
+  targetTab = '',
+  highlightId = '',
+  actor = null,
+  extraUserIds = [],
+  onlyExplicitUsers = false,
+  extraDepartmentIds = [],
+  metadata = {},
+} = {}) {
+  if (!eventKey) return null;
+  const catalogEv = WORKFLOW_EVENTS_BY_KEY[eventKey];
+  const kind = catalogEv?.kind || 'notification';
+
+  try {
+    const [notifCfgSnap, permsSnap, usersSnap, empsSnap, deptsSnap] = await Promise.all([
+      getDoc(doc(db, 'system_config', 'notifications_config')),
+      getDoc(doc(db, 'system_config', 'permissions')),
+      getDocs(collection(db, 'users')),
+      getDocs(collection(db, 'employees')),
+      getDocs(collection(db, 'departments')),
+    ]);
+
+    const eventRoutingOverrides = notifCfgSnap.exists()
+      ? (notifCfgSnap.data().eventRoutingOverrides || {})
+      : {};
+    const permsData = permsSnap.exists() ? permsSnap.data() : {};
+    const users = usersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const employees = empsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const departments = deptsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    const resolved = resolveTargetUsers({
+      eventKey,
+      departmentIds: extraDepartmentIds,
+      explicitUserIds: extraUserIds,
+      onlyExplicitUsers,
+      excludeActorId: actor?.id || null,
+      users,
+      employees,
+      departments,
+      departmentOverrides: permsData.departmentOverrides || {},
+      userOverrides: permsData.userOverrides || {},
+      eventRoutingOverrides,
+    });
+
+    if (!resolved.enabled || (resolved.targetUserIds.length === 0 && resolved.targetDepartmentIds.length === 0)) {
+      return resolved;
+    }
+
+    const createdBy = actor?.id || 'system';
+    const createdByName = actor?.nameAr || actor?.name || 'System';
+
+    if (kind === 'action_required' && docId) {
+      await createActionRequired({
+        actionType: eventKey,
+        docId,
+        docNumber: docNumber || docId,
+        title: titleAr || catalogEv?.labelAr || 'إجراء مطلوب',
+        titleEn: titleEn || catalogEv?.labelEn || 'Action Required',
+        message: messageAr || '',
+        messageEn: messageEn || '',
+        targetModule,
+        targetTab: targetTab || catalogEv?.requiredPermission?.tabId || '',
+        highlightId: highlightId || docId,
+        createdBy,
+        createdByName,
+        targetUserIds: resolved.targetUserIds,
+        targetDepartmentIds: resolved.targetDepartmentIds,
+        includeGeneralAdmins: resolved.includeGeneralAdmins,
+        metadata: { ...metadata, eventKey, routingMode: resolved.mode },
+      });
+    } else {
+      await createNotification({
+        type: 'info',
+        title: titleAr || catalogEv?.labelAr || 'إشعار جديد',
+        titleEn: titleEn || catalogEv?.labelEn || 'New Notification',
+        message: messageAr || '',
+        messageEn: messageEn || '',
+        targetModule,
+        targetTab: targetTab || catalogEv?.requiredPermission?.tabId || '',
+        highlightId: highlightId || docId || '',
+        createdBy,
+        createdByName,
+        targetUserIds: resolved.targetUserIds,
+        targetDepartmentIds: resolved.targetDepartmentIds,
+        includeGeneralAdmins: resolved.includeGeneralAdmins,
+        metadata: { ...metadata, eventKey, routingMode: resolved.mode },
+      });
+    }
+
+    return resolved;
+  } catch (err) {
+    console.error(`[WorkflowEvent] Failed dispatching ${eventKey}:`, err);
+    return null;
   }
 }

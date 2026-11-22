@@ -47,7 +47,10 @@ import {
   GitFork,
   PackageMinus,
   Store,
-  ClipboardCheck
+  ClipboardCheck,
+  ListOrdered,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import {
   collection,
@@ -63,7 +66,11 @@ import { canAccessAction } from '../config/appArchitecture.js';
 import { RowCommentButton } from './comments';
 import { resolveLocationInfo, normalizeLocationUrl } from '../utils/locationUtils.js';
 import { compareOrdersBySerialAsc, isOrderRetailRoute } from '../utils/salesOrderUtils.js';
+import { buildUnifiedPersonnelPool } from '../utils/personnelDirectory.js';
 import RetailSettlementModal from './RetailSettlementModal.jsx';
+import LoadingPlanFgSidebar from './LoadingPlanFgSidebar.jsx';
+import { buildOrderTripAvailabilityMap } from '../utils/fgStockEngine.js';
+import { makeTripDispatchDocId, evaluateReturnDiscrepancySummary } from '../utils/truckDispatchUtils.js';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
 
 const ORDER_TYPES = [
@@ -668,6 +675,58 @@ function TripRoadwayCarousel({
   );
 }
 
+// Group trip orders into distinct client/branch stops with resolved optional deliverySequence
+function getTripClientStops(assignedOrders = [], stagedAssignments = {}) {
+  const stopByKey = {};
+  const stops = [];
+  (assignedOrders || []).forEach((ord, idx) => {
+    const key = `${ord.clientId || ord.clientName || ord.id}::${ord.branchId || ord.branchName || 'main'}`;
+    const staged = stagedAssignments?.[ord.id];
+    const rawSeq = staged && staged.deliverySequence !== undefined
+      ? staged.deliverySequence
+      : ord.deliverySequence;
+    const numSeq = Number(rawSeq);
+    const validSeq = Number.isFinite(numSeq) && numSeq > 0 ? Math.floor(numSeq) : null;
+
+    if (!stopByKey[key]) {
+      const entry = {
+        key,
+        clientId: ord.clientId || '',
+        clientName: ord.clientName || '—',
+        branchName: ord.branchName || '',
+        orderIds: [],
+        orders: [],
+        deliverySequence: validSeq,
+        originalIndex: idx,
+      };
+      stopByKey[key] = entry;
+      stops.push(entry);
+    }
+    const stop = stopByKey[key];
+    stop.orderIds.push(ord.id);
+    stop.orders.push(ord);
+    if (validSeq !== null && (stop.deliverySequence === null || validSeq < stop.deliverySequence)) {
+      stop.deliverySequence = validSeq;
+    }
+  });
+
+  const hasManualSequence = stops.length > 1 && stops.some((s) => s.deliverySequence !== null);
+
+  if (hasManualSequence) {
+    stops.sort((a, b) => {
+      const aHas = a.deliverySequence !== null;
+      const bHas = b.deliverySequence !== null;
+      if (aHas && bHas && a.deliverySequence !== b.deliverySequence) {
+        return a.deliverySequence - b.deliverySequence;
+      }
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      return a.originalIndex - b.originalIndex;
+    });
+  }
+
+  return { stops, hasManualSequence };
+}
+
 // Compact 50%-Size Truck Scorecard with Rich Light Hover Tooltips, Bidirectional Stepper & Trip Carousel
 function CompactTruckCard({
   truckData,
@@ -676,6 +735,8 @@ function CompactTruckCard({
   onSelectTrip,
   onFilterConflict,
   onOpenTransitionModal,
+  onOpenSequenceModal,
+  onNavigateToTruckDispatch,
   isAr = true
 }) {
   const {
@@ -718,8 +779,12 @@ function CompactTruckCard({
         : activeTrip.tripOperationalStatus)
     : operationalStatus;
 
+  const hasReturnDiscrepancy = Boolean(activeTrip?.returnDiscrepancy?.hasDiscrepancy);
+
   const cardSurfaceClasses =
-    displayStatus === 'conflict'
+    hasReturnDiscrepancy
+      ? 'bg-rose-50/45 border-rose-400 ring-2 ring-rose-400/50 shadow-xs'
+      : displayStatus === 'conflict'
       ? 'bg-rose-50/40 border-rose-300 ring-1 ring-rose-500/20 shadow-xs'
       : displayStatus === 'shipped'
       ? 'bg-sky-50/30 border-sky-300 shadow-2xs hover:border-sky-400'
@@ -1031,6 +1096,34 @@ function CompactTruckCard({
                 </span>
               </span>
             </FleetRichTooltip>
+
+            {/* Quick Optional Delivery Sequence Button (only when saved trip has > 1 distinct client) */}
+            {activeTrip && onOpenSequenceModal && (() => {
+              const { stops: cardStops, hasManualSequence: cardHasSeq } = getTripClientStops(tripOrders);
+              if (cardStops.length <= 1) return null;
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenSequenceModal(veh, activeTrip);
+                  }}
+                  title={
+                    isAr
+                      ? (cardHasSeq ? 'تعديل أولوية التسليم للعملاء في هذه الرحلة' : 'تحديد أولوية التسليم للعملاء (اختياري)')
+                      : (cardHasSeq ? 'Edit client delivery sequence for this trip' : 'Set client delivery sequence (optional)')
+                  }
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg border text-[10px] font-black transition cursor-pointer ${
+                    cardHasSeq
+                      ? 'border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800'
+                      : 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  <ListOrdered className="w-3 h-3 shrink-0" />
+                  <span>{isAr ? (cardHasSeq ? 'أولوية ✓' : 'أولوية') : (cardHasSeq ? 'Seq ✓' : 'Seq')}</span>
+                </button>
+              );
+            })()}
           </div>
 
           {/* Clickable Conflict Alert Icon (triggers manual Trip# filter when trip or vehicle has conflict) */}
@@ -1073,6 +1166,88 @@ function CompactTruckCard({
             </FleetRichTooltip>
           )}
         </div>
+
+        {/* Synced Docs & Fast Navigation Row (Dispatch # & Return # / Discrepancy Jump) */}
+        {activeTrip && activeTrip.tripId && onNavigateToTruckDispatch && (
+          <div className="flex items-center gap-1 flex-wrap">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onNavigateToTruckDispatch(activeTrip.tripId, { openReturn: false });
+              }}
+              title={isAr ? 'فتح بطاقة الرحلة في تبويب صرف الشاحنات' : 'Open Trip Card in Truck Dispatch'}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border font-mono text-[9.5px] font-black transition cursor-pointer ${
+                activeTrip.dispatchDocNumber
+                  ? 'bg-teal-50 hover:bg-teal-100 text-teal-900 border-teal-300'
+                  : activeTrip.isWarehouseConfirmed
+                  ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                  : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'
+              }`}
+            >
+              <FileText className="w-2.5 h-2.5 shrink-0" />
+              <span>
+                {activeTrip.dispatchDocNumber
+                  ? activeTrip.dispatchDocNumber
+                  : activeTrip.isWarehouseConfirmed
+                  ? (isAr ? 'محمل ✓' : 'Loaded ✓')
+                  : (isAr ? 'صرف' : 'Dispatch')}
+              </span>
+              <ExternalLink className="w-2 h-2 opacity-70 shrink-0" />
+            </button>
+
+            {(displayStatus === 'shipped' ||
+              displayStatus === 'delivered' ||
+              activeTrip.returnHandshakeStatus !== 'none' ||
+              Boolean(activeTrip.returnDocNumber)) && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onNavigateToTruckDispatch(activeTrip.tripId, { openReturn: true });
+                }}
+                title={
+                  hasReturnDiscrepancy
+                    ? (isAr ? 'تنبيه: يوجد فرق مرتجعات — انقر للمراجعة الفورية' : 'Return discrepancy detected — click to review')
+                    : (isAr ? 'إصدار أو عرض إذن استلام المرتجع' : 'Issue / view Return Document')
+                }
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border font-mono text-[9.5px] font-black transition cursor-pointer ${
+                  hasReturnDiscrepancy
+                    ? 'bg-rose-100 hover:bg-rose-200 text-rose-900 border-rose-400 animate-pulse'
+                    : activeTrip.returnHandshakeStatus === 'reconciled'
+                    ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                    : activeTrip.returnHandshakeStatus === 'pending_accounting_confirm'
+                    ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-300 animate-pulse'
+                    : activeTrip.returnHandshakeStatus === 'pending_wh_confirm'
+                    ? 'bg-sky-50 hover:bg-sky-100 text-sky-900 border-sky-300 animate-pulse'
+                    : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                }`}
+              >
+                {hasReturnDiscrepancy ? (
+                  <AlertTriangle className="w-2.5 h-2.5 text-rose-600 shrink-0" />
+                ) : (
+                  <RotateCcw className="w-2.5 h-2.5 shrink-0" />
+                )}
+                <span>
+                  {hasReturnDiscrepancy
+                    ? (isAr
+                        ? `فرق مرتجع${activeTrip.returnDocNumber ? ` ${activeTrip.returnDocNumber}` : ''}`
+                        : `Variance${activeTrip.returnDocNumber ? ` ${activeTrip.returnDocNumber}` : ''}`)
+                    : activeTrip.returnDocNumber
+                    ? `${activeTrip.returnDocNumber}${activeTrip.returnHandshakeStatus === 'reconciled' ? ' ✓' : ''}`
+                    : activeTrip.returnHandshakeStatus === 'reconciled'
+                    ? (isAr ? 'مرتجع ✓' : 'Ret ✓')
+                    : activeTrip.returnHandshakeStatus === 'pending_accounting_confirm'
+                    ? (isAr ? 'مراجعة محاسبية' : 'Acct Align')
+                    : activeTrip.returnHandshakeStatus === 'pending_wh_confirm'
+                    ? (isAr ? 'تأكيد مرتجع' : 'Confirm Ret')
+                    : (isAr ? 'إذن مرتجع' : 'Return')}
+                </span>
+                <ExternalLink className="w-2 h-2 opacity-70 shrink-0" />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Sequential Stepper Row (Bwd & Fwd for Middle Statuses, or Clickable Conflict Bar) */}
         {!activeTrip ? (
@@ -1157,8 +1332,77 @@ function CompactTruckCard({
   );
 }
 
+// Enlarged 2-line Cartons + Sequential Trip Availability Chip
+function OrderCartonsAvailabilityChip({ order, availability, onClick, isAr = true }) {
+  const cartons = Number(order?.totalCartons || order?.totalQty || 0);
+  const bonus = Number(order?.totalBonus || 0);
+  const mode = availability?.mode;
+  const tier = availability?.tier;
+  const pct = Number(availability?.pct ?? 0);
+
+  let chipCls = 'bg-amber-50 hover:bg-amber-100/80 border-amber-200 text-slate-900';
+  let iconCls = 'text-amber-600';
+  let subLabel = null;
+  let subCls = 'text-slate-500';
+
+  if (mode === 'open') {
+    if (tier === 'green') {
+      chipCls = 'bg-emerald-50 hover:bg-emerald-100/90 border-emerald-300 text-emerald-950';
+      iconCls = 'text-emerald-600';
+      subLabel = isAr ? '✓ متوفر بالكامل' : '✓ ALL Available';
+      subCls = 'text-emerald-700';
+    } else if (tier === 'amber') {
+      chipCls = 'bg-amber-50 hover:bg-amber-100/90 border-amber-300 text-amber-950';
+      iconCls = 'text-amber-600';
+      subLabel = isAr ? `متوفر ${pct}%` : `${pct}% Available`;
+      subCls = 'text-amber-700';
+    } else {
+      chipCls = 'bg-rose-50 hover:bg-rose-100/90 border-rose-300 text-rose-950';
+      iconCls = 'text-rose-600';
+      subLabel = isAr ? `متوفر ${pct}%` : `${pct}% Available`;
+      subCls = 'text-rose-700';
+    }
+  } else if (mode === 'dispatched') {
+    const isDel = availability?.fulfillmentStatus === 'delivered' || availability?.fulfillmentStatus === 'paid';
+    chipCls = 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-800';
+    iconCls = 'text-slate-500';
+    subLabel = isDel ? (isAr ? 'تم التسليم' : 'Delivered') : (isAr ? 'تم الشحن' : 'Dispatched');
+    subCls = 'text-slate-500';
+  } else if (mode === 'return') {
+    chipCls = 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-900';
+    iconCls = 'text-sky-600';
+    subLabel = isAr ? 'مرتجع وارد' : 'Incoming Return';
+    subCls = 'text-sky-700';
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.(e);
+      }}
+      className={`px-3 py-1.5 rounded-xl border transition cursor-pointer group/ctn shadow-2xs flex flex-col items-start text-start min-w-[110px] ${chipCls}`}
+      title={isAr ? 'انقر لعرض تفاصيل الأصناف والتوفر لكل صنف' : 'Click to view item breakdown & per-SKU stock availability'}
+    >
+      <div className="font-mono font-black text-xs inline-flex items-center gap-1.5 leading-tight">
+        <Boxes className={`w-3.5 h-3.5 group-hover/ctn:scale-110 transition-transform shrink-0 ${iconCls}`} />
+        <span>{cartons.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
+        {bonus > 0 && (
+          <span className="text-emerald-700 text-[10px] font-bold">+{bonus}</span>
+        )}
+      </div>
+      {subLabel && (
+        <span className={`text-[10px] font-extrabold font-sans leading-tight mt-0.5 ${subCls}`}>
+          {subLabel}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // Non-Intrusive Order Products & Prices Breakdown Modal
-function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segments = [], products = [], isAr = true }) {
+function OrderProductsDetailsModal({ isOpen, onClose, order, availability = null, clients = [], segments = [], products = [], isAr = true }) {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') onClose();
@@ -1191,7 +1435,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden text-start animate-in zoom-in-95 duration-150"
+        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden text-start animate-in zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -1296,6 +1540,40 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
 
         {/* Products Table Content */}
         <div className="p-4 overflow-y-auto flex-1 text-xs space-y-3">
+          {availability?.mode === 'open' && (
+            <div
+              className={`px-3.5 py-2 rounded-2xl border flex flex-wrap items-center justify-between gap-2 text-xs ${
+                availability.tier === 'green'
+                  ? 'bg-emerald-50/90 border-emerald-200 text-emerald-900'
+                  : availability.tier === 'amber'
+                  ? 'bg-amber-50/90 border-amber-200 text-amber-950'
+                  : 'bg-rose-50/90 border-rose-200 text-rose-950'
+              }`}
+            >
+              <div className="flex items-center gap-2 font-extrabold">
+                <Boxes className="w-4 h-4 shrink-0" />
+                <span>
+                  {availability.tier === 'green'
+                    ? (isAr ? 'كامل الكميات متاحة لهذا الطلب حسب تسلسل التوفر والرحلات' : 'All items available for this order in sequential trip priority')
+                    : (isAr
+                        ? `التوفر المخصص: ${availability.totalAvailableCartons} / ${availability.totalRequiredCartons} كرتونة (${availability.pct}%)`
+                        : `Allocated Stock: ${availability.totalAvailableCartons} / ${availability.totalRequiredCartons} ctn (${availability.pct}%)`)}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold">
+                {availability.tripNum ? (
+                  <span className="px-2 py-0.5 rounded-lg bg-white/80 border border-current/20">
+                    {isAr ? `أولوية رحلة #${availability.tripNum}` : `Trip #${availability.tripNum} Priority`}
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-lg bg-white/80 border border-current/20">
+                    {isAr ? 'غير مسكن على رحلة' : 'Unassigned Trip'}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {order.hasPartialRejection && (
             <div className="p-3 bg-rose-50/90 border border-rose-200 rounded-2xl space-y-1.5 text-xs">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1350,6 +1628,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                         : (order.retailSettlementStatus === 'settled' ? 'Actual Sold' : order.hasPartialRejection ? 'Actual Recv' : 'Qty')}
                     </th>
                     <th className="py-2.5 px-3 text-center">{isAr ? 'البونص' : 'Bonus'}</th>
+                    <th className="py-2.5 px-3 text-center">{isAr ? 'التوفر' : 'Availability'}</th>
                     {showReconCols && (
                       <th className="py-2.5 px-2.5 text-center text-rose-700">{isAr ? 'مرتجع' : 'Returned'}</th>
                     )}
@@ -1399,6 +1678,48 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, clients = [], segme
                           ) : (
                             <span className="text-slate-300">—</span>
                           )}
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          {(() => {
+                            const lineAvail = availability?.lineStatuses?.[idx];
+                            if (!lineAvail) return <span className="text-slate-300">—</span>;
+                            if (lineAvail.mode === 'dispatched') {
+                              return (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-sans font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                                  {isAr ? 'تم الصرف' : 'Dispatched'}
+                                </span>
+                              );
+                            }
+                            if (lineAvail.mode === 'return') {
+                              return (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-sans font-bold bg-sky-50 text-sky-700 border border-sky-200">
+                                  {isAr ? 'مرتجع' : 'Return'}
+                                </span>
+                              );
+                            }
+                            const chipColor =
+                              lineAvail.tier === 'green'
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : lineAvail.tier === 'amber'
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                : 'bg-rose-50 text-rose-800 border-rose-200';
+                            return (
+                              <span
+                                className={`inline-flex flex-col items-center px-2 py-0.5 rounded-lg border text-[10px] font-extrabold leading-tight ${chipColor}`}
+                              >
+                                <span className="font-mono">
+                                  {lineAvail.tier === 'green'
+                                    ? (isAr ? `✓ متوفر (${lineAvail.availableCartons})` : `✓ ALL (${lineAvail.availableCartons})`)
+                                    : `${lineAvail.availableCartons} / ${lineAvail.requiredCartons} (${lineAvail.pct}%)`}
+                                </span>
+                                {lineAvail.optionSuffix && (
+                                  <span className="text-[8px] font-mono opacity-75">
+                                    [{lineAvail.optionSuffix === 'ANY' ? (isAr ? 'أي تعبئة' : 'ANY') : lineAvail.optionSuffix}]
+                                  </span>
+                                )}
+                              </span>
+                            );
+                          })()}
                         </td>
                         {showReconCols && (
                           <td className="py-2 px-2.5 text-center font-black text-rose-700">
@@ -1473,6 +1794,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const [clients, setClients] = useState([]);
   const [products, setProducts] = useState([]);
   const [segments, setSegments] = useState([]);
+  const [stagedPallets, setStagedPallets] = useState([]);
+  const [stockTransfers, setStockTransfers] = useState([]);
+  const [faultyReturns, setFaultyReturns] = useState([]);
+  const [workOrders, setWorkOrders] = useState([]);
+  const [truckDispatches, setTruckDispatches] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // 1. Target Planning Date (Anchor Date for Assignments & Sequence Validation)
@@ -1500,6 +1826,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
   // Floating Dock Expanded State
   const [isManifestExpanded, setIsManifestExpanded] = useState(false);
+
+  // Saved Multi-Client Trip Delivery Sequence Quick Modal
+  const [sequenceModal, setSequenceModal] = useState(null); // { vehicle, trip, stops, hasManualSequence, isSaving }
 
   // Non-Intrusive Order Products & Prices Modal
   const [selectedOrderForProducts, setSelectedOrderForProducts] = useState(null);
@@ -1529,6 +1858,47 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
   // Retail Van-Sales Settlement Modal State: { order, allowDeferDelivery }
   const [retailSettlementModal, setRetailSettlementModal] = useState(null);
+
+  // Opposite-Edge FG Stock & Deficit Sidebar State (default collapsed; pushes workspace inward when expanded on md+)
+  const FG_SIDEBAR_WIDTH = 355;
+  const [isFgSidebarOpen, setIsFgSidebarOpen] = useState(false);
+  const [fgSidebarPushPx, setFgSidebarPushPx] = useState(0);
+  const [isDesktopViewport, setIsDesktopViewport] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
+  );
+  const loadingPlanWrapperRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const recalcPush = () => {
+      const desktop = window.innerWidth >= 768;
+      setIsDesktopViewport(desktop);
+      if (!isFgSidebarOpen || !desktop || !loadingPlanWrapperRef.current) {
+        setFgSidebarPushPx(0);
+        return;
+      }
+      const rect = loadingPlanWrapperRef.current.getBoundingClientRect();
+      const isRtlDoc = isAr || document.documentElement?.dir === 'rtl';
+      const existingEndGap = isRtlDoc
+        ? Math.max(0, Math.round(rect.left))
+        : Math.max(0, Math.round(window.innerWidth - rect.right));
+      const neededPush = Math.max(24, FG_SIDEBAR_WIDTH + 16 - existingEndGap);
+      setFgSidebarPushPx((prev) => (prev !== neededPush ? neededPush : prev));
+    };
+
+    recalcPush();
+    window.addEventListener('resize', recalcPush);
+    const parentEl = loadingPlanWrapperRef.current?.parentElement;
+    let ro = null;
+    if (parentEl && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(recalcPush);
+      ro.observe(parentEl);
+    }
+    return () => {
+      window.removeEventListener('resize', recalcPush);
+      if (ro) ro.disconnect();
+    };
+  }, [isFgSidebarOpen, isAr]);
 
   useEffect(() => {
     setLoFilter(null);
@@ -1586,67 +1956,23 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return () => unsub();
   }, []);
 
-  // 3. Subscribe to Workers Directory (production_workers + users + employees)
+  // 3. Subscribe to Unified Staff & Workers Directory (`employees` SSOT + unlinked `users`)
   useEffect(() => {
-    let workers = [];
     let users = [];
     let emps = [];
 
     const rebuildWorkersPool = () => {
-      const combined = [];
-      const seenIds = new Set();
-
-      // Priority 1: Production Workers (existing workers directory)
-      workers.forEach((w) => {
-        if (!w.id || seenIds.has(w.id)) return;
-        if (w.isActive === false || w.status === 'inactive') return;
-        seenIds.add(w.id);
-        const roleLabel = WORKER_ROLE_LABELS[w.role]?.[isAr ? 'ar' : 'en'] || w.role || (isAr ? 'عامل' : 'Worker');
-        combined.push({
-          id: w.id,
-          name: isAr ? (w.nameAr || w.name) : (w.name || w.nameAr),
-          nameAr: w.nameAr || w.name || '',
-          nameEn: w.nameEn || w.name || '',
-          role: roleLabel,
-          department: w.department || ''
-        });
-      });
-
-      // Priority 2: System Users
-      users.forEach((u) => {
-        if (!u.id || seenIds.has(u.id)) return;
-        if (u.isActive === false || u.status === 'inactive') return;
-        seenIds.add(u.id);
-        combined.push({
-          id: u.id,
-          name: isAr ? (u.nameAr || u.name) : (u.name || u.nameAr),
-          nameAr: u.nameAr || u.name || '',
-          nameEn: u.nameEn || u.name || '',
-          role: u.role || (isAr ? 'مستخدم' : 'User'),
-          department: u.department || ''
-        });
-      });
-
-      // Priority 3: Employees (if any exist in employees collection)
-      emps.forEach((e) => {
-        if (!e.id || seenIds.has(e.id)) return;
-        seenIds.add(e.id);
-        combined.push({
-          id: e.id,
-          name: isAr ? (e.nameAr || e.name) : (e.name || e.nameAr),
-          nameAr: e.nameAr || e.name || '',
-          nameEn: e.nameEn || e.name || '',
-          role: e.role || (isAr ? 'موظف' : 'Staff'),
-          department: e.department || ''
-        });
-      });
-
-      combined.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ar'));
-      setEmployees(combined);
+      setEmployees(
+        buildUnifiedPersonnelPool({
+          employees: emps,
+          users,
+          isAr,
+        })
+      );
     };
 
-    const unsubWorkers = onSnapshot(collection(db, 'production_workers'), (snapshot) => {
-      workers = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const unsubEmps = onSnapshot(collection(db, 'employees'), (snapshot) => {
+      emps = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       rebuildWorkersPool();
     });
 
@@ -1655,15 +1981,9 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       rebuildWorkersPool();
     });
 
-    const unsubEmps = onSnapshot(collection(db, 'employees'), (snapshot) => {
-      emps = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-      rebuildWorkersPool();
-    });
-
     return () => {
-      unsubWorkers();
-      unsubUsers();
       unsubEmps();
+      unsubUsers();
     };
   }, [isAr]);
 
@@ -1692,6 +2012,32 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       setSegments(loaded);
     });
     return () => unsub();
+  }, []);
+
+  // 7. Subscribe Read-Only to Production & FG Inventory Streams for FG Stock Forecast Sidebar
+  useEffect(() => {
+    const unsubPallets = onSnapshot(collection(db, 'staged_floor_pallets'), (snap) => {
+      setStagedPallets(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    const unsubTransfers = onSnapshot(collection(db, 'stock_transfers'), (snap) => {
+      setStockTransfers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    const unsubFaulty = onSnapshot(collection(db, 'faulty_fg_returns'), (snap) => {
+      setFaultyReturns(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    const unsubWorkOrders = onSnapshot(collection(db, 'work_orders'), (snap) => {
+      setWorkOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    const unsubTruckDispatches = onSnapshot(collection(db, 'truck_dispatches'), (snap) => {
+      setTruckDispatches(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => {
+      unsubPallets();
+      unsubTransfers();
+      unsubFaulty();
+      unsubWorkOrders();
+      unsubTruckDispatches();
+    };
   }, []);
 
   // Fast Segment Map
@@ -1730,6 +2076,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         })
       );
     }
+  };
+
+  // Fast navigation to a specific Trip Card (or Return Inspection Modal) in Truck Dispatch
+  const handleNavigateToTruckDispatch = (tripId, { openReturn = false } = {}) => {
+    if (!tripId || typeof window === 'undefined') return;
+    window.location.hash = `#truck_dispatch?module=sales&tripId=${encodeURIComponent(tripId)}${openReturn ? '&openReturn=1' : ''}`;
   };
 
   // Listen for Incoming Deep-Link Focus from Sales Orders Master
@@ -2399,6 +2751,132 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     return groupList;
   }, [sortedOrders, groupBy, sortBy, isAr, stagedAssignments, targetPlanningDate, todayStr, tomorrowStr, vehicles]);
 
+  // Sequential FG Stock Availability Map per Order & SKU Line (Date -> Prepare -> Ascending Trip # -> Serial #)
+  const orderAvailabilityMap = useMemo(() => {
+    return buildOrderTripAvailabilityMap({
+      finishedProducts: products,
+      stagedPallets,
+      stockTransfers,
+      faultyReturns,
+      salesOrders: orders,
+      workOrders,
+      truckDispatches,
+      stagedAssignments,
+      todayStr,
+    });
+  }, [
+    products,
+    stagedPallets,
+    stockTransfers,
+    faultyReturns,
+    orders,
+    workOrders,
+    truckDispatches,
+    stagedAssignments,
+    todayStr,
+  ]);
+
+  // Stage optional client delivery sequence (1..N or null for Auto) for all orders in a multi-client trip
+  const handleStageTripSequence = (assignedOrders, orderedStopsOrNull) => {
+    if (!Array.isArray(assignedOrders) || assignedOrders.length === 0) return;
+    setStagedAssignments((prev) => {
+      const next = { ...prev };
+      if (!orderedStopsOrNull) {
+        // Clear sequence back to automatic
+        assignedOrders.forEach((ord) => {
+          const base = prev[ord.id] || getEffectiveAssignment(ord);
+          next[ord.id] = { ...base, deliverySequence: null };
+        });
+      } else {
+        orderedStopsOrNull.forEach((stop, idx) => {
+          const seq = idx + 1;
+          (stop.orders || []).forEach((ord) => {
+            const base = prev[ord.id] || getEffectiveAssignment(ord);
+            next[ord.id] = { ...base, deliverySequence: seq };
+          });
+        });
+      }
+      return next;
+    });
+  };
+
+  const handleOpenSequenceModal = (veh, trip) => {
+    if (!trip || !Array.isArray(trip.orders)) return;
+    const { stops, hasManualSequence } = getTripClientStops(trip.orders, stagedAssignments);
+    if (stops.length <= 1) return;
+    setSequenceModal({
+      vehicle: veh,
+      trip,
+      stops,
+      hasManualSequence,
+      isSaving: false,
+    });
+  };
+
+  const handleSaveSequenceModal = async (overrideClear = false) => {
+    if (!sequenceModal?.trip) return;
+    setSequenceModal((prev) => (prev ? { ...prev, isSaving: true } : null));
+    try {
+      const batch = writeBatch(db);
+      const nowIso = new Date().toISOString();
+      let changedCount = 0;
+
+      const stopsToApply = sequenceModal.stops || [];
+      stopsToApply.forEach((stop, idx) => {
+        const targetSeq = overrideClear ? null : idx + 1;
+        (stop.orders || []).forEach((ord) => {
+          const originalOrder = orders.find((o) => o.id === ord.id) || ord;
+          const oldSeq = Number(originalOrder?.deliverySequence) > 0 ? Math.floor(Number(originalOrder.deliverySequence)) : null;
+          if (oldSeq === targetSeq) return;
+
+          changedCount += 1;
+          const orderRef = doc(db, 'sales_orders', ord.id);
+          const existingAudit = Array.isArray(originalOrder?.auditTrail) ? originalOrder.auditTrail : [];
+          const auditEntry = {
+            id: `AUD-${Date.now()}-${existingAudit.length + 1}`,
+            timestamp: nowIso,
+            userId: currentUserId,
+            userName: currentUserName,
+            performedBy: currentUserName,
+            performedById: currentUserId,
+            action: 'dispatch_plan_update',
+            summaryAr: targetSeq ? `تحديث أولوية التسليم إلى #${targetSeq}` : 'إعادة أولوية التسليم إلى تلقائي',
+            summaryEn: targetSeq ? `Updated delivery sequence to #${targetSeq}` : 'Reset delivery sequence to Auto',
+            changes: [
+              {
+                labelAr: 'أولوية التسليم',
+                labelEn: 'Delivery Sequence',
+                oldValue: oldSeq ? `#${oldSeq}` : (isAr ? 'تلقائي' : 'Auto'),
+                newValue: targetSeq ? `#${targetSeq}` : (isAr ? 'تلقائي' : 'Auto'),
+              },
+            ],
+          };
+
+          batch.update(orderRef, {
+            deliverySequence: targetSeq,
+            updatedAt: nowIso,
+            updatedBy: currentUserName,
+            auditTrail: [...existingAudit, auditEntry],
+          });
+        });
+      });
+
+      if (changedCount > 0) {
+        await batch.commit();
+        showToast(
+          overrideClear
+            ? (isAr ? 'تم إعادة ترتيب التسليم إلى الوضع التلقائي' : 'Delivery sequence reset to Auto')
+            : (isAr ? 'تم حفظ أولوية التسليم للرحلة بنجاح' : 'Trip delivery sequence saved successfully')
+        );
+      }
+      setSequenceModal(null);
+    } catch (err) {
+      console.error('Failed saving delivery sequence:', err);
+      showToast(isAr ? 'حدث خطأ أثناء حفظ أولوية التسليم' : 'Error saving delivery sequence', 'error');
+      setSequenceModal((prev) => (prev ? { ...prev, isSaving: false } : null));
+    }
+  };
+
   // Active Trucks / Trips Manifest Analysis (Focused ONLY on trips triggered by stagedAssignments)
   const truckManifest = useMemo(() => {
     const loGroups = {};
@@ -2564,6 +3042,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const truckFleetAnalysis = useMemo(() => {
     if (!Array.isArray(vehicles) || vehicles.length === 0) return [];
 
+    const dispatchesById = {};
+    (truckDispatches || []).forEach((td) => {
+      if (td && td.id) dispatchesById[td.id] = td;
+    });
+
     const analyzed = vehicles.map((veh) => {
       const maxCapKg = Number(veh.maxCapacityKg) || 0;
 
@@ -2646,7 +3129,16 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           const driverName = effFirst?.assignedDriverName || grp.orders[0]?.assignedDriverName || veh.driverName || '';
           const repName = effFirst?.assignedDeliveryRepName || grp.orders[0]?.assignedDeliveryRepName || '';
 
+          const tripId =
+            grp.orders.find((o) => o.fgWarehouseDispatchId)?.fgWarehouseDispatchId ||
+            (grp.loadingOrderNumber !== 'unnumbered'
+              ? makeTripDispatchDocId(targetPlanningDate, grp.loadingOrderNumber)
+              : '');
+          const dispatchDoc = tripId ? dispatchesById[tripId] || null : null;
+          const returnDiscrepancy = evaluateReturnDiscrepancySummary(dispatchDoc);
+
           return {
+            tripId,
             loadingOrderNumber: grp.loadingOrderNumber,
             orders: grp.orders,
             totalWeightKg: tripWeightKg,
@@ -2660,7 +3152,13 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             currentStep: hasStatusConflict ? null : SEQUENTIAL_FULFILLMENT_STEPS[currentStepIndex],
             tripOperationalStatus,
             driverName,
-            repName
+            repName,
+            dispatchDoc,
+            dispatchDocNumber: dispatchDoc?.latestDispatchDocNumber || '',
+            returnDocNumber: dispatchDoc?.latestReturnDocNumber || '',
+            isWarehouseConfirmed: Boolean(dispatchDoc && dispatchDoc.dispatchStatus !== 'cancelled'),
+            returnHandshakeStatus: dispatchDoc?.returnHandshakeStatus || 'none',
+            returnDiscrepancy
           };
         });
 
@@ -2768,7 +3266,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     });
 
     return analyzed;
-  }, [vehicles, orders, stagedAssignments, targetPlanningDate]);
+  }, [vehicles, orders, stagedAssignments, targetPlanningDate, truckDispatches]);
 
   // Handler to execute atomic batch transition for a truck trip (supports partial delivery / returned orders)
   const handleConfirmTruckFulfillmentTransition = async () => {
@@ -2787,12 +3285,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       const nowIso = new Date().toISOString();
       let advancedCount = 0;
       let returnedCount = 0;
+      const shippedTripIds = new Set();
+      const failedByTripId = {};
+
+      const resolveOrderTripId = (ord) => {
+        if (ord?.fgWarehouseDispatchId) return ord.fgWarehouseDispatchId;
+        const loNum = Number(loadingOrderNumber || ord?.loadingOrderNumber || 0);
+        if (loNum > 0) {
+          const loDate = String(ord?.loadingDate || ord?.invoiceDate || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+          return makeTripDispatchDocId(loDate, loNum);
+        }
+        return '';
+      };
 
       affectedOrders.forEach((order) => {
         const orderRef = doc(db, 'sales_orders', order.id);
         const oldStatus = order.fulfillmentStatus || 'not_yet';
         const isChecked = selectedSet.has(order.id);
         const existingAudit = Array.isArray(order.auditTrail) ? order.auditTrail : [];
+        const orderTripId = resolveOrderTripId(order);
 
         if (isChecked) {
           advancedCount++;
@@ -2836,6 +3347,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             auditTrail: [auditEntry, ...existingAudit]
           };
 
+          if (newStatus === 'shipped') {
+            updatePayload.shippedAt = order.shippedAt || nowIso;
+            if (orderTripId) shippedTripIds.add(orderTripId);
+          }
+
           if (
             newStatus === 'delivered' &&
             isOrderRetailRoute(order, clients, segments) &&
@@ -2860,12 +3376,36 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             updatePayload.assignedDriverName = '';
             updatePayload.assignedDeliveryRepId = '';
             updatePayload.assignedDeliveryRepName = '';
+            updatePayload.fgWarehouseDispatched = false;
+            updatePayload.fgWarehouseDispatchId = '';
           }
 
           batch.update(orderRef, updatePayload);
         } else {
           // Unchecked order during transition -> Returned / Undelivered -> Revert to 'not_yet' (Pending) & detach from Trip # / Truck
           returnedCount++;
+          const wasAlreadyShipped = oldStatus === 'shipped' || Boolean(order.shippedAt);
+          if (wasAlreadyShipped && orderTripId) {
+            if (!failedByTripId[orderTripId]) failedByTripId[orderTripId] = [];
+            failedByTripId[orderTripId].push({
+              orderId: order.id,
+              serial: order.serial || String(order.id || '').replace(/^SO-/i, ''),
+              clientId: order.clientId || '',
+              clientName: order.clientName || order.clientNameAr || '—',
+              orderType: order.orderType || 'supply',
+              lines: (order.lines || []).map((l) => ({
+                productId: l.productId || l.finishedProductId || '',
+                productCode: l.productCode || l.code || '',
+                packagingOptionSuffix: l.packagingOptionSuffix || l.optionSuffix || '',
+                packagingRatio: Number(l.packagingRatio || 1),
+                qty: Number(l.qty || 0),
+                bonus: Number(l.bonus || 0),
+              })),
+              failedAt: nowIso,
+              failedBy: currentUserName,
+            });
+          }
+
           const auditEntry = {
             id: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
             timestamp: nowIso,
@@ -2903,6 +3443,32 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             auditTrail: [auditEntry, ...existingAudit]
           });
         }
+      });
+
+      // Stamp `hasShippedOut: true` on `truck_dispatches/{tripId}` when moving to 'shipped'
+      // and append any undelivered shipped orders to `undeliveredOrders[]` for Expected-to-Return tracking
+      const touchedTripIds = new Set([...shippedTripIds, ...Object.keys(failedByTripId)]);
+      touchedTripIds.forEach((tid) => {
+        const existingTd = truckDispatches.find((d) => d.id === tid) || null;
+        const dispRef = doc(db, 'truck_dispatches', tid);
+        const tdUpdate = {
+          hasShippedOut: true,
+          shippedAt: existingTd?.shippedAt || nowIso,
+          shippedBy: existingTd?.shippedBy || currentUserName,
+        };
+        const newlyFailed = failedByTripId[tid] || [];
+        if (newlyFailed.length > 0) {
+          const prevUndelivered = Array.isArray(existingTd?.undeliveredOrders) ? existingTd.undeliveredOrders : [];
+          const byOrderId = {};
+          prevUndelivered.forEach((u) => {
+            if (u?.orderId) byOrderId[u.orderId] = u;
+          });
+          newlyFailed.forEach((u) => {
+            if (u?.orderId) byOrderId[u.orderId] = u;
+          });
+          tdUpdate.undeliveredOrders = Object.values(byOrderId);
+        }
+        batch.set(dispRef, tdUpdate, { merge: true });
       });
 
       await batch.commit();
@@ -3085,6 +3651,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           updatePayload.fulfillmentStatus = staged.fulfillmentStatus;
         }
 
+        // Optional Delivery Sequence (Priority) if staged
+        if (staged.deliverySequence !== undefined) {
+          updatePayload.deliverySequence =
+            Number.isFinite(Number(staged.deliverySequence)) && Number(staged.deliverySequence) > 0
+              ? Math.floor(Number(staged.deliverySequence))
+              : null;
+        }
+
         // Build rich metadata diffs for Sales Orders Master audit trail
         const metaDiffs = [];
         const oldLo = originalOrder?.loadingOrderNumber ? `#${originalOrder.loadingOrderNumber}` : '—';
@@ -3125,31 +3699,49 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           metaDiffs.push({ labelAr: 'تاريخ الفاتورة', labelEn: 'Invoice Date', oldValue: originalOrder?.invoiceDate || '—', newValue: updatePayload.invoiceDate });
         }
 
-        // Add audit trail entry
-        const existingAudit = Array.isArray(originalOrder?.auditTrail) ? originalOrder.auditTrail : [];
-        const auditEntry = {
-          id: `AUD-${Date.now()}-${existingAudit.length + 1}`,
-          timestamp: nowIso,
-          userId: currentUserId,
-          userName: currentUserName,
-          performedBy: currentUserName,
-          performedById: currentUserId,
-          action: 'dispatch_plan_update',
-          summaryAr: staged.loadingOrderNumber
-            ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}${updatePayload.fulfillmentStatus ? ` — حالة التنفيذ: ${updatePayload.fulfillmentStatus}` : ''}${updatePayload.invoiceDate ? ` — تاريخ الفاتورة: ${updatePayload.invoiceDate}` : ''}`
-            : 'إلغاء تسكين الشاحنة وأمر التحميل',
-          summaryEn: staged.loadingOrderNumber
-            ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}${updatePayload.fulfillmentStatus ? ` — Status: ${updatePayload.fulfillmentStatus}` : ''}${updatePayload.invoiceDate ? ` — Invoice Date: ${updatePayload.invoiceDate}` : ''}`
-            : 'Unassigned from truck',
-          changes: {
-            metadata: metaDiffs
+        if (staged.deliverySequence !== undefined) {
+          const oldSeqVal = Number(originalOrder?.deliverySequence) > 0 ? Math.floor(Number(originalOrder.deliverySequence)) : null;
+          const newSeqVal = updatePayload.deliverySequence ?? null;
+          if (oldSeqVal !== newSeqVal) {
+            metaDiffs.push({
+              labelAr: 'أولوية التسليم',
+              labelEn: 'Delivery Sequence',
+              oldValue: oldSeqVal ? `#${oldSeqVal}` : (isAr ? 'تلقائي' : 'Auto'),
+              newValue: newSeqVal ? `#${newSeqVal}` : (isAr ? 'تلقائي' : 'Auto'),
+            });
           }
-        };
+        }
 
-        updatePayload.auditTrail = [auditEntry, ...existingAudit];
+        // Add audit trail entry ONLY if actual metadata changes occurred
+        const existingAudit = Array.isArray(originalOrder?.auditTrail) ? originalOrder.auditTrail : [];
+        if (metaDiffs.length > 0) {
+          const auditEntry = {
+            id: `AUD-${Date.now()}-${existingAudit.length + 1}`,
+            timestamp: nowIso,
+            userId: currentUserId,
+            userName: currentUserName,
+            performedBy: currentUserName,
+            performedById: currentUserId,
+            action: 'dispatch_plan_update',
+            summaryAr: staged.loadingOrderNumber
+              ? `تسكين في أمر تحميل #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — سيارة: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — سائق: ${staged.assignedDriverName || '—'}${updatePayload.fulfillmentStatus ? ` — حالة التنفيذ: ${updatePayload.fulfillmentStatus}` : ''}${updatePayload.invoiceDate ? ` — تاريخ الفاتورة: ${updatePayload.invoiceDate}` : ''}`
+              : 'إلغاء تسكين الشاحنة وأمر التحميل',
+            summaryEn: staged.loadingOrderNumber
+              ? `Assigned to LO #${staged.loadingOrderNumber} (${staged.loadingDate || targetPlanningDate}) — Truck: ${staged.assignedVehicleName || staged.assignedVehiclePlate || '—'} — Driver: ${staged.assignedDriverName || '—'}${updatePayload.fulfillmentStatus ? ` — Status: ${updatePayload.fulfillmentStatus}` : ''}${updatePayload.invoiceDate ? ` — Invoice Date: ${updatePayload.invoiceDate}` : ''}`
+              : 'Unassigned from truck',
+            changes: {
+              metadata: metaDiffs
+            }
+          };
+          updatePayload.auditTrail = [auditEntry, ...existingAudit];
+        } else {
+          updatePayload.auditTrail = existingAudit;
+        }
 
-        batch.update(orderRef, updatePayload);
-        updatedCount++;
+        if (metaDiffs.length > 0) {
+          batch.update(orderRef, updatePayload);
+          updatedCount++;
+        }
       }
 
       await batch.commit();
@@ -3170,7 +3762,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   const stagedOrdersCount = Object.keys(stagedAssignments).length;
 
   return (
-    <div className="space-y-4 max-w-[1700px] w-full mx-auto px-2 sm:px-4 lg:px-6 pb-32">
+    <div
+      ref={loadingPlanWrapperRef}
+      style={fgSidebarPushPx > 0 ? { paddingInlineEnd: `${fgSidebarPushPx}px` } : undefined}
+      className="space-y-4 max-w-[1700px] w-full mx-auto px-2 sm:px-4 lg:px-6 pb-32 transition-[padding] duration-300 ease-out"
+    >
       {/* Toast Notification */}
       {toastMsg && (
         <div className={`fixed top-4 end-4 z-50 flex items-center gap-2 px-4 py-2.5 rounded-2xl shadow-lg border text-xs font-bold transition animate-in fade-in ${
@@ -3512,6 +4108,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   selectedTripState={selectedTripByVehicle[truckData.vehicle.id]}
                   onSelectTrip={handleSelectVehicleTrip}
                   onFilterConflict={handleFilterConflictByLO}
+                  onOpenSequenceModal={handleOpenSequenceModal}
+                  onNavigateToTruckDispatch={handleNavigateToTruckDispatch}
                   onOpenTransitionModal={(veh, step, trip) =>
                     setTruckStatusModal({
                       isOpen: true,
@@ -3836,18 +4434,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               </div>
 
                               <div className="pt-2 border-t border-slate-200/70">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedOrderForProducts(order);
-                                  }}
-                                  className="text-xs font-mono font-black text-slate-900 hover:text-indigo-600 inline-flex items-center gap-1 cursor-pointer transition group/ctn"
-                                  title={isAr ? 'عرض تفاصيل المنتجات والكميات والأسعار' : 'View products, quantities and prices breakdown'}
-                                >
-                                  <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
-                                  <span>{(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
-                                </button>
+                                <OrderCartonsAvailabilityChip
+                                  order={order}
+                                  availability={orderAvailabilityMap[order.id]}
+                                  onClick={() => setSelectedOrderForProducts(order)}
+                                  isAr={isAr}
+                                />
                               </div>
                             </div>
 
@@ -4295,23 +4887,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
                                 </div>
 
-                                {/* Cartons Summary Badge */}
+                                {/* Cartons Summary & Sequential Trip Availability Chip */}
                                 <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSelectedOrderForProducts(order);
-                                    }}
-                                    className="font-bold text-slate-900 text-xs font-mono inline-flex items-center gap-1 hover:text-indigo-600 px-2.5 py-1 rounded-xl bg-amber-50 hover:bg-amber-100/80 border border-amber-200 transition cursor-pointer group/ctn shadow-2xs"
-                                    title={isAr ? 'انقر لعرض تفاصيل المنتجات والكميات والأسعار' : 'Click to view products, quantities and prices breakdown'}
-                                  >
-                                    <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
-                                    <span>{(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
-                                    {order.totalBonus > 0 ? (
-                                      <span className="text-emerald-700 text-[10px] font-bold ms-0.5">+{order.totalBonus}</span>
-                                    ) : null}
-                                  </button>
+                                  <OrderCartonsAvailabilityChip
+                                    order={order}
+                                    availability={orderAvailabilityMap[order.id]}
+                                    onClick={() => setSelectedOrderForProducts(order)}
+                                    isAr={isAr}
+                                  />
                                 </div>
                               </div>
 
@@ -4714,23 +5297,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </span>
                                 </div>
 
-                                {/* Cartons Summary Badge */}
+                                {/* Cartons Summary & Sequential Trip Availability Chip */}
                                 <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSelectedOrderForProducts(order);
-                                    }}
-                                    className="font-bold text-slate-900 text-xs font-mono inline-flex items-center gap-1 hover:text-indigo-600 px-2.5 py-1 rounded-xl bg-amber-50 hover:bg-amber-100/80 border border-amber-200 transition cursor-pointer group/ctn shadow-2xs"
-                                    title={isAr ? 'انقر لعرض تفاصيل المنتجات والكميات والأسعار' : 'Click to view products, quantities and prices breakdown'}
-                                  >
-                                    <Boxes className="w-3.5 h-3.5 text-amber-600 group-hover/ctn:scale-110 transition-transform shrink-0" />
-                                    <span>{(order.totalCartons || order.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}</span>
-                                    {order.totalBonus > 0 ? (
-                                      <span className="text-emerald-700 text-[10px] font-bold ms-0.5">+{order.totalBonus}</span>
-                                    ) : null}
-                                  </button>
+                                  <OrderCartonsAvailabilityChip
+                                    order={order}
+                                    availability={orderAvailabilityMap[order.id]}
+                                    onClick={() => setSelectedOrderForProducts(order)}
+                                    isAr={isAr}
+                                  />
                                 </div>
                               </div>
 
@@ -4938,7 +5512,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
       {/* FLOATING BOTTOM VALIDATION & REVIEW DOCK */}
       {stagedOrdersCount > 0 && (
-        <div className="fixed bottom-4 inset-x-4 sm:inset-x-8 z-40 animate-in slide-in-from-bottom-5 duration-200">
+        <div
+          style={
+            isFgSidebarOpen && isDesktopViewport
+              ? { insetInlineEnd: `${FG_SIDEBAR_WIDTH + 16}px` }
+              : undefined
+          }
+          className="fixed bottom-4 inset-x-4 sm:inset-x-8 z-40 transition-all duration-300 animate-in slide-in-from-bottom-5"
+        >
           <div className="bg-slate-900 text-white rounded-3xl shadow-2xl border border-slate-700/80 overflow-hidden">
             {/* Expanded Manifest Drawer (Cards per Compound Truck/Date Key) */}
             {isManifestExpanded && (
@@ -5064,6 +5645,94 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               </div>
                             </div>
                           )}
+
+                          {/* Optional Delivery Sequence (Priority) Editor — only when > 1 distinct client */}
+                          {(() => {
+                            const { stops: manifestStops, hasManualSequence } = getTripClientStops(
+                              tm.assignedOrders,
+                              stagedAssignments
+                            );
+                            if (manifestStops.length <= 1) return null;
+
+                            const moveStop = (fromIdx, toIdx) => {
+                              if (toIdx < 0 || toIdx >= manifestStops.length) return;
+                              const nextStops = [...manifestStops];
+                              const [moved] = nextStops.splice(fromIdx, 1);
+                              nextStops.splice(toIdx, 0, moved);
+                              handleStageTripSequence(tm.assignedOrders, nextStops);
+                            };
+
+                            return (
+                              <div className="pt-2 border-t border-slate-700/60 mb-2">
+                                <div className="flex items-center justify-between gap-2 mb-1.5">
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-extrabold text-indigo-300">
+                                    <ListOrdered className="w-3 h-3 shrink-0" />
+                                    <span>{isAr ? 'أولوية التسليم (اختياري):' : 'Delivery Sequence (Optional):'}</span>
+                                  </span>
+                                  {hasManualSequence ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStageTripSequence(tm.assignedOrders, null)}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-700 text-slate-300 border border-slate-600 text-[9px] font-bold transition cursor-pointer"
+                                    >
+                                      <RotateCcw className="w-2.5 h-2.5" />
+                                      <span>{isAr ? 'تلقائي' : 'Reset Auto'}</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStageTripSequence(tm.assignedOrders, manifestStops)}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-600/80 hover:bg-indigo-500 text-white text-[9px] font-black transition cursor-pointer"
+                                    >
+                                      <ListOrdered className="w-2.5 h-2.5" />
+                                      <span>{isAr ? 'تحديد الترتيب' : 'Set Sequence'}</span>
+                                    </button>
+                                  )}
+                                </div>
+
+                                {hasManualSequence && (
+                                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                                    {manifestStops.map((stop, idx) => (
+                                      <div
+                                        key={stop.key}
+                                        className="flex items-center justify-between gap-1.5 px-2 py-1 rounded-lg bg-slate-900/90 border border-indigo-500/40 text-[10px]"
+                                      >
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          <span className="w-4 h-4 rounded-full bg-indigo-500 text-white font-mono text-[9px] font-black inline-flex items-center justify-center shrink-0">
+                                            {idx + 1}
+                                          </span>
+                                          <span className="font-bold text-slate-100 truncate">
+                                            {stop.clientName}
+                                            {stop.branchName ? ` — ${stop.branchName}` : ''}
+                                          </span>
+                                        </div>
+                                        <div className="flex items-center gap-0.5 shrink-0">
+                                          <button
+                                            type="button"
+                                            disabled={idx === 0}
+                                            onClick={() => moveStop(idx, idx - 1)}
+                                            className="p-0.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-200 transition cursor-pointer"
+                                            title={isAr ? 'تقديم' : 'Move Up'}
+                                          >
+                                            <ArrowUp className="w-3 h-3" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={idx === manifestStops.length - 1}
+                                            onClick={() => moveStop(idx, idx + 1)}
+                                            className="p-0.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-200 transition cursor-pointer"
+                                            title={isAr ? 'تأخير' : 'Move Down'}
+                                          >
+                                            <ArrowDown className="w-3 h-3" />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
 
                           {/* Weight Capacity Gauge */}
                           <div className="space-y-1 pt-2 border-t border-slate-700/60 text-xs">
@@ -5227,6 +5896,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           isOpen={Boolean(selectedOrderForProducts)}
           onClose={() => setSelectedOrderForProducts(null)}
           order={selectedOrderForProducts}
+          availability={orderAvailabilityMap[selectedOrderForProducts.id] || null}
           clients={clients}
           segments={segments}
           products={products}
@@ -5671,6 +6341,26 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   {isAr ? truckStatusModal.targetStep.labelAr : truckStatusModal.targetStep.labelEn}
                 </span>
               </div>
+
+              {truckStatusModal.targetStep?.id === 'shipped' && (() => {
+                const allWhDispatched = truckStatusModal.affectedOrders.every((o) => Boolean(o.fgWarehouseDispatched));
+                return (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 text-[11px] font-bold">
+                    <span className={`px-2 py-1 rounded-lg border ${
+                      allWhDispatched
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-amber-50 text-amber-900 border-amber-300'
+                    }`}>
+                      {allWhDispatched
+                        ? (isAr ? 'بوابة مخزن التام: معتمد ✓' : 'FG Warehouse Dispatch Gate: Confirmed ✓')
+                        : (isAr ? 'تنبيه: بانتظار اعتماد صرف الشاحنة من تبويب تسليم الشاحنات' : 'Note: FG Warehouse Truck Dispatch not yet confirmed')}
+                    </span>
+                    <span className="px-2 py-1 rounded-lg border bg-slate-100 text-slate-600 border-slate-200">
+                      {isAr ? 'بوابة المستندات المالية: قيد الإنشاء لاحقاً' : 'Financial Docs Gate: Next Phase'}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {(() => {
@@ -5841,6 +6531,154 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           }}
         />
       )}
+      {/* Quick Delivery Sequence Modal for Saved Multi-Client Trips (from Truck Scorecard) */}
+      {sequenceModal && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => !sequenceModal.isSaving && setSequenceModal(null)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ListOrdered className="w-4 h-4 text-indigo-400" />
+                <div>
+                  <h3 className="text-sm font-black">
+                    {isAr ? `أولوية التسليم — رحلة #${sequenceModal.trip.loadingOrderNumber}` : `Delivery Sequence — Trip #${sequenceModal.trip.loadingOrderNumber}`}
+                  </h3>
+                  <p className="text-[11px] text-slate-300 font-medium">
+                    {isAr ? 'رتّب العملاء حسب أولوية النزول (اختياري)' : 'Order clients by delivery priority (optional)'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={sequenceModal.isSaving}
+                onClick={() => setSequenceModal(null)}
+                className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-2 max-h-[55vh] overflow-y-auto">
+              {(sequenceModal.stops || []).map((stop, idx) => (
+                <div
+                  key={stop.key}
+                  className="flex items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-slate-50 border border-slate-200"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="w-6 h-6 rounded-full bg-indigo-600 text-white font-mono text-xs font-black inline-flex items-center justify-center shrink-0">
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-xs font-black text-slate-900 truncate">
+                        {stop.clientName}
+                        {stop.branchName ? ` — ${stop.branchName}` : ''}
+                      </div>
+                      <div className="text-[10px] text-slate-500 font-mono">
+                        {stop.orders.map((o) => `#${resolveOrderSerial(o, orders)}`).join(' • ')}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={idx === 0 || sequenceModal.isSaving}
+                      onClick={() => {
+                        setSequenceModal((prev) => {
+                          if (!prev) return null;
+                          const next = [...prev.stops];
+                          const [m] = next.splice(idx, 1);
+                          next.splice(idx - 1, 0, m);
+                          return { ...prev, stops: next, hasManualSequence: true };
+                        });
+                      }}
+                      className="p-1.5 rounded-lg bg-white hover:bg-indigo-50 border border-slate-200 disabled:opacity-30 text-slate-700 cursor-pointer"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={idx === sequenceModal.stops.length - 1 || sequenceModal.isSaving}
+                      onClick={() => {
+                        setSequenceModal((prev) => {
+                          if (!prev) return null;
+                          const next = [...prev.stops];
+                          const [m] = next.splice(idx, 1);
+                          next.splice(idx + 1, 0, m);
+                          return { ...prev, stops: next, hasManualSequence: true };
+                        });
+                      }}
+                      className="p-1.5 rounded-lg bg-white hover:bg-indigo-50 border border-slate-200 disabled:opacity-30 text-slate-700 cursor-pointer"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2">
+              {sequenceModal.hasManualSequence ? (
+                <button
+                  type="button"
+                  disabled={sequenceModal.isSaving}
+                  onClick={() => handleSaveSequenceModal(true)}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 border border-slate-300 hover:border-rose-300 text-slate-700 hover:text-rose-700 text-xs font-bold transition cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'إلغاء (تلقائي)' : 'Reset Auto'}</span>
+                </button>
+              ) : (
+                <span className="text-[10px] text-slate-500 font-bold">
+                  {isAr ? 'الوضع الحالي: تلقائي' : 'Current mode: Auto'}
+                </span>
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={sequenceModal.isSaving}
+                  onClick={() => setSequenceModal(null)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold transition cursor-pointer"
+                >
+                  {isAr ? 'إلغاء' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  disabled={sequenceModal.isSaving}
+                  onClick={() => handleSaveSequenceModal(false)}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-black shadow-sm transition cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{sequenceModal.isSaving ? (isAr ? 'جاري الحفظ...' : 'Saving...') : (isAr ? 'حفظ الأولوية' : 'Save Sequence')}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Persistent Collapsible FG Stock & Deficit Intelligence Sidebar (Opposite Edge, Pushes Content Inward) */}
+      <LoadingPlanFgSidebar
+        finishedProducts={products}
+        stagedPallets={stagedPallets}
+        stockTransfers={stockTransfers}
+        faultyReturns={faultyReturns}
+        salesOrders={orders}
+        workOrders={workOrders}
+        truckDispatches={truckDispatches}
+        stagedAssignments={stagedAssignments}
+        targetPlanningDate={targetPlanningDate}
+        todayStr={todayStr}
+        isAr={isAr}
+        isOpen={isFgSidebarOpen}
+        onToggleOpen={setIsFgSidebarOpen}
+        drawerWidth={FG_SIDEBAR_WIDTH}
+      />
     </div>
   );
 }

@@ -213,32 +213,35 @@ export default function FinancialStatementPrintSlip({
                 <div className="pt-0.5">
                   <span className="inline-block px-2 py-0.5 rounded bg-slate-100 border border-slate-300 text-[10px] font-bold text-slate-700">
                     {activeLedgerMode === 'official'
-                      ? (isAr ? 'النطاق: الدفتر الضريبي الرسمي (Standard)' : 'Scope: Official Tax Ledger (Standard)')
-                      : (isAr ? 'النطاق: الدفتر الشامل الموحد (Consolidated)' : 'Scope: Consolidated Master Ledger')}
+                      ? (isAr ? 'الدفتر الضريبي الرسمي' : 'Official Tax Ledger')
+                      : (isAr ? 'الدفتر الشامل الموحد' : 'Consolidated Ledger')}
                   </span>
                 </div>
               </div>
 
               <div className="flex items-center gap-3">
                 <div className="text-end">
-                  <span className="inline-block px-3 py-1 bg-slate-900 text-white rounded-lg text-xs font-black">
+                  <span className="inline-block px-3 py-1 bg-slate-100 text-slate-900 border-2 border-slate-900 rounded-lg text-xs font-black">
                     {getStatementTitle()}
                   </span>
                   <div className="text-[10px] text-slate-500 mt-1 font-mono">
                     {statementType === 'balance_sheet'
-                      ? (isAr ? `المركز المالي التراكمي حتى: ${endDate || selectedYear}` : `Cumulative As Of: ${endDate}`)
-                      : (isAr ? `الفترة: ${startDate || selectedYear} إلى ${endDate || selectedYear}` : `Period: ${startDate} to ${endDate}`)}
+                      ? (isAr ? `حتى: ${endDate || selectedYear}` : `As Of: ${endDate}`)
+                      : (isAr ? `الفترة: ${startDate || selectedYear} — ${endDate || selectedYear}` : `Period: ${startDate} — ${endDate}`)}
                   </div>
                   <div className="text-[9px] text-slate-400 font-mono">
                     {printTimestamp}
                   </div>
                 </div>
                 {qrDataUrl && (
-                  <img
-                    src={qrDataUrl}
-                    alt="Verification QR"
-                    className="w-16 h-16 rounded border border-slate-200 p-0.5 object-contain"
-                  />
+                  <div className="flex flex-col items-center gap-0.5 shrink-0">
+                    <img
+                      src={qrDataUrl}
+                      alt="QR"
+                      className="w-16 h-16 rounded border border-slate-200 p-0.5 object-contain"
+                    />
+                    <span className="text-[8.5px] font-black text-slate-900">{isAr ? 'للنظام' : 'ERP'}</span>
+                  </div>
                 )}
               </div>
             </div>
@@ -252,61 +255,61 @@ export default function FinancialStatementPrintSlip({
                 <table className="w-full text-start border-collapse">
                   <thead>
                     <tr className="bg-slate-100 font-black border-b border-slate-300">
-                      <th className="py-2.5 px-3 text-start">{isAr ? 'البند المالي / الحساب' : 'Financial Line Item'}</th>
-                      <th className="py-2.5 px-3 text-end w-36">{isAr ? 'القيمة (ج.م)' : 'Amount (EGP)'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الحساب' : 'Line Item'}</th>
+                      <th className="py-2.5 px-3 text-end w-36">{isAr ? 'القيمة' : 'Amount'}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 font-sans">
                     <tr className="bg-slate-50/70 font-bold">
-                      <td className="py-2 px-3 text-emerald-800">{isAr ? '١. إجمالي الإيرادات التشغيلية المبيعات' : '1. Operating Revenues'}</td>
+                      <td className="py-2 px-3 text-emerald-800">{isAr ? '١. الإيرادات' : '1. Revenues'}</td>
                       <td className="py-2 px-3 text-end font-mono text-emerald-800">{formatStatementMoney(incomeStatementData.totalRevenue ?? incomeStatementData.totalRevenues)}</td>
                     </tr>
                     {renderPrintAccountItems(incomeStatementData.revenueItems ?? incomeStatementData.revenuesItems)}
 
                     <tr className="bg-slate-50/70 font-bold">
-                      <td className="py-2 px-3 text-amber-800">{isAr ? '٢. (-) تكلفة البضاعة المباعة والمصنعة (COGS)' : '2. (-) Cost of Goods Sold (COGS)'}</td>
+                      <td className="py-2 px-3 text-amber-800">{isAr ? '٢. (-) تكلفة المبيعات' : '2. (-) COGS'}</td>
                       <td className="py-2 px-3 text-end font-mono text-amber-800">({formatEGP(incomeStatementData.totalCogs)})</td>
                     </tr>
                     {renderPrintAccountItems(incomeStatementData.cogsItems)}
 
                     <tr className="bg-emerald-50/50 font-black text-emerald-950 border-t border-b border-emerald-200">
-                      <td className="py-2 px-3">{isAr ? '= مجمل الربح (Gross Profit)' : '= Gross Profit'}</td>
+                      <td className="py-2 px-3">{isAr ? '= مجمل الربح' : '= Gross Profit'}</td>
                       <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(incomeStatementData.grossProfit)}</td>
                     </tr>
 
                     <tr className="bg-slate-50/70 font-bold">
-                      <td className="py-2 px-3 text-slate-700">{isAr ? '٣. (-) المصروفات البيعية والتسويقية والتوزيع' : '3. (-) Selling & Distribution Expenses'}</td>
+                      <td className="py-2 px-3 text-slate-700">{isAr ? '٣. (-) مصروفات بيعية' : '3. (-) Selling Expenses'}</td>
                       <td className="py-2 px-3 text-end font-mono text-slate-700">({formatEGP(incomeStatementData.totalSelling ?? incomeStatementData.totalSellingExpenses)})</td>
                     </tr>
                     {renderPrintAccountItems(incomeStatementData.sellingItems ?? incomeStatementData.sellingExpensesItems)}
 
                     <tr className="bg-slate-50/70 font-bold">
-                      <td className="py-2 px-3 text-slate-700">{isAr ? '٤. (-) المصروفات العمومية والإدارية' : '4. (-) General & Administrative Expenses'}</td>
+                      <td className="py-2 px-3 text-slate-700">{isAr ? '٤. (-) مصروفات إدارية' : '4. (-) Admin Expenses'}</td>
                       <td className="py-2 px-3 text-end font-mono text-slate-700">({formatEGP(incomeStatementData.totalAdmin ?? incomeStatementData.totalAdminExpenses)})</td>
                     </tr>
                     {renderPrintAccountItems(incomeStatementData.adminItems ?? incomeStatementData.adminExpensesItems)}
 
                     <tr className="bg-slate-50/70 font-bold">
-                      <td className="py-2 px-3 text-purple-800">{isAr ? '٥. (-) المصروفات التمويلية والعمولات البنكية' : '5. (-) Financing & Bank Expenses'}</td>
+                      <td className="py-2 px-3 text-purple-800">{isAr ? '٥. (-) مصروفات تمويلية' : '5. (-) Financing Expenses'}</td>
                       <td className="py-2 px-3 text-end font-mono text-purple-800">({formatEGP(incomeStatementData.totalFinancing)})</td>
                     </tr>
                     {renderPrintAccountItems(incomeStatementData.financingItems ?? incomeStatementData.financingExpensesItems)}
 
                     <tr className="bg-blue-50/50 font-black text-blue-950 border-t border-b border-blue-200">
-                      <td className="py-2 px-3">{isAr ? '= صافي الربح التشغيلي للنشاط (Operating Profit)' : '= Operating Profit'}</td>
+                      <td className="py-2 px-3">{isAr ? '= الربح التشغيلي' : '= Operating Profit'}</td>
                       <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(incomeStatementData.operatingProfit ?? incomeStatementData.ebit)}</td>
                     </tr>
 
                     <tr className="bg-slate-50/70 font-bold">
-                      <td className="py-2 px-3 text-slate-600">{isAr ? '٦. صافي إيرادات / (مصروفات) أخرى غير تشغيلية' : '6. Other Non-Operating Net'}</td>
+                      <td className="py-2 px-3 text-slate-600">{isAr ? '٦. بنود أخرى' : '6. Other Net'}</td>
                       <td className="py-2 px-3 text-end font-mono text-slate-600">{formatStatementMoney(incomeStatementData.totalOther ?? incomeStatementData.otherNet)}</td>
                     </tr>
                     {renderPrintAccountItems(incomeStatementData.otherItems ?? incomeStatementData.otherRevExpItems)}
                   </tbody>
-                  <tfoot className="bg-slate-900 text-white font-black text-xs">
+                  <tfoot className="bg-slate-200 text-slate-900 font-black text-xs border-t-2 border-slate-900">
                     <tr>
-                      <td className="py-3 px-3">{isAr ? 'صافي أرباح / خسائر الفترة (Net Profit / Loss):' : 'Net Profit / Loss:'}</td>
-                      <td className="py-3 px-3 text-end font-mono text-sm text-emerald-300">
+                      <td className="py-3 px-3">{isAr ? 'صافي الربح / الخسارة:' : 'Net Profit / Loss:'}</td>
+                      <td className="py-3 px-3 text-end font-mono text-sm text-slate-950">
                         {formatStatementMoney(incomeStatementData.netProfit)} ج.م
                       </td>
                     </tr>
@@ -322,63 +325,63 @@ export default function FinancialStatementPrintSlip({
                   <table className="w-full text-start border-collapse">
                     <thead>
                       <tr className="bg-slate-100 font-black border-b border-slate-300">
-                        <th className="py-2.5 px-3 text-start">{isAr ? 'البند المالي / الحساب' : 'Balance Sheet Line Item'}</th>
-                        <th className="py-2.5 px-3 text-end w-40">{isAr ? 'الرصيد التراكمي (ج.م)' : 'Cumulative Balance (EGP)'}</th>
+                        <th className="py-2.5 px-3 text-start">{isAr ? 'الحساب' : 'Line Item'}</th>
+                        <th className="py-2.5 px-3 text-end w-40">{isAr ? 'الرصيد' : 'Balance'}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200 font-sans">
                       {/* SECTION I: ASSETS */}
                       <tr className="bg-emerald-100/70 font-black text-emerald-950">
-                        <td colSpan={2} className="py-2 px-3">{isAr ? 'أولاً: الأصول (Assets)' : 'I. Assets'}</td>
+                        <td colSpan={2} className="py-2 px-3">{isAr ? 'أولاً: الأصول' : 'I. Assets'}</td>
                       </tr>
                       <tr className="bg-slate-50 font-bold">
-                        <td className="py-2 px-3">{isAr ? '١. الأصول الثابتة وغير المتداولة (بالصافي)' : '1. Fixed & Non-Current Assets (Net)'}</td>
+                        <td className="py-2 px-3">{isAr ? '١. أصول ثابتة' : '1. Fixed Assets'}</td>
                         <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(balanceSheetData.fixedAssets)}</td>
                       </tr>
                       {renderPrintAccountItems(balanceSheetData.fixedAssetsItems)}
 
                       <tr className="bg-slate-50 font-bold">
-                        <td className="py-2 px-3">{isAr ? '٢. الأصول المتداولة (Current Assets)' : '2. Current Assets'}</td>
+                        <td className="py-2 px-3">{isAr ? '٢. أصول متداولة' : '2. Current Assets'}</td>
                         <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(balanceSheetData.currentAssets)}</td>
                       </tr>
                       {renderPrintAccountItems(balanceSheetData.currentAssetsItems)}
 
                       <tr className="bg-emerald-50 font-black border-t-2 border-b-2 border-emerald-300 text-emerald-950">
-                        <td className="py-2.5 px-3">{isAr ? '= إجمالي الأصول (Total Assets)' : '= Total Assets'}</td>
+                        <td className="py-2.5 px-3">{isAr ? '= إجمالي الأصول' : '= Total Assets'}</td>
                         <td className="py-2.5 px-3 text-end font-mono text-sm">{formatStatementMoney(balanceSheetData.totalAssets)} ج.م</td>
                       </tr>
 
                       {/* SECTION II: LIABILITIES & EQUITY */}
                       <tr className="bg-blue-100/70 font-black text-blue-950">
-                        <td colSpan={2} className="py-2 px-3">{isAr ? 'ثانياً: الالتزامات وحقوق الملكية (Liabilities & Equity)' : 'II. Liabilities & Equity'}</td>
+                        <td colSpan={2} className="py-2 px-3">{isAr ? 'ثانياً: الالتزامات وحقوق الملكية' : 'II. Liabilities & Equity'}</td>
                       </tr>
                       <tr className="bg-slate-50 font-bold">
-                        <td className="py-2 px-3">{isAr ? '١. الالتزامات المتداولة قصيرة الأجل' : '1. Current Liabilities'}</td>
+                        <td className="py-2 px-3">{isAr ? '١. التزامات متداولة' : '1. Current Liabilities'}</td>
                         <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(balanceSheetData.currentLiabilities)}</td>
                       </tr>
                       {renderPrintAccountItems(balanceSheetData.currentLiabilitiesItems)}
 
                       <tr className="bg-slate-50 font-bold">
-                        <td className="py-2 px-3">{isAr ? '٢. الالتزامات طويلة الأجل وغير المتداولة' : '2. Long-Term Liabilities'}</td>
+                        <td className="py-2 px-3">{isAr ? '٢. التزامات طويلة الأجل' : '2. Long-Term Liabilities'}</td>
                         <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(balanceSheetData.longTermLiabilities)}</td>
                       </tr>
                       {renderPrintAccountItems(balanceSheetData.longTermLiabilitiesItems)}
 
                       <tr className="bg-slate-100 font-bold text-slate-900">
-                        <td className="py-1.5 px-3">{isAr ? '= إجمالي الالتزامات (Total Liabilities)' : '= Total Liabilities'}</td>
+                        <td className="py-1.5 px-3">{isAr ? '= إجمالي الالتزامات' : '= Total Liabilities'}</td>
                         <td className="py-1.5 px-3 text-end font-mono">{formatStatementMoney(balanceSheetData.totalLiabilities)}</td>
                       </tr>
 
                       <tr className="bg-slate-50 font-bold">
-                        <td className="py-2 px-3">{isAr ? '٣. حقوق الملكية والأرباح المحتجزة (Shareholders\' Equity)' : '3. Shareholders\' Equity'}</td>
+                        <td className="py-2 px-3">{isAr ? '٣. حقوق الملكية' : '3. Equity'}</td>
                         <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(balanceSheetData.totalEquity)}</td>
                       </tr>
                       {renderPrintAccountItems(balanceSheetData.equityItems)}
                     </tbody>
-                    <tfoot className="bg-slate-900 text-white font-black text-xs">
+                    <tfoot className="bg-slate-200 text-slate-900 font-black text-xs border-t-2 border-slate-900">
                       <tr>
-                        <td className="py-2.5 px-3">{isAr ? '= إجمالي الالتزامات وحقوق الملكية:' : '= Total Liabilities & Equity:'}</td>
-                        <td className="py-2.5 px-3 text-end font-mono text-sm text-blue-300">
+                        <td className="py-2.5 px-3">{isAr ? '= إجمالي الالتزامات والملكية:' : '= Total Liabilities & Equity:'}</td>
+                        <td className="py-2.5 px-3 text-end font-mono text-sm text-slate-950">
                           {formatStatementMoney(balanceSheetData.totalLiabilitiesAndEquity)} ج.م
                         </td>
                       </tr>
@@ -388,7 +391,7 @@ export default function FinancialStatementPrintSlip({
 
                 {/* Equilibrium Balance Badge */}
                 <div className="p-2.5 rounded-xl border border-slate-300 bg-slate-50 flex items-center justify-between font-mono font-bold">
-                  <span>{isAr ? 'معادلة المركز المالي (الأصول - الالتزامات والملكية):' : 'Balance Equation:'}</span>
+                  <span>{isAr ? 'التوازن:' : 'Balance Check:'}</span>
                   <span className={`px-2 py-0.5 rounded text-xs ${Math.abs(balanceSheetData.variance || 0) < 0.01 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
                     {formatEGP(balanceSheetData.variance || 0)} ج.م ({Math.abs(balanceSheetData.variance || 0) < 0.01 ? (isAr ? 'متزن' : 'Balanced') : (isAr ? 'غير متزن' : 'Out of Balance')})
                   </span>
@@ -402,28 +405,28 @@ export default function FinancialStatementPrintSlip({
                 <table className="w-full text-start border-collapse">
                   <thead>
                     <tr className="bg-slate-100 font-black border-b border-slate-300">
-                      <th className="py-2.5 px-3 text-start">{isAr ? 'نوع التدفق النقدي' : 'Cash Flow Activity'}</th>
-                      <th className="py-2.5 px-3 text-end w-36">{isAr ? 'صافي التدفق (ج.م)' : 'Net Flow (EGP)'}</th>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'النشاط' : 'Activity'}</th>
+                      <th className="py-2.5 px-3 text-end w-36">{isAr ? 'التدفق' : 'Net Flow'}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
                     <tr>
-                      <td className="py-2 px-3 font-bold">{isAr ? '١. صافي التدفقات من الأنشطة التشغيلية' : '1. Operating Activities'}</td>
+                      <td className="py-2 px-3 font-bold">{isAr ? '١. تشغيلي' : '1. Operating'}</td>
                       <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(cashFlowData.operatingFlow)}</td>
                     </tr>
                     <tr>
-                      <td className="py-2 px-3 font-bold">{isAr ? '٢. صافي التدفقات من الأنشطة الاستثمارية' : '2. Investing Activities'}</td>
+                      <td className="py-2 px-3 font-bold">{isAr ? '٢. استثماري' : '2. Investing'}</td>
                       <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(cashFlowData.investingFlow)}</td>
                     </tr>
                     <tr>
-                      <td className="py-2 px-3 font-bold">{isAr ? '٣. صافي التدفقات من الأنشطة التمويلية' : '3. Financing Activities'}</td>
+                      <td className="py-2 px-3 font-bold">{isAr ? '٣. تمويلي' : '3. Financing'}</td>
                       <td className="py-2 px-3 text-end font-mono">{formatStatementMoney(cashFlowData.financingFlow)}</td>
                     </tr>
                   </tbody>
-                  <tfoot className="bg-slate-900 text-white font-black text-xs">
+                  <tfoot className="bg-slate-200 text-slate-900 font-black text-xs border-t-2 border-slate-900">
                     <tr>
-                      <td className="py-2.5 px-3">{isAr ? 'صافي التغير في النقدية وما في حكمها:' : 'Net Change in Cash:'}</td>
-                      <td className="py-2.5 px-3 text-end font-mono text-emerald-300">{formatStatementMoney(cashFlowData.netChangeInCash)} ج.م</td>
+                      <td className="py-2.5 px-3">{isAr ? 'صافي التغير في النقدية:' : 'Net Change in Cash:'}</td>
+                      <td className="py-2.5 px-3 text-end font-mono text-slate-950">{formatStatementMoney(cashFlowData.netChangeInCash)} ج.م</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -465,32 +468,26 @@ export default function FinancialStatementPrintSlip({
           <div className="pt-6 mt-6 border-t border-slate-300 grid grid-cols-3 gap-4 text-center text-xs">
             <div className="space-y-8">
               <span className="font-bold text-slate-700 block">
-                {isAr ? 'إعداد المحاسب المالي' : 'Prepared by'}
+                {isAr ? 'المحاسب' : 'Prepared by'}
               </span>
               <div className="border-b border-dashed border-slate-400 w-36 mx-auto"></div>
               <span className="text-[10px] text-slate-500 block">
-                {currentUser?.name || currentUser?.nameAr || 'المحاسب المسؤول'}
+                {currentUser?.name || currentUser?.nameAr || '—'}
               </span>
             </div>
 
             <div className="space-y-8">
               <span className="font-bold text-slate-700 block">
-                {isAr ? 'مراجعة رئيس الحسابات' : 'Reviewed by Chief Accountant'}
+                {isAr ? 'رئيس الحسابات' : 'Chief Accountant'}
               </span>
               <div className="border-b border-dashed border-slate-400 w-36 mx-auto"></div>
-              <span className="text-[10px] text-slate-500 block">
-                {isAr ? 'رئيس قسم الحسابات العامة' : 'Accounting Manager'}
-              </span>
             </div>
 
             <div className="space-y-8">
               <span className="font-bold text-slate-700 block">
-                {isAr ? 'اعتماد المدير المالي' : 'Approved by CFO'}
+                {isAr ? 'المدير المالي' : 'CFO'}
               </span>
               <div className="border-b border-dashed border-slate-400 w-36 mx-auto"></div>
-              <span className="text-[10px] text-slate-500 block">
-                {isAr ? 'الإدارة المالية العليا' : 'Chief Financial Officer'}
-              </span>
             </div>
           </div>
         </div>

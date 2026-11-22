@@ -36,8 +36,10 @@ import {
   Users,
   Search,
   Check,
-  AlertTriangle
+  AlertTriangle,
+  Building2
 } from 'lucide-react';
+import { getRecordDepartmentIds } from '../../utils/personnelDirectory';
 
 /**
  * Client-side Canvas Image Compression helper.
@@ -124,7 +126,9 @@ export default function CommentThreadPopover() {
     getThread,
     currentUser,
     usersList = [],
-    cloudPermissions = {}
+    cloudPermissions = {},
+    cloudDeptPermissions = {},
+    departmentsList = []
   } = useRecordComments();
 
   const { i18n } = useTranslation();
@@ -182,7 +186,9 @@ export default function CommentThreadPopover() {
         user: u,
         targetModule: target.module,
         targetTab: target.tab,
-        cloudPermissions
+        cloudPermissions,
+        departmentOverrides: cloudDeptPermissions,
+        departments: departmentsList,
       })) {
         return false;
       }
@@ -201,7 +207,7 @@ export default function CommentThreadPopover() {
 
       return true;
     });
-  }, [usersList, target?.module, target?.tab, target?.isSensitive, target?.fieldKey, cloudPermissions]);
+  }, [usersList, target?.module, target?.tab, target?.isSensitive, target?.fieldKey, cloudPermissions, cloudDeptPermissions, departmentsList]);
 
   // Reset inputs when popover opens with new target
   useEffect(() => {
@@ -333,6 +339,29 @@ export default function CommentThreadPopover() {
     };
   }, [isOpen, closeCommentPopover, viewerAttachment, isAudienceOpen]);
 
+  // Filter @Department mention suggestions (only departments with >= 1 authorized user excluding author)
+  const departmentMentionSuggestions = useMemo(() => {
+    if (!mentionQuery && mentionQuery !== '') return [];
+    const q = mentionQuery.toLowerCase();
+    return (departmentsList || [])
+      .filter((d) => d.isActive !== false)
+      .map((dept) => {
+        const members = permittedUsers.filter(
+          (u) =>
+            u.id !== currentUser?.id &&
+            getRecordDepartmentIds(u, departmentsList).includes(dept.id)
+        );
+        return { dept, members };
+      })
+      .filter(({ dept, members }) => {
+        if (members.length === 0) return false;
+        const matchAr = (dept.nameAr || '').toLowerCase().includes(q);
+        const matchEn = (dept.nameEn || '').toLowerCase().includes(q);
+        const matchCode = (dept.code || '').toLowerCase().includes(q);
+        return matchAr || matchEn || matchCode;
+      });
+  }, [departmentsList, permittedUsers, mentionQuery, currentUser?.id]);
+
   // Filter mention suggestions strictly from permitted users and exclude author
   const mentionSuggestions = useMemo(() => {
     if (!mentionQuery && mentionQuery !== '') return [];
@@ -412,6 +441,34 @@ export default function CommentThreadPopover() {
       }
     }
     setMentionQuery(null);
+  };
+
+  const handleSelectDepartmentMention = ({ dept, members }) => {
+    const textBeforeCursor = messageText.slice(0, mentionCursorIndex);
+    const atIndex = textBeforeCursor.lastIndexOf('@');
+    const textAfterCursor = messageText.slice(mentionCursorIndex);
+
+    const deptLabel = isAr ? (dept.nameAr || dept.nameEn || dept.code) : (dept.nameEn || dept.nameAr || dept.code);
+    const newText = `${messageText.slice(0, atIndex)}@${deptLabel} ${textAfterCursor}`;
+
+    setMessageText(newText);
+    setMentionQuery(null);
+
+    // Expand @Department to all authorized active members of that department (any one member can resolve)
+    if (Array.isArray(members) && members.length > 0) {
+      setSelectedMentions((prev) => {
+        const next = [...prev];
+        members.forEach((m) => {
+          if (!next.some((existing) => existing.id === m.id)) {
+            next.push({ ...m, fromDepartmentId: dept.id });
+          }
+        });
+        return next;
+      });
+      setIsActionRequired(true);
+    }
+
+    textareaRef.current?.focus();
   };
 
   const handleSelectMention = (user) => {
@@ -1132,28 +1189,57 @@ export default function CommentThreadPopover() {
           </div>
         )}
 
-        {/* 4. Mention Autocomplete Dropdown (Filtered strictly to permitted tab users) */}
-        {mentionQuery !== null && mentionSuggestions.length > 0 && (
-          <div className="mx-3 mb-1 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden max-h-36 overflow-y-auto">
-            <div className="px-2.5 py-1 text-[9px] font-bold text-slate-400 bg-slate-50 border-b border-slate-100">
-              {isAr ? 'أعضاء مصرح لهم بهذه الشاشة للإشارة والتعيين:' : 'Authorized tab users to mention & assign:'}
-            </div>
-            {mentionSuggestions.map((user) => (
-              <button
-                key={user.id}
-                type="button"
-                onClick={() => handleSelectMention(user)}
-                className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 transition cursor-pointer text-start"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 font-bold flex items-center justify-center text-[10px]">
-                    {(user.name || 'U').charAt(0)}
-                  </span>
-                  <span className="font-semibold">{isAr ? (user.nameAr || user.name) : (user.name || user.nameAr)}</span>
+        {/* 4. Mention Autocomplete Dropdown (@Department + Authorized System Users) */}
+        {mentionQuery !== null && (departmentMentionSuggestions.length > 0 || mentionSuggestions.length > 0) && (
+          <div className="mx-3 mb-1 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden max-h-44 overflow-y-auto">
+            {departmentMentionSuggestions.length > 0 && (
+              <>
+                <div className="px-2.5 py-1 text-[9px] font-bold text-indigo-600 bg-indigo-50/70 border-b border-indigo-100">
+                  {isAr ? 'الأقسام (توجيه جماعي لأعضاء القسم المصرح لهم):' : 'Departments (notify/assign authorized dept members):'}
                 </div>
-                <span className="text-[10px] text-slate-400">{user.role || 'user'}</span>
-              </button>
-            ))}
+                {departmentMentionSuggestions.map(({ dept, members }) => (
+                  <button
+                    key={dept.id}
+                    type="button"
+                    onClick={() => handleSelectDepartmentMention({ dept, members })}
+                    className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-indigo-900 hover:bg-indigo-50 transition cursor-pointer text-start"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-5 h-5 rounded-lg bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center shrink-0">
+                        <Building2 className="w-3 h-3" />
+                      </span>
+                      <span className="font-black truncate">{isAr ? (dept.nameAr || dept.nameEn) : (dept.nameEn || dept.nameAr)}</span>
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-indigo-600 shrink-0">
+                      {members.length} {isAr ? 'مستخدم' : 'users'}
+                    </span>
+                  </button>
+                ))}
+              </>
+            )}
+            {mentionSuggestions.length > 0 && (
+              <>
+                <div className="px-2.5 py-1 text-[9px] font-bold text-slate-400 bg-slate-50 border-b border-slate-100">
+                  {isAr ? 'أعضاء مصرح لهم بهذه الشاشة للإشارة والتعيين:' : 'Authorized tab users to mention & assign:'}
+                </div>
+                {mentionSuggestions.map((user) => (
+                  <button
+                    key={user.id}
+                    type="button"
+                    onClick={() => handleSelectMention(user)}
+                    className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 transition cursor-pointer text-start"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 font-bold flex items-center justify-center text-[10px] shrink-0">
+                        {(user.name || 'U').charAt(0)}
+                      </span>
+                      <span className="font-semibold truncate">{isAr ? (user.nameAr || user.name) : (user.name || user.nameAr)}</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 truncate max-w-[110px]">{user.department || user.role || 'user'}</span>
+                  </button>
+                ))}
+              </>
+            )}
           </div>
         )}
 

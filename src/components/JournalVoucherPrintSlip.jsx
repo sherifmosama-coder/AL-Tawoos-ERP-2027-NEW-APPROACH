@@ -178,7 +178,7 @@ export default function JournalVoucherPrintSlip({
                   {companyName}
                 </h1>
                 <h2 className="text-xs text-slate-700 font-bold mt-0.5">
-                  {isAr ? 'سند قيد يومية محاسبي معتمد (Journal Entry Voucher)' : 'Official Journal Entry Voucher'}
+                  {isAr ? 'سند قيد يومية' : 'Journal Entry Voucher'}
                 </h2>
                 <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5">
                   <span>{companyProfile.registeredAddress || 'المنطقة الصناعية، السادس من أكتوبر، الجيزة، مصر'}</span>
@@ -199,10 +199,10 @@ export default function JournalVoucherPrintSlip({
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded inline-block mt-0.5 ${
                 isReversed ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
               }`}>
-                {isReversed ? (isAr ? 'قيد ملغي / معكوس' : 'Reversed') : (isAr ? 'قيد معتمد ومرحل' : 'Posted')}
+                {isReversed ? (isAr ? 'معكوس' : 'Reversed') : (isAr ? 'مرحل' : 'Posted')}
               </span>
               <span className="text-[11px] text-slate-500 mt-1 block">
-                {isAr ? 'تاريخ القيد:' : 'Posting Date:'} {entry.entryDate || entry.createdAt?.slice(0, 10)}
+                {isAr ? 'تاريخ:' : 'Date:'} {entry.entryDate || entry.createdAt?.slice(0, 10)}
               </span>
             </div>
           </div>
@@ -210,33 +210,33 @@ export default function JournalVoucherPrintSlip({
           {/* Metadata Card */}
           <div className="grid grid-cols-3 gap-3 p-3 mb-3.5 rounded-xl border border-slate-200 bg-slate-50/60 text-xs">
             <div>
-              <span className="text-slate-400 block mb-0.5">{isAr ? 'نوع الحركة والمستند:' : 'Doc Type:'}</span>
+              <span className="text-slate-400 block mb-0.5">{isAr ? 'النوع:' : 'Type:'}</span>
               <span className="font-bold text-slate-900 block">{entry.docLabelAr || entry.sourceDocType}</span>
               {entry.referenceNumber && (
                 <span className="text-slate-600 block mt-0.5 font-mono text-[11px]">
-                  {isAr ? 'المرجع:' : 'Ref:'} {entry.referenceNumber}
+                  {isAr ? 'مرجع:' : 'Ref:'} {entry.referenceNumber}
                 </span>
               )}
             </div>
             <div>
-              <span className="text-slate-400 block mb-0.5">{isAr ? 'الطرف المقابل / التحليلي:' : 'Counterparty:'}</span>
+              <span className="text-slate-400 block mb-0.5">{isAr ? 'الطرف:' : 'Party:'}</span>
               <span className="font-bold text-slate-900 block truncate">
                 {entry.supplierName || entry.subAccountName || entry.safeId || '—'}
               </span>
               <span className="text-slate-500 block text-[10px]">
-                {entry.streamType === 'cash' ? (isAr ? 'حركة نقدية / خزينة' : 'Cash Stream') : (isAr ? 'استحقاق / عمليات' : 'Accrual Stream')}
+                {entry.streamType === 'cash' ? (isAr ? 'نقدي' : 'Cash') : (isAr ? 'استحقاق' : 'Accrual')}
               </span>
             </div>
             <div className="text-end">
-              <span className="text-slate-400 block mb-0.5">{isAr ? 'المعاملة الضريبية:' : 'Tax Status:'}</span>
+              <span className="text-slate-400 block mb-0.5">{isAr ? 'الضريبة:' : 'Tax:'}</span>
               {entry.isTaxOfficial ? (
                 <span className="font-bold text-blue-700 block text-[11px]">
-                  {isAr ? 'خاضع للضريبة (رسمي)' : 'Taxable Official'}
-                  {entry.taxInvoiceNumber && <span className="font-mono block text-slate-600 font-normal">فاتورة #{entry.taxInvoiceNumber}</span>}
+                  {isAr ? 'ضريبي' : 'Taxable'}
+                  {entry.taxInvoiceNumber && <span className="font-mono block text-slate-600 font-normal">#{entry.taxInvoiceNumber}</span>}
                 </span>
               ) : (
                 <span className="text-slate-500 italic block text-[11px]">
-                  {isAr ? 'غير ضريبي / داخلي' : 'Non-Taxable'}
+                  {isAr ? 'غير ضريبي' : 'Non-Taxable'}
                 </span>
               )}
             </div>
@@ -245,7 +245,7 @@ export default function JournalVoucherPrintSlip({
           {/* Description */}
           {(entry.descriptionAr || entry.description) && (
             <div className="p-2 mb-3 rounded-lg border border-slate-200 bg-slate-50/30 text-xs">
-              <span className="font-bold text-slate-700 block mb-0.5">{isAr ? 'البيان والملاحظات:' : 'Description:'}</span>
+              <span className="font-bold text-slate-700 block mb-0.5">{isAr ? 'البيان:' : 'Description:'}</span>
               <span className="text-slate-700">{entry.descriptionAr || entry.description}</span>
             </div>
           )}
@@ -255,13 +255,13 @@ export default function JournalVoucherPrintSlip({
             <table className="w-full border-collapse text-xs">
               <thead>
                 <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
-                  <th className="p-2 text-start border-e border-slate-200 w-8">{isAr ? 'م' : 'No.'}</th>
-                  <th className="p-2 text-start border-e border-slate-200 w-24">{isAr ? 'كود الحساب' : 'Code'}</th>
-                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'اسم الحساب' : 'Account Name'}</th>
-                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'الحساب المساعد / التحليلي' : 'Subledger'}</th>
-                  <th className="p-2 text-end border-e border-slate-200 w-28">{isAr ? 'مدين (ج.م)' : 'Debit (EGP)'}</th>
-                  <th className="p-2 text-end border-e border-slate-200 w-28">{isAr ? 'دائن (ج.م)' : 'Credit (EGP)'}</th>
-                  <th className="p-2 text-start">{isAr ? 'البيان التفصيلي' : 'Memo'}</th>
+                  <th className="p-2 text-start border-e border-slate-200 w-8">{isAr ? 'م' : '#'}</th>
+                  <th className="p-2 text-start border-e border-slate-200 w-24">{isAr ? 'الكود' : 'Code'}</th>
+                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'الحساب' : 'Account'}</th>
+                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'المساعد' : 'Subledger'}</th>
+                  <th className="p-2 text-end border-e border-slate-200 w-28">{isAr ? 'مدين' : 'Debit'}</th>
+                  <th className="p-2 text-end border-e border-slate-200 w-28">{isAr ? 'دائن' : 'Credit'}</th>
+                  <th className="p-2 text-start">{isAr ? 'البيان' : 'Memo'}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -297,15 +297,15 @@ export default function JournalVoucherPrintSlip({
                 <tr>
                   <td colSpan={4} className="p-2.5 text-start text-slate-800">
                     <div className="flex items-center gap-2">
-                      <span>{isAr ? 'الإجمالي العام للقيد:' : 'Total:'}</span>
+                      <span>{isAr ? 'الإجمالي:' : 'Total:'}</span>
                       {isBalanced ? (
                         <span className="text-emerald-700 text-[11px] flex items-center gap-1 font-bold">
                           <CheckCircle2 className="h-3.5 w-3.5" />
-                          <span>{isAr ? 'القيد متزن محاسبياً 100%' : 'Balanced'}</span>
+                          <span>{isAr ? 'متزن' : 'Balanced'}</span>
                         </span>
                       ) : (
                         <span className="text-rose-700 text-[11px] font-bold">
-                          {isAr ? 'تنبيه: القيد غير متزن' : 'Imbalanced'}
+                          {isAr ? 'غير متزن' : 'Imbalanced'}
                         </span>
                       )}
                     </div>
@@ -324,26 +324,21 @@ export default function JournalVoucherPrintSlip({
 
           {/* Tafqeet & Verification Footer Box */}
           <div className="flex justify-between items-start gap-4 mb-4">
-            <div className="flex items-center gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/40">
+            <div className="flex flex-col items-center gap-1 p-2 rounded-xl border border-slate-200 bg-slate-50/40 shrink-0">
               {qrDataUrl ? (
-                <img src={qrDataUrl} alt="Voucher QR Verification" className="w-16 h-16 rounded border border-slate-200" />
+                <img src={qrDataUrl} alt="QR" className="w-16 h-16 rounded border border-slate-200" />
               ) : (
                 <div className="w-16 h-16 bg-slate-100 rounded flex items-center justify-center">
                   <QrCode className="h-8 w-8 text-slate-400" />
                 </div>
               )}
-              <div className="text-[10px] text-slate-500 space-y-0.5">
-                <span className="font-bold text-slate-800 block text-[11px]">
-                  {isAr ? 'توثيق قيود دفتر اليومية' : 'Audit Verification'}
-                </span>
-                <span>{isAr ? 'كود التحقق الرقمي يطابق السجلات بدقة' : 'Verified Digital Audit Record'}</span>
-                <span className="font-mono block text-slate-400">{entry.id}</span>
-              </div>
+              <span className="text-[8.5px] font-black text-slate-900">{isAr ? 'للنظام' : 'ERP'}</span>
+              <span className="text-[8px] font-mono text-slate-400">{entry.id}</span>
             </div>
 
             <div className="flex-1 p-2.5 rounded-xl border border-slate-200 bg-slate-50/60 text-xs">
               <span className="font-bold text-slate-700 block mb-0.5 text-[11px]">
-                {isAr ? 'المبلغ بالحروف والتفقيط:' : 'Amount in Words:'}
+                {isAr ? 'كتابة:' : 'In Words:'}
               </span>
               <p className="font-bold text-purple-950 font-serif leading-relaxed text-xs">
                 {tafqeetText}
@@ -355,19 +350,19 @@ export default function JournalVoucherPrintSlip({
           <div className="grid grid-cols-3 gap-4 pt-3 border-t border-slate-200 text-xs text-center">
             <div className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'المحاسب / محرر القيد' : 'Prepared By Accountant'}
+                {isAr ? 'المحاسب' : 'Accountant'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">........................</span>
             </div>
             <div className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'المراجع المالي الداخلي' : 'Internal Auditor'}
+                {isAr ? 'المراجع' : 'Auditor'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">........................</span>
             </div>
             <div className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'اعتماد المدير المالي' : 'Chief Financial Officer'}
+                {isAr ? 'المدير المالي' : 'CFO'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">........................</span>
             </div>

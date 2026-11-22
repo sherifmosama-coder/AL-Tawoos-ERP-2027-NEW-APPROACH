@@ -3309,7 +3309,7 @@ export const DEFAULT_ACCOUNTING_LINKS = {
     code: '1020401',
     nameAr: 'عهد العاملين',
     nameEn: 'Staff Custodies',
-    masterCollection: 'production_workers',
+    masterCollection: 'employees',
     role: 'workers',
     labelAr: 'سجل عمالة الإنتاج والموظفين (العهد والسلف)',
     labelEn: 'Workers & Staff (Custodies & Advances)',

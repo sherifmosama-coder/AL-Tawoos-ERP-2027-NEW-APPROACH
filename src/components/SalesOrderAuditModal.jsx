@@ -44,7 +44,15 @@ export default function SalesOrderAuditModal({
     return list.filter((entry) => {
       if (actionFilter !== 'all') {
         if (actionFilter === 'create' && entry.action !== 'create') return false;
-        if (actionFilter === 'dispatch' && entry.action !== 'dispatch_plan_update' && entry.action !== 'dispatch_assignment') return false;
+        if (
+          actionFilter === 'dispatch' &&
+          entry.action !== 'dispatch_plan_update' &&
+          entry.action !== 'dispatch_assignment' &&
+          entry.action !== 'truck_dispatch_confirmed' &&
+          entry.action !== 'truck_dispatch_updated'
+        ) {
+          return false;
+        }
         if (
           actionFilter === 'edit' &&
           entry.action !== 'edit' &&
@@ -63,7 +71,13 @@ export default function SalesOrderAuditModal({
           entry.action !== 'retail_settlement_force_synced' &&
           entry.action !== 'retail_delivery_deferred' &&
           entry.action !== 'retail_warehouse_acknowledged' &&
-          entry.action !== 'retail_accounting_acknowledged'
+          entry.action !== 'retail_accounting_acknowledged' &&
+          entry.action !== 'truck_dispatch_confirmed' &&
+          entry.action !== 'truck_dispatch_updated' &&
+          entry.action !== 'truck_return_accountant_submitted' &&
+          entry.action !== 'truck_return_wh_confirmed' &&
+          entry.action !== 'truck_return_variance_resolved' &&
+          entry.action !== 'retail_return_synced_to_dispatch'
         ) {
           return false;
         }
@@ -220,6 +234,42 @@ export default function SalesOrderAuditModal({
           bg: 'bg-teal-50 text-teal-800 border-teal-200',
           icon: ClipboardCheck,
           label: isAr ? 'اعتماد الحسابات لفاتورة التجزئة' : 'Accounting Ack (Adjusted Invoice)'
+        };
+      case 'truck_dispatch_confirmed':
+        return {
+          bg: 'bg-teal-50 text-teal-800 border-teal-200',
+          icon: Truck,
+          label: isAr ? 'اعتماد تحميل وصرف الشاحنة' : 'Truck Load & FG Gate Confirmed'
+        };
+      case 'truck_dispatch_updated':
+        return {
+          bg: 'bg-blue-50 text-blue-800 border-blue-200',
+          icon: Edit3,
+          label: isAr ? 'تحديث بيان التحميل والزيادات والعمالة' : 'Dispatch Matrix, Extras & Crew Updated'
+        };
+      case 'truck_return_accountant_submitted':
+        return {
+          bg: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          icon: ClipboardCheck,
+          label: isAr ? 'تسجيل المحاسب للمرتجع المتوقع' : 'Accountant Registered Expected Returns'
+        };
+      case 'truck_return_wh_confirmed':
+        return {
+          bg: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+          icon: CheckCircle2,
+          label: isAr ? 'استلام ومطابقة أمين مخزن التام' : 'WH Custodian Return Receipt Verified'
+        };
+      case 'truck_return_variance_resolved':
+        return {
+          bg: 'bg-amber-50 text-amber-800 border-amber-200',
+          icon: RotateCcw,
+          label: isAr ? 'اعتماد وإقفال فروقات المرتجع' : 'Return Variance Reconciled'
+        };
+      case 'retail_return_synced_to_dispatch':
+        return {
+          bg: 'bg-cyan-50 text-cyan-800 border-cyan-200',
+          icon: Store,
+          label: isAr ? 'مزامنة مرتجع تسوية التجزئة مع الرحلة' : 'Retail Unsold Returns Synced to Trip'
         };
       case 'edit':
       default:

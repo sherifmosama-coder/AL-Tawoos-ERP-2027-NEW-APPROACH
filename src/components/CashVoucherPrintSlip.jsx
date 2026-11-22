@@ -215,9 +215,6 @@ export default function CashVoucherPrintSlip({ voucher, safe, activeSafeId, onCl
                     <span>{isAr ? 'س.ت:' : 'CR:'}</span>
                     <span>{companyProfile.commercialRegister || '—'}</span>
                   </div>
-                  <p className="text-[9.5px] text-slate-400">
-                    {isAr ? 'الإدارة المالية — قطاع الخزينة' : 'Finance Dept. — Treasury'}
-                  </p>
                 </div>
               </div>
 
@@ -230,7 +227,7 @@ export default function CashVoucherPrintSlip({ voucher, safe, activeSafeId, onCl
                 {typeName}
               </span>
               <div className="text-xs font-mono font-black text-slate-900 mt-1">
-                <span className="text-[10px] font-normal text-slate-400 me-1">{isAr ? 'رقم السند:' : 'No:'}</span>
+                <span className="text-[10px] font-normal text-slate-400 me-1">{isAr ? 'رقم:' : 'No:'}</span>
                 {voucher.id}
               </div>
               <div className="text-[9.5px] text-slate-500 mt-0.5 font-mono">
@@ -243,7 +240,7 @@ export default function CashVoucherPrintSlip({ voucher, safe, activeSafeId, onCl
           <div className="bg-slate-50/60 border border-slate-200 rounded-xl p-2.5 mb-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="space-y-0.5 flex-1">
               <span className="text-[10px] font-bold text-slate-400 block uppercase">
-                {isAr ? 'المبلغ كتابة:' : 'In Words:'}
+                {isAr ? 'كتابة:' : 'In Words:'}
               </span>
               <p className="text-xs sm:text-sm font-black text-slate-900 font-serif leading-relaxed">
                 {tafqeetText}
@@ -283,7 +280,7 @@ export default function CashVoucherPrintSlip({ voucher, safe, activeSafeId, onCl
 
               <div className="p-2">
                 <span className="text-[10px] text-slate-400 block font-bold mb-0.5">
-                  {isAr ? 'التوجيه المحاسبي:' : 'GL Account:'}
+                  {isAr ? 'الحساب:' : 'Account:'}
                 </span>
                 <span className="font-extrabold text-slate-800 block text-xs">
                   {mainAccName || (isAr ? 'خزينة رئيسية' : 'Main Cash Safe')}
@@ -310,7 +307,7 @@ export default function CashVoucherPrintSlip({ voucher, safe, activeSafeId, onCl
             <div className="border border-slate-200 rounded-xl p-1.5 mb-2 bg-slate-50/50 text-xs">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] font-bold text-slate-600">
-                  {isAr ? 'فئات النقدية:' : 'Cash Breakdown:'}
+                  {isAr ? 'الفئات:' : 'Denominations:'}
                 </span>
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -386,26 +383,19 @@ export default function CashVoucherPrintSlip({ voucher, safe, activeSafeId, onCl
         <div className="pt-2 border-t border-slate-300">
           <div className="flex items-end justify-between gap-4">
             {/* QR Code Deep-Link */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col items-center gap-0.5 shrink-0">
               {qrDataUrl ? (
                 <img
                   src={qrDataUrl}
                   alt="QR"
-                  className="h-16 w-16 border border-slate-200 rounded-lg p-1 bg-white shrink-0"
+                  className="h-16 w-16 border border-slate-200 rounded-lg p-1 bg-white"
                 />
               ) : (
-                <div className="h-16 w-16 border border-dashed border-slate-300 rounded-lg flex items-center justify-center text-slate-300 shrink-0">
+                <div className="h-16 w-16 border border-dashed border-slate-300 rounded-lg flex items-center justify-center text-slate-300">
                   <QrCode className="h-5 w-5" />
                 </div>
               )}
-              <div className="text-[9.5px] text-slate-500">
-                <span className="font-bold text-slate-800 block">
-                  {isAr ? 'التحقق المباشر' : 'Direct Link'}
-                </span>
-                <p className="text-[9px] text-slate-400">
-                  {isAr ? 'مسح الرمز للمطابقة بالنظام' : 'Scan to view in ERP'}
-                </p>
-              </div>
+              <span className="text-[8.5px] font-black text-slate-900">{isAr ? 'للنظام' : 'ERP'}</span>
             </div>
 
             {/* 3 Dedicated Airy Signature Blocks */}
@@ -423,7 +413,7 @@ export default function CashVoucherPrintSlip({ voucher, safe, activeSafeId, onCl
               {/* 2. Vault Custodian */}
               <div className="flex-1 border border-slate-200 rounded-xl p-2 bg-slate-50/30 flex flex-col justify-between h-20">
                 <div className="font-bold text-slate-700 text-[10.5px]">
-                  {isAr ? 'أمين الخزينة' : 'Cashier'}
+                  {isAr ? 'الخزينة' : 'Cashier'}
                 </div>
                 <div className="text-[9.5px] font-bold text-emerald-700 truncate">
                   {voucher.issuedByName || ''}
@@ -436,22 +426,21 @@ export default function CashVoucherPrintSlip({ voucher, safe, activeSafeId, onCl
               {/* 3. Authorized Approval */}
               <div className="flex-1 border border-slate-200 rounded-xl p-2 bg-slate-50/30 flex flex-col justify-between h-20">
                 <div className="font-bold text-slate-700 text-[10.5px]">
-                  {isAr ? 'الاعتماد المالي' : 'Finance Approval'}
+                  {isAr ? 'الاعتماد' : 'Approval'}
                 </div>
                 <div className="text-[9.5px] font-bold text-blue-700 truncate">
                   {voucher.approvedByName || ''}
                 </div>
                 <div className="border-t border-dashed border-slate-400 pt-1 text-[9px] text-slate-400">
-                  {isAr ? 'الاعتماد' : 'Approval'}
+                  {isAr ? 'التوقيع' : 'Approval'}
                 </div>
               </div>
             </div>
           </div>
 
           {/* Footer Notice */}
-          <div className="mt-2 pt-1 border-t border-slate-200 text-center text-[9px] text-slate-400 flex items-center justify-between">
-            <span>{isAr ? 'نظام الطاووس لإدارة الموارد • نسخة أصلية معتمدة' : 'Al Tawoos ERP • Official Certified Document'}</span>
-            <span>{isAr ? 'صفحة 1 من 1' : 'Page 1 of 1'}</span>
+          <div className="mt-2 pt-1 border-t border-slate-200 text-end text-[9px] text-slate-400">
+            <span>{isAr ? '1 / 1' : '1 / 1'}</span>
           </div>
         </div>
       </div>

@@ -421,7 +421,7 @@ export default function ChartOfAccountsMaster({
     const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
       setClientsList(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
-    const unsubWorkers = onSnapshot(collection(db, 'production_workers'), (snap) => {
+    const unsubWorkers = onSnapshot(collection(db, 'employees'), (snap) => {
       setWorkersList(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
     const unsubSafes = onSnapshot(collection(db, 'cash_safes'), (snap) => {

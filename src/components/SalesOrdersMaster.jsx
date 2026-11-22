@@ -70,7 +70,8 @@ import {
   Store,
   ClipboardCheck,
   ClipboardList,
-  FileImage
+  FileImage,
+  RotateCcw
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import SalesOrderAuditModal from './SalesOrderAuditModal';
@@ -91,6 +92,15 @@ import {
   isRetailSegmentRecord,
   openPrintableRetailSettlementSlip
 } from '../utils/salesOrderUtils';
+import {
+  makeTripDispatchDocId,
+  resolveOrderTripDispatch,
+  evaluateReturnDiscrepancySummary
+} from '../utils/truckDispatchUtils';
+import {
+  completeActionRequired,
+  dispatchWorkflowEvent
+} from '../utils/notificationEngine';
 import { normalizeLocationUrl } from '../utils/locationUtils';
 import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from './ClientSegmentsMaster';
 import { RowCommentButton, useRecordComments } from './comments';
@@ -572,6 +582,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const { i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin' || currentUser?.role === 'admin';
+  const canCreateSalesOrder = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canCreate', currentUser);
+  const canEditSalesOrder = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canEdit', currentUser);
   const canSplitOrder = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSplitOrder', currentUser);
   const canAdjustDispatchedQty = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canAdjustDispatchedQuantities', currentUser);
   const canSettleRetailOrders = isGeneralAdmin || canAccessAction(permissions, 'sales_orders', 'canSettleRetailOrders', currentUser);
@@ -585,6 +597,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [segments, setSegments] = useState([]);
   const [products, setProducts] = useState([]);
   const [vehicles, setVehicles] = useState([]);
+  const [truckDispatches, setTruckDispatches] = useState([]);
   const [productCategories, setProductCategories] = useState([]);
   const [priceLists, setPriceLists] = useState([]);
   const [strategies, setStrategies] = useState(DEFAULT_PRICING_STRATEGIES);
@@ -611,6 +624,10 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState(null);
   const [editorInitialAdjustmentMode, setEditorInitialAdjustmentMode] = useState(false);
+  const [prefillTripContext, setPrefillTripContext] = useState(null);
+  const [activeSettlementTripId, setActiveSettlementTripId] = useState('');
+  const [isCompletingSettlementTask, setIsCompletingSettlementTask] = useState(false);
+  const handledSettlementDeepLinkRef = useRef('');
   const [isAdminModal, setIsAdminModal] = useState(false);
   const [auditModalOrder, setAuditModalOrder] = useState(null);
   const [splitModalOrder, setSplitModalOrder] = useState(null);
@@ -738,6 +755,22 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     return () => unsub();
   }, []);
 
+  // 8b. Subscribe to Truck Dispatches (synced DD-XXXXX / RET-XXXXX doc numbers & return discrepancy alerts)
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'truck_dispatches'), (snapshot) => {
+      setTruckDispatches(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+
+  const truckDispatchesById = useMemo(() => {
+    const map = {};
+    (truckDispatches || []).forEach((td) => {
+      if (td && td.id) map[td.id] = td;
+    });
+    return map;
+  }, [truckDispatches]);
+
   // 9. Subscribe to Global Standard Retail Load List Config
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'system_config', 'retail_standard_load_list'), (snap) => {
@@ -768,25 +801,181 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     }
   };
 
-  // Listen for Incoming Deep-Link Focus from Loading Plan
+  // Fast Navigation to Truck Dispatch (Trip Card or Return Inspection Modal)
+  const handleNavigateToTruckDispatch = (order, { openReturn = false } = {}) => {
+    if (!order || typeof window === 'undefined') return;
+    const loNum = Number(order.loadingOrderNumber || 0);
+    const tripId =
+      order.fgWarehouseDispatchId ||
+      (loNum > 0 ? makeTripDispatchDocId(order.loadingDate || order.invoiceDate, loNum) : '');
+    if (!tripId) return;
+    window.location.hash = `#truck_dispatch?module=sales&tripId=${encodeURIComponent(tripId)}${openReturn ? '&openReturn=1' : ''}`;
+  };
+
+  const openCreateOrderForTrip = (tripId, { orderType = 'supply', fromTripExtras = false } = {}) => {
+    if (!tripId || !canCreateSalesOrder) return;
+    const dDoc = truckDispatchesById[tripId] || null;
+    const siblingOrder =
+      orders.find(
+        (o) =>
+          o &&
+          !o.isSplitParent &&
+          o.confirmationStatus !== 'canceled' &&
+          (o.fgWarehouseDispatchId === tripId ||
+            (Number(o.loadingOrderNumber || 0) > 0 &&
+              makeTripDispatchDocId(o.loadingDate || o.invoiceDate, o.loadingOrderNumber) === tripId))
+      ) || null;
+    const vehObj =
+      vehicles.find((v) => v.id === (dDoc?.vehicleId || siblingOrder?.assignedVehicleId)) || null;
+    const loadingDate = dDoc?.loadingDate || siblingOrder?.loadingDate || formatDateKey(new Date());
+    const loadingOrderNumber = Number(dDoc?.loadingOrderNumber || siblingOrder?.loadingOrderNumber || 0) || null;
+
+    setPrefillTripContext({
+      tripId,
+      loadingDate,
+      loadingOrderNumber,
+      assignedVehicleId: dDoc?.vehicleId || siblingOrder?.assignedVehicleId || '',
+      assignedVehicleName: dDoc?.vehicleName || siblingOrder?.assignedVehicleName || vehObj?.vehicleModel || vehObj?.name || '',
+      assignedVehiclePlate: dDoc?.plateNumber || siblingOrder?.assignedVehiclePlate || vehObj?.plateNumber || '',
+      assignedDriverId: dDoc?.driverId || siblingOrder?.assignedDriverId || '',
+      assignedDriverName: dDoc?.driverName || siblingOrder?.assignedDriverName || '',
+      assignedDeliveryRepId: dDoc?.deliveryRepId || siblingOrder?.assignedDeliveryRepId || '',
+      assignedDeliveryRepName: dDoc?.deliveryRepName || siblingOrder?.assignedDeliveryRepName || '',
+      orderType: orderType || 'supply',
+      settledFromTripExtras: Boolean(fromTripExtras && (orderType || 'supply') === 'supply'),
+      fulfillmentStatus: 'delivered',
+    });
+    setEditingOrder(null);
+    setEditorInitialAdjustmentMode(false);
+    setIsAdminModal(false);
+    setIsEditorOpen(true);
+  };
+
+  const handleCompleteSettlementTask = async (tripDoc) => {
+    if (!tripDoc?.id) return;
+    setIsCompletingSettlementTask(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const prevTasks = Array.isArray(tripDoc.returnSettlementTasks) ? tripDoc.returnSettlementTasks : [];
+      const nextTasks = prevTasks.map((t) =>
+        t.status === 'open'
+          ? {
+              ...t,
+              status: 'completed',
+              completedAt: nowIso,
+              completedBy: currentUserId,
+              completedByName: currentUserName,
+            }
+          : t
+      );
+      const doneAudit = {
+        id: `AUD-TSKD-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: nowIso,
+        userId: currentUserId,
+        userName: currentUserName,
+        performedBy: currentUserName,
+        performedById: currentUserId,
+        action: 'truck_return_settlement_task_completed',
+        summaryAr: `تم تنفيذ مهمة تسوية أوامر البيع لرحلة #${tripDoc.loadingOrderNumber} بواسطة ${currentUserName}`,
+        summaryEn: `Completed Sales Order settlement task for Trip #${tripDoc.loadingOrderNumber} by ${currentUserName}`,
+        changes: { metadata: [], lineChanges: [] },
+      };
+
+      await setDoc(
+        doc(db, 'truck_dispatches', tripDoc.id),
+        {
+          returnSettlementTasks: nextTasks,
+          auditTrail: [...(Array.isArray(tripDoc.auditTrail) ? tripDoc.auditTrail : []), doneAudit],
+          updatedAt: nowIso,
+          updatedBy: currentUserId,
+          updatedByName: currentUserName,
+        },
+        { merge: true }
+      );
+
+      await completeActionRequired({
+        actionType: 'trip_return_order_settlement_task',
+        docId: tripDoc.id,
+        completedBy: currentUserId,
+        completedByName: currentUserName,
+        resolutionNote: `Sales order settlement completed by ${currentUserName}`,
+      });
+
+      await dispatchWorkflowEvent({
+        eventKey: 'trip_return_alignment_accounting',
+        docId: tripDoc.id,
+        docNumber: `LO-${tripDoc.loadingOrderNumber}`,
+        titleAr: `تمت تسوية أوامر بيع مرتجع رحلة #${tripDoc.loadingOrderNumber} — جاهز لمطابقة المحاسبة`,
+        titleEn: `Order Settlement Completed for Trip #${tripDoc.loadingOrderNumber} — Ready for Accounting Alignment`,
+        messageAr: `أتم (${currentUserName}) تعديل/إضافة أوامر البيع المطلوبة. يرجى مراجعة نافذة المرتجعات وتأكيد المطابقة النهائية.`,
+        messageEn: `(${currentUserName}) completed the requested Sales Order settlement. Please open Return Receiving to confirm final alignment.`,
+        targetModule: 'sales',
+        targetTab: 'truck_dispatch',
+        highlightId: tripDoc.id,
+        actor: currentUser,
+        metadata: { tripId: tripDoc.id, openReturn: '1' },
+      });
+    } catch (err) {
+      console.error('Failed completing settlement task:', err);
+      alert(isAr ? 'تعذر إغلاق مهمة التسوية.' : 'Failed closing settlement task.');
+    } finally {
+      setIsCompletingSettlementTask(false);
+    }
+  };
+
+  // Listen for Incoming Deep-Link Focus & Settlement Launchers from Loading Plan / Truck Dispatch
   useEffect(() => {
-    const checkHashFocus = () => {
-      if (typeof window === 'undefined') return;
-      const rawHash = window.location.hash || '';
-      if (!rawHash.includes('sales_orders')) return;
-      const queryPart = rawHash.split('?')[1];
-      if (!queryPart) return;
-      const params = new URLSearchParams(queryPart);
-      const targetSerial = params.get('focusOrder');
-      if (targetSerial && orders.length > 0) {
-        const found = orders.find((o) => resolveOrderSerial(o, orders) === targetSerial || o.id === targetSerial);
+    const processSettlementParams = ({
+      orderId = '',
+      focusOrder = '',
+      openAdjust = '',
+      openRetailSettle = '',
+      createForTrip = '',
+      orderType = '',
+      fromTripExtras = '',
+      settlementTripId = '',
+    } = {}) => {
+      if (settlementTripId) {
+        setActiveSettlementTripId(settlementTripId);
+      }
+
+      const actionKey = `${orderId}|${focusOrder}|${openAdjust}|${openRetailSettle}|${createForTrip}|${orderType}|${fromTripExtras}`;
+      if (createForTrip && handledSettlementDeepLinkRef.current !== actionKey && (truckDispatches.length > 0 || orders.length > 0)) {
+        handledSettlementDeepLinkRef.current = actionKey;
+        if (canCreateSalesOrder) {
+          openCreateOrderForTrip(createForTrip, {
+            orderType: orderType || 'supply',
+            fromTripExtras: fromTripExtras === '1',
+          });
+        }
+        return;
+      }
+
+      if ((orderId || focusOrder) && orders.length > 0) {
+        const found =
+          (orderId ? orders.find((o) => o.id === orderId) : null) ||
+          (focusOrder ? orders.find((o) => resolveOrderSerial(o, orders) === focusOrder || o.id === focusOrder) : null);
         const resolvedFound =
           found && found.splitParentId && found.invoiceSplitMode === 'merged_on_parent'
             ? orders.find((o) => o.id === found.splitParentId) || found
             : found;
-        setSearchTerm(resolvedFound ? resolveOrderSerial(resolvedFound, orders) : targetSerial);
+        const resolvedSerial = resolvedFound ? resolveOrderSerial(resolvedFound, orders) : (focusOrder || '');
+        if (resolvedSerial) setSearchTerm(resolvedSerial);
         if (resolvedFound) {
           setExpandedOrderIds((prev) => new Set([...prev, resolvedFound.id]));
+          if (handledSettlementDeepLinkRef.current !== actionKey) {
+            if (openAdjust === '1' && (canAdjustDispatchedQty || canEditSalesOrder)) {
+              handledSettlementDeepLinkRef.current = actionKey;
+              setPrefillTripContext(null);
+              setIsAdminModal(false);
+              setEditorInitialAdjustmentMode(true);
+              setEditingOrder(resolvedFound);
+              setIsEditorOpen(true);
+            } else if (openRetailSettle === '1' && canSettleRetailOrders) {
+              handledSettlementDeepLinkRef.current = actionKey;
+              setRetailSettlementModalOrder(resolvedFound);
+            }
+          }
           setTimeout(() => {
             const el = document.getElementById(`sales-order-row-${resolvedFound.id}`);
             if (el) {
@@ -801,47 +990,48 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
       }
     };
 
+    const checkHashFocus = () => {
+      if (typeof window === 'undefined') return;
+      const rawHash = window.location.hash || '';
+      if (!rawHash.includes('sales_orders')) return;
+      const queryPart = rawHash.split('?')[1];
+      if (!queryPart) return;
+      const params = new URLSearchParams(queryPart);
+      processSettlementParams({
+        orderId: params.get('orderId') || '',
+        focusOrder: params.get('focusOrder') || '',
+        openAdjust: params.get('openAdjust') || '',
+        openRetailSettle: params.get('openRetailSettle') || '',
+        createForTrip: params.get('createForTrip') || '',
+        orderType: params.get('orderType') || '',
+        fromTripExtras: params.get('fromTripExtras') || '',
+        settlementTripId: params.get('settlementTripId') || params.get('recordId') || '',
+      });
+    };
+
     checkHashFocus();
     window.addEventListener('hashchange', checkHashFocus);
 
     const handleCustomNav = (e) => {
-      const { tab, focusOrder, orderId } = e.detail || {};
+      const { tab, ...rest } = e.detail || {};
       if (tab === 'sales_orders') {
-        const initialFound =
-          (orderId ? orders.find((o) => o.id === orderId) : null) ||
-          (focusOrder ? orders.find((o) => resolveOrderSerial(o, orders) === focusOrder) : null);
-        const resolvedFound =
-          initialFound && initialFound.splitParentId && initialFound.invoiceSplitMode === 'merged_on_parent'
-            ? orders.find((o) => o.id === initialFound.splitParentId) || initialFound
-            : initialFound;
-        if (resolvedFound) {
-          setSearchTerm(resolveOrderSerial(resolvedFound, orders));
-        } else if (focusOrder) {
-          setSearchTerm(focusOrder);
-        }
-        const targetId = resolvedFound?.id || orderId || null;
-        if (targetId) {
-          setExpandedOrderIds((prev) => new Set([...prev, targetId]));
-          setTimeout(() => {
-            const el = document.getElementById(`sales-order-row-${targetId}`);
-            if (el) {
-              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              el.classList.add('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
-              setTimeout(() => {
-                el.classList.remove('ring-4', 'ring-indigo-400', 'bg-indigo-50/50');
-              }, 3000);
-            }
-          }, 400);
-        }
+        handledSettlementDeepLinkRef.current = '';
+        processSettlementParams(rest);
       }
     };
+    const handleSettlementNav = (e) => {
+      handledSettlementDeepLinkRef.current = '';
+      processSettlementParams(e.detail || {});
+    };
     window.addEventListener('app-navigate', handleCustomNav);
+    window.addEventListener('app_focus_sales_orders_settlement', handleSettlementNav);
 
     return () => {
       window.removeEventListener('hashchange', checkHashFocus);
       window.removeEventListener('app-navigate', handleCustomNav);
+      window.removeEventListener('app_focus_sales_orders_settlement', handleSettlementNav);
     };
-  }, [orders]);
+  }, [orders, truckDispatches, canCreateSalesOrder, canEditSalesOrder, canAdjustDispatchedQty, canSettleRetailOrders]);
 
   // Close 3-dots actions menu on outside click or scroll
   useEffect(() => {
@@ -1413,8 +1603,100 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     URL.revokeObjectURL(url);
   };
 
+  const activeSettlementTrip = activeSettlementTripId ? truckDispatchesById[activeSettlementTripId] || null : null;
+
   return (
     <div className="space-y-5 select-none font-sans">
+      {/* Contextual Return Settlement Task Workbench Bar (shown ONLY when deep-linked from Return Discrepancy / Task) */}
+      {activeSettlementTrip && (() => {
+        const openTasks = (Array.isArray(activeSettlementTrip.returnSettlementTasks)
+          ? activeSettlementTrip.returnSettlementTasks
+          : []
+        ).filter((t) => t.status === 'open');
+        const latestTask = openTasks[openTasks.length - 1] || null;
+        return (
+          <div className="rounded-2xl border-2 border-indigo-300 bg-indigo-50/80 p-3.5 shadow-xs space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                  <RotateCcw className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-black text-indigo-950 flex items-center gap-2 flex-wrap">
+                    <span>
+                      {isAr
+                        ? `تسوية أوامر بيع مرتجعات رحلة #${activeSettlementTrip.loadingOrderNumber} (${activeSettlementTrip.loadingDate})`
+                        : `Trip #${activeSettlementTrip.loadingOrderNumber} (${activeSettlementTrip.loadingDate}) Return Settlement Workbench`}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-white border border-indigo-200 font-mono text-[10px] font-black text-indigo-800">
+                      {activeSettlementTrip.vehicleName || '—'}
+                    </span>
+                  </div>
+                  {latestTask && (
+                    <div className="text-[11px] font-bold text-indigo-900 mt-0.5">
+                      {isAr ? `ملاحظة المحاسبة (${latestTask.createdByName}):` : `Accounting Note (${latestTask.createdByName}):`}{' '}
+                      <span className="underline decoration-indigo-300">{latestTask.notes}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                {canCreateSalesOrder && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => openCreateOrderForTrip(activeSettlementTrip.id, { orderType: 'supply', fromTripExtras: true })}
+                      className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black inline-flex items-center gap-1 transition cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'أمر توريد (زيادات الرحلة)' : 'Supply Order (Extras)'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openCreateOrderForTrip(activeSettlementTrip.id, { orderType: 'return_deduct', fromTripExtras: false })}
+                      className="px-2.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black inline-flex items-center gap-1 transition cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'أمر مرتجع عميل للرحلة' : 'Client Return Order'}</span>
+                    </button>
+                  </>
+                )}
+                {openTasks.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isCompletingSettlementTask}
+                    onClick={() => handleCompleteSettlementTask(activeSettlementTrip)}
+                    className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white text-[11px] font-black inline-flex items-center gap-1 transition cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'تم إنجاز التسوية وإخطار المحاسبة' : 'Mark Settlement Done'}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.hash = `#truck_dispatch?module=sales&tripId=${encodeURIComponent(activeSettlementTrip.id)}&openReturn=1`;
+                  }}
+                  className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-indigo-100 text-indigo-900 border border-indigo-300 text-[11px] font-black inline-flex items-center gap-1 transition cursor-pointer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'العودة لمرتجع الرحلة' : 'Back to Trip Return'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveSettlementTripId('')}
+                  className="p-1.5 rounded-xl hover:bg-indigo-200/70 text-indigo-800 cursor-pointer"
+                  title={isAr ? 'إخفاء شريط التسوية' : 'Dismiss'}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* KPI Summary Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {/* 1. Total Orders */}
@@ -1825,6 +2107,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       const matchedOrderVehicle = vehicles.find((v) => v.id === order.assignedVehicleId);
                       const orderVehicleDisplayName = resolveVehicleDisplayName(matchedOrderVehicle, order.assignedVehicleName);
                       const orderVehiclePlate = order.assignedVehiclePlate || matchedOrderVehicle?.plateNumber || '';
+                      const orderDispatchDoc = resolveOrderTripDispatch(order, truckDispatchesById);
+                      const orderReturnDisc = evaluateReturnDiscrepancySummary(orderDispatchDoc);
 
                       // Client and Branch resolution
                       const clientObj = clients.find((c) => c.id === order.clientId) || null;
@@ -2079,6 +2363,51 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         <span>{orderVehiclePlate}</span>
                                         <CopyButton text={orderVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
                                       </span>
+                                    )}
+                                    {(orderDispatchDoc?.latestDispatchDocNumber || orderReturnDisc.hasDiscrepancy || orderDispatchDoc?.latestReturnDocNumber) && (
+                                      <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                                        {orderDispatchDoc?.latestDispatchDocNumber && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleNavigateToTruckDispatch(order, { openReturn: false });
+                                            }}
+                                            title={isAr ? 'فتح رحلة الصرف في تبويب صرف الشاحنات' : 'Open Trip in Truck Dispatch'}
+                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-300 font-mono text-[9px] font-black cursor-pointer transition"
+                                          >
+                                            <FileText className="w-2.5 h-2.5 shrink-0" />
+                                            <span>{orderDispatchDoc.latestDispatchDocNumber}</span>
+                                          </button>
+                                        )}
+                                        {orderReturnDisc.hasDiscrepancy ? (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleNavigateToTruckDispatch(order, { openReturn: true });
+                                            }}
+                                            title={isAr ? 'تنبيه: يوجد فرق مرتجع — انقر للمراجعة' : 'Return discrepancy detected — click to review'}
+                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-400 font-mono text-[9px] font-black cursor-pointer animate-pulse"
+                                          >
+                                            <AlertTriangle className="w-2.5 h-2.5 text-rose-600 shrink-0" />
+                                            <span>{isAr ? 'فرق مرتجع' : 'Ret Variance'}</span>
+                                          </button>
+                                        ) : orderDispatchDoc?.latestReturnDocNumber ? (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleNavigateToTruckDispatch(order, { openReturn: true });
+                                            }}
+                                            title={isAr ? 'فتح إذن المرتجع في تبويب صرف الشاحنات' : 'Open Return Doc in Truck Dispatch'}
+                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-mono text-[9px] font-black cursor-pointer transition"
+                                          >
+                                            <RotateCcw className="w-2.5 h-2.5 shrink-0" />
+                                            <span>{orderDispatchDoc.latestReturnDocNumber} ✓</span>
+                                          </button>
+                                        ) : null}
+                                      </div>
                                     )}
                                   </div>
                                 ) : !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) ? (
@@ -2571,17 +2900,66 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                               </div>
                                             </div>
 
-                                            <button
-                                              type="button"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleNavigateToLoadingPlan(order);
-                                              }}
-                                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-indigo-600 hover:text-white border border-indigo-300 text-indigo-700 text-xs font-bold rounded-lg transition shadow-2xs cursor-pointer group"
-                                            >
-                                              <span>{order.assignedVehicleName || order.loadingOrderNumber ? (isAr ? 'فتح في خطة التحميل' : 'Open in Loading Plan') : (isAr ? 'تسكين في خطة التحميل' : 'Assign in Loading Plan')}</span>
-                                              <ExternalLink className="w-3 h-3 text-indigo-400 group-hover:text-white" />
-                                            </button>
+                                            <div className="flex flex-wrap items-center gap-1.5">
+                                              {order.loadingOrderNumber && (
+                                                <>
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleNavigateToTruckDispatch(order, { openReturn: false });
+                                                    }}
+                                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-teal-600 hover:text-white border border-teal-300 text-teal-800 text-xs font-bold rounded-lg transition shadow-2xs cursor-pointer group"
+                                                  >
+                                                    <FileText className="w-3 h-3 text-teal-600 group-hover:text-white" />
+                                                    <span>
+                                                      {isAr
+                                                        ? `فتح في صرف الشاحنات${orderDispatchDoc?.latestDispatchDocNumber ? ` (${orderDispatchDoc.latestDispatchDocNumber})` : ''}`
+                                                        : `Open in Dispatch${orderDispatchDoc?.latestDispatchDocNumber ? ` (${orderDispatchDoc.latestDispatchDocNumber})` : ''}`}
+                                                    </span>
+                                                  </button>
+
+                                                  {(['shipped', 'delivered', 'paid'].includes(order.fulfillmentStatus) ||
+                                                    (orderDispatchDoc?.returnHandshakeStatus && orderDispatchDoc.returnHandshakeStatus !== 'none')) && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleNavigateToTruckDispatch(order, { openReturn: true });
+                                                      }}
+                                                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-black rounded-lg border transition shadow-2xs cursor-pointer ${
+                                                        orderReturnDisc.hasDiscrepancy
+                                                          ? 'bg-rose-100 hover:bg-rose-600 text-rose-900 hover:text-white border-rose-400 animate-pulse'
+                                                          : 'bg-white hover:bg-emerald-600 hover:text-white border-emerald-300 text-emerald-800'
+                                                      }`}
+                                                    >
+                                                      {orderReturnDisc.hasDiscrepancy ? (
+                                                        <AlertTriangle className="w-3 h-3 shrink-0" />
+                                                      ) : (
+                                                        <RotateCcw className="w-3 h-3 shrink-0" />
+                                                      )}
+                                                      <span>
+                                                        {orderReturnDisc.hasDiscrepancy
+                                                          ? (isAr ? 'مراجعة فرق المرتجع ⚠️' : 'Review Return Discrepancy ⚠️')
+                                                          : (isAr ? 'إذن / حالة المرتجع' : 'Return Status / Doc')}
+                                                      </span>
+                                                    </button>
+                                                  )}
+                                                </>
+                                              )}
+
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleNavigateToLoadingPlan(order);
+                                                }}
+                                                className="inline-flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-indigo-600 hover:text-white border border-indigo-300 text-indigo-700 text-xs font-bold rounded-lg transition shadow-2xs cursor-pointer group"
+                                              >
+                                                <span>{order.assignedVehicleName || order.loadingOrderNumber ? (isAr ? 'فتح في خطة التحميل' : 'Open in Loading Plan') : (isAr ? 'تسكين في خطة التحميل' : 'Assign in Loading Plan')}</span>
+                                                <ExternalLink className="w-3 h-3 text-indigo-400 group-hover:text-white" />
+                                              </button>
+                                            </div>
                                           </div>
 
                                           {/* 4-Grid of Preserved Assignment Info */}
@@ -2624,6 +3002,24 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                                   <span>{order.loadingOrderNumber ? (isAr ? `رحلة #${order.loadingOrderNumber}` : `Trip #${order.loadingOrderNumber}`) : '—'}</span>
                                                 </span>
                                                 <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{order.loadingDate || order.invoiceDate || '—'}</span>
+                                                {(orderDispatchDoc?.latestDispatchDocNumber || orderDispatchDoc?.latestReturnDocNumber || orderReturnDisc.hasDiscrepancy) && (
+                                                  <div className="flex flex-wrap items-center gap-1 mt-1">
+                                                    {orderDispatchDoc?.latestDispatchDocNumber && (
+                                                      <span className="px-1.5 py-0.2 rounded bg-teal-50 text-teal-900 border border-teal-200 font-mono text-[9.5px] font-black">
+                                                        {orderDispatchDoc.latestDispatchDocNumber}
+                                                      </span>
+                                                    )}
+                                                    {orderReturnDisc.hasDiscrepancy ? (
+                                                      <span className="px-1.5 py-0.2 rounded bg-rose-100 text-rose-900 border border-rose-300 font-mono text-[9.5px] font-black">
+                                                        ⚠️ {orderDispatchDoc?.latestReturnDocNumber || (isAr ? 'فرق مرتجع' : 'Variance')}
+                                                      </span>
+                                                    ) : orderDispatchDoc?.latestReturnDocNumber ? (
+                                                      <span className="px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 font-mono text-[9.5px] font-black">
+                                                        {orderDispatchDoc.latestReturnDocNumber} ✓
+                                                      </span>
+                                                    ) : null}
+                                                  </div>
+                                                )}
                                               </div>
                                             </div>
                                           ) : (
@@ -2940,11 +3336,22 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                               return (
                                                 <tr key={lIdx} className="hover:bg-slate-50/50">
                                                   <td className="py-2 px-3 font-sans font-bold text-slate-800">
-                                                    <div className="flex items-center gap-1.5">
-                                                      <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1 py-0.2 rounded border border-indigo-200">
+                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                      <span className="text-[10px] font-mono text-slate-400">
                                                         {line.productCode}
                                                       </span>
                                                       <span>{isAr ? line.productNameAr : (line.productNameEn || line.productNameAr)}</span>
+                                                      {line.packagingOptionSuffix && (
+                                                        <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded border ${
+                                                          line.packagingOptionSuffix === 'any'
+                                                            ? 'bg-cyan-50 text-cyan-800 border-cyan-200'
+                                                            : 'bg-slate-100 text-slate-700 border-slate-300'
+                                                        }`}>
+                                                          {line.packagingOptionSuffix === 'any'
+                                                            ? (isAr ? 'أي تعبئة (Any)' : 'Any Packing')
+                                                            : (isAr ? (line.packagingOptionNameAr || line.packagingOptionSuffix) : (line.packagingOptionNameEn || line.packagingOptionNameAr || line.packagingOptionSuffix))}
+                                                        </span>
+                                                      )}
                                                       {line.isPrivateLabel && (
                                                         <span className="text-[9px] font-bold text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
                                                           {isAr ? 'علامة خاصة' : 'PL'}
@@ -3688,9 +4095,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             setEditingOrder(null);
             setIsAdminModal(false);
             setEditorInitialAdjustmentMode(false);
+            setPrefillTripContext(null);
           }}
           editingOrder={editingOrder}
           isAdminModal={isAdminModal}
+          prefillTripContext={prefillTripContext}
           canAdjustDispatchedQty={canAdjustDispatchedQty}
           initialAdjustmentMode={editorInitialAdjustmentMode}
           clients={clients}
@@ -3989,11 +4398,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
  * SALES ORDER EDITOR MODAL (Order Header + Products Grid + 8-Tier Auto Pricing)
  * =========================================================================
  */
-function SalesOrderEditorModal({
+export function SalesOrderEditorModal({
   isOpen,
   onClose,
   editingOrder,
   isAdminModal = false,
+  prefillTripContext = null,
+  onSaved = null,
+  zIndexClass = 'z-50',
   canAdjustDispatchedQty = false,
   initialAdjustmentMode = false,
   clients = [],
@@ -4017,7 +4429,7 @@ function SalesOrderEditorModal({
 
   const todayStr = formatDateKey(new Date());
 
-  const defaultOrderType = isAdminModal ? 'admin' : 'supply';
+  const defaultOrderType = isAdminModal ? 'admin' : (prefillTripContext?.orderType || 'supply');
   const initialOrderType = editingOrder?.orderType || defaultOrderType;
   const initialVatMode = editingOrder?.vatMode || (initialOrderType.startsWith('invoice_only') ? 'exclusive' : 'none');
 
@@ -4057,17 +4469,26 @@ function SalesOrderEditorModal({
     branchName: editingOrder?.branchName || '',
     region: editingOrder?.region || '',
     deliveryAddress: editingOrder?.deliveryAddress || '',
-    invoiceDate: editingOrder?.invoiceDate || todayStr,
-    loadingDate: editingOrder?.loadingDate || todayStr,
-    isDatesLinked: editingOrder ? Boolean(editingOrder.invoiceDate === editingOrder.loadingDate) : true,
-    loadingOrderNumber: editingOrder?.loadingOrderNumber ?? null,
-    assignedVehicleId: editingOrder?.assignedVehicleId || '',
-    assignedVehicleName: editingOrder?.assignedVehicleName || '',
-    assignedVehiclePlate: editingOrder?.assignedVehiclePlate || '',
-    assignedDriverId: editingOrder?.assignedDriverId || '',
-    assignedDriverName: editingOrder?.assignedDriverName || '',
-    assignedDeliveryRepId: editingOrder?.assignedDeliveryRepId || '',
-    assignedDeliveryRepName: editingOrder?.assignedDeliveryRepName || '',
+    invoiceDate: editingOrder?.invoiceDate || prefillTripContext?.loadingDate || todayStr,
+    loadingDate: editingOrder?.loadingDate || prefillTripContext?.loadingDate || todayStr,
+    isDatesLinked: editingOrder
+      ? Boolean(editingOrder.invoiceDate === editingOrder.loadingDate)
+      : true,
+    loadingOrderNumber: editingOrder?.loadingOrderNumber ?? prefillTripContext?.loadingOrderNumber ?? null,
+    assignedVehicleId: editingOrder?.assignedVehicleId || prefillTripContext?.assignedVehicleId || '',
+    assignedVehicleName: editingOrder?.assignedVehicleName || prefillTripContext?.assignedVehicleName || '',
+    assignedVehiclePlate: editingOrder?.assignedVehiclePlate || prefillTripContext?.assignedVehiclePlate || '',
+    assignedDriverId: editingOrder?.assignedDriverId || prefillTripContext?.assignedDriverId || '',
+    assignedDriverName: editingOrder?.assignedDriverName || prefillTripContext?.assignedDriverName || '',
+    assignedDeliveryRepId: editingOrder?.assignedDeliveryRepId || prefillTripContext?.assignedDeliveryRepId || '',
+    assignedDeliveryRepName: editingOrder?.assignedDeliveryRepName || prefillTripContext?.assignedDeliveryRepName || '',
+    fgWarehouseDispatchId: editingOrder?.fgWarehouseDispatchId || prefillTripContext?.tripId || '',
+    settledFromTripExtras: Boolean(
+      editingOrder ? editingOrder.settledFromTripExtras : prefillTripContext?.settledFromTripExtras
+    ),
+    isPostDispatchSettlementOrder: Boolean(
+      editingOrder ? editingOrder.isPostDispatchSettlementOrder : prefillTripContext
+    ),
     orderType: initialOrderType,
     isAdministrative: Boolean(editingOrder?.isAdministrative || isAdminModal),
     adminNotes: editingOrder?.adminNotes || editingOrder?.notes || '',
@@ -4079,7 +4500,7 @@ function SalesOrderEditorModal({
     revisedAt: editingOrder?.revisedAt || null,
     revisedBy: editingOrder?.revisedBy || null,
     revisedById: editingOrder?.revisedById || null,
-    fulfillmentStatus: editingOrder?.fulfillmentStatus || (isAdminModal ? 'paid' : 'not_yet'),
+    fulfillmentStatus: editingOrder?.fulfillmentStatus || (isAdminModal ? 'paid' : (prefillTripContext?.fulfillmentStatus || 'not_yet')),
     vatMode: initialVatMode,
     poTawoos: editingOrder?.poTawoos || '',
     poPrivateLabel: editingOrder?.poPrivateLabel || '',
@@ -4671,7 +5092,7 @@ function SalesOrderEditorModal({
   }, [products, formData.clientId, formData.clientName, selectedCategory, isAr]);
 
   // Shared line builder for single product addition & Standard Retail List population
-  const buildOrderLineFromProduct = (prod, qty = 1, bonus = 0) => {
+  const buildOrderLineFromProduct = (prod, qty = 1, bonus = 0, requestedSuffix = null) => {
     const resolved = detectProductPrice({
       clientId: formData.clientId,
       clientName: formData.clientName,
@@ -4694,9 +5115,20 @@ function SalesOrderEditorModal({
       priceLists
     });
 
-    const primaryOpt = (prod.packagingOptions || [])[0] || {};
-    const largeUnitWeightKg = Number(primaryOpt.largeUnitWeightKg || prod.weight || 0);
-    const packagingRatio = Number(primaryOpt.packagingRatio || prod.packagingRatio || 12);
+    const opts = prod.packagingOptions || [];
+    const primaryOpt = opts[0] || {};
+    const defaultSuffix = opts.length > 1 ? 'any' : (primaryOpt.suffix || 'A');
+    const effectiveSuffix =
+      requestedSuffix && (requestedSuffix === 'any' || opts.some((o) => o.suffix === requestedSuffix))
+        ? requestedSuffix
+        : defaultSuffix;
+    const matchedOpt =
+      effectiveSuffix === 'any'
+        ? primaryOpt
+        : opts.find((o) => o.suffix === effectiveSuffix) || primaryOpt;
+
+    const largeUnitWeightKg = Number(matchedOpt.largeUnitWeightKg || primaryOpt.largeUnitWeightKg || prod.weight || 0);
+    const packagingRatio = Number(matchedOpt.packagingRatio || primaryOpt.packagingRatio || prod.packagingRatio || 12);
 
     return calculateLineTotals(
       {
@@ -4704,6 +5136,15 @@ function SalesOrderEditorModal({
         productCode: prod.code || prod.id,
         productNameAr: prod.nameAr,
         productNameEn: prod.nameEn || prod.nameAr,
+        packagingOptionSuffix: effectiveSuffix,
+        packagingOptionNameAr:
+          effectiveSuffix === 'any'
+            ? 'أي تعبئة (Any)'
+            : matchedOpt.nameAr || `تعبئة ${effectiveSuffix}`,
+        packagingOptionNameEn:
+          effectiveSuffix === 'any'
+            ? 'Any Packing'
+            : matchedOpt.nameEn || matchedOpt.nameAr || `Option ${effectiveSuffix}`,
         isPrivateLabel: isProductPrivateLabel(prod),
         vatRate: prod.vatRate || '14%',
         smallUnit: prod.smallUnit || 'زجاجة',
@@ -4763,7 +5204,7 @@ function SalesOrderEditorModal({
         skippedCount += 1;
         return;
       }
-      nextLines.push(buildOrderLineFromProduct(prod, item.qty, item.bonus));
+      nextLines.push(buildOrderLineFromProduct(prod, item.qty, item.bonus, item.packagingOptionSuffix));
     });
 
     if (nextLines.length === 0) {
@@ -4814,22 +5255,42 @@ function SalesOrderEditorModal({
     applyStandardRetailList();
   };
 
-  // Line item change (qty, bonus, manualDiscount)
+  // Line item change (qty, bonus, manualDiscount, packagingOptionSuffix)
   const handleLineChange = (index, field, value) => {
     setFormData((prev) => {
       const updatedLines = [...prev.lines];
       const existing = updatedLines[index];
-      let nextVal = value;
-      if (isPostDispatch && adjustmentMode && (field === 'qty' || field === 'bonus')) {
-        const base = baselineLineMap[existing.productId] || existing;
-        const maxAllowed =
-          field === 'qty'
-            ? Number(base.dispatchedQty ?? base.qty ?? 0)
-            : Number(base.dispatchedBonus ?? base.bonus ?? 0);
-        const parsed = Math.max(0, Math.floor(Number(value) || 0));
-        nextVal = Math.min(parsed, maxAllowed);
+      let target = { ...existing, [field]: value };
+
+      if (field === 'packagingOptionSuffix') {
+        const prod = products.find((p) => p.id === existing.productId);
+        const opts = prod?.packagingOptions || [];
+        const primaryOpt = opts[0] || {};
+        const matchedOpt = value === 'any' ? primaryOpt : opts.find((o) => o.suffix === value) || primaryOpt;
+        target = {
+          ...existing,
+          packagingOptionSuffix: value || 'any',
+          packagingOptionNameAr:
+            value === 'any' ? 'أي تعبئة (Any)' : matchedOpt.nameAr || `تعبئة ${value}`,
+          packagingOptionNameEn:
+            value === 'any' ? 'Any Packing' : matchedOpt.nameEn || matchedOpt.nameAr || `Option ${value}`,
+          packagingRatio: Number(matchedOpt.packagingRatio || primaryOpt.packagingRatio || prod?.packagingRatio || existing.packagingRatio || 12),
+          largeUnitWeightKg: Number(matchedOpt.largeUnitWeightKg || primaryOpt.largeUnitWeightKg || prod?.weight || existing.largeUnitWeightKg || 0),
+        };
+      } else {
+        let nextVal = value;
+        if (isPostDispatch && adjustmentMode && (field === 'qty' || field === 'bonus')) {
+          const base = baselineLineMap[existing.productId] || existing;
+          const maxAllowed =
+            field === 'qty'
+              ? Number(base.dispatchedQty ?? base.qty ?? 0)
+              : Number(base.dispatchedBonus ?? base.bonus ?? 0);
+          const parsed = Math.max(0, Math.floor(Number(value) || 0));
+          nextVal = Math.min(parsed, maxAllowed);
+        }
+        target = { ...existing, [field]: nextVal };
       }
-      const target = { ...existing, [field]: nextVal };
+
       updatedLines[index] = calculateLineTotals(
         target,
         target.detectedUnitPrice,
@@ -5165,28 +5626,38 @@ function SalesOrderEditorModal({
           }
         };
       } else {
-        // Compute diff for editing
+        // Compute diff for editing — only track actual changes (never log empty saves)
         const metaDiffs = [];
         const old = editingOrder;
+        const eqStr = (a, b) => String(a || '').trim() === String(b || '').trim();
+        const eqNum = (a, b) => Math.abs((Number(a) || 0) - (Number(b) || 0)) < 1e-4;
 
-        if (old.clientName !== formData.clientName) metaDiffs.push({ labelAr: 'العميل', labelEn: 'Client', oldValue: old.clientName, newValue: formData.clientName });
-        if (old.branchName !== formData.branchName) metaDiffs.push({ labelAr: 'الفرع', labelEn: 'Branch', oldValue: old.branchName, newValue: formData.branchName });
-        if (old.invoiceDate !== formData.invoiceDate) metaDiffs.push({ labelAr: 'تاريخ الفاتورة / الإجراء', labelEn: 'Date', oldValue: old.invoiceDate, newValue: formData.invoiceDate });
-        if (old.loadingDate !== formData.loadingDate) metaDiffs.push({ labelAr: 'تاريخ التحميل', labelEn: 'Loading Date', oldValue: old.loadingDate, newValue: formData.loadingDate });
-        if (old.confirmationStatus !== formData.confirmationStatus) metaDiffs.push({ labelAr: 'حالة التأكيد', labelEn: 'Confirmation', oldValue: old.confirmationStatus, newValue: formData.confirmationStatus });
-        if (old.fulfillmentStatus !== formData.fulfillmentStatus) metaDiffs.push({ labelAr: 'حالة التنفيذ', labelEn: 'Fulfillment', oldValue: old.fulfillmentStatus, newValue: formData.fulfillmentStatus });
-        if (old.vatMode !== formData.vatMode) metaDiffs.push({ labelAr: 'المعاملة الضريبية', labelEn: 'Tax Mode', oldValue: old.vatMode, newValue: formData.vatMode });
-        if (old.orderType !== formData.orderType) metaDiffs.push({ labelAr: 'نوع الطلب', labelEn: 'Order Type', oldValue: old.orderType, newValue: formData.orderType });
+        if (!eqStr(old.clientName, formData.clientName)) metaDiffs.push({ labelAr: 'العميل', labelEn: 'Client', oldValue: old.clientName || '—', newValue: formData.clientName || '—' });
+        if (!eqStr(old.branchName, formData.branchName)) metaDiffs.push({ labelAr: 'الفرع', labelEn: 'Branch', oldValue: old.branchName || '—', newValue: formData.branchName || '—' });
+        if (!eqStr(old.invoiceDate, formData.invoiceDate)) metaDiffs.push({ labelAr: 'تاريخ الفاتورة / الإجراء', labelEn: 'Date', oldValue: old.invoiceDate || '—', newValue: formData.invoiceDate || '—' });
+        if (!eqStr(old.loadingDate, formData.loadingDate)) metaDiffs.push({ labelAr: 'تاريخ التحميل', labelEn: 'Loading Date', oldValue: old.loadingDate || '—', newValue: formData.loadingDate || '—' });
+        if (!eqStr(old.confirmationStatus, formData.confirmationStatus)) metaDiffs.push({ labelAr: 'حالة التأكيد', labelEn: 'Confirmation', oldValue: old.confirmationStatus || '—', newValue: formData.confirmationStatus || '—' });
+        if (!eqStr(old.fulfillmentStatus, formData.fulfillmentStatus)) metaDiffs.push({ labelAr: 'حالة التنفيذ', labelEn: 'Fulfillment', oldValue: old.fulfillmentStatus || '—', newValue: formData.fulfillmentStatus || '—' });
+        if (!eqStr(old.vatMode, formData.vatMode)) metaDiffs.push({ labelAr: 'المعاملة الضريبية', labelEn: 'Tax Mode', oldValue: old.vatMode || '—', newValue: formData.vatMode || '—' });
+        if (!eqStr(old.orderType, formData.orderType)) metaDiffs.push({ labelAr: 'نوع الطلب', labelEn: 'Order Type', oldValue: old.orderType || '—', newValue: formData.orderType || '—' });
+        if (!eqStr(old.poTawoos, formData.poTawoos)) metaDiffs.push({ labelAr: 'أمر شراء طاووس', labelEn: 'PO # Tawoos', oldValue: old.poTawoos || '—', newValue: formData.poTawoos || '—' });
+        if (!eqStr(old.poPrivateLabel, formData.poPrivateLabel)) metaDiffs.push({ labelAr: 'أمر شراء علامة خاصة', labelEn: 'PO # Private Label', oldValue: old.poPrivateLabel || '—', newValue: formData.poPrivateLabel || '—' });
+        if (!eqStr(old.notes, formData.notes)) metaDiffs.push({ labelAr: 'ملاحظات', labelEn: 'Notes', oldValue: old.notes || '—', newValue: formData.notes || '—' });
+        if (isCollection && !eqNum(old.collectionAmount, formData.collectionAmount)) {
+          metaDiffs.push({ labelAr: 'مبلغ التحصيل', labelEn: 'Collection Amount', oldValue: `${Number(old.collectionAmount || 0)} EGP`, newValue: `${Number(formData.collectionAmount || 0)} EGP` });
+        }
 
+        const lineKey = (l) => `${l.productId || ''}::${String(l.packagingOptionSuffix || l.optionSuffix || '').toUpperCase()}`;
         const oldLineMap = {};
-        (old.lines || []).forEach((l) => { oldLineMap[l.productId] = l; });
+        (old.lines || []).forEach((l) => { oldLineMap[lineKey(l)] = l; });
         const newLineMap = {};
-        formData.lines.forEach((l) => { newLineMap[l.productId] = l; });
+        formData.lines.forEach((l) => { newLineMap[lineKey(l)] = l; });
 
         const lineChanges = [];
         if (isInvoiceOrSales) {
           formData.lines.forEach((l) => {
-            if (!oldLineMap[l.productId]) {
+            const k = lineKey(l);
+            if (!oldLineMap[k]) {
               lineChanges.push({
                 productCode: l.productCode,
                 productNameAr: l.productNameAr,
@@ -5196,74 +5667,104 @@ function SalesOrderEditorModal({
                 detailEn: `${l.qty} cartons at ${l.detectedUnitPrice} EGP`
               });
             } else {
-              const oldL = oldLineMap[l.productId];
-              if (oldL.qty !== l.qty || oldL.bonus !== l.bonus || oldL.manualDiscountPerUnit !== l.manualDiscountPerUnit) {
+              const oldL = oldLineMap[k];
+              const oldQty = Number(oldL.qty || 0);
+              const newQty = Number(l.qty || 0);
+              const oldBonus = Number(oldL.bonus || 0);
+              const newBonus = Number(l.bonus || 0);
+              const oldDisc = Number(oldL.manualDiscountPerUnit || 0);
+              const newDisc = Number(l.manualDiscountPerUnit || 0);
+              const oldPack = String(oldL.packagingOptionSuffix || oldL.optionSuffix || '').toUpperCase();
+              const newPack = String(l.packagingOptionSuffix || l.optionSuffix || '').toUpperCase();
+
+              const changedPartsAr = [];
+              const changedPartsEn = [];
+              if (!eqNum(oldQty, newQty)) {
+                changedPartsAr.push(`الكمية: ${oldQty} → ${newQty}`);
+                changedPartsEn.push(`Qty: ${oldQty} → ${newQty}`);
+              }
+              if (!eqNum(oldBonus, newBonus)) {
+                changedPartsAr.push(`بونص: ${oldBonus} → ${newBonus}`);
+                changedPartsEn.push(`Bonus: ${oldBonus} → ${newBonus}`);
+              }
+              if (!eqNum(oldDisc, newDisc)) {
+                changedPartsAr.push(`خصم: ${oldDisc} → ${newDisc}`);
+                changedPartsEn.push(`Disc: ${oldDisc} → ${newDisc}`);
+              }
+              if (oldPack !== newPack) {
+                changedPartsAr.push(`تعبئة: ${oldPack || '—'} → ${newPack || '—'}`);
+                changedPartsEn.push(`Pack: ${oldPack || '—'} → ${newPack || '—'}`);
+              }
+              if (changedPartsAr.length > 0) {
                 lineChanges.push({
                   productCode: l.productCode,
                   productNameAr: l.productNameAr,
                   productNameEn: l.productNameEn,
                   type: 'modified',
-                  detailAr: `الكمية: ${oldL.qty} -> ${l.qty} | بونص: ${oldL.bonus} -> ${l.bonus} | خصم: ${oldL.manualDiscountPerUnit} -> ${l.manualDiscountPerUnit}`,
-                  detailEn: `Qty: ${oldL.qty} -> ${l.qty} | Bonus: ${oldL.bonus} -> ${l.bonus} | Disc: ${oldL.manualDiscountPerUnit} -> ${l.manualDiscountPerUnit}`
+                  detailAr: changedPartsAr.join(' | '),
+                  detailEn: changedPartsEn.join(' | ')
                 });
               }
             }
           });
 
           (old.lines || []).forEach((l) => {
-            if (!newLineMap[l.productId]) {
+            if (!newLineMap[lineKey(l)]) {
               lineChanges.push({
                 productCode: l.productCode,
                 productNameAr: l.productNameAr,
                 productNameEn: l.productNameEn,
                 type: 'removed',
-                detailAr: `تم حذف الصنف من الطلب`,
-                detailEn: `Removed product from order`
+                detailAr: `تم حذف الصنف (${l.qty || 0} كرتونة)`,
+                detailEn: `Removed product (${l.qty || 0} cartons)`
               });
             }
           });
         }
 
-        auditEvent = {
-          id: `AUD-${Date.now()}-${(old.auditTrail || []).length + 1}`,
-          action: isSyncingPartialRejection ? 'partial_rejection_sync' : 'edit',
-          performedBy: currentUserName,
-          performedById: currentUserId,
-          timestamp: now,
-          summaryAr: isSyncingPartialRejection
-            ? `مزامنة الكميات المستلمة فعلياً بعد الرفض الجزئي للأمر #${formData.serial} (مرتجع: ${adjustmentFields.returnedCartons || 0} كرتونة | خصم تسوية: ${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} ج.م)`
-            : `تم تعديل بيانات أمر البيع / الإجراء #${formData.serial}`,
-          summaryEn: isSyncingPartialRejection
-            ? `Synced actual received quantities for #${formData.serial} (Returned: ${adjustmentFields.returnedCartons || 0} ctn | Invoice Credit: ${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} EGP)`
-            : `Updated order / action #${formData.serial}`,
-          changes: {
-            metadata: isSyncingPartialRejection
-              ? [
-                  ...metaDiffs,
-                  {
-                    labelAr: 'إجمالي المرتجع للمخزن',
-                    labelEn: 'Warehouse Return Estimate',
-                    oldValue: `${adjustmentFields.preAdjustmentSnapshot?.originalTotalCartons || 0} ctn`,
-                    newValue: `${adjustmentFields.returnedCartons || 0} ctn (${Number(adjustmentFields.returnedWeightKg || 0).toFixed(1)} kg)`
-                  },
-                  {
-                    labelAr: 'تسوية الفاتورة',
-                    labelEn: 'Invoice Credit',
-                    oldValue: `${Number(adjustmentFields.preAdjustmentSnapshot?.originalGrandTotal || 0).toFixed(2)} EGP`,
-                    newValue: `${Number(financials.grandTotal || 0).toFixed(2)} EGP (-${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} EGP)`
-                  },
-                  ...(adjustmentFields.rejectionReason
-                    ? [{ labelAr: 'سبب الرفض', labelEn: 'Rejection Reason', newValue: adjustmentFields.rejectionReason }]
-                    : [])
-                ]
-              : metaDiffs,
-            lineChanges
-          }
-        };
+        const hasActualDiffs = isSyncingPartialRejection || metaDiffs.length > 0 || lineChanges.length > 0;
+        auditEvent = hasActualDiffs
+          ? {
+              id: `AUD-${Date.now()}-${(old.auditTrail || []).length + 1}`,
+              action: isSyncingPartialRejection ? 'partial_rejection_sync' : 'edit',
+              performedBy: currentUserName,
+              performedById: currentUserId,
+              timestamp: now,
+              summaryAr: isSyncingPartialRejection
+                ? `مزامنة الكميات المستلمة فعلياً بعد الرفض الجزئي للأمر #${formData.serial} (مرتجع: ${adjustmentFields.returnedCartons || 0} كرتونة | خصم تسوية: ${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} ج.م)`
+                : `تم تعديل بيانات أمر البيع / الإجراء #${formData.serial}`,
+              summaryEn: isSyncingPartialRejection
+                ? `Synced actual received quantities for #${formData.serial} (Returned: ${adjustmentFields.returnedCartons || 0} ctn | Invoice Credit: ${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} EGP)`
+                : `Updated order / action #${formData.serial}`,
+              changes: {
+                metadata: isSyncingPartialRejection
+                  ? [
+                      ...metaDiffs,
+                      {
+                        labelAr: 'إجمالي المرتجع للمخزن',
+                        labelEn: 'Warehouse Return Estimate',
+                        oldValue: `${adjustmentFields.preAdjustmentSnapshot?.originalTotalCartons || 0} ctn`,
+                        newValue: `${adjustmentFields.returnedCartons || 0} ctn (${Number(adjustmentFields.returnedWeightKg || 0).toFixed(1)} kg)`
+                      },
+                      {
+                        labelAr: 'تسوية الفاتورة',
+                        labelEn: 'Invoice Credit',
+                        oldValue: `${Number(adjustmentFields.preAdjustmentSnapshot?.originalGrandTotal || 0).toFixed(2)} EGP`,
+                        newValue: `${Number(financials.grandTotal || 0).toFixed(2)} EGP (-${Number(adjustmentFields.returnedAmount || 0).toFixed(2)} EGP)`
+                      },
+                      ...(adjustmentFields.rejectionReason
+                        ? [{ labelAr: 'سبب الرفض', labelEn: 'Rejection Reason', newValue: adjustmentFields.rejectionReason }]
+                        : [])
+                    ]
+                  : metaDiffs,
+                lineChanges
+              }
+            }
+          : null;
       }
 
       const existingAudit = editingOrder?.auditTrail || [];
-      const updatedAuditTrail = [...existingAudit, auditEvent];
+      const updatedAuditTrail = auditEvent ? [...existingAudit, auditEvent] : existingAudit;
 
       const payload = {
         ...formData,
@@ -5282,6 +5783,9 @@ function SalesOrderEditorModal({
         assignedDriverName: formData.assignedDriverName || '',
         assignedDeliveryRepId: formData.assignedDeliveryRepId || '',
         assignedDeliveryRepName: formData.assignedDeliveryRepName || '',
+        fgWarehouseDispatchId: formData.fgWarehouseDispatchId || '',
+        settledFromTripExtras: Boolean(formData.settledFromTripExtras && formData.orderType === 'supply'),
+        isPostDispatchSettlementOrder: Boolean(formData.isPostDispatchSettlementOrder),
         loadingDate: formData.loadingDate || '',
         ...financials,
         ...adjustmentFields,
@@ -5299,6 +5803,7 @@ function SalesOrderEditorModal({
       }
 
       await setDoc(orderRef, payload, { merge: true });
+      if (onSaved) await onSaved(payload);
       onClose();
     } catch (err) {
       console.error('Error saving sales order:', err);
@@ -5309,7 +5814,7 @@ function SalesOrderEditorModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto font-sans">
+    <div className={`fixed inset-0 ${zIndexClass} bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto font-sans`}>
       <div className="bg-white rounded-3xl max-w-5xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] my-4 animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
         <div className={`px-6 py-4 ltr:bg-gradient-to-r rtl:bg-gradient-to-l ${
@@ -5421,6 +5926,29 @@ function SalesOrderEditorModal({
             <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl font-bold flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
               <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {/* Post-Dispatch Return Settlement Link Banner */}
+          {!editingOrder && prefillTripContext && (
+            <div className="p-3.5 bg-teal-50 border-2 border-teal-300 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs text-teal-950">
+              <div className="flex items-center gap-2 font-black">
+                <Truck className="w-4 h-4 text-teal-700 shrink-0" />
+                <span>
+                  {formData.settledFromTripExtras && formData.orderType === 'supply'
+                    ? (isAr
+                        ? `أمر توريد تسوية مرتبط تلقائياً برحلة #${prefillTripContext.loadingOrderNumber} (${prefillTripContext.loadingDate}) — سيُخصم من زيادات الرحلة دون خصم إضافي من المخزن`
+                        : `Pre-linked Supply Order from Trip #${prefillTripContext.loadingOrderNumber} Extras (${prefillTripContext.loadingDate})`)
+                    : (isAr
+                        ? `أمر تسوية مرتبط تلقائياً برحلة #${prefillTripContext.loadingOrderNumber} (${prefillTripContext.loadingDate}) لإغلاق فروقات المرتجعات`
+                        : `Pre-linked Order for Trip #${prefillTripContext.loadingOrderNumber} (${prefillTripContext.loadingDate}) Return Settlement`)}
+                </span>
+              </div>
+              {formData.settledFromTripExtras && formData.orderType === 'supply' && (
+                <span className="px-2 py-0.5 rounded-md bg-white border border-teal-300 text-[10px] font-black text-teal-800">
+                  {isAr ? 'مُصرف ضمن زيادات الشاحنة ✓' : 'From Truck Extras ✓'}
+                </span>
+              )}
             </div>
           )}
 
@@ -6334,28 +6862,66 @@ function SalesOrderEditorModal({
                         const retQtyLine = Math.max(0, dispQty - Number(line.qty || 0));
                         const retBonusLine = Math.max(0, dispBonus - Number(line.bonus || 0));
                         const qtyDisabled = isStructureLocked && !adjustmentMode;
+                        const catalogProd = products.find((p) => p.id === line.productId);
+                        const packingOpts = catalogProd?.packagingOptions || [];
+                        const hasMultiPacking = packingOpts.length > 1;
+                        const selectedPackingSuffix = line.packagingOptionSuffix || (hasMultiPacking ? 'any' : packingOpts[0]?.suffix || 'A');
 
                         return (
                           <tr key={idx} className="hover:bg-slate-50/50">
-                            {/* Product Info + Promo Icon */}
+                            {/* Product Info + Packing Option Picker + Promo Icon */}
                             <td className="py-2.5 px-3 font-bold text-slate-800">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-mono text-[10px] text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
-                                  {line.productCode}
-                                </span>
-                                <span>{isAr ? line.productNameAr : (line.productNameEn || line.productNameAr)}</span>
-                                {line.isPrivateLabel && (
-                                  <span className="text-[9px] font-bold text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
-                                    {isAr ? 'علامة خاصة' : 'PL'}
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {catalogProd?.imageFile && (
+                                    <img
+                                      src={catalogProd.imageFile}
+                                      alt={line.productNameAr}
+                                      className="w-7 h-7 rounded-md border border-slate-200 bg-white object-contain p-0.5 shrink-0"
+                                    />
+                                  )}
+                                  <span>{isAr ? line.productNameAr : (line.productNameEn || line.productNameAr)}</span>
+                                  <span className="font-mono text-[10px] text-slate-400 font-medium">
+                                    {line.productCode}
                                   </span>
-                                )}
-                                {line.isPromotional && (
-                                  <span
-                                    className="inline-flex items-center gap-0.5 text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200 text-[10px] font-bold"
-                                    title={isAr ? `عرض ترويجي (${line.promoDiscountPct ? `${line.promoDiscountPct.toFixed(1)}%` : ''})` : `Promotional (-${line.promoDiscountPct?.toFixed(1)}%)`}
-                                  >
-                                    <Zap className="w-3 h-3 text-rose-500 fill-rose-500" />
-                                  </span>
+                                  {line.isPrivateLabel && (
+                                    <span className="text-[9px] font-bold text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
+                                      {isAr ? 'علامة خاصة' : 'PL'}
+                                    </span>
+                                  )}
+                                  {line.isPromotional && (
+                                    <span
+                                      className="inline-flex items-center gap-0.5 text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200 text-[10px] font-bold"
+                                      title={isAr ? `عرض ترويجي (${line.promoDiscountPct ? `${line.promoDiscountPct.toFixed(1)}%` : ''})` : `Promotional (-${line.promoDiscountPct?.toFixed(1)}%)`}
+                                    >
+                                      <Zap className="w-3 h-3 text-rose-500 fill-rose-500" />
+                                    </span>
+                                  )}
+                                </div>
+
+                                {hasMultiPacking && (
+                                  <div>
+                                    {isStructureLocked ? (
+                                      <span className="inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-cyan-50 text-cyan-800 border border-cyan-200">
+                                        {selectedPackingSuffix === 'any'
+                                          ? (isAr ? 'التعبئة: أي تعبئة (Any)' : 'Packing: Any')
+                                          : (isAr ? `التعبئة: ${line.packagingOptionNameAr || selectedPackingSuffix}` : `Packing: ${line.packagingOptionNameEn || selectedPackingSuffix}`)}
+                                      </span>
+                                    ) : (
+                                      <select
+                                        value={selectedPackingSuffix}
+                                        onChange={(e) => handleLineChange(idx, 'packagingOptionSuffix', e.target.value)}
+                                        className="px-2 py-1 text-[11px] font-bold border border-cyan-300 rounded-lg bg-cyan-50/70 text-slate-800 focus:outline-none focus:border-cyan-600 cursor-pointer"
+                                      >
+                                        <option value="any">{isAr ? 'أي تعبئة (Any Packing)' : 'Any Packing'}</option>
+                                        {packingOpts.map((opt) => (
+                                          <option key={opt.suffix} value={opt.suffix}>
+                                            {isAr ? (opt.nameAr || `تعبئة ${opt.suffix}`) : (opt.nameEn || opt.nameAr || `Option ${opt.suffix}`)} ({opt.optionCode || `${catalogProd.code}-${opt.suffix}`}) — 1×{opt.packagingRatio || catalogProd.packagingRatio}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             </td>

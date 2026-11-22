@@ -18,10 +18,12 @@ import {
   Save,
   ShieldCheck,
   Server,
-  Layers
+  Layers,
+  MapPin
 } from 'lucide-react';
 import { MASTER_COLLECTIONS_REGISTRY, COLLECTION_DISPLAY_NAMES, getCollectionDisplayName } from './AdminControlPanel';
 import VatNumberInput from './VatNumberInput';
+import { extractCoordinates } from '../utils/locationUtils';
 
 export default function SystemConfigMaster({
   currentUser = {},
@@ -41,6 +43,7 @@ export default function SystemConfigMaster({
     commercialRegister: '104822',
     taxDistrict: 'مأمورية ضرائب الشركات المساهمة - 6 أكتوبر',
     registeredAddress: 'المنطقة الصناعية الثالثة - قطعة 14/ب - مدينة 6 أكتوبر - الجيزة',
+    factoryGpsLocation: '',
     baseCurrency: 'EGP',
     decimalPrecision: 2,
     fiscalYearStart: '01-01',
@@ -230,6 +233,35 @@ export default function SystemConfigMaster({
                   disabled={!isGeneralAdmin}
                   onChange={(e) => setCompanyProfile({ ...companyProfile, registeredAddress: e.target.value })}
                   className="w-full px-3 py-2 border border-slate-300 rounded-xl font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="flex items-center justify-between gap-2 font-bold text-slate-700 mb-1">
+                  <span className="inline-flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                    {isAr
+                      ? 'موقع المصنع / مخزن التام (رابط خرائط جوجل أو إحداثيات GPS لنقطة انطلاق الرحلات)'
+                      : 'Factory / FG Warehouse GPS Location (Google Maps URL or lat, lng for Trip Routes)'}
+                  </span>
+                  {(() => {
+                    const parsed = extractCoordinates(companyProfile.factoryGpsLocation || '');
+                    if (!parsed) return null;
+                    return (
+                      <span className="px-2 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[10px] font-mono font-bold">
+                        GPS ✓ {parsed.latStr}, {parsed.lngStr}
+                      </span>
+                    );
+                  })()}
+                </label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={companyProfile.factoryGpsLocation || ''}
+                  disabled={!isGeneralAdmin}
+                  onChange={(e) => setCompanyProfile({ ...companyProfile, factoryGpsLocation: e.target.value })}
+                  placeholder="https://maps.google.com/... or 29.9668, 30.9299"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 

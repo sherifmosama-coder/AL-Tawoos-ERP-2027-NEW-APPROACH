@@ -186,8 +186,8 @@ export default function GoodsReceiptPrintSlip({
                 </h1>
                 <h2 className="text-xs text-slate-700 font-bold mt-0.5">
                   {isPrintReturn
-                    ? (isAr ? 'إذن مرتجع خامات ومستلزمات إنتاج للمورد (RTV / RTN)' : 'Supplier Goods Return Note (RTV / RTN)')
-                    : (isAr ? 'إذن استلام وتوريد خامات ومستلزمات إنتاج (GRN)' : 'Goods Receipt & Inspection Note (GRN)')
+                    ? (isAr ? 'إذن مرتجع مورد' : 'Supplier Return Note')
+                    : (isAr ? 'إذن استلام مخزني' : 'Goods Receipt Note')
                   }
                 </h2>
                 <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5">
@@ -205,13 +205,10 @@ export default function GoodsReceiptPrintSlip({
             <div className="text-end">
               <span className="text-sm md:text-base font-mono font-extrabold text-slate-900 block">{grn.id}</span>
               <span className="text-[11px] font-bold text-slate-600 block">
-                {isAr ? `(الإصدار ${formatVersionTag(grn.version)})` : `(Revision ${formatVersionTag(grn.version)})`}
+                {formatVersionTag(grn.version)}
               </span>
               <span className="text-[11px] text-slate-500 mt-0.5 block">
-                {isPrintReturn
-                  ? (isAr ? 'تاريخ الارتجاع:' : 'Return Date:')
-                  : (isAr ? 'تاريخ الاستلام:' : 'Receipt Date:')
-                } {grn.receiptDate || grn.date || grn.createdAt?.slice(0, 10)}
+                {isAr ? 'تاريخ:' : 'Date:'} {grn.receiptDate || grn.date || grn.createdAt?.slice(0, 10)}
               </span>
               {grn.poId && (
                 <span className="text-[11px] font-mono font-bold text-blue-700 block">
@@ -224,11 +221,11 @@ export default function GoodsReceiptPrintSlip({
           {/* Supplier & Delivery / Tax Invoicing Info */}
           <div className="grid grid-cols-2 gap-3.5 p-3 mb-3.5 rounded-xl border border-slate-200 bg-slate-50/60 text-xs">
             <div>
-              <span className="text-slate-400 block mb-0.5">{isAr ? 'المورد المعتمد:' : 'Supplier:'}</span>
+              <span className="text-slate-400 block mb-0.5">{isAr ? 'المورد:' : 'Supplier:'}</span>
               <span className="font-bold text-slate-900 text-sm block">{grn.supplierName}</span>
               {grn.supplierDeliveryNote && (
                 <span className="text-slate-600 block mt-0.5 font-mono text-[11px]">
-                  {isAr ? 'رقم إذن تسليم المورد (D/N):' : 'Supplier D/N:'} {grn.supplierDeliveryNote}
+                  {isAr ? 'إذن تسليم:' : 'D/N:'} {grn.supplierDeliveryNote}
                 </span>
               )}
             </div>
@@ -238,27 +235,27 @@ export default function GoodsReceiptPrintSlip({
                   grn.creditNoteNumber ? (
                     <>
                       <span className="text-slate-800 block font-mono font-bold text-xs">
-                        {isAr ? 'إشعار الخصم / الدائن:' : 'Credit Note #:'} {grn.creditNoteNumber}
+                        {isAr ? 'إشعار دائن:' : 'Credit Note:'} {grn.creditNoteNumber}
                       </span>
                       {grn.creditNoteDate && (
                         <span className="text-slate-500 block font-mono text-[10px]">
-                          {isAr ? 'تاريخ إشعار الخصم:' : 'CN Date:'} {grn.creditNoteDate}
+                          {isAr ? 'التاريخ:' : 'Date:'} {grn.creditNoteDate}
                         </span>
                       )}
                       {grn.etaPortalRegistered && (
                         <span className="text-emerald-700 block font-semibold text-[10px]">
-                          {isAr ? '✓ موثق ومسجل بمنظومة الفاتورة الإلكترونية (ETA)' : '✓ Verified on ETA Portal'}
+                          ✓ ETA
                         </span>
                       )}
                     </>
                   ) : (
                     <span className="text-amber-800 font-semibold block text-[11px]">
-                      {isAr ? 'مرتجع ضريبي رسمي (بانتظار إشعار الخصم)' : 'Official Tax Return (Credit Note Pending)'}
+                      {isAr ? 'بانتظار إشعار الخصم' : 'Credit Note Pending'}
                     </span>
                   )
                 ) : (
                   <span className="text-slate-500 italic block text-[11px]">
-                    {isAr ? 'مرتجع داخلي غير ضريبي' : 'Internal Non-Taxable Return'}
+                    {isAr ? 'غير ضريبي' : 'Non-Taxable'}
                   </span>
                 )
               ) : (
@@ -266,28 +263,28 @@ export default function GoodsReceiptPrintSlip({
                   grn.taxInvoiceNumber ? (
                     <>
                       <span className="text-slate-800 block font-mono font-bold text-xs">
-                        {isAr ? 'الفاتورة الضريبية:' : 'Tax Invoice:'} {grn.taxInvoiceNumber}
+                        {isAr ? 'الفاتورة:' : 'Invoice:'} {grn.taxInvoiceNumber}
                       </span>
                       {grn.etaPortalRegistered && (
                         <span className="text-emerald-700 block font-semibold text-[10px]">
-                          {isAr ? '✓ موثق ومسجل بمنظومة الفاتورة الإلكترونية (ETA)' : '✓ Verified on ETA Portal'}
+                          ✓ ETA
                         </span>
                       )}
                     </>
                   ) : (
                     <span className="text-amber-800 font-semibold block text-[11px]">
-                      {isAr ? 'توريد ضريبي رسمي (بانتظار الفاتورة الضريبية)' : 'Official Tax Receipt (Invoice Pending)'}
+                      {isAr ? 'بانتظار الفاتورة' : 'Invoice Pending'}
                     </span>
                   )
                 ) : (
                   <span className="text-slate-500 italic block text-[11px]">
-                    {isAr ? 'توريد داخلي غير ضريبي' : 'Internal Non-Taxable Receipt'}
+                    {isAr ? 'غير ضريبي' : 'Non-Taxable'}
                   </span>
                 )
               )}
               <span className="text-slate-600 block pt-0.5 text-[11px]">
                 {isPrintReturn
-                  ? (isAr ? 'المسؤول / محرر الإذن:' : 'Issued By:')
+                  ? (isAr ? 'المحرر:' : 'By:')
                   : (isAr ? 'المستلم:' : 'Received By:')
                 } <b className="text-slate-900">{grn.receivedBy || grn.issuedBy || 'أمين المخزن'}</b>
               </span>
@@ -299,17 +296,14 @@ export default function GoodsReceiptPrintSlip({
             <table className="w-full border-collapse text-xs">
               <thead>
                 <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
-                  <th className="p-2 text-start border-e border-slate-200 w-8">{isAr ? 'م' : 'No.'}</th>
-                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'الكود والتنوع' : 'Code & Var'}</th>
-                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'اسم الخامة والمواصفات' : 'Material & Specs'}</th>
+                  <th className="p-2 text-start border-e border-slate-200 w-8">{isAr ? 'م' : '#'}</th>
+                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'الكود' : 'Code'}</th>
+                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'الصنف' : 'Item'}</th>
                   <th className="p-2 text-start border-e border-slate-200">
-                    {isPrintReturn
-                      ? (isAr ? 'المخزن المنصرف منه' : 'Source WH')
-                      : (isAr ? 'المخزن المستلم' : 'Target WH')
-                    }
+                    {isAr ? 'المخزن' : 'Warehouse'}
                   </th>
                   <th className="p-2 text-center border-e border-slate-200">{isAr ? 'الكمية' : 'Qty'}</th>
-                  <th className="p-2 text-end border-e border-slate-200">{isAr ? 'سعر الوحدة' : 'Unit Price'}</th>
+                  <th className="p-2 text-end border-e border-slate-200">{isAr ? 'السعر' : 'Price'}</th>
                   <th className="p-2 text-end">{isAr ? 'الإجمالي' : 'Total'}</th>
                 </tr>
               </thead>
@@ -363,28 +357,23 @@ export default function GoodsReceiptPrintSlip({
           {/* Financial Summary & QR Code */}
           <div className="flex justify-between items-start gap-4 mb-3.5">
             {/* QR Code and System Seal */}
-            <div className="flex items-center gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/40">
+            <div className="flex flex-col items-center gap-1 p-2 rounded-xl border border-slate-200 bg-slate-50/40 shrink-0">
               {qrDataUrl ? (
-                <img src={qrDataUrl} alt="GRN QR Verification" className="w-16 h-16 rounded border border-slate-200" />
+                <img src={qrDataUrl} alt="QR" className="w-16 h-16 rounded border border-slate-200" />
               ) : (
                 <div className="w-16 h-16 bg-slate-100 rounded flex items-center justify-center">
                   <QrCode className="h-8 w-8 text-slate-400" />
                 </div>
               )}
-              <div className="text-[10px] text-slate-500 space-y-0.5">
-                <span className="font-bold text-slate-800 block text-[11px]">
-                  {isAr ? 'التحقق الرقمي والتوثيق' : 'Digital Verification'}
-                </span>
-                <span>{isAr ? 'رمز QR يربط مباشرة بسجل العملية بالنظام' : 'QR code verifies system record'}</span>
-                <span className="font-mono block text-slate-400">{grn.id}</span>
-              </div>
+              <span className="text-[8.5px] font-black text-slate-900">{isAr ? 'للنظام' : 'ERP'}</span>
+              <span className="text-[8px] font-mono text-slate-400">{grn.id}</span>
             </div>
 
             {/* Financial Box */}
             {grn.financials?.hasPricing && (
               <div className="w-72 space-y-1 p-2.5 rounded-xl border border-slate-200 bg-slate-50/60 text-xs">
                 <div className="flex justify-between text-slate-600 text-[11px]">
-                  <span>{isAr ? 'المجموع قبل الضريبة:' : 'Subtotal:'}</span>
+                  <span>{isAr ? 'قبل الضريبة:' : 'Subtotal:'}</span>
                   <span className="font-mono font-bold text-slate-800">
                     {isPrintReturn ? '-' : ''}{grn.financials.subtotal.toFixed(2)} {grn.financials.currency || 'EGP'}
                   </span>
@@ -399,19 +388,14 @@ export default function GoodsReceiptPrintSlip({
                 )}
                 {grn.isTaxOfficial && grn.financials.totalWht > 0 && (
                   <div className="flex justify-between text-slate-600 text-[11px]">
-                    <span>{isAr ? 'خصم أ.ت.ص (WHT):' : 'WHT Deduction:'}</span>
+                    <span>{isAr ? 'خصم ضريبي:' : 'WHT:'}</span>
                     <span className="font-mono font-bold text-slate-800">
                       {isPrintReturn ? '+' : '-'}{grn.financials.totalWht.toFixed(2)} {grn.financials.currency || 'EGP'}
                     </span>
                   </div>
                 )}
                 <div className="flex justify-between border-t border-slate-200 pt-1 font-extrabold text-xs text-slate-900">
-                  <span>
-                    {isPrintReturn
-                      ? (isAr ? 'صافي القيمة المخصومة:' : 'Net Debit / Deduction:')
-                      : (isAr ? 'صافي القيمة المستحقة للمورد:' : 'Net Payable:')
-                    }
-                  </span>
+                  <span>{isAr ? 'الصافي:' : 'Net:'}</span>
                   <span className={`font-mono ${isPrintReturn ? 'text-rose-700' : 'text-slate-900'}`}>
                     {isPrintReturn ? '-' : ''}{grn.financials.netPayable.toFixed(2)} {grn.financials.currency || 'EGP'}
                   </span>
@@ -423,7 +407,7 @@ export default function GoodsReceiptPrintSlip({
           {/* Notes if Present */}
           {grn.notes && (
             <div className="p-2 mb-3 rounded-lg border border-slate-200 bg-slate-50/30 text-[11px]">
-              <span className="font-bold text-slate-700 block mb-0.5">{isAr ? 'ملاحظات وتوجيهات:' : 'Notes:'}</span>
+              <span className="font-bold text-slate-700 block mb-0.5">{isAr ? 'ملاحظات:' : 'Notes:'}</span>
               <span className="text-slate-600 whitespace-pre-wrap">{grn.notes}</span>
             </div>
           )}
@@ -432,10 +416,7 @@ export default function GoodsReceiptPrintSlip({
           <div className="grid grid-cols-4 gap-3 pt-3 border-t border-slate-200 text-xs text-center">
             <div className="p-2 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isPrintReturn
-                  ? (isAr ? 'أمين المخزن المنصرف' : 'Issuing Storekeeper')
-                  : (isAr ? 'أمين المخزن المستلم' : 'Receiving Storekeeper')
-                }
+                {isAr ? 'المخزن' : 'Warehouse'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px] truncate">
                 {grn.receivedBy || grn.issuedBy || (isAr ? 'أمين المخزن' : 'Storekeeper')}
@@ -444,21 +425,21 @@ export default function GoodsReceiptPrintSlip({
             <div className="p-2 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
                 {isPrintReturn
-                  ? (isAr ? 'مدير المشتريات' : 'Purchasing Manager')
-                  : (isAr ? 'مسؤول الفحص والجودة' : 'QC Inspector')
+                  ? (isAr ? 'المشتريات' : 'Purchasing')
+                  : (isAr ? 'الجودة' : 'QC')
                 }
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">........................</span>
             </div>
             <div className="p-2 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'إدارة مراقبة المخزون' : 'Inventory Control'}
+                {isAr ? 'مراقبة المخزون' : 'Inventory'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">........................</span>
             </div>
             <div className="p-2 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'الإدارة المالية / الحسابات' : 'Finance Dept.'}
+                {isAr ? 'الحسابات' : 'Finance'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">........................</span>
             </div>

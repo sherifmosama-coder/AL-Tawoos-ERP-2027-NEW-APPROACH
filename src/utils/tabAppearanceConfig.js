@@ -956,6 +956,28 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'البيانات الأساسية',
     categoryEn: 'Master Data'
   },
+  departments: {
+    id: 'departments',
+    moduleKey: 'master_data',
+    order: 13,
+    labelAr: 'الأقسام وصلاحياتها',
+    labelEn: 'Departments & Permissions',
+    iconName: 'Building2',
+    color: '#4f46e5',
+    categoryAr: 'البيانات الأساسية',
+    categoryEn: 'Master Data'
+  },
+  employees: {
+    id: 'employees',
+    moduleKey: 'master_data',
+    order: 14,
+    labelAr: 'الموظفون والعمالة والمستخدمون',
+    labelEn: 'Staff, Workers & Users',
+    iconName: 'Users',
+    color: '#0d9488',
+    categoryAr: 'البيانات الأساسية',
+    categoryEn: 'Master Data'
+  },
   production_workers: {
     id: 'production_workers',
     moduleKey: 'master_data',
@@ -1118,10 +1140,21 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'الإنتاج والتشغيل',
     categoryEn: 'Production & Manufacturing'
   },
+  fg_balances: {
+    id: 'fg_balances',
+    moduleKey: 'production',
+    order: 6,
+    labelAr: 'أرصدة مخزون المنتج التام',
+    labelEn: 'FG Stock Balances',
+    iconName: 'Boxes',
+    color: '#0f766e',
+    categoryAr: 'الإنتاج والتشغيل',
+    categoryEn: 'Production & Manufacturing'
+  },
   production_reports: {
     id: 'production_reports',
     moduleKey: 'production',
-    order: 6,
+    order: 7,
     labelAr: 'تقارير الإنتاجية والأداء التنفيذي',
     labelEn: 'Production & Performance Reports',
     iconName: 'BarChart3',
@@ -1223,10 +1256,21 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'المبيعات والتوزيع',
     categoryEn: 'Sales & Distribution'
   },
+  truck_dispatch: {
+    id: 'truck_dispatch',
+    moduleKey: 'sales',
+    order: 3,
+    labelAr: 'تسليم واستلام الشاحنات',
+    labelEn: 'Truck Dispatch & Receiving',
+    iconName: 'PackageCheck',
+    color: '#0d9488',
+    categoryAr: 'المبيعات والتوزيع',
+    categoryEn: 'Sales & Distribution'
+  },
   price_lists: {
     id: 'price_lists',
     moduleKey: 'sales',
-    order: 3,
+    order: 4,
     labelAr: 'قوائم الأسعار',
     labelEn: 'Price Lists',
     iconName: 'BadgeDollarSign',
@@ -1237,7 +1281,7 @@ export const DEFAULT_TABS_CONFIG = {
   client_contracts: {
     id: 'client_contracts',
     moduleKey: 'sales',
-    order: 4,
+    order: 5,
     labelAr: 'عقود وخصومات العملاء',
     labelEn: 'Client Contracts',
     iconName: 'Handshake',

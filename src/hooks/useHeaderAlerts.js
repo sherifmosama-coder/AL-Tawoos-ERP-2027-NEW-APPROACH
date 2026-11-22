@@ -20,8 +20,9 @@ import {
   completeActionRequired
 } from '../utils/notificationEngine';
 import { syncOneSignalUser, sendTestMobilePush, optInOneSignalPush } from '../utils/oneSignalEngine';
+import { getRecordDepartmentIds } from '../utils/personnelDirectory';
 
-export function useHeaderAlerts(currentUser) {
+export function useHeaderAlerts(currentUser, departmentsList = []) {
   const [actionsQueue, setActionsQueue] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [activeToasts, setActiveToasts] = useState([]);
@@ -64,19 +65,26 @@ export function useHeaderAlerts(currentUser) {
         return true;
       }
 
-      // CRITICAL: Comment tasks are strictly and exclusively isolated to the targeted assigned user(s)
+      // 2.5 Department targeting (multi-department aware)
+      const userDeptIds = getRecordDepartmentIds(currentUser, departmentsList);
+      const hasDeptTarget = Array.isArray(item.targetDepartmentIds) && item.targetDepartmentIds.length > 0;
+      if (hasDeptTarget && userDeptIds.some((dId) => item.targetDepartmentIds.includes(dId))) {
+        return true;
+      }
+
+      // CRITICAL: Comment tasks are strictly and exclusively isolated to the targeted assigned user(s)/dept(s)
       if (item.actionType === 'comment_task') {
         return false;
       }
 
-      // 3. General Admin sees general business workflow approvals (unless self-initiated)
+      // 3. General Admin sees general business workflow approvals UNLESS the event explicitly opted out (`includeGeneralAdmins === false`)
       const isGeneralAdmin = currentUser.isGeneralAdmin || currentUser.role === 'general_admin';
       if (isGeneralAdmin) {
-        return true;
+        return item.includeGeneralAdmins !== false;
       }
 
-      // If action is targeted specifically to dedicated custodian(s), exclude other non-admin users
-      const hasSpecificUserTarget = !!item.targetUserId || (Array.isArray(item.targetUserIds) && item.targetUserIds.length > 0);
+      // If action is targeted specifically to dedicated custodian(s) or department(s), exclude other non-admin users
+      const hasSpecificUserTarget = !!item.targetUserId || (Array.isArray(item.targetUserIds) && item.targetUserIds.length > 0) || hasDeptTarget;
       if (hasSpecificUserTarget) {
         return false;
       }
@@ -94,7 +102,7 @@ export function useHeaderAlerts(currentUser) {
 
       return false;
     },
-    [currentUser]
+    [currentUser, departmentsList]
   );
 
   // Filter helper: matches notifications for current user
@@ -111,17 +119,20 @@ export function useHeaderAlerts(currentUser) {
         return false;
       }
 
-      // 2. Direct user targeting (single user or array of authorized users)
-      const hasSpecificUserTarget = !!item.targetUserId || (Array.isArray(item.targetUserIds) && item.targetUserIds.length > 0);
+      // 2. Direct user or department targeting
+      const userDeptIds = getRecordDepartmentIds(currentUser, departmentsList);
+      const hasDeptTarget = Array.isArray(item.targetDepartmentIds) && item.targetDepartmentIds.length > 0;
+      const hasSpecificUserTarget = !!item.targetUserId || (Array.isArray(item.targetUserIds) && item.targetUserIds.length > 0) || hasDeptTarget;
       if (hasSpecificUserTarget) {
         if (item.targetUserId === currentUser.id) return true;
         if (Array.isArray(item.targetUserIds) && item.targetUserIds.includes(currentUser.id)) return true;
+        if (hasDeptTarget && userDeptIds.some((dId) => item.targetDepartmentIds.includes(dId))) return true;
         return false;
       }
 
-      // 3. General Admin sees non-targeted system announcements
+      // 3. General Admin sees non-targeted system announcements unless explicitly opted out
       const isGeneralAdmin = currentUser.isGeneralAdmin || currentUser.role === 'general_admin';
-      if (isGeneralAdmin) return true;
+      if (isGeneralAdmin) return item.includeGeneralAdmins !== false;
 
       // 4. Role targeting (for non-user-specific alerts)
       if (Array.isArray(item.targetRoles) && item.targetRoles.length > 0) {
@@ -130,7 +141,7 @@ export function useHeaderAlerts(currentUser) {
 
       return true;
     },
-    [currentUser]
+    [currentUser, departmentsList]
   );
 
   // Trigger arrival alerts (sound + vibration + mobile notification + in-app toast)

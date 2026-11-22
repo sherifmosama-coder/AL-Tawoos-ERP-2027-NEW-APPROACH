@@ -469,7 +469,7 @@ export default function CashSafesMaster({
       setSuppliersList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 
-    const unsubWorkers = onSnapshot(collection(db, 'production_workers'), (snap) => {
+    const unsubWorkers = onSnapshot(collection(db, 'employees'), (snap) => {
       setWorkersList(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
 

@@ -168,19 +168,22 @@ export default function TrialBalancePrintSlip({
               {/* QR Code and Title Pill */}
               <div className="flex items-center gap-3">
                 <div className="text-end">
-                  <span className="inline-block px-3 py-1 bg-slate-900 text-white rounded-lg text-xs font-black">
-                    {isAr ? 'ميزان المراجعة بالأرصدة والمجاميع' : 'Trial Balance Report'}
+                  <span className="inline-block px-3 py-1 bg-slate-100 text-slate-900 border-2 border-slate-900 rounded-lg text-xs font-black">
+                    {isAr ? 'ميزان المراجعة' : 'Trial Balance'}
                   </span>
                   <div className="text-[10px] text-slate-500 mt-1 font-mono">
                     {printTimestamp}
                   </div>
                 </div>
                 {qrDataUrl && (
-                  <img
-                    src={qrDataUrl}
-                    alt="Verification QR"
-                    className="w-16 h-16 rounded border border-slate-200 p-0.5 object-contain"
-                  />
+                  <div className="flex flex-col items-center gap-0.5 shrink-0">
+                    <img
+                      src={qrDataUrl}
+                      alt="QR"
+                      className="w-16 h-16 rounded border border-slate-200 p-0.5 object-contain"
+                    />
+                    <span className="text-[8.5px] font-black text-slate-900">{isAr ? 'للنظام' : 'ERP'}</span>
+                  </div>
                 )}
               </div>
             </div>
@@ -202,15 +205,15 @@ export default function TrialBalancePrintSlip({
                 <span>
                   {isBalanced
                     ? isAr
-                      ? 'ميزان المراجعة متطابق ومتزن دفترياً بنسبة 100% (إجمالي المدين = إجمالي الدائن)'
-                      : 'Trial Balance is 100% Balanced (Total Debits == Total Credits)'
+                      ? 'متزن 100%'
+                      : 'Balanced 100%'
                     : isAr
-                    ? `تنبيه: يوجد عدم اتزان بمقدار (${variance.toLocaleString()} ج.م)`
-                    : `Warning: Variance of (${variance.toLocaleString()} EGP)`}
+                    ? `فرق اتزان: (${variance.toLocaleString()} ج.م)`
+                    : `Variance: (${variance.toLocaleString()} EGP)`}
                 </span>
               </div>
               <div className="text-[11px] font-mono">
-                {isAr ? 'طريقة العرض: معتمد' : 'Mode: Certified'}
+                {isAr ? 'معتمد' : 'Certified'}
               </div>
             </div>
           </div>
@@ -224,7 +227,7 @@ export default function TrialBalancePrintSlip({
                     {isAr ? 'الكود' : 'Code'}
                   </th>
                   <th className="py-2 px-2.5 text-start border-e border-slate-300">
-                    {isAr ? 'اسم الحساب المحاسبي' : 'Account Name'}
+                    {isAr ? 'الحساب' : 'Account'}
                   </th>
                   <th className="py-2 px-2 text-center border-e border-slate-300 w-20">
                     {isAr ? 'القائمة' : 'Stmt'}
@@ -233,13 +236,13 @@ export default function TrialBalancePrintSlip({
                     {isAr ? 'الطبيعة' : 'Nature'}
                   </th>
                   <th className="py-2 px-2.5 text-end border-e border-slate-300 w-28 text-emerald-900">
-                    {isAr ? 'مدين (ج.م)' : 'Debit'}
+                    {isAr ? 'مدين' : 'Debit'}
                   </th>
                   <th className="py-2 px-2.5 text-end border-e border-slate-300 w-28 text-indigo-900">
-                    {isAr ? 'دائن (ج.م)' : 'Credit'}
+                    {isAr ? 'دائن' : 'Credit'}
                   </th>
                   <th className="py-2 px-2.5 text-end w-28">
-                    {isAr ? 'صافي الرصيد' : 'Net Balance'}
+                    {isAr ? 'الصافي' : 'Net'}
                   </th>
                 </tr>
               </thead>
@@ -333,7 +336,7 @@ export default function TrialBalancePrintSlip({
                     colSpan="4"
                     className="py-2.5 px-3 text-slate-900 font-sans text-xs border-e border-slate-300"
                   >
-                    {isAr ? 'الإجمالي العام لميزان المراجعة:' : 'Grand Totals:'}
+                    {isAr ? 'الإجمالي:' : 'Totals:'}
                   </td>
                   <td className="py-2.5 px-2.5 text-end text-emerald-900 text-xs border-e border-slate-300">
                     {totalDebits.toLocaleString(undefined, {
@@ -367,32 +370,26 @@ export default function TrialBalancePrintSlip({
           <div className="pt-6 mt-4 border-t border-slate-300 grid grid-cols-3 gap-4 text-center text-xs">
             <div className="space-y-8">
               <span className="font-bold text-slate-700 block">
-                {isAr ? 'إعداد المحاسب المالي' : 'Prepared by'}
+                {isAr ? 'المحاسب' : 'Prepared by'}
               </span>
               <div className="border-b border-dashed border-slate-400 w-36 mx-auto"></div>
               <span className="text-[10px] text-slate-500 block">
-                {currentUser?.name || currentUser?.nameAr || 'المحاسب المسؤول'}
+                {currentUser?.name || currentUser?.nameAr || '—'}
               </span>
             </div>
 
             <div className="space-y-8">
               <span className="font-bold text-slate-700 block">
-                {isAr ? 'مراجعة رئيس الحسابات' : 'Reviewed by Chief Accountant'}
+                {isAr ? 'رئيس الحسابات' : 'Chief Accountant'}
               </span>
               <div className="border-b border-dashed border-slate-400 w-36 mx-auto"></div>
-              <span className="text-[10px] text-slate-500 block">
-                {isAr ? 'رئيس قسم الحسابات العامة' : 'Accounting Manager'}
-              </span>
             </div>
 
             <div className="space-y-8">
               <span className="font-bold text-slate-700 block">
-                {isAr ? 'اعتماد المدير المالي' : 'Approved by CFO'}
+                {isAr ? 'المدير المالي' : 'CFO'}
               </span>
               <div className="border-b border-dashed border-slate-400 w-36 mx-auto"></div>
-              <span className="text-[10px] text-slate-500 block">
-                {isAr ? 'الإدارة المالية العليا' : 'Chief Financial Officer'}
-              </span>
             </div>
           </div>
         </div>

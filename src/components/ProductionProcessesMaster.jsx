@@ -310,7 +310,7 @@ export default function ProductionProcessesMaster({ currentUser = {}, permission
     });
 
     // 3. Subscribe to Manual Workers Pool
-    const unsubWorkers = onSnapshot(collection(db, 'production_workers'), (snap) => {
+    const unsubWorkers = onSnapshot(collection(db, 'employees'), (snap) => {
       setManualWorkers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
 
@@ -570,11 +570,23 @@ export default function ProductionProcessesMaster({ currentUser = {}, permission
     e.preventDefault();
     if (!newWorkerName.trim()) return;
     try {
-      const workerId = `WRK-${Date.now()}`;
-      await setDoc(doc(db, 'production_workers', workerId), {
+      const workerId = `EMP-${Date.now()}`;
+      await setDoc(doc(db, 'employees', workerId), {
         id: workerId,
+        employeeCode: workerId,
         name: newWorkerName.trim(),
-        role: newWorkerRole.trim(),
+        nameAr: newWorkerName.trim(),
+        nameEn: newWorkerName.trim(),
+        jobTitle: newWorkerRole.trim(),
+        role: 'standard',
+        departmentId: 'DEPT-PROD',
+        departmentIds: ['DEPT-PROD'],
+        departmentNameAr: 'إدارة الإنتاج والتصنيع',
+        operationalTags: ['operator'],
+        isSystemUser: false,
+        linkedUserId: null,
+        status: 'active',
+        isActive: true,
         createdAt: serverTimestamp(),
         createdBy: currentUser?.id || 'admin'
       });
@@ -588,7 +600,7 @@ export default function ProductionProcessesMaster({ currentUser = {}, permission
   // Handle Delete Manual Worker
   const handleDeleteWorker = async (wId) => {
     try {
-      await deleteDoc(doc(db, 'production_workers', wId));
+      await deleteDoc(doc(db, 'employees', wId));
       showToast(isAr ? 'تم حذف العامل من القائمة' : 'Worker removed from roster');
     } catch (err) {
       console.error('Failed to remove worker:', err);

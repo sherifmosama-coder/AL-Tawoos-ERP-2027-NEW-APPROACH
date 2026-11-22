@@ -61,6 +61,7 @@ import ClientMaster from './components/ClientMaster';
 import ClientSegmentsMaster from './components/ClientSegmentsMaster';
 import SalesOrdersMaster from './components/SalesOrdersMaster';
 import SalesLoadingPlanMaster from './components/SalesLoadingPlanMaster';
+import TruckDispatchMaster from './components/TruckDispatchMaster';
 import PriceListsMaster from './components/PriceListsMaster';
 import CategoriesMaster from './components/CategoriesMaster';
 import FinishedProductsMaster from './components/FinishedProductsMaster';
@@ -72,14 +73,15 @@ import WarehouseMaster from './components/WarehouseMaster';
 import SafesMaster from './components/SafesMaster';
 import BankAccountsMaster from './components/BankAccountsMaster';
 import VehiclesMaster from './components/VehiclesMaster';
-import ProductionWorkersMaster from './components/ProductionWorkersMaster';
-import UsersMaster from './components/UsersMaster';
+import DepartmentsMaster from './components/DepartmentsMaster';
+import EmployeesDirectoryMaster from './components/EmployeesDirectoryMaster';
 import SystemConfigMaster from './components/SystemConfigMaster';
 import LiquidTanksMaster from './components/LiquidTanksMaster';
 import FloorLiquidStorage from './components/FloorLiquidStorage';
 import WorkOrdersMaster from './components/WorkOrdersMaster';
 import FaultyFGReturnMaster from './components/FaultyFGReturnMaster';
 import FinishedGoodsInward from './components/FinishedGoodsInward';
+import FgBalancesMaster from './components/FgBalancesMaster';
 import ProductionPerformanceReports from './components/ProductionPerformanceReports';
 import POCreation from './components/POCreation';
 import GoodsReceipt from './components/GoodsReceipt';
@@ -99,8 +101,10 @@ import { useHeaderAlerts } from './hooks/useHeaderAlerts';
 import InAppAlertToast from './components/InAppAlertToast';
 import { highlightTargetRow, resolveModuleAndTab } from './utils/notificationEngine';
 import { syncOneSignalUser } from './utils/oneSignalEngine';
+import { startAutoRestoreScheduler } from './utils/systemRestoreEngine';
 import PeacockLoader from './components/PeacockLoader';
-import { DEFAULT_ROLE_PERMISSIONS } from './config/appArchitecture';
+import { DEFAULT_ROLE_PERMISSIONS, resolveEffectivePermissions } from './config/appArchitecture';
+import { getRecordDepartmentIds } from './utils/personnelDirectory';
 import { collection, doc, onSnapshot, getDocs, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase';
 import { CommentProvider } from './context/CommentContext';
@@ -220,6 +224,7 @@ export default function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   const [showCollapsedUserMenu, setShowCollapsedUserMenu] = useState(false);
+  const [collapsedTooltip, setCollapsedTooltip] = useState(null); // { label, color, top, rectLeft, rectRight }
   const [usersList, setUsersList] = useState(INITIAL_SEED_USERS);
   const collapsedUserMenuRef = useRef(null);
 
@@ -249,6 +254,8 @@ export default function App() {
     }
   };
   const [cloudPermissions, setCloudPermissions] = useState({});
+  const [cloudDeptPermissions, setCloudDeptPermissions] = useState({});
+  const [departmentsList, setDepartmentsList] = useState([]);
   const [isBooting, setIsBooting] = useState(true);
 
   // Tab Customization (Icons, Labels Ar/En, Watercolor Glows) State & Sync
@@ -293,6 +300,9 @@ export default function App() {
       if (targetTab === 'fg_inward' || targetTab === 'fg_inwards' || targetTab === 'finished_goods_inward' || targetTab === 'finished_goods_inwards') {
         setActiveModule('production');
         setActiveTab('fg_inward');
+      } else if (targetTab === 'fg_balances' || targetTab === 'fg_stock' || targetTab === 'finished_goods_stock') {
+        setActiveModule('production');
+        setActiveTab('fg_balances');
       } else if (targetTab === 'work_orders') {
         setActiveModule('production');
         setActiveTab('work_orders');
@@ -305,6 +315,54 @@ export default function App() {
       } else if (targetTab === 'vehicles') {
         setActiveModule('master_data');
         setActiveTab('vehicles');
+      } else if (targetTab === 'sales_orders') {
+        setActiveModule('sales');
+        setActiveTab('sales_orders');
+        const orderId = searchParams.get('orderId') || hashParams.get('orderId') || '';
+        const focusOrder = searchParams.get('focusOrder') || hashParams.get('focusOrder') || '';
+        const openAdjust = searchParams.get('openAdjust') || hashParams.get('openAdjust') || '';
+        const openRetailSettle = searchParams.get('openRetailSettle') || hashParams.get('openRetailSettle') || '';
+        const createForTrip = searchParams.get('createForTrip') || hashParams.get('createForTrip') || '';
+        const orderType = searchParams.get('orderType') || hashParams.get('orderType') || '';
+        const fromTripExtras = searchParams.get('fromTripExtras') || hashParams.get('fromTripExtras') || '';
+        const settlementTripId =
+          searchParams.get('settlementTripId') || hashParams.get('settlementTripId') || recordId || '';
+        if (orderId || focusOrder || openAdjust || openRetailSettle || createForTrip || settlementTripId) {
+          setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent('app_focus_sales_orders_settlement', {
+                detail: {
+                  orderId,
+                  focusOrder,
+                  openAdjust,
+                  openRetailSettle,
+                  createForTrip,
+                  orderType,
+                  fromTripExtras,
+                  settlementTripId,
+                },
+              })
+            );
+          }, 380);
+        }
+      } else if (targetTab === 'truck_dispatch') {
+        setActiveModule('sales');
+        setActiveTab('truck_dispatch');
+        const tripId = searchParams.get('tripId') || hashParams.get('tripId') || recordId;
+        const docVersion = searchParams.get('docVersion') || hashParams.get('docVersion') || '';
+        const docNumber = searchParams.get('docNumber') || hashParams.get('docNumber') || '';
+        const openLatestDoc = searchParams.get('openLatestDoc') || hashParams.get('openLatestDoc') || '';
+        const openReturn = searchParams.get('openReturn') || hashParams.get('openReturn') || '';
+        if (tripId || docNumber) {
+          setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent('app_focus_trip_dispatch', {
+                detail: { tripId, docVersion, docNumber, openLatestDoc, openReturn },
+              })
+            );
+            if (tripId) highlightTargetRow(tripId);
+          }, 450);
+        }
       } else if (targetTab === 'cash_safes' || targetTab === 'cash_safes_hub' || targetTab === 'custodies_advances' || voucherId || recordId) {
         setActiveModule('finance');
         setActiveTab('cash_safes');
@@ -353,6 +411,12 @@ export default function App() {
         const currSafeId = hashParams.get('safeId') || hashParams.get('safe');
         if (currSubTab) freshParams.set('subTab', currSubTab);
         if (currSafeId) freshParams.set('safeId', currSafeId);
+        if (activeTab === 'sales_orders') {
+          ['orderId', 'focusOrder', 'openAdjust', 'openRetailSettle', 'createForTrip', 'orderType', 'fromTripExtras', 'settlementTripId'].forEach((k) => {
+            const v = hashParams.get(k);
+            if (v) freshParams.set(k, v);
+          });
+        }
         const queryStr = freshParams.toString();
         window.location.hash = queryStr ? `${activeTab}?${queryStr}` : activeTab;
 
@@ -400,6 +464,7 @@ export default function App() {
       (snap) => {
         if (snap.exists()) {
           setCloudPermissions(snap.data().userOverrides || {});
+          setCloudDeptPermissions(snap.data().departmentOverrides || {});
         }
         setIsBooting(false);
       },
@@ -409,6 +474,13 @@ export default function App() {
       }
     );
 
+    // 2.5 Subscribe to Departments for 3-layer permission resolution
+    const unsubDepts = onSnapshot(collection(db, 'departments'), (snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => String(a.code || a.id).localeCompare(String(b.code || b.id)));
+      setDepartmentsList(list);
+    });
+
     // 3. Subscribe to Global Tab Appearance (Colors, Icons & Names) in Cloud Firestore
     const unsubTabAppearance = initTabAppearanceLiveSync((syncedConfigs) => {
       setTabAppearanceMap(syncedConfigs);
@@ -417,6 +489,7 @@ export default function App() {
     return () => {
       unsubUsers();
       unsubPerms();
+      unsubDepts();
       if (typeof unsubTabAppearance === 'function') unsubTabAppearance();
     };
   }, []);
@@ -433,47 +506,26 @@ export default function App() {
     }
   }, [currentUser?.id]);
 
-  // Live Real-Time Actions Required & Notifications Hub
-  const headerAlerts = useHeaderAlerts(currentUser);
+  // Silent Hybrid In-App Automated System Restore Scheduler (Spark-compatible single-writer lease)
+  useEffect(() => {
+    if (!currentUser?.id) return undefined;
+    return startAutoRestoreScheduler({ currentUser });
+  }, [currentUser?.id]);
 
-  // Compute Effective Permissions Dynamically
+  // Live Real-Time Actions Required & Notifications Hub (Multi-Department Aware)
+  const headerAlerts = useHeaderAlerts(currentUser, departmentsList);
+
+  // Compute Effective Permissions Dynamically (3-Layer Cascade: Role Defaults -> Multi-Dept Union -> User Overrides)
   const effectivePermissions = useMemo(() => {
-    if (currentUser.isGeneralAdmin || currentUser.role === 'general_admin') {
-      return DEFAULT_ROLE_PERMISSIONS.general_admin;
-    }
-
-    const baseDefault = DEFAULT_ROLE_PERMISSIONS.standard || DEFAULT_ROLE_PERMISSIONS.general_admin;
-    const userOverride = cloudPermissions[currentUser.id] || {};
-
-    const effectiveModules = { ...baseDefault.modules, ...(userOverride.modules || {}) };
-    const effectiveActions = { ...baseDefault.actions, ...(userOverride.actions || {}) };
-    const effectiveSensitive = { ...baseDefault.sensitive, ...(userOverride.sensitive || {}) };
-    const effectiveFields = { ...(userOverride.fields || {}) };
-
-    // CASCADE RULE: If "show tab in navigation" (effectiveModules[tabId]) is false,
-    // all related actions and fields under that tab must be false
-    Object.keys(effectiveModules).forEach((tabId) => {
-      if (effectiveModules[tabId] === false) {
-        Object.keys(effectiveActions).forEach((actKey) => {
-          if (actKey.startsWith(`${tabId}.`)) {
-            effectiveActions[actKey] = false;
-          }
-        });
-        Object.keys(effectiveFields).forEach((fKey) => {
-          if (fKey.startsWith(`${tabId}.`)) {
-            effectiveFields[fKey] = false;
-          }
-        });
-      }
+    const resolvedDeptIds = getRecordDepartmentIds(currentUser, departmentsList);
+    return resolveEffectivePermissions({
+      user: currentUser,
+      departmentIds: resolvedDeptIds,
+      departmentOverrides: cloudDeptPermissions,
+      userOverrides: cloudPermissions,
+      defaultRolePermissions: DEFAULT_ROLE_PERMISSIONS,
     });
-
-    return {
-      modules: effectiveModules,
-      actions: effectiveActions,
-      sensitive: effectiveSensitive,
-      fields: effectiveFields,
-    };
-  }, [currentUser, cloudPermissions]);
+  }, [currentUser, departmentsList, cloudDeptPermissions, cloudPermissions]);
 
   // Auto-redirect if active tab is restricted for the current user
   useEffect(() => {
@@ -522,8 +574,8 @@ export default function App() {
       { id: 'safes', labelAr: 'سجل الخزائن والخزن النقدية', labelEn: 'Safes & Cash Vaults', icon: Vault, moduleKey: 'safes' },
       { id: 'bank_accounts', labelAr: 'سجل الحسابات والودائع البنكية', labelEn: 'Bank Accounts Master', icon: Landmark, moduleKey: 'bank_accounts' },
       { id: 'vehicles', labelAr: 'سجل أسطول الشاحنات والسيارات', labelEn: 'Vehicles & Fleet Master', icon: Truck, moduleKey: 'vehicles' },
-      { id: 'production_workers', labelAr: 'سجل عمالة وفنيي الإنتاج', labelEn: 'Production Workers', icon: Users, moduleKey: 'production_workers' },
-      { id: 'users', labelAr: 'المستخدمين والصلاحيات', labelEn: 'Users & Roles', icon: ShieldCheck, moduleKey: 'users' },
+      { id: 'departments', labelAr: 'الأقسام وصلاحياتها', labelEn: 'Departments & Permissions', icon: Building2, moduleKey: 'departments' },
+      { id: 'employees', labelAr: 'الموظفون والعمالة والمستخدمون', labelEn: 'Staff, Workers & Users', icon: Users, moduleKey: 'employees' },
       { id: 'system_config', labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', icon: Settings, moduleKey: 'system_config' },
     ],
     purchases: [
@@ -540,6 +592,7 @@ export default function App() {
       { id: 'liquid_storage', labelAr: 'خزانات وتدفق السوائل (M)', labelEn: 'Floor Liquid Storage (M)', icon: Activity, moduleKey: 'liquid_storage' },
       { id: 'faulty_fg', labelAr: 'مرتجعات ومعيب المنتج التام', labelEn: 'Faulty FG & Returns', icon: AlertOctagon, moduleKey: 'faulty_fg' },
       { id: 'fg_inward', labelAr: 'استلام المنتج التام', labelEn: 'Finished Goods Inward', icon: CheckCircle2, moduleKey: 'fg_inward' },
+      { id: 'fg_balances', labelAr: 'أرصدة مخزون المنتج التام', labelEn: 'FG Stock Balances', icon: Boxes, moduleKey: 'fg_balances' },
       { id: 'production_reports', labelAr: 'تقارير الإنتاجية والأداء التنفيذي', labelEn: 'Production & Performance Reports', icon: BarChart3, moduleKey: 'production_reports' },
     ],
     finance: [
@@ -553,6 +606,7 @@ export default function App() {
     sales: [
       { id: 'sales_orders', labelAr: 'أوامر البيع والتوريد', labelEn: 'Sales Orders', icon: ShoppingCart, moduleKey: 'sales_orders' },
       { id: 'loading_plan', labelAr: 'خطة التحميل', labelEn: 'Loading Plan', icon: Truck, moduleKey: 'loading_plan' },
+      { id: 'truck_dispatch', labelAr: 'تسليم واستلام الشاحنات', labelEn: 'Truck Dispatch & Receiving', icon: PackageCheck, moduleKey: 'truck_dispatch' },
       { id: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign, moduleKey: 'price_lists' },
       { id: 'client_contracts', labelAr: 'عقود وخصومات العملاء', labelEn: 'Client Contracts', icon: Handshake, moduleKey: 'client_contracts' },
     ],
@@ -686,6 +740,8 @@ export default function App() {
       currentUser={currentUser}
       usersList={usersList}
       cloudPermissions={cloudPermissions}
+      cloudDeptPermissions={cloudDeptPermissions}
+      departmentsList={departmentsList}
       onSelectModule={handleSelectModule}
     >
       <div 
@@ -735,7 +791,7 @@ export default function App() {
               fixed inset-y-0 start-0 z-50 md:sticky md:top-[53px] md:z-30
               h-full md:h-[calc(100vh-53px)] md:h-[calc(100dvh-53px)] md:max-h-[calc(100dvh-53px)]
               bg-white border-e border-slate-200 transition-all duration-300 ease-in-out flex flex-col py-2.5 shadow-xl md:shadow-xs shrink-0
-              ${isSidebarExpanded ? 'w-68 md:w-60 px-3' : 'w-68 md:w-18 px-3 md:px-2'}
+              ${isSidebarExpanded ? 'w-72 md:w-72 px-3' : 'w-72 md:w-18 px-3 md:px-2'}
               ${isSidebarVisible ? 'translate-x-0' : '-translate-x-full md:translate-x-0 rtl:translate-x-full rtl:md:translate-x-0 hidden md:flex'}
             `}
           >
@@ -751,6 +807,7 @@ export default function App() {
                   onClick={() => {
                     setIsSidebarExpanded(!isSidebarExpanded);
                     setShowCollapsedUserMenu(false);
+                    setCollapsedTooltip(null);
                   }}
                   className="hidden md:flex p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
                   title={isSidebarExpanded ? (isAr ? 'تصغير القائمة' : 'Collapse Sidebar') : (isAr ? 'توسيع القائمة' : 'Expand Sidebar')}
@@ -769,7 +826,10 @@ export default function App() {
             </div>
 
             {/* Navigation Links List */}
-            <nav className="space-y-1 flex-1 min-h-0 overflow-y-auto overflow-x-hidden pe-0.5">
+            <nav
+              onScroll={() => collapsedTooltip && setCollapsedTooltip(null)}
+              className="space-y-1 flex-1 min-h-0 overflow-y-auto overflow-x-hidden pe-0.5"
+            >
               {navItems.map((item) => {
                 const Icon = item.icon;
                 const isActive = activeTab === item.id;
@@ -778,11 +838,30 @@ export default function App() {
                 const isGeneralAdmin = Boolean(currentUser.isGeneralAdmin || currentUser.role === 'general_admin');
 
                 return (
-                  <div key={item.id} className="relative group flex items-center w-full">
+                  <div
+                    key={item.id}
+                    className="relative group flex items-center w-full"
+                    onMouseEnter={(e) => {
+                      if (!isSidebarExpanded && window.innerWidth >= 768) {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setCollapsedTooltip({
+                          label: item.label,
+                          color: tabColor,
+                          top: rect.top + rect.height / 2,
+                          rectLeft: rect.left,
+                          rectRight: rect.right,
+                        });
+                      }
+                    }}
+                    onMouseLeave={() => {
+                      if (!isSidebarExpanded) setCollapsedTooltip(null);
+                    }}
+                  >
                     <button
                       onClick={() => {
                         setActiveTab(item.id);
                         setShowCollapsedUserMenu(false);
+                        setCollapsedTooltip(null);
                         if (window.innerWidth < 768) {
                           setIsSidebarVisible(false);
                         }
@@ -793,10 +872,10 @@ export default function App() {
                         color: tabColor,
                         boxShadow: `0 2px 8px -2px rgba(${r}, ${g}, ${b}, 0.25)`
                       } : undefined}
-                      className={`w-full flex items-center rounded-xl text-sm font-medium transition-all duration-150 cursor-pointer ${
-                        isSidebarExpanded 
-                          ? (isGeneralAdmin ? 'gap-2.5 ps-3 pe-16 py-2.5 justify-start' : 'gap-3 px-3.5 py-2.5 justify-start')
-                          : 'justify-start md:justify-center px-3.5 py-2.5 md:p-3 gap-3 md:gap-0'
+                      className={`w-full flex items-center rounded-xl text-[13px] font-medium transition-all duration-150 cursor-pointer ${
+                        isSidebarExpanded
+                          ? 'gap-2.5 px-3 py-2 justify-start'
+                          : 'justify-start md:justify-center px-3 py-2.5 md:p-3 gap-2.5 md:gap-0'
                       } ${
                         isActive
                           ? 'font-bold'
@@ -807,7 +886,9 @@ export default function App() {
                         className={`h-5 w-5 shrink-0 transition-colors ${!isActive ? 'text-slate-400 group-hover:text-slate-600' : ''}`}
                         style={isActive ? { color: tabColor } : undefined}
                       />
-                      <span className={`truncate min-w-0 flex-1 text-start ${!isSidebarExpanded ? 'md:hidden' : ''}`}>{item.label}</span>
+                      <span className={`min-w-0 flex-1 text-start leading-snug line-clamp-2 whitespace-normal break-words ${!isSidebarExpanded ? 'md:hidden' : ''}`}>
+                        {item.label}
+                      </span>
                     </button>
 
                     {/* General Admin Quick Tab Actions: Customize Tab Appearance + Permission Shield */}
@@ -839,16 +920,29 @@ export default function App() {
                         </button>
                       </div>
                     )}
-
-                    {!isSidebarExpanded && (
-                      <div className="absolute start-full top-1/2 -translate-y-1/2 ms-2.5 px-3 py-1.5 bg-slate-900 text-white text-xs font-semibold rounded-lg shadow-xl whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all duration-150 z-50">
-                        {item.label}
-                      </div>
-                    )}
                   </div>
                 );
               })}
             </nav>
+
+            {/* Elegant Fixed-Position Hover Tooltip for Collapsed Sidebar (Never Clipped by Overflow) */}
+            {!isSidebarExpanded && collapsedTooltip && (
+              <div
+                style={{
+                  top: `${collapsedTooltip.top}px`,
+                  ...(isAr
+                    ? { right: `${window.innerWidth - collapsedTooltip.rectLeft + 10}px` }
+                    : { left: `${collapsedTooltip.rectRight + 10}px` }),
+                }}
+                className="hidden md:flex fixed -translate-y-1/2 z-[120] pointer-events-none items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900/95 text-white text-xs font-bold shadow-2xl border border-slate-700/80 backdrop-blur-xs whitespace-nowrap animate-in fade-in zoom-in-95 duration-100"
+              >
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: collapsedTooltip.color || '#10b981' }}
+                />
+                <span>{collapsedTooltip.label}</span>
+              </div>
+            )}
 
             {/* Pinned Bottom Footer Section: Admin Panel, Persona Switcher & Language Toggle */}
             {/* Footer Controls Container */}
@@ -1198,16 +1292,23 @@ export default function App() {
                 permissions={effectivePermissions} 
               />
             )}
-            {activeTab === 'production_workers' && (
-              <ProductionWorkersMaster 
-                currentUser={currentUser} 
-                permissions={effectivePermissions} 
+            {activeTab === 'departments' && (
+              <DepartmentsMaster
+                currentUser={currentUser}
+                permissions={effectivePermissions}
               />
             )}
-            {activeTab === 'users' && (
-              <UsersMaster 
-                currentUser={currentUser} 
-                permissions={effectivePermissions} 
+            {(activeTab === 'employees' || activeTab === 'users' || activeTab === 'production_workers') && (
+              <EmployeesDirectoryMaster
+                currentUser={currentUser}
+                permissions={effectivePermissions}
+                initialAccessFilter={
+                  activeTab === 'users'
+                    ? 'system'
+                    : activeTab === 'production_workers'
+                    ? 'worker'
+                    : 'all'
+                }
               />
             )}
             {activeTab === 'system_config' && (
@@ -1298,6 +1399,12 @@ export default function App() {
                 permissions={effectivePermissions} 
               />
             )}
+            {activeTab === 'fg_balances' && (
+              <FgBalancesMaster
+                currentUser={currentUser}
+                permissions={effectivePermissions}
+              />
+            )}
             {activeTab === 'production_reports' && (
               <ProductionPerformanceReports 
                 currentUser={currentUser} 
@@ -1318,6 +1425,16 @@ export default function App() {
               <SalesLoadingPlanMaster 
                 currentUser={currentUser} 
                 permissions={effectivePermissions} 
+              />
+            )}
+            {activeTab === 'truck_dispatch' && (
+              <TruckDispatchMaster 
+                currentUser={currentUser} 
+                permissions={effectivePermissions}
+                departmentsList={departmentsList}
+                departmentOverrides={cloudDeptPermissions}
+                userOverrides={cloudPermissions}
+                usersList={usersList}
               />
             )}
             {activeTab === 'price_lists' && (
@@ -1532,6 +1649,7 @@ export default function App() {
         targetKey={scopedMatrixModal.targetKey}
         currentUser={currentUser}
         usersList={usersList}
+        departmentsList={departmentsList}
       />
 
       {/* Global Real-Time Collaborative Comment Overlays (Google Sheets Engine) */}

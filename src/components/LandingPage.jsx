@@ -102,8 +102,8 @@ export default function LandingPage({
         { id: 'safes', moduleKey: 'safes', labelAr: 'سجل الخزائن والخزن النقدية', labelEn: 'Safes & Cash Vaults', icon: Vault },
         { id: 'bank_accounts', moduleKey: 'bank_accounts', labelAr: 'سجل الحسابات والودائع البنكية', labelEn: 'Bank Accounts Master', icon: Landmark },
         { id: 'vehicles', moduleKey: 'vehicles', labelAr: 'سجل أسطول الشاحنات والسيارات', labelEn: 'Vehicles & Fleet Master', icon: Truck },
-        { id: 'production_workers', moduleKey: 'production_workers', labelAr: 'سجل عمالة وفنيي الإنتاج', labelEn: 'Production Workers', icon: Users },
-        { id: 'users', moduleKey: 'users', labelAr: 'المستخدمين والصلاحيات', labelEn: 'Users & Roles', icon: ShieldCheck },
+        { id: 'departments', moduleKey: 'departments', labelAr: 'الأقسام وصلاحياتها', labelEn: 'Departments & Permissions', icon: Building2 },
+        { id: 'employees', moduleKey: 'employees', labelAr: 'الموظفون والعمالة والمستخدمون', labelEn: 'Staff, Workers & Users', icon: Users },
         { id: 'system_config', moduleKey: 'system_config', labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', icon: Settings },
       ]
     },
@@ -140,6 +140,7 @@ export default function LandingPage({
         { id: 'liquid_storage', moduleKey: 'liquid_storage', labelAr: 'خزانات وتدفق السوائل (M)', labelEn: 'Floor Liquid Storage (M)', icon: Activity },
         { id: 'faulty_fg', moduleKey: 'faulty_fg', labelAr: 'مرتجعات ومعيب المنتج التام', labelEn: 'Faulty FG & Returns', icon: AlertOctagon },
         { id: 'fg_inward', moduleKey: 'fg_inward', labelAr: 'استلام المنتج التام', labelEn: 'FG Inward', icon: CheckCircle2 },
+        { id: 'fg_balances', moduleKey: 'fg_balances', labelAr: 'أرصدة مخزون المنتج التام', labelEn: 'FG Stock Balances', icon: Boxes },
         { id: 'production_reports', moduleKey: 'production_reports', labelAr: 'تقارير الإنتاجية والأداء التنفيذي', labelEn: 'Production & Performance Reports', icon: BarChart3 },
       ]
     },
@@ -173,6 +174,7 @@ export default function LandingPage({
       tabs: [
         { id: 'sales_orders', moduleKey: 'sales_orders', labelAr: 'أوامر البيع والتوريد', labelEn: 'Sales Orders', icon: ShoppingCart },
         { id: 'loading_plan', moduleKey: 'loading_plan', labelAr: 'خطة التحميل', labelEn: 'Loading Plan', icon: Truck },
+        { id: 'truck_dispatch', moduleKey: 'truck_dispatch', labelAr: 'تسليم واستلام الشاحنات', labelEn: 'Truck Dispatch & Receiving', icon: PackageCheck },
         { id: 'price_lists', moduleKey: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign },
         { id: 'client_contracts', moduleKey: 'client_contracts', labelAr: 'عقود وخصومات العملاء', labelEn: 'Client Contracts', icon: Handshake },
       ]

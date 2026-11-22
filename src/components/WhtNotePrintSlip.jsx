@@ -58,11 +58,11 @@ export default function WhtNotePrintSlip({
                 </span>
               </div>
               <p className="text-[10px] text-slate-600 font-semibold flex items-center gap-2 flex-wrap">
-                <span>الإدارة المالية - قسم الضرائب والالتزام الضريبي (نموذج ٤١ خصم وتحصيل)</span>
+                <span>نموذج ٤١ — خصم وتحصيل</span>
                 {companyProfile.taxCardNumber && (
                   <>
                     <span>•</span>
-                    <span>ب.ض جهة الخصم: <VatNumberDisplay value={companyProfile.taxCardNumber} /></span>
+                    <span>ب.ض: <VatNumberDisplay value={companyProfile.taxCardNumber} /></span>
                   </>
                 )}
               </p>
@@ -71,7 +71,7 @@ export default function WhtNotePrintSlip({
             <div className="text-center">
               <h2 className="text-sm font-black text-slate-900 tracking-tight">
                 {isReturn
-                  ? 'إشعار تسوية خصم وتحصيل تحت حساب الضريبة (مرتجع)'
+                  ? 'إشعار تسوية خصم وتحصيل (مرتجع)'
                   : 'إشعار خصم وتحصيل تحت حساب الضريبة'}
               </h2>
               <div
@@ -82,18 +82,18 @@ export default function WhtNotePrintSlip({
                 }`}
               >
                 {isOriginal
-                  ? 'أصل الإشعار — يُختم ويُسلم للمورد (Original Copy for Supplier)'
-                  : 'صورة الإشعار — تُوقع وتُختم من المورد باستلام الأصل وتُحفظ (Archive Copy)'}
+                  ? 'أصل — للمورد'
+                  : 'صورة — للأرشيف'}
               </div>
             </div>
 
             <div className="text-end font-mono text-[11px] space-y-0.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-300">
               <div>
-                <span className="text-slate-500 font-sans text-[10px]">رقم الإشعار: </span>
+                <span className="text-slate-500 font-sans text-[10px]">رقم: </span>
                 <span className="font-black text-slate-900">{whtData.serialNumber || 'WHT-PENDING'}</span>
               </div>
               <div>
-                <span className="text-slate-500 font-sans text-[10px]">تاريخ الإصدار: </span>
+                <span className="text-slate-500 font-sans text-[10px]">تاريخ: </span>
                 <span className="font-bold">{whtData.issueDate || new Date().toISOString().slice(0, 10)}</span>
               </div>
               <div className="font-sans text-[9px] text-slate-600 font-bold">{quarterLabelAr}</div>
@@ -103,7 +103,7 @@ export default function WhtNotePrintSlip({
           {/* Supplier Legal & Tax Info Grid */}
           <div className="grid grid-cols-12 gap-2 bg-slate-50/80 border border-slate-300 rounded-lg p-2 mb-2 text-[11px]">
             <div className="col-span-5">
-              <span className="text-slate-500 text-[10px] block">اسم الممول / المورد بالبطاقة الضريبية:</span>
+              <span className="text-slate-500 text-[10px] block">المورد:</span>
               <span className="font-extrabold text-slate-900 text-xs">
                 {supplier?.taxpayerLegalName || supplier?.name || whtData.supplierName || '—'}
               </span>
@@ -112,7 +112,7 @@ export default function WhtNotePrintSlip({
               )}
             </div>
             <div className="col-span-3">
-              <span className="text-slate-500 text-[10px] block">رقم التسجيل الضريبي (ب.ض):</span>
+              <span className="text-slate-500 text-[10px] block">ب.ض:</span>
               <div className="font-mono font-bold text-slate-900 mt-0.5">
                 {supplier?.taxCardNumber ? (
                   <VatNumberDisplay value={supplier.taxCardNumber} />
@@ -122,13 +122,13 @@ export default function WhtNotePrintSlip({
               </div>
             </div>
             <div className="col-span-2">
-              <span className="text-slate-500 text-[10px] block">رقم الملف الضريبي:</span>
+              <span className="text-slate-500 text-[10px] block">ملف ضريبي:</span>
               <span className="font-mono font-bold text-slate-900">
                 {supplier?.taxFileNumber || supplier?.commercialRegister || '—'}
               </span>
             </div>
             <div className="col-span-2">
-              <span className="text-slate-500 text-[10px] block">مأمورية الضرائب المختصة:</span>
+              <span className="text-slate-500 text-[10px] block">المأمورية:</span>
               <span className="font-bold text-slate-900">{supplier?.taxDistrict || '—'}</span>
             </div>
           </div>
@@ -137,21 +137,21 @@ export default function WhtNotePrintSlip({
           <table className="w-full border-collapse border border-slate-400 text-[11px] mb-2">
             <thead>
               <tr className="bg-slate-100 text-slate-800 font-bold">
-                <th className="border border-slate-400 px-2 py-1 text-right">بيان المستند</th>
-                <th className="border border-slate-400 px-2 py-1 text-center">رقم الفاتورة / الإشعار</th>
-                <th className="border border-slate-400 px-2 py-1 text-center">تاريخ المستند</th>
-                <th className="border border-slate-400 px-2 py-1 text-center">مرجع الاستلام</th>
-                <th className="border border-slate-400 px-2 py-1 text-center">القيمة قبل الضريبة</th>
-                <th className="border border-slate-400 px-2 py-1 text-center">ض. القيمة المضافة</th>
-                <th className="border border-slate-400 px-2 py-1 text-center">نسبة الخصم</th>
-                <th className="border border-slate-400 px-2 py-1 text-center bg-amber-50">قيمة خصم الضريبة (1%)</th>
-                <th className="border border-slate-400 px-2 py-1 text-center">صافي المستحق</th>
+                <th className="border border-slate-400 px-2 py-1 text-right">المستند</th>
+                <th className="border border-slate-400 px-2 py-1 text-center">الفاتورة</th>
+                <th className="border border-slate-400 px-2 py-1 text-center">التاريخ</th>
+                <th className="border border-slate-400 px-2 py-1 text-center">المرجع</th>
+                <th className="border border-slate-400 px-2 py-1 text-center">قبل الضريبة</th>
+                <th className="border border-slate-400 px-2 py-1 text-center">ض.ق.م</th>
+                <th className="border border-slate-400 px-2 py-1 text-center">النسبة</th>
+                <th className="border border-slate-400 px-2 py-1 text-center bg-amber-50">الخصم (1%)</th>
+                <th className="border border-slate-400 px-2 py-1 text-center">الصافي</th>
               </tr>
             </thead>
             <tbody>
               <tr className="font-mono text-center">
                 <td className="border border-slate-400 px-2 py-1.5 text-right font-sans font-bold">
-                  {isReturn ? 'إشعار دائن (مرتجع)' : 'فاتورة ضريبية (توريد)'}
+                  {isReturn ? 'إشعار دائن' : 'فاتورة ضريبية'}
                 </td>
                 <td className="border border-slate-400 px-2 py-1.5 font-bold text-slate-900">
                   {whtData.invoiceNumber || '—'}
@@ -178,11 +178,11 @@ export default function WhtNotePrintSlip({
           {/* Tafqeet Bar */}
           <div className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-[11px] flex items-center justify-between">
             <div>
-              <span className="text-slate-500 font-semibold">قيمة الضريبة المخصومة بالحروف: </span>
+              <span className="text-slate-500 font-semibold">كتابة: </span>
               <span className="font-extrabold text-slate-900">{whtTafqeet}</span>
             </div>
             <div className="text-[10px] text-slate-600 font-semibold">
-              طبقا لأحكام القانون رقم 91 لسنة 2005 وتعديلاته
+              قانون 91 لسنة 2005
             </div>
           </div>
         </div>
@@ -191,39 +191,39 @@ export default function WhtNotePrintSlip({
         {isOriginal ? (
           <div className="grid grid-cols-3 gap-4 pt-2 border-t border-slate-300 text-[11px] text-center">
             <div>
-              <p className="font-bold text-slate-700 mb-4">إعداد المحاسب الضريبي</p>
+              <p className="font-bold text-slate-700 mb-4">المحاسب</p>
               <div className="border-b border-dashed border-slate-400 w-36 mx-auto" />
             </div>
             <div>
-              <p className="font-bold text-slate-700 mb-4">اعتماد الإدارة المالية</p>
+              <p className="font-bold text-slate-700 mb-4">الاعتماد</p>
               <div className="border-b border-dashed border-slate-400 w-36 mx-auto" />
             </div>
             <div>
-              <p className="font-bold text-slate-700 mb-1">خاتم الشركة الرسمي (يسلم للمورد)</p>
+              <p className="font-bold text-slate-700 mb-1">ختم الشركة</p>
               <div className="h-10 w-28 mx-auto border border-dashed border-slate-400 rounded flex items-center justify-center text-[9px] text-slate-400">
-                مكان الختم الحي
+                الختم
               </div>
             </div>
           </div>
         ) : (
           <div className="grid grid-cols-12 gap-3 pt-1.5 border-t border-slate-300 text-[10px]">
             <div className="col-span-4 text-center flex flex-col justify-between">
-              <p className="font-bold text-slate-700">توقيع المحاسب / المسلم</p>
+              <p className="font-bold text-slate-700">المسلم</p>
               <div className="border-b border-dashed border-slate-400 w-32 mx-auto mt-5" />
             </div>
             <div className="col-span-8 bg-amber-50/60 border border-amber-300 rounded-lg px-3 py-1.5 flex items-center justify-between">
               <div className="space-y-1">
                 <p className="font-extrabold text-slate-900 text-[11px]">
-                  إقرار استلام أصل إشعار الخصم والإضافة (يوقع ويختم من مندوب المورد):
+                  إقرار استلام الأصل:
                 </p>
                 <div className="flex items-center gap-4 text-[10px] text-slate-700">
-                  <span>اسم المستلم: ...............................</span>
-                  <span>الرقم القومي / الصفة: ..........................</span>
+                  <span>الاسم: ...............................</span>
+                  <span>الرقم القومي: ..........................</span>
                   <span>التاريخ: .... / .... / 202</span>
                 </div>
               </div>
               <div className="h-11 w-28 border border-dashed border-amber-500 rounded bg-white flex items-center justify-center text-[9px] text-amber-800 font-bold shrink-0">
-                توقيع وختم المورد
+                ختم المورد
               </div>
             </div>
           </div>
@@ -340,7 +340,7 @@ export default function WhtNotePrintSlip({
               <div className="absolute bg-white px-3 flex items-center gap-1.5 text-[10px] font-bold text-slate-600">
                 <Scissors className="h-3.5 w-3.5 text-slate-700" />
                 <span>
-                  خط القص والفصل — النصف العلوي (الأصل) يُختم ويُسلم للمورد، والنصف السفلي يُوقع من المورد بالاستلام ويُحفظ
+                  خط القص — أصل للمورد / صورة للأرشيف
                 </span>
               </div>
             </div>

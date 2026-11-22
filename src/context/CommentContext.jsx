@@ -10,6 +10,8 @@ export function CommentProvider({
   currentUser,
   usersList = [],
   cloudPermissions = {},
+  cloudDeptPermissions = {},
+  departmentsList = [],
   onSelectModule
 }) {
   const [threads, setThreads] = useState([]);
@@ -98,7 +100,9 @@ export function CommentProvider({
         user: currentUser,
         targetModule: thread.targetModule,
         targetTab: thread.targetTab,
-        cloudPermissions
+        cloudPermissions,
+        departmentOverrides: cloudDeptPermissions,
+        departments: departmentsList,
       })) {
         return null;
       }
@@ -383,6 +387,8 @@ export function CommentProvider({
     currentUser,
     usersList,
     cloudPermissions,
+    cloudDeptPermissions,
+    departmentsList,
     markThreadAsRead
   };
 

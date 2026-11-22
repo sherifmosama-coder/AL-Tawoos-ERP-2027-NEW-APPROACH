@@ -393,6 +393,46 @@ export const APP_ARCHITECTURE = {
             status: { labelAr: "حالة الحساب", labelEn: "Account Status", type: "enum", options: ["active", "inactive"], sample: "active" },
           }
         },
+        departments: {
+          id: "departments",
+          collection: "departments",
+          labelAr: "الأقسام والإدارات",
+          labelEn: "Departments",
+          icon: "Building2",
+          actions: [
+            { key: "canCreate", labelAr: "إنشاء قسم جديد", labelEn: "Create Department" },
+            { key: "canEdit", labelAr: "تعديل بيانات القسم", labelEn: "Edit Department" },
+            { key: "canDelete", labelAr: "حذف قسم", labelEn: "Delete Department" },
+            { key: "canManageDeptPermissions", labelAr: "إدارة صلاحيات القسم", labelEn: "Manage Dept Permissions" },
+          ],
+          fields: {
+            code: { labelAr: "كود القسم", labelEn: "Department Code", type: "string", required: true, sample: "SALES" },
+            nameAr: { labelAr: "اسم القسم (عربي)", labelEn: "Department Name (Ar)", type: "string", required: true, sample: "إدارة المبيعات والتسويق" },
+            nameEn: { labelAr: "اسم القسم (إنجليزي)", labelEn: "Department Name (En)", type: "string", sample: "Sales & Marketing" },
+            isActive: { labelAr: "نشط", labelEn: "Active", type: "boolean", sample: true },
+          }
+        },
+        employees: {
+          id: "employees",
+          collection: "employees",
+          labelAr: "سجل الموظفين والعمالة الموحد",
+          labelEn: "Staff & Workers Directory",
+          icon: "Users",
+          actions: [
+            { key: "canCreate", labelAr: "إضافة موظف / عامل جديد", labelEn: "Create Staff Member" },
+            { key: "canEdit", labelAr: "تعديل بيانات الموظف / العامل", labelEn: "Edit Staff Member" },
+            { key: "canDelete", labelAr: "حذف سجل موظف", labelEn: "Delete Staff Member" },
+            { key: "canManageSystemAccess", labelAr: "تفعيل / إيقاف حساب النظام للموظف", labelEn: "Manage System User Access" },
+          ],
+          fields: {
+            employeeCode: { labelAr: "الكود الوظيفي", labelEn: "Employee Code", type: "string", required: true, sample: "EMP-001" },
+            nameAr: { labelAr: "الاسم (عربي)", labelEn: "Name (Ar)", type: "string", required: true, sample: "أحمد محمود" },
+            departmentId: { labelAr: "القسم / الإدارة", labelEn: "Department", type: "string", sample: "DEPT-WH" },
+            isSystemUser: { labelAr: "مستخدم للنظام", labelEn: "System User", type: "boolean", sample: true },
+            phone: { labelAr: "رقم الهاتف", labelEn: "Phone", type: "string", sample: "01001234567" },
+            nationalId: { labelAr: "الرقم القومي (HR)", labelEn: "National ID (HR)", type: "string", isSensitive: true, sample: "29001011234567" },
+          }
+        },
         system_config: {
           id: "system_config",
           collection: "system_config",
@@ -565,7 +605,7 @@ export const APP_ARCHITECTURE = {
           labelAr: "أوامر التشغيل وتتبع الإنتاج",
           labelEn: "Work Orders & Floor Execution",
           icon: "Factory",
-          resetCascades: ["staged_floor_pallets", "staged_floor_materials", "production_breaks", "production_workers", "production_shifts"],
+          resetCascades: ["staged_floor_pallets", "staged_floor_materials", "production_breaks", "production_shifts"],
           actions: [
             { key: "canCreate", labelAr: "إدراج صنف جديد بالخطة", labelEn: "Assign to Plan" },
             { key: "canEdit", labelAr: "تعديل جدول وكميات التشغيل", labelEn: "Edit Plan Order" },
@@ -687,6 +727,23 @@ export const APP_ARCHITECTURE = {
           fields: {
             id: { labelAr: "رقم إذن استلام التام", labelEn: "FG Receipt ID", type: "string", required: true, sample: "FGR-20260917-01" },
             fgLotNumber: { labelAr: "رقم تشغيلة المنتج التام", labelEn: "FG Lot Number", type: "string", required: true, sample: "LOT-FG-20260917-01" },
+          }
+        },
+        fg_balances: {
+          id: "fg_balances",
+          collection: "finished_products",
+          labelAr: "أرصدة مخزون المنتج التام (FG SSOT)",
+          labelEn: "FG Stock Balances",
+          icon: "Boxes",
+          descAr: "نظرة موحدة لحظية لأرصدة المنتج التام (بالكرتونة والوحدة الصغرى) متضمنة الرصيد الافتتاحي، الاستلامات المعتمدة، السحب التالف، صرف المبيعات، والطلبات قيد التجهيز.",
+          actions: [
+            { key: "canViewKardex", labelAr: "عرض كارت حركة المنتج التام (FG Kardex)", labelEn: "View FG Product Kardex" },
+            { key: "canExport", labelAr: "تصدير أرصدة المنتج التام (CSV)", labelEn: "Export FG Stock CSV" },
+            { key: "canPrint", labelAr: "طباعة كارت حركة المنتج التام", labelEn: "Print FG Kardex" },
+          ],
+          fields: {
+            unitCost: { labelAr: "متوسط تكلفة الوحدة التامة", labelEn: "Avg FG Unit Cost", type: "number", isSensitive: true },
+            totalValue: { labelAr: "إجمالي تقييم مخزون المنتج التام", labelEn: "Total FG Stock Value", type: "number", isSensitive: true },
           }
         },
         production_reports: {
@@ -924,6 +981,28 @@ export const APP_ARCHITECTURE = {
             loadingDate: { labelAr: "تاريخ التحميل المعتمد", labelEn: "Scheduled Loading Date", type: "date", sample: "2026-11-10" }
           }
         },
+        truck_dispatch: {
+          id: "truck_dispatch",
+          collection: "truck_dispatches",
+          labelAr: "تسليم واستلام الشاحنات",
+          labelEn: "Truck Dispatch & Receiving",
+          icon: "PackageCheck",
+          actions: [
+            { key: "canDispatchTruck", labelAr: "اعتماد تحميل وصرف الشاحنات وإضافة الزيادات والعمالة", labelEn: "Confirm Truck Dispatch, Extras & Labour" },
+            { key: "canEditDispatchedTrip", labelAr: "تعديل بيان صرف الشاحنة بعد الاعتماد", labelEn: "Edit Saved Dispatch Slip" },
+            { key: "canReceiveWarehouseReturn", labelAr: "استلام ومطابقة مرتجعات الشاحنة بمخزن التام", labelEn: "Receive & Confirm Truck Returns in FG Warehouse" },
+            { key: "canRegisterAccountantReturn", labelAr: "تسجيل كميات المرتجع المتوقعة بواسطة المحاسب", labelEn: "Register Accountant Expected Trip Returns" },
+            { key: "canResolveReturnDiscrepancy", labelAr: "اعتماد وإقفال فروقات المرتجعات (المحاسبة)", labelEn: "Resolve & Reconcile Return Variance" }
+          ],
+          fields: {
+            loadingOrderNumber: { labelAr: "رقم الرحلة / أمر التحميل", labelEn: "Trip / Loading Order #", type: "number", required: true, sample: 1 },
+            loadingDate: { labelAr: "تاريخ التحميل", labelEn: "Loading Date", type: "date", required: true, sample: "2026-11-18" },
+            dispatchStatus: { labelAr: "حالة التحميل والصرف المخزني", labelEn: "Warehouse Dispatch Status", type: "enum", options: ["draft", "loaded", "dispatched", "returned"], sample: "loaded" },
+            returnHandshakeStatus: { labelAr: "حالة مطابقة المرتجعات", labelEn: "Return Handshake Status", type: "enum", options: ["none", "pending_wh_confirm", "pending_accounting_confirm", "discrepancy_pending_accounting", "reconciled"], sample: "reconciled" },
+            loadingWorkers: { labelAr: "عمالة التحميل ونسب المجهود", labelEn: "Loading Crew & Effort %", type: "array" },
+            offloadingWorkers: { labelAr: "عمالة التفريغ والتوزيع ونسب المجهود", labelEn: "Offloading Crew & Effort %", type: "array" }
+          }
+        },
         price_lists: {
           id: "price_lists",
           collection: "price_lists",
@@ -1002,6 +1081,8 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       vehicles: true,
       production_workers: true,
       users: true,
+      departments: true,
+      employees: true,
       system_config: true,
       purchase_orders: true,
       goods_receipts: true,
@@ -1014,6 +1095,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       work_orders: true,
       faulty_fg: true,
       fg_inward: true,
+      fg_balances: true,
       production_reports: true,
       finance: true,
       cash_safes: true,
@@ -1027,6 +1109,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       sales: true,
       sales_orders: true,
       loading_plan: true,
+      truck_dispatch: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: true
@@ -1038,6 +1121,11 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       canAdjustDispatchedQuantities: true,
       canSettleRetailOrders: true,
       canManageStdRetailList: true,
+      canDispatchTruck: true,
+      canEditDispatchedTrip: true,
+      canReceiveWarehouseReturn: true,
+      canRegisterAccountantReturn: true,
+      canResolveReturnDiscrepancy: true,
       canCreate: true,
       canEdit: true,
       canApprove: true,
@@ -1116,6 +1204,8 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       vehicles: true,
       production_workers: true,
       users: false,
+      departments: false,
+      employees: true,
       system_config: false,
       purchase_orders: true,
       goods_receipts: true,
@@ -1128,6 +1218,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       work_orders: true,
       faulty_fg: true,
       fg_inward: true,
+      fg_balances: true,
       production_reports: true,
       finance: true,
       cash_safes: true,
@@ -1141,6 +1232,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       sales: true,
       sales_orders: true,
       loading_plan: true,
+      truck_dispatch: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: false
@@ -1152,6 +1244,11 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       canAdjustDispatchedQuantities: false,
       canSettleRetailOrders: true,
       canManageStdRetailList: false,
+      canDispatchTruck: true,
+      canEditDispatchedTrip: true,
+      canReceiveWarehouseReturn: false,
+      canRegisterAccountantReturn: false,
+      canResolveReturnDiscrepancy: false,
       canCreate: true,
       canEdit: true,
       canApprove: true,
@@ -1260,6 +1357,227 @@ export function canAccessAction(permissions, tabId, actionKey, currentUser = nul
   }
 
   return true;
+}
+
+/**
+ * Helper: Computes the combined multi-department permission layer (union across all assigned departments).
+ * For each department, its own tab-level cascade rule is applied first; across multiple departments,
+ * if ANY department grants a permission (`true`), the union grants `true`.
+ */
+function resolveMergedDepartmentLayer({ deptIds = [], departmentOverrides = {}, baseDefault }) {
+  const activeIds = (Array.isArray(deptIds) ? deptIds : []).filter(
+    (id) => id && departmentOverrides && departmentOverrides[id]
+  );
+  if (activeIds.length === 0) {
+    return { hasAnyDept: false, modules: {}, actions: {}, sensitive: {}, fields: {} };
+  }
+
+  // Evaluate each department's effective layer (baseDefault + deptOverride + cascade)
+  const perDeptLayers = activeIds.map((id) => {
+    const ov = departmentOverrides[id] || {};
+    const mods = { ...(baseDefault.modules || {}), ...(ov.modules || {}) };
+    const acts = { ...(baseDefault.actions || {}), ...(ov.actions || {}) };
+    const sens = { ...(baseDefault.sensitive || {}), ...(ov.sensitive || {}) };
+    const flds = { ...(ov.fields || {}) };
+
+    Object.keys(mods).forEach((tabId) => {
+      if (mods[tabId] === false) {
+        const prefix = `${tabId}.`;
+        Object.keys(acts).forEach((ak) => {
+          if (ak.startsWith(prefix)) acts[ak] = false;
+        });
+        Object.keys(flds).forEach((fk) => {
+          if (fk.startsWith(prefix)) flds[fk] = false;
+        });
+      }
+    });
+
+    return { ov, modules: mods, actions: acts, sensitive: sens, fields: flds };
+  });
+
+  // Collect all explicitly touched keys across the user's departments and union (OR) their effective values
+  const mergeTier = (tier) => {
+    const out = {};
+    const allKeys = new Set();
+    perDeptLayers.forEach((layer) => {
+      Object.keys(layer.ov[tier] || {}).forEach((k) => allKeys.add(k));
+    });
+    // Also include child keys affected by any department disabling a tab
+    if (tier === 'actions' || tier === 'fields') {
+      perDeptLayers.forEach((layer) => {
+        Object.keys(layer[tier] || {}).forEach((k) => {
+          const tabId = k.includes('.') ? k.split('.')[0] : null;
+          if (tabId && perDeptLayers.some((l) => l.ov.modules && l.ov.modules[tabId] !== undefined)) {
+            allKeys.add(k);
+          }
+        });
+      });
+    }
+    allKeys.forEach((k) => {
+      // Union: true if ANY of the user's departments evaluates this key to true
+      out[k] = perDeptLayers.some((layer) => {
+        if (tier === 'fields') {
+          const tabId = k.includes('.') ? k.split('.')[0] : null;
+          if (tabId && layer.modules[tabId] === false) return false;
+          return layer.fields[k] !== false;
+        }
+        if (tier === 'actions') {
+          const tabId = k.includes('.') ? k.split('.')[0] : null;
+          if (tabId && layer.modules[tabId] === false) return false;
+          if (layer.actions[k] !== undefined) return layer.actions[k] === true;
+          const shortKey = k.includes('.') ? k.split('.').slice(1).join('.') : k;
+          return layer.actions[shortKey] !== false;
+        }
+        return layer[tier][k] === true;
+      });
+    });
+    return out;
+  };
+
+  return {
+    hasAnyDept: true,
+    modules: mergeTier('modules'),
+    actions: mergeTier('actions'),
+    sensitive: mergeTier('sensitive'),
+    fields: mergeTier('fields'),
+  };
+}
+
+/**
+ * 3-Layer Permission Cascade Resolver (supports Multi-Department Membership):
+ *   Layer 1: Role Defaults (`DEFAULT_ROLE_PERMISSIONS.standard`)
+ *   Layer 2: Union of all assigned Departments (`departmentOverrides[deptId]`)
+ *   Layer 3: Individual User Override (`userOverrides[user.id]`) — can grant OR revoke
+ *   Cascade Rule: If `effectiveModules[tabId] === false`, all `actions[tabId.*]` & `fields[tabId.*]` become `false`.
+ */
+export function resolveEffectivePermissions({
+  user = null,
+  departmentId = '',
+  departmentIds = null,
+  departmentOverrides = {},
+  userOverrides = {},
+  defaultRolePermissions = DEFAULT_ROLE_PERMISSIONS,
+} = {}) {
+  if (user?.isGeneralAdmin || user?.role === 'general_admin') {
+    return defaultRolePermissions.general_admin;
+  }
+
+  const baseDefault = defaultRolePermissions.standard || defaultRolePermissions.general_admin;
+  const resolvedDeptIds = Array.isArray(departmentIds) && departmentIds.length > 0
+    ? departmentIds
+    : Array.isArray(user?.departmentIds) && user.departmentIds.length > 0
+    ? user.departmentIds
+    : (departmentId || user?.departmentId)
+    ? [departmentId || user.departmentId]
+    : [];
+
+  const deptLayer = resolveMergedDepartmentLayer({
+    deptIds: resolvedDeptIds,
+    departmentOverrides,
+    baseDefault,
+  });
+  const userOverride = (user?.id && userOverrides?.[user.id]) ? userOverrides[user.id] : {};
+
+  const effectiveModules = {
+    ...(baseDefault.modules || {}),
+    ...(deptLayer.modules || {}),
+    ...(userOverride.modules || {}),
+  };
+  const effectiveActions = {
+    ...(baseDefault.actions || {}),
+    ...(deptLayer.actions || {}),
+    ...(userOverride.actions || {}),
+  };
+  const effectiveSensitive = {
+    ...(baseDefault.sensitive || {}),
+    ...(deptLayer.sensitive || {}),
+    ...(userOverride.sensitive || {}),
+  };
+  const effectiveFields = {
+    ...(deptLayer.fields || {}),
+    ...(userOverride.fields || {}),
+  };
+
+  // CASCADE RULE: If parent tab is hidden in navigation, all child actions and fields evaluate to false
+  Object.keys(effectiveModules).forEach((tabId) => {
+    if (effectiveModules[tabId] === false) {
+      const prefix = `${tabId}.`;
+      Object.keys(effectiveActions).forEach((ak) => {
+        if (ak.startsWith(prefix)) effectiveActions[ak] = false;
+      });
+      Object.keys(effectiveFields).forEach((fk) => {
+        if (fk.startsWith(prefix)) effectiveFields[fk] = false;
+      });
+    }
+  });
+
+  return {
+    modules: effectiveModules,
+    actions: effectiveActions,
+    sensitive: effectiveSensitive,
+    fields: effectiveFields,
+  };
+}
+
+/**
+ * Inspects a single permission cell (`modules`, `actions`, `fields`, or `sensitive`)
+ * to determine its effective boolean value AND provenance (`admin` | `user_override` | `department` | `role_default`).
+ */
+export function getPermissionCellMeta({
+  user = null,
+  departmentId = '',
+  departmentIds = null,
+  departmentOverrides = {},
+  userOverrides = {},
+  kind = 'modules', // 'modules' | 'actions' | 'fields' | 'sensitive'
+  key = '',
+  defaultRolePermissions = DEFAULT_ROLE_PERMISSIONS,
+} = {}) {
+  if (user?.isGeneralAdmin || user?.role === 'general_admin') {
+    return { effectiveValue: true, source: 'admin', deptValue: true, hasUserOverride: false };
+  }
+
+  const baseDefault = defaultRolePermissions.standard || defaultRolePermissions.general_admin;
+  const resolvedDeptIds = Array.isArray(departmentIds) && departmentIds.length > 0
+    ? departmentIds
+    : Array.isArray(user?.departmentIds) && user.departmentIds.length > 0
+    ? user.departmentIds
+    : (departmentId || user?.departmentId)
+    ? [departmentId || user.departmentId]
+    : [];
+
+  const deptLayer = resolveMergedDepartmentLayer({
+    deptIds: resolvedDeptIds,
+    departmentOverrides,
+    baseDefault,
+  });
+  const userOverride = (user?.id && userOverrides?.[user.id]) ? userOverrides[user.id] : {};
+
+  // Determine Role Default fallback value
+  let roleVal;
+  if (kind === 'fields') {
+    roleVal = true;
+  } else if (kind === 'actions') {
+    const shortActionKey = key.includes('.') ? key.split('.').slice(1).join('.') : key;
+    if (baseDefault.actions?.[key] !== undefined) {
+      roleVal = baseDefault.actions[key] === true;
+    } else if (baseDefault.actions?.[shortActionKey] !== undefined) {
+      roleVal = baseDefault.actions[shortActionKey] === true;
+    } else {
+      roleVal = true;
+    }
+  } else {
+    roleVal = baseDefault[kind]?.[key] !== false;
+  }
+
+  const hasDept = deptLayer[kind] && deptLayer[kind][key] !== undefined;
+  const deptValue = hasDept ? deptLayer[kind][key] === true : roleVal;
+
+  const hasUserOverride = Boolean(userOverride[kind] && userOverride[kind][key] !== undefined);
+  const effectiveValue = hasUserOverride ? userOverride[kind][key] === true : deptValue;
+
+  const source = hasUserOverride ? 'user_override' : hasDept ? 'department' : 'role_default';
+  return { effectiveValue, source, deptValue, hasUserOverride };
 }
 
 /**
@@ -1530,5 +1848,20 @@ export const RELATIONAL_CASCADE_PURGE_ARCHITECTURE = {
     operationalOnlyImmunity: 'Wipes all operational/transactional collections while 100% preserving Master Data collections and Chart of Accounts setups, resetting transient balances on items, cash_safes, corporate_banks, and floor_liquid_vessels to 0.',
     targetedCascadePurge: 'Clearing any specific operational module selectively deletes its auto-generated records in shared collections (stock_ledger, stock_transfers, production_transformations, journal_entries, cash_transactions, dues_settlements, wht_notes, record_comments, user_actions_queue, system_notifications) without wiping unrelated records.',
     liveBalanceRecalculation: 'After a targeted cascade purge, items.stock is dynamically recalculated from remaining stock_ledger records, and cash_safes / corporate_banks balances are dynamically recalculated from remaining posted cash_transactions.'
+  }
+};
+
+/**
+ * Hybrid Automated System Restore (Time Machine) Architecture Specification
+ */
+export const AUTOMATED_SYSTEM_RESTORE_ARCHITECTURE = {
+  version: '1.0-hybrid-time-machine',
+  collections: ['system_restore_points', 'system_restore_blobs', 'system_restore_config', 'system_restore_logs'],
+  accessControl: 'General Admin only inside Admin Control Panel (#admin_panel?subTab=system_restore)',
+  rules: {
+    hybridScheduling: 'Runs a zero-cost Spark-compatible single-writer transaction lease scheduler in-app when users are active, plus a ready-to-deploy Cloud Function schedule (scheduledSystemRestoreSnapshot in functions/index.js) for 24/7 unattended snapshots when Firebase Blaze is enabled.',
+    contentAddressedDedup: 'Canonicalizes documents (sorted keys, preserved Timestamps/Dates) and stores gzip+Base64 payloads content-addressed by SHA-256 hash inside system_restore_blobs (split into <650KB __pN chunks) so unchanged collections across snapshots reuse existing blobs with zero extra storage.',
+    threeLevelRelationalCascade: 'Supports System-Wide, Module, and Tab rollback via resolveRestoreScopePlan with Always-Full-Relational-Cascade semantics, selectively diffing and reverting primary + predicate-scoped linked records (journal_entries, stock_ledger, cash_transactions, dues_settlements, wht_notes, record_comments, user_actions_queue, system_notifications) while leaving unrelated records untouched.',
+    safetyAndRecalculation: 'Guarantees an automatic pre_restore safety checkpoint (plus pre_purge before Factory Reset), requires typing RESTORE after inspecting live Diff Preview (+create/~update/-delete), recalculates items.stock & cash_safes/corporate_banks balances on partial rollbacks, and retains 12h intra-day / 14d daily anchors / pinned / 8 safety points with safe orphan blob GC.'
   }
 };

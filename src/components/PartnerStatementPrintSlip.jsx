@@ -243,18 +243,17 @@ export default function PartnerStatementPrintSlip({
 
           <div className="flex items-center gap-3">
             {qrDataUrl && (
-              <img
-                src={qrDataUrl}
-                alt="QR Code"
-                className="w-16 h-16 border border-slate-300 rounded p-0.5 bg-white shrink-0"
-              />
+              <div className="flex flex-col items-center gap-0.5 shrink-0">
+                <img
+                  src={qrDataUrl}
+                  alt="QR"
+                  className="w-16 h-16 border border-slate-300 rounded p-0.5 bg-white"
+                />
+                <span className="text-[8.5px] font-black text-slate-900">{isAr ? 'للنظام' : 'ERP'}</span>
+              </div>
             )}
             <div className="text-end text-[10px] text-slate-500 space-y-0.5 font-mono shrink-0">
-              <div className="font-bold text-slate-900">{isAr ? 'تاريخ الطباعة:' : 'Print Date:'}</div>
               <div>{printTimestamp}</div>
-              <div className="text-[9px] text-indigo-700 font-sans font-bold">
-                {isAr ? 'منظومة الطاووس ERP' : 'Tawoos ERP System'}
-              </div>
             </div>
           </div>
         </div>
@@ -262,21 +261,21 @@ export default function PartnerStatementPrintSlip({
         {/* 2. Partner Profile & Statement Scope Box */}
         <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 mb-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
           <div>
-            <span className="text-slate-500 block text-[10px]">{isSupplier ? (isAr ? 'اسم المورد:' : 'Supplier:') : (isAr ? 'اسم العميل:' : 'Client:')}</span>
+            <span className="text-slate-500 block text-[10px]">{isSupplier ? (isAr ? 'المورد:' : 'Supplier:') : (isAr ? 'العميل:' : 'Client:')}</span>
             <strong className="text-slate-900 text-xs">{party?.name || party?.tradeName || party?.id || '—'}</strong>
           </div>
           <div>
-            <span className="text-slate-500 block text-[10px]">{isAr ? 'كود الطرف:' : 'Partner Code:'}</span>
+            <span className="text-slate-500 block text-[10px]">{isAr ? 'الكود:' : 'Code:'}</span>
             <strong className="font-mono text-slate-800">{party?.code || party?.id || '—'}</strong>
           </div>
           <div>
-            <span className="text-slate-500 block text-[10px]">{isAr ? 'الرقم الضريبي:' : 'Tax Number:'}</span>
+            <span className="text-slate-500 block text-[10px]">{isAr ? 'ب.ض:' : 'Tax ID:'}</span>
             <strong className="font-mono text-slate-800">
               {party?.taxNumber || party?.vatNumber || party?.taxCardNumber || '—'}
             </strong>
           </div>
           <div>
-            <span className="text-slate-500 block text-[10px]">{isAr ? 'فترة كشف الحساب:' : 'Statement Period:'}</span>
+            <span className="text-slate-500 block text-[10px]">{isAr ? 'الفترة:' : 'Period:'}</span>
             <strong className="font-mono text-indigo-900 text-[10px]">
               {fromDate ? fromDate : (isAr ? 'البداية' : 'Start')} ➔ {toDate ? toDate : (isAr ? 'حتى تاريخه' : 'To Date')}
             </strong>
@@ -288,18 +287,18 @@ export default function PartnerStatementPrintSlip({
           <div className="bg-slate-100 border border-slate-300 rounded-lg px-3 py-1.5 mb-2.5 flex items-center justify-between text-[10px] flex-wrap gap-2">
             <div className="flex items-center gap-1.5 font-bold text-slate-900">
               <FileText className="h-3.5 w-3.5 text-indigo-700" />
-              <span>{isAr ? 'حصر المستندات الضريبية للفترة:' : 'Tax Documents Period Summary:'}</span>
+              <span>{isAr ? 'المستندات الضريبية:' : 'Tax Docs:'}</span>
             </div>
             <div className="flex items-center gap-2.5 font-mono text-[9px]">
               <span className="bg-white px-2 py-0.5 rounded border border-slate-300 text-slate-900">
-                {isAr ? 'فواتير ضريبية:' : 'Tax Invoices:'} <strong className="font-bold text-indigo-900">{taxSummary.invoicesCount}</strong> ({formatEGP(taxSummary.invoicesTotal)} {isAr ? 'ج.م' : 'EGP'})
+                {isAr ? 'فواتير:' : 'Invoices:'} <strong className="font-bold text-indigo-900">{taxSummary.invoicesCount}</strong> ({formatEGP(taxSummary.invoicesTotal)} {isAr ? 'ج.م' : 'EGP'})
               </span>
               <span className="bg-white px-2 py-0.5 rounded border border-slate-300 text-slate-900">
-                {isAr ? 'إشعارات دائنة (خصم):' : 'Credit Notes:'} <strong className="font-bold text-emerald-800">{taxSummary.creditNotesCount}</strong> ({formatEGP(taxSummary.creditNotesTotal)} {isAr ? 'ج.م' : 'EGP'})
+                {isAr ? 'إشعارات دائنة:' : 'Credit Notes:'} <strong className="font-bold text-emerald-800">{taxSummary.creditNotesCount}</strong> ({formatEGP(taxSummary.creditNotesTotal)} {isAr ? 'ج.م' : 'EGP'})
               </span>
               {taxSummary.debitNotesCount > 0 && (
                 <span className="bg-white px-2 py-0.5 rounded border border-slate-300 text-slate-900">
-                  {isAr ? 'إشعارات مدينة (إضافة):' : 'Debit Notes:'} <strong className="font-bold text-amber-800">{taxSummary.debitNotesCount}</strong> ({formatEGP(taxSummary.debitNotesTotal)} {isAr ? 'ج.م' : 'EGP'})
+                  {isAr ? 'إشعارات مدينة:' : 'Debit Notes:'} <strong className="font-bold text-amber-800">{taxSummary.debitNotesCount}</strong> ({formatEGP(taxSummary.debitNotesTotal)} {isAr ? 'ج.م' : 'EGP'})
                 </span>
               )}
             </div>
@@ -309,16 +308,16 @@ export default function PartnerStatementPrintSlip({
         {/* 3. Statement Ledger Table */}
         <table className="w-full text-start border-collapse text-[10px] mb-3">
           <thead>
-            <tr className="bg-slate-900 text-white font-bold">
+            <tr className="bg-slate-100 text-slate-900 font-bold border-y-2 border-slate-900">
               <th className="py-2 px-1.5 text-center w-7">#</th>
               <th className="py-2 px-1.5 text-start w-20">{isAr ? 'التاريخ' : 'Date'}</th>
-              <th className="py-2 px-1.5 text-start min-w-[130px]">{isAr ? 'المستند الضريبي المعتمد (فاتورة / إشعار)' : 'Taxable Document (Inv / CN / DN)'}</th>
-              <th className="py-2 px-1.5 text-start w-24">{isAr ? 'نوع الحركة الداخلي' : 'Internal Type'}</th>
-              <th className="py-2 px-1.5 text-start w-24">{isAr ? 'رقم الإذن / المرجع' : 'Internal Ref'}</th>
-              <th className="py-2 px-1.5 text-start">{isAr ? 'البيان والشرح' : 'Description'}</th>
-              <th className="py-2 px-1.5 text-end w-20">{isAr ? 'مدين (ج.م)' : 'Debit'}</th>
-              <th className="py-2 px-1.5 text-end w-20">{isAr ? 'دائن (ج.م)' : 'Credit'}</th>
-              <th className="py-2 px-1.5 text-end w-24">{isAr ? 'الرصيد (ج.م)' : 'Balance'}</th>
+              <th className="py-2 px-1.5 text-start min-w-[130px]">{isAr ? 'المستند الضريبي' : 'Tax Doc'}</th>
+              <th className="py-2 px-1.5 text-start w-24">{isAr ? 'النوع' : 'Type'}</th>
+              <th className="py-2 px-1.5 text-start w-24">{isAr ? 'المرجع' : 'Ref'}</th>
+              <th className="py-2 px-1.5 text-start">{isAr ? 'البيان' : 'Description'}</th>
+              <th className="py-2 px-1.5 text-end w-20">{isAr ? 'مدين' : 'Debit'}</th>
+              <th className="py-2 px-1.5 text-end w-20">{isAr ? 'دائن' : 'Credit'}</th>
+              <th className="py-2 px-1.5 text-end w-24">{isAr ? 'الرصيد' : 'Balance'}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200">
@@ -327,7 +326,7 @@ export default function PartnerStatementPrintSlip({
               <td className="py-1.5 px-1.5 text-center font-mono">0</td>
               <td className="py-1.5 px-1.5 font-mono">{fromDate || '—'}</td>
               <td className="py-1.5 px-1.5 text-indigo-950" colSpan={4}>
-                {isAr ? 'الرصيد الافتتاحي السابق للفترة' : 'Opening Balance Prior to Period'}
+                {isAr ? 'رصيد افتتاحي' : 'Opening Balance'}
               </td>
               <td className="py-1.5 px-1.5 text-end font-mono">—</td>
               <td className="py-1.5 px-1.5 text-end font-mono">—</td>
@@ -340,7 +339,7 @@ export default function PartnerStatementPrintSlip({
             {transactions.length === 0 ? (
               <tr>
                 <td colSpan={9} className="py-6 text-center text-slate-400">
-                  {isAr ? 'لا توجد حركات مسجلة خلال الفترة المحددة' : 'No transactions recorded during this period'}
+                  {isAr ? 'لا توجد حركات' : 'No transactions'}
                 </td>
               </tr>
             ) : (
@@ -423,9 +422,9 @@ export default function PartnerStatementPrintSlip({
             )}
 
             {/* Closing Balance & Totals Summary Row */}
-            <tr className="bg-slate-900 text-white font-extrabold text-[11px]">
+            <tr className="bg-slate-200 text-slate-900 font-extrabold text-[11px] border-t-2 border-slate-900">
               <td colSpan={6} className="py-2.5 px-2 text-start">
-                <span>{isAr ? 'إجمالي حركة الفترة والرصيد الختامي المستحق:' : 'Period Movement Totals & Closing Balance:'}</span>
+                <span>{isAr ? 'الإجمالي والرصيد:' : 'Totals & Closing:'}</span>
               </td>
               <td className="py-2.5 px-1.5 text-end font-mono">
                 {formatEGP(totalDebit)}
@@ -433,7 +432,7 @@ export default function PartnerStatementPrintSlip({
               <td className="py-2.5 px-1.5 text-end font-mono">
                 {formatEGP(totalCredit)}
               </td>
-              <td className="py-2.5 px-1.5 text-end font-mono text-amber-300 font-black text-xs">
+              <td className="py-2.5 px-1.5 text-end font-mono text-slate-950 font-black text-xs">
                 {formatEGP(closingBalance)}
               </td>
             </tr>
@@ -443,7 +442,7 @@ export default function PartnerStatementPrintSlip({
         {/* 4. Arabic Tafqeet & Account Position Banner */}
         <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 mb-4 space-y-1">
           <div className="flex items-center justify-between text-[11px]">
-            <span className="font-bold text-slate-600">{isAr ? 'التفقيط المالي للرصيد الختامي:' : 'Amount in Words:'}</span>
+            <span className="font-bold text-slate-600">{isAr ? 'كتابة:' : 'In Words:'}</span>
             <span className="font-bold text-indigo-900 font-sans">{getPositionText()}</span>
           </div>
           <p className="text-xs font-black font-serif text-slate-950">
@@ -454,22 +453,22 @@ export default function PartnerStatementPrintSlip({
         {/* 5. Official Signatures Block */}
         <div className="pt-3 border-t border-slate-300 grid grid-cols-4 gap-4 text-center text-[10px]">
           <div>
-            <span className="text-slate-500 block mb-6">{isAr ? 'المحاسب المسؤول' : 'Accountant'}</span>
+            <span className="text-slate-500 block mb-6">{isAr ? 'المحاسب' : 'Accountant'}</span>
             <div className="border-b border-dotted border-slate-400 w-3/4 mx-auto" />
             <span className="text-[9px] text-slate-400 mt-1 block">
               {currentUser?.name || currentUser?.nameAr || '—'}
             </span>
           </div>
           <div>
-            <span className="text-slate-500 block mb-6">{isAr ? 'المراجع المالي' : 'Internal Auditor'}</span>
+            <span className="text-slate-500 block mb-6">{isAr ? 'المراجع' : 'Auditor'}</span>
             <div className="border-b border-dotted border-slate-400 w-3/4 mx-auto" />
           </div>
           <div>
-            <span className="text-slate-500 block mb-6">{isAr ? 'أمين الخزينة / الحسابات' : 'Treasury Custodian'}</span>
+            <span className="text-slate-500 block mb-6">{isAr ? 'الحسابات' : 'Treasury'}</span>
             <div className="border-b border-dotted border-slate-400 w-3/4 mx-auto" />
           </div>
           <div>
-            <span className="text-slate-500 block mb-6">{isAr ? 'اعتماد المدير المالي' : 'Financial Director'}</span>
+            <span className="text-slate-500 block mb-6">{isAr ? 'المدير المالي' : 'CFO'}</span>
             <div className="border-b border-dotted border-slate-400 w-3/4 mx-auto" />
           </div>
         </div>

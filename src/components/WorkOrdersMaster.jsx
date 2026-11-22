@@ -757,7 +757,7 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
       setProductionProcesses(list);
     });
 
-    const unsubWorkers = onSnapshot(collection(db, 'production_workers'), (snap) => {
+    const unsubWorkers = onSnapshot(collection(db, 'employees'), (snap) => {
       const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       setManualWorkers(list);
     });
@@ -3929,22 +3929,29 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   const handleQuickAddManualWorker = async (e) => {
     e.preventDefault();
     if (!quickWorkerName.trim()) return;
-    const newWorkerId = `wrk_manual_${Date.now()}`;
+    const newWorkerId = `EMP-${Date.now()}`;
     const workerObj = {
       id: newWorkerId,
+      employeeCode: newWorkerId,
       name: quickWorkerName.trim(),
       nameAr: quickWorkerName.trim(),
       nameEn: quickWorkerName.trim(),
-      role: quickWorkerRole.trim() || 'عامل تشغيل',
-      department: 'الإنتاج',
-      isManual: true,
+      jobTitle: quickWorkerRole.trim() || 'عامل تشغيل',
+      role: 'standard',
+      departmentId: 'DEPT-PROD',
+      departmentIds: ['DEPT-PROD'],
+      departmentNameAr: 'إدارة الإنتاج والتصنيع',
+      operationalTags: ['operator'],
+      isSystemUser: false,
+      linkedUserId: null,
+      status: 'active',
       isActive: true,
       createdAt: new Date().toISOString(),
       createdBy: currentUserName,
     };
 
     try {
-      await setDoc(doc(db, 'production_workers', newWorkerId), workerObj);
+      await setDoc(doc(db, 'employees', newWorkerId), workerObj);
       // Auto-assign to triggered context if available
       if (quickWorkerTargetContext) {
         if (quickWorkerTargetContext.type === 'plan') {

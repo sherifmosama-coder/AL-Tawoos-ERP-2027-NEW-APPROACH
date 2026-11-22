@@ -17,7 +17,11 @@ import { APP_ARCHITECTURE, getMasterCollectionsRegistry, isMasterCollection } fr
 import TabAppearanceManager from './TabAppearanceManager';
 import OpeningStockSeederModal from './OpeningStockSeederModal';
 import NotificationControlCenter from './NotificationControlCenter';
+import SystemRestoreHub from './SystemRestoreHub';
+import { createRestorePoint } from '../utils/systemRestoreEngine';
+import { OPERATIONAL_COLLECTIONS_COMPLETE } from '../utils/systemRestoreScopeCatalog';
 import {
+  History,
   Plus,
   Shield,
   ShieldCheck,
@@ -93,6 +97,8 @@ export const STATIC_GRAPH_METADATA = {
   suppliers: { labelAr: 'سجل الموردين المعتمدين', labelEn: 'Suppliers Master', category: 'Master Data', color: '#0d6cba' },
   warehouses: { labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', category: 'Master Data', color: '#4f46e5' },
   users: { labelAr: 'سجل المستخدمين والمشرفين', labelEn: 'User Accounts', category: 'Master Data', color: '#0284c7' },
+  departments: { labelAr: 'الأقسام والإدارات وصلاحياتها', labelEn: 'Departments & Permissions', category: 'Master Data', color: '#4f46e5' },
+  employees: { labelAr: 'سجل الموظفين والعمالة والمستخدمين الموحد', labelEn: 'Unified Staff, Workers & Users', category: 'Master Data', color: '#0d9488' },
   categories: { labelAr: 'مجموعات وتصنيفات التكويد', labelEn: 'Category Groups', category: 'Master Data', color: '#6366f1' },
   finished_products: { labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Goods Master', category: 'Master Data', color: '#e11d48' },
   finished_product_categories: { labelAr: 'تصنيفات ومجموعات المنتج التام', labelEn: 'FG Categories', category: 'Master Data', color: '#6366f1' },
@@ -151,7 +157,8 @@ export function resolveDynamicEntityRelations(targetCollection, sampleDocs = [],
     { pattern: /(processCode|processId)/i, target: 'production_processes', labelAr: 'مسار التشغيل', labelEn: 'Production Process' },
     { pattern: /(palletId|palletCode|floorPalletId)/i, target: 'staged_floor_pallets', labelAr: 'بالتة الصالة', labelEn: 'Floor Pallet' },
     { pattern: /(breakId)/i, target: 'production_breaks', labelAr: 'استراحة تشغيل', labelEn: 'Production Break' },
-    { pattern: /(workerId|technicianId)/i, target: 'production_workers', labelAr: 'عامل الإنتاج', labelEn: 'Production Worker' },
+    { pattern: /(departmentId)/i, target: 'departments', labelAr: 'القسم / الإدارة', labelEn: 'Department' },
+    { pattern: /(employeeId|workerId|technicianId|driverId)/i, target: 'employees', labelAr: 'الموظف / العامل', labelEn: 'Staff / Worker' },
     { pattern: /(returnId|faultyReturnId)/i, target: 'faulty_fg_returns', labelAr: 'إشعار المرتجع المعيب', labelEn: 'Faulty FG Return' },
     { pattern: /(fgReceiptId|fgrId)/i, target: 'fg_receipts', labelAr: 'إذن استلام التام', labelEn: 'FG Receipt' },
     { pattern: /(transformationId|transformationDocId)/i, target: 'production_transformations', labelAr: 'حركة التحويل', labelEn: 'Transformation' },
@@ -272,42 +279,7 @@ const ICON_MAP = {
 // Dynamically derived from APP_ARCHITECTURE.modules.master_data.tabs + core master tables
 export const MASTER_COLLECTIONS_REGISTRY = getMasterCollectionsRegistry(APP_ARCHITECTURE);
 
-export const OPERATIONAL_COLLECTIONS_REGISTRY = [
-  'purchase_orders',
-  'goods_receipts',
-  'stock_transfers',
-  'transfers',
-  'stock_ledger',
-  'stock_counts',
-  'spare_parts_issues',
-  'work_orders',
-  'production_work_orders',
-  'staged_floor_pallets',
-  'staged_floor_materials',
-  'production_breaks',
-  'production_shifts',
-  'liquid_tanks',
-  'production_transformations',
-  'shift_handovers',
-  'faulty_fg_returns',
-  'fg_receipts',
-  'cash_transactions',
-  'cash_count_sessions',
-  'journal_entries',
-  'custody_ledger',
-  'custody_advance_drafts',
-  'custodies_and_advances',
-  'dues_settlements',
-  'dues_batches',
-  'wht_notes',
-  'sales_orders',
-  'price_lists',
-  'pricing_strategies',
-  'client_contracts',
-  'record_comments',
-  'user_actions_queue',
-  'system_notifications',
-];
+export const OPERATIONAL_COLLECTIONS_REGISTRY = OPERATIONAL_COLLECTIONS_COMPLETE;
 
 export const BACKUP_COLLECTIONS_REGISTRY = Array.from(
   new Set([
@@ -317,10 +289,13 @@ export const BACKUP_COLLECTIONS_REGISTRY = Array.from(
 );
 
 export const COLLECTION_DISPLAY_NAMES = {
-  users: { ar: 'المستخدمين والصلاحيات', en: 'Users & Roles' },
+  users: { ar: 'حسابات دخول النظام (متزامن مع الموظفين)', en: 'System Login Accounts (Synced with Employees)' },
+  departments: { ar: 'الأقسام والإدارات وصلاحياتها', en: 'Departments & Permissions' },
+  employees: { ar: 'سجل الموظفين والعمالة والمستخدمين الموحد', en: 'Unified Staff, Workers & Users' },
   system_config: { ar: 'إعدادات النظام والروابط المحاسبية ومراكز التكلفة', en: 'System Config, Accounting Links & Cost Centers' },
   suppliers: { ar: 'سجل الموردين المعتمدين', en: 'Suppliers Master' },
   clients: { ar: 'سجل العملاء', en: 'Clients Master' },
+  client_segments: { ar: 'تصنيفات وقطاعات العملاء', en: 'Client Segments Master' },
   items: { ar: 'سجل الخامات ومستلزمات الإنتاج', en: 'Item Master (Raw Materials)' },
   categories: { ar: 'مجموعات وتصنيفات التكويد', en: 'Category Groups' },
   finished_products: { ar: 'سجل المنتجات التامة', en: 'Finished Goods Master' },
@@ -365,6 +340,8 @@ export const COLLECTION_DISPLAY_NAMES = {
   dues_batches: { ar: 'حافظات السداد المجمعة للموردين', en: 'Batch Payment Ledgers' },
   wht_notes: { ar: 'إشعارات وشهادات الخصم والإضافة (1%)', en: '1% WHT Certificates' },
   sales_orders: { ar: 'أوامر البيع والتوريد وخطط التحميل والتوزيع', en: 'Sales Orders & Dispatch Loading Plans' },
+  truck_dispatches: { ar: 'رحلات التوزيع واستلام المرتجعات', en: 'Truck Dispatches & Receiving' },
+  dispatch_documents: { ar: 'سجل أذون صرف الشاحنات المرقمة', en: 'Dispatch Documents Registry' },
   price_lists: { ar: 'قوائم الأسعار وفترات التسعير', en: 'Price Lists & Periods' },
   pricing_strategies: { ar: 'استراتيجيات التسعير المخصصة', en: 'Pricing Strategies' },
   client_contracts: { ar: 'عقود وخصومات العملاء', en: 'Client Contracts & Discounts' },
@@ -1168,14 +1145,14 @@ export const PURGE_TARGETS_CATALOG = [
   {
     key: 'master_workers_and_vehicles',
     category: 'master',
-    labelAr: 'سجل عمالة الإنتاج وأسطول المركبات (Production Workers & Vehicles Master)',
-    labelEn: 'Production Workers & Vehicles Fleet Master (production_workers & vehicles)',
-    collectionsLabel: 'production_workers + vehicles',
-    primaryCollections: ['production_workers', 'vehicles'],
+    labelAr: 'سجل الموظفين والأقسام وأسطول المركبات (Employees, Departments & Vehicles)',
+    labelEn: 'Staff, Departments & Vehicles Fleet Master (employees, departments & vehicles)',
+    collectionsLabel: 'employees + departments + vehicles',
+    primaryCollections: ['employees', 'departments', 'vehicles'],
     relatedCascades: [],
     recalculate: {},
-    descAr: 'تحذير: يحذف سجل عمالة وفنيي الإنتاج وسجل أسطول السيارات والشاحنات.',
-    descEn: 'WARNING: Permanently deletes all Production Workers and Vehicles Fleet master records.',
+    descAr: 'تحذير: يحذف سجل الموظفين والعمالة الموحد والأقسام وأسطول السيارات والشاحنات.',
+    descEn: 'WARNING: Permanently deletes all Staff/Workers, Departments, and Vehicles Fleet master records.',
   },
 ];
 
@@ -1205,7 +1182,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       if (raw.includes('?')) {
         const p = new URLSearchParams(raw.split('?')[1]);
         const s = p.get('subTab');
-        if (s && ['users', 'warehouses', 'permissions', 'tab_appearance', 'import', 'backup_restore', 'factory_reset', 'db_inspector'].includes(s)) {
+        if (s && ['users', 'warehouses', 'permissions', 'tab_appearance', 'import', 'backup_restore', 'system_restore', 'factory_reset', 'db_inspector'].includes(s)) {
           return s;
         }
       }
@@ -3897,6 +3874,21 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
 
     setIsPurging(true);
 
+    // Best-effort automatic pre-purge safety checkpoint so accidental Factory Resets remain 1-click recoverable
+    try {
+      await createRestorePoint({
+        kind: 'pre_purge',
+        source: 'safety_guard',
+        pinned: false,
+        labelAr: `نقطة أمان قبل التصفير (${selectedPurgeTargetKey})`,
+        labelEn: `Pre-Purge Safety Point (${selectedPurgeTargetKey})`,
+        notes: `Auto safety capture before Factory Reset / Purge (${selectedPurgeTargetKey})`,
+        actor: currentUser,
+      });
+    } catch (prePurgeErr) {
+      console.warn('Pre-purge safety snapshot warning (proceeding with requested purge):', prePurgeErr?.message);
+    }
+
     // Helper: Commit operations in chunks of 400 to respect Firestore 500-op batch limit
     const commitChunkedOperations = async (operations = []) => {
       if (!operations.length) return 0;
@@ -4577,6 +4569,17 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
           >
             <Archive className="h-3.5 w-3.5" />
             <span>{isAr ? 'النسخ الاحتياطي والاستعادة' : 'Backup & Restore'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('system_restore')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition cursor-pointer ${
+              activeSubTab === 'system_restore' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-300 hover:text-indigo-300'
+            }`}
+          >
+            <History className="h-3.5 w-3.5" />
+            <span>{isAr ? 'الاستعادة الزمنية' : 'System Restore'}</span>
           </button>
 
           <button
@@ -6321,6 +6324,13 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
             </div>
           )}
         </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* SUB-TAB: AUTOMATED SYSTEM RESTORE (TIME MACHINE)                         */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'system_restore' && (
+        <SystemRestoreHub currentUser={currentUser} isAr={isAr} />
       )}
 
       {/* ========================================================================= */}

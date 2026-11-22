@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { doc, updateDoc, collection, getDocs, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, collection, getDocs, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
-import { createNotification } from '../utils/notificationEngine';
+import { createNotification, createActionRequired, completeActionRequired } from '../utils/notificationEngine';
+import { makeTripDispatchDocId, resolveProductAndOption } from '../utils/truckDispatchUtils';
+import { roundQty } from '../utils/fgStockEngine';
 import {
   X,
   Store,
@@ -38,6 +40,8 @@ export default function RetailSettlementModal({
   order,
   canSettleRetailOrders = false,
   allowDeferDelivery = false,
+  skipDispatchSync = false,
+  zIndexClass = 'z-[70]',
   vehicles = [],
   resolveVehicleDisplayName,
   isAr = true,
@@ -317,12 +321,142 @@ export default function RetailSettlementModal({
         updatedBy: currentUserName
       });
 
+      // Sync unsold Retail returns into the linked truck_dispatches Return Handshake + notify Warehouse Custodian
+      const linkedTripId =
+        order.fgWarehouseDispatchId ||
+        (order.loadingDate && Number(order.loadingOrderNumber) > 0
+          ? makeTripDispatchDocId(order.loadingDate, order.loadingOrderNumber)
+          : '');
+
+      if (linkedTripId && !skipDispatchSync) {
+        try {
+          const tdRef = doc(db, 'truck_dispatches', linkedTripId);
+          const tdSnap = await getDoc(tdRef);
+          const tdExisting = tdSnap.exists() ? tdSnap.data() : null;
+          const totalReturnedUnits = Number(payload.returnedCartons || 0);
+
+          if (tdExisting || totalReturnedUnits > 0) {
+            const nextReturnByCol = { ...(tdExisting?.returnByCol || {}) };
+            lineStates.forEach((row) => {
+              const unsoldQty = roundQty(Number(row.returnedQty || 0) + Number(row.returnedBonus || 0));
+              const meta = resolveProductAndOption(
+                [],
+                row.productId || row.productCode,
+                row.packagingOptionSuffix || row.optionSuffix,
+                row.packagingRatio
+              );
+              const colKey = `${meta.productCode}::${meta.optionSuffix}`;
+              const prev = nextReturnByCol[colKey] || {};
+              const expExt = Number(prev.expectedExtras || 0);
+              const whExt = prev.whReceivedExtras !== undefined ? Number(prev.whReceivedExtras) : expExt;
+              const whCli = prev.whReceivedClientReturns !== undefined ? Number(prev.whReceivedClientReturns) : unsoldQty;
+              const acctTot = roundQty(expExt + unsoldQty);
+              const whTot = roundQty(whExt + whCli);
+
+              nextReturnByCol[colKey] = {
+                expectedExtras: expExt,
+                expectedClientReturns: unsoldQty,
+                whReceivedExtras: whExt,
+                whReceivedClientReturns: whCli,
+                faultySwappedExtras: Number(prev.faultySwappedExtras || 0),
+                shortageExtras: Number(prev.shortageExtras || 0),
+                accountantExpectedTotal: acctTot,
+                whReceivedTotal: whTot,
+                variance: roundQty(whTot - acctTot),
+              };
+            });
+
+            const anyVariance = Object.values(nextReturnByCol).some((r) => Math.abs(Number(r.variance || 0)) > 1e-4);
+            const alreadyWhConfirmed = Boolean(tdExisting?.whReturnConfirmedAt);
+            const nextHandshake =
+              totalReturnedUnits === 0 && !tdExisting?.columns?.some((c) => Number(c.extraQty || 0) > 0) && alreadyWhConfirmed
+                ? 'reconciled'
+                : alreadyWhConfirmed && !anyVariance
+                ? 'reconciled'
+                : alreadyWhConfirmed && anyVariance
+                ? 'discrepancy_pending_accounting'
+                : 'pending_wh_confirm';
+
+            const retSyncAuditEntry = {
+              id: `AUD-RS-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              timestamp: new Date().toISOString(),
+              userId: currentUserId,
+              userName: currentUserName,
+              performedBy: currentUserName,
+              performedById: currentUserId,
+              action: 'retail_return_synced_to_dispatch',
+              summaryAr: `مزامنة تسوية التجزئة (#${order.serial || order.id}) — مرتجع متوقع ${totalReturnedUnits} كرتونة (${nextHandshake})`,
+              summaryEn: `Synced Retail settlement (#${order.serial || order.id}) — Expected return: ${totalReturnedUnits} ctn (${nextHandshake})`,
+              changes: {
+                metadata: [
+                  {
+                    labelAr: 'المرتجع غير المباع المتوقع',
+                    labelEn: 'Expected Unsold Return',
+                    oldValue: '—',
+                    newValue: `${totalReturnedUnits} ctn`,
+                  },
+                ],
+              },
+            };
+
+            await setDoc(
+              tdRef,
+              {
+                id: linkedTripId,
+                loadingDate: order.loadingDate || tdExisting?.loadingDate || '',
+                loadingOrderNumber: Number(order.loadingOrderNumber || tdExisting?.loadingOrderNumber || 0),
+                orderIds: Array.from(new Set([...(tdExisting?.orderIds || []), order.id])),
+                returnByCol: nextReturnByCol,
+                returnHandshakeStatus: nextHandshake,
+                returnContentUpdatedAt: new Date().toISOString(),
+                auditTrail: [...(Array.isArray(tdExisting?.auditTrail) ? tdExisting.auditTrail : []), retSyncAuditEntry],
+                accountantReturnSubmittedBy: currentUserId,
+                accountantReturnSubmittedByName: currentUserName,
+                accountantReturnSubmittedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              },
+              { merge: true }
+            );
+
+            if (nextHandshake === 'pending_wh_confirm' && totalReturnedUnits > 0) {
+              await createActionRequired({
+                actionType: 'truck_return_wh_confirm',
+                docId: linkedTripId,
+                docNumber: `LO-${order.loadingOrderNumber || ''}`,
+                title: `تأكيد استلام مرتجع تجزئة (${totalReturnedUnits} كرتونة)`,
+                titleEn: `Confirm Physical Receipt of Retail Returns (${totalReturnedUnits} ctn)`,
+                message: `تمت تسوية خط سير التجزئة للأمر #${order.serial || order.id} بمرتجع غير مباع (${totalReturnedUnits} كرتونة). يرجى تأكيد الاستلام الفعلي بمخزن التام.`,
+                messageEn: `Retail settlement for #${order.serial || order.id} recorded ${totalReturnedUnits} unsold return cartons. Please verify receipt in FG Warehouse.`,
+                targetTab: 'truck_dispatch',
+                targetModule: 'sales',
+                highlightId: linkedTripId,
+                createdBy: currentUserId,
+                createdByName: currentUserName,
+                targetRoles: ['finished_goods_custodian', 'general_admin'],
+                metadata: { tripId: linkedTripId, orderId: order.id, returnedCartons: totalReturnedUnits },
+              });
+            } else if (nextHandshake === 'reconciled') {
+              await completeActionRequired({
+                actionType: 'truck_return_wh_confirm',
+                docId: linkedTripId,
+                completedBy: currentUserId,
+                completedByName: currentUserName,
+                resolutionNote: 'Zero return or already matched',
+              });
+            }
+          }
+        } catch (tdSyncErr) {
+          console.debug('Truck dispatch return sync skipped:', tdSyncErr);
+        }
+      }
+
       // Dispatch notification to Warehouse, Accounting, Sales & Admin users (fire-and-forget)
       (async () => {
         try {
           const relevantTabs = [
             'sales_orders',
             'loading_plan',
+            'truck_dispatch',
             'stock',
             'fg_inward',
             'accounts',
@@ -381,7 +515,7 @@ export default function RetailSettlementModal({
         }
       })();
 
-      if (onSuccess) onSuccess({ mode: isForceSyncEdit ? 'force_synced' : 'settled', payload });
+      if (onSuccess) onSuccess({ mode: isForceSyncEdit ? 'force_synced' : 'settled', payload: { ...order, ...payload } });
       onClose();
     } catch (err) {
       console.error('Error saving retail settlement:', err);
@@ -439,7 +573,7 @@ export default function RetailSettlementModal({
 
   return (
     <>
-      <div className="fixed inset-0 z-[70] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+      <div className={`fixed inset-0 ${zIndexClass} bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4`}>
         <div className="bg-white rounded-3xl max-w-5xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[94vh]">
           {/* Header */}
           <div className="px-5 py-4 bg-gradient-to-r from-slate-900 via-cyan-950 to-slate-900 text-white flex items-center justify-between gap-3 shrink-0">

@@ -252,43 +252,43 @@ export function openPrintableAdjustmentSlip(order, isAr = true) {
 <body>
   <div class="header">
     <div>
-      <h2 style="margin:0 0 4px 0;">${isAr ? 'بيان تسوية استلام جزئي ومرتجع مخزني وفاتورة معدلة' : 'Partial Delivery Return & Adjusted Invoice Reconciliation'}</h2>
-      <div><strong>${isAr ? 'أمر بيع رقم:' : 'Order #:'}</strong> #${escHtml(order.serial || order.id)} &nbsp;|&nbsp; <strong>${isAr ? 'العميل:' : 'Client:'}</strong> ${escHtml(order.clientName || '—')} ${order.branchName ? `(${escHtml(order.branchName)})` : ''}</div>
-      <div style="color:#475569;margin-top:3px;"><strong>${isAr ? 'تاريخ الفاتورة:' : 'Invoice Date:'}</strong> ${escHtml(order.invoiceDate || '—')} &nbsp;|&nbsp; <strong>${isAr ? 'تاريخ التحميل:' : 'Loading Date:'}</strong> ${escHtml(order.loadingDate || '—')} ${order.assignedVehicleName ? `&nbsp;|&nbsp; <strong>${isAr ? 'الشاحنة:' : 'Truck:'}</strong> ${escHtml(order.assignedVehicleName)} (${escHtml(order.assignedVehiclePlate || '')})` : ''}</div>
+      <h2 style="margin:0 0 4px 0;">${isAr ? 'تسوية استلام جزئي ومرتجع' : 'Partial Return Reconciliation'}</h2>
+      <div><strong>${isAr ? 'طلب:' : 'Order:'}</strong> #${escHtml(order.serial || order.id)} &nbsp;|&nbsp; <strong>${isAr ? 'عميل:' : 'Client:'}</strong> ${escHtml(order.clientName || '—')} ${order.branchName ? `(${escHtml(order.branchName)})` : ''}</div>
+      <div style="color:#475569;margin-top:3px;"><strong>${isAr ? 'فاتورة:' : 'Invoice:'}</strong> ${escHtml(order.invoiceDate || '—')} &nbsp;|&nbsp; <strong>${isAr ? 'تحميل:' : 'Loading:'}</strong> ${escHtml(order.loadingDate || '—')} ${order.assignedVehicleName ? `&nbsp;|&nbsp; <strong>${isAr ? 'شاحنة:' : 'Truck:'}</strong> ${escHtml(order.assignedVehicleName)} (${escHtml(order.assignedVehiclePlate || '')})` : ''}</div>
     </div>
     <div style="text-align:end">
-      <span class="badge">${isAr ? 'تسوية استلام فعلي ومرتجع' : 'PARTIAL RETURN RECONCILIATION'}</span>
-      <div style="font-size:11px;color:#64748b;margin-top:6px;">${isAr ? 'بواسطة:' : 'Synced By:'} ${escHtml(order.lastAdjustedBy || '—')}</div>
+      <span class="badge">${isAr ? 'تسوية مرتجع' : 'PARTIAL RETURN'}</span>
+      <div style="font-size:11px;color:#64748b;margin-top:6px;">${isAr ? 'بواسطة:' : 'By:'} ${escHtml(order.lastAdjustedBy || '—')}</div>
     </div>
   </div>
 
   <div class="grid">
-    <div class="card"><span class="lbl">${isAr ? 'المنصرف الأصلي (شحن)' : 'Originally Dispatched'}</span><span class="val">${origCartons} ${isAr ? 'كرتونة' : 'ctn'} (${origWeightKg.toFixed(1)} kg)</span></div>
-    <div class="card" style="background:#ecfdf5;border-color:#a7f3d0"><span class="lbl">${isAr ? 'المستلم فعلياً لدى العميل' : 'Actual Received Qty'}</span><span class="val" style="color:#065f46">${actualCartons} ${isAr ? 'كرتونة' : 'ctn'} (${actualWeightKg.toFixed(1)} kg)</span></div>
-    <div class="card" style="background:#fff1f2;border-color:#fecdd3"><span class="lbl">${isAr ? 'تقدير المرتجع للمخزن' : 'Est. Warehouse Return'}</span><span class="val" style="color:#be123c">${returnedCartons} ${isAr ? 'كرتونة' : 'ctn'} (${returnedWeightKg.toFixed(1)} kg)</span></div>
-    <div class="card" style="background:#eef2ff;border-color:#c7d2fe"><span class="lbl">${isAr ? 'الفاتورة المعدلة (فرق المرتجع)' : 'Adjusted Total (Credit Delta)'}</span><span class="val" style="color:#3730a3">${actualTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</span><div style="font-size:11px;color:#be123c;font-weight:700;">${isAr ? 'الخصم/الإشعار الدائن:' : 'Credit:'} -${returnedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</div></div>
+    <div class="card"><span class="lbl">${isAr ? 'منصرف' : 'Dispatched'}</span><span class="val">${origCartons} ${isAr ? 'كرتونة' : 'ctn'} (${origWeightKg.toFixed(1)} kg)</span></div>
+    <div class="card" style="background:#ecfdf5;border-color:#a7f3d0"><span class="lbl">${isAr ? 'مستلم' : 'Received'}</span><span class="val" style="color:#065f46">${actualCartons} ${isAr ? 'كرتونة' : 'ctn'} (${actualWeightKg.toFixed(1)} kg)</span></div>
+    <div class="card" style="background:#fff1f2;border-color:#fecdd3"><span class="lbl">${isAr ? 'مرتجع' : 'Returned'}</span><span class="val" style="color:#be123c">${returnedCartons} ${isAr ? 'كرتونة' : 'ctn'} (${returnedWeightKg.toFixed(1)} kg)</span></div>
+    <div class="card" style="background:#eef2ff;border-color:#c7d2fe"><span class="lbl">${isAr ? 'الفاتورة المعدلة' : 'Adjusted Total'}</span><span class="val" style="color:#3730a3">${actualTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</span><div style="font-size:11px;color:#be123c;font-weight:700;">${isAr ? 'خصم:' : 'Credit:'} -${returnedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</div></div>
   </div>
 
-  ${order.rejectionReason ? `<div class="reason"><strong>${isAr ? 'سبب الرفض الجزئي / التسوية:' : 'Rejection / Adjustment Reason:'}</strong> ${escHtml(order.rejectionReason)}</div>` : ''}
+  ${order.rejectionReason ? `<div class="reason"><strong>${isAr ? 'السبب:' : 'Reason:'}</strong> ${escHtml(order.rejectionReason)}</div>` : ''}
 
   <table>
     <thead>
       <tr>
-        <th>${isAr ? 'الصنف' : 'Product SKU'}</th>
-        <th class="num">${isAr ? 'الكمية المنصرفة' : 'Dispatched'}</th>
-        <th class="num">${isAr ? 'المستلم فعلياً' : 'Received'}</th>
-        <th class="num">${isAr ? 'المرتجع للمخزن' : 'Returned'}</th>
-        <th class="num">${isAr ? 'الإجمالي الأصلي (ج.م)' : 'Orig. Total'}</th>
-        <th class="num">${isAr ? 'الإجمالي المعدل (ج.م)' : 'Adj. Total'}</th>
+        <th>${isAr ? 'الصنف' : 'Product'}</th>
+        <th class="num">${isAr ? 'منصرف' : 'Dispatched'}</th>
+        <th class="num">${isAr ? 'مستلم' : 'Received'}</th>
+        <th class="num">${isAr ? 'مرتجع' : 'Returned'}</th>
+        <th class="num">${isAr ? 'الأصلي' : 'Orig. Total'}</th>
+        <th class="num">${isAr ? 'المعدل' : 'Adj. Total'}</th>
       </tr>
     </thead>
     <tbody>${rowsHtml}</tbody>
   </table>
 
   <div class="footer">
-    <div class="sig">${isAr ? 'اعتماد المبيعات / التشغيل' : 'Sales / Dispatch Approval'}</div>
-    <div class="sig">${isAr ? 'استلام أمين المخزن للمرتجع' : 'Warehouse Return Receipt'}</div>
-    <div class="sig">${isAr ? 'مراجعة الحسابات والفاتورة المعدلة' : 'Accounting Adjusted Invoice'}</div>
+    <div class="sig">${isAr ? 'المبيعات' : 'Sales'}</div>
+    <div class="sig">${isAr ? 'المخزن' : 'Warehouse'}</div>
+    <div class="sig">${isAr ? 'الحسابات' : 'Accounting'}</div>
   </div>
 
   <div class="no-print" style="margin-top:24px;text-align:center;">
@@ -669,33 +669,33 @@ export function openPrintableRetailSettlementSlip(order, isAr = true) {
 <body>
   <div class="header">
     <div>
-      <h2 style="margin:0 0 4px 0;">${isAr ? 'بيان جرد وتسوية رحلة مبيعات التجزئة والفاتورة النهائية' : 'Retail Van-Sales Trip Settlement & Final Invoice'}</h2>
-      <div><strong>${isAr ? 'أمر بيع رقم:' : 'Order #:'}</strong> #${escHtml(order.serial || order.id)} &nbsp;|&nbsp; <strong>${isAr ? 'العميل / المنطقة:' : 'Client / Route:'}</strong> ${escHtml(order.clientName || '—')} ${order.region ? `(${escHtml(order.region)})` : ''}</div>
-      <div style="color:#475569;margin-top:3px;"><strong>${isAr ? 'تاريخ التحميل:' : 'Loading Date:'}</strong> ${escHtml(order.loadingDate || '—')} ${order.assignedVehicleName ? `&nbsp;|&nbsp; <strong>${isAr ? 'الشاحنة:' : 'Truck:'}</strong> ${escHtml(order.assignedVehicleName)} ${order.assignedDriverName ? `— ${escHtml(order.assignedDriverName)}` : ''}` : ''}</div>
+      <h2 style="margin:0 0 4px 0;">${isAr ? 'تسوية رحلة تجزئة' : 'Retail Trip Settlement'}</h2>
+      <div><strong>${isAr ? 'طلب:' : 'Order:'}</strong> #${escHtml(order.serial || order.id)} &nbsp;|&nbsp; <strong>${isAr ? 'عميل:' : 'Client:'}</strong> ${escHtml(order.clientName || '—')} ${order.region ? `(${escHtml(order.region)})` : ''}</div>
+      <div style="color:#475569;margin-top:3px;"><strong>${isAr ? 'تحميل:' : 'Loading:'}</strong> ${escHtml(order.loadingDate || '—')} ${order.assignedVehicleName ? `&nbsp;|&nbsp; <strong>${isAr ? 'شاحنة:' : 'Truck:'}</strong> ${escHtml(order.assignedVehicleName)} ${order.assignedDriverName ? `— ${escHtml(order.assignedDriverName)}` : ''}` : ''}</div>
     </div>
     <div style="text-align:end">
-      <span class="badge">${isAr ? `تسوية رحلة تجزئة (مراجعة #${order.retailSettlementRevision || 1})` : `RETAIL TRIP SETTLEMENT (Rev #${order.retailSettlementRevision || 1})`}</span>
-      <div style="font-size:11px;color:#64748b;margin-top:6px;">${isAr ? 'تمت التسوية بواسطة:' : 'Settled By:'} ${escHtml(order.retailSettledBy || '—')}</div>
+      <span class="badge">${isAr ? `تسوية تجزئة #${order.retailSettlementRevision || 1}` : `RETAIL SETTLEMENT #${order.retailSettlementRevision || 1}`}</span>
+      <div style="font-size:11px;color:#64748b;margin-top:6px;">${isAr ? 'بواسطة:' : 'By:'} ${escHtml(order.retailSettledBy || '—')}</div>
     </div>
   </div>
 
   <div class="grid">
-    <div class="card"><span class="lbl">${isAr ? 'إجمالي الحمولة المنصرفة' : 'Loaded on Truck'}</span><span class="val">${loadedCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
-    <div class="card" style="background:#ecfdf5;border-color:#a7f3d0"><span class="lbl">${isAr ? 'المباع الفعلي المعتمد' : 'Confirmed Sold Qty'}</span><span class="val" style="color:#065f46">${soldCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
-    <div class="card" style="background:#f0f9ff;border-color:#bae6fd"><span class="lbl">${isAr ? 'المرتجع غير المباع للمخزن' : 'Unsold Return to Warehouse'}</span><span class="val" style="color:#0369a1">${returnedCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
-    <div class="card" style="background:#eef2ff;border-color:#c7d2fe"><span class="lbl">${isAr ? 'صافي الفاتورة النهائية' : 'Final Settled Invoice'}</span><span class="val" style="color:#3730a3">${soldTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</span>${returnedAmount > 0 ? `<div style="font-size:11px;color:#0369a1;font-weight:700;">${isAr ? 'قيمة غير المباع:' : 'Unsold Credit:'} -${returnedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</div>` : ''}</div>
+    <div class="card"><span class="lbl">${isAr ? 'محمل' : 'Loaded'}</span><span class="val">${loadedCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
+    <div class="card" style="background:#ecfdf5;border-color:#a7f3d0"><span class="lbl">${isAr ? 'مباع' : 'Sold'}</span><span class="val" style="color:#065f46">${soldCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
+    <div class="card" style="background:#f0f9ff;border-color:#bae6fd"><span class="lbl">${isAr ? 'مرتجع' : 'Returned'}</span><span class="val" style="color:#0369a1">${returnedCartons} ${isAr ? 'كرتونة' : 'ctn'}</span></div>
+    <div class="card" style="background:#eef2ff;border-color:#c7d2fe"><span class="lbl">${isAr ? 'الصافي' : 'Net Total'}</span><span class="val" style="color:#3730a3">${soldTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</span>${returnedAmount > 0 ? `<div style="font-size:11px;color:#0369a1;font-weight:700;">${isAr ? 'غير مباع:' : 'Unsold:'} -${returnedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} EGP</div>` : ''}</div>
   </div>
 
-  ${order.retailSettlementNotes ? `<div style="margin:12px 0;padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;"><strong>${isAr ? 'ملاحظات الرحلة والتسوية:' : 'Route & Settlement Notes:'}</strong> ${escHtml(order.retailSettlementNotes)}</div>` : ''}
+  ${order.retailSettlementNotes ? `<div style="margin:12px 0;padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;"><strong>${isAr ? 'ملاحظات:' : 'Notes:'}</strong> ${escHtml(order.retailSettlementNotes)}</div>` : ''}
 
   <table>
     <thead>
       <tr>
-        <th>${isAr ? 'الصنف' : 'Product SKU'}</th>
-        <th class="num">${isAr ? 'المحمل على الشاحنة' : 'Loaded'}</th>
-        <th class="num">${isAr ? 'المباع الفعلي' : 'Sold Qty'}</th>
-        <th class="num">${isAr ? 'المرتجع غير المباع' : 'Unsold Returned'}</th>
-        <th class="num">${isAr ? 'قيمة المباع (ج.م)' : 'Sold Value (EGP)'}</th>
+        <th>${isAr ? 'الصنف' : 'Product'}</th>
+        <th class="num">${isAr ? 'محمل' : 'Loaded'}</th>
+        <th class="num">${isAr ? 'مباع' : 'Sold'}</th>
+        <th class="num">${isAr ? 'مرتجع' : 'Returned'}</th>
+        <th class="num">${isAr ? 'القيمة' : 'Value'}</th>
       </tr>
     </thead>
     <tbody>${rowsHtml}</tbody>
@@ -704,9 +704,9 @@ export function openPrintableRetailSettlementSlip(order, isAr = true) {
   ${buyerDocsHtml}
 
   <div class="footer">
-    <div class="sig"><strong>${isAr ? 'المبيعات / تسوية الرحلة' : 'Sales / Trip Settlement'}</strong><br/><small>${escHtml(order.retailSettledBy || '—')}</small></div>
-    <div class="sig"><strong>${isAr ? 'أمين المخزن (استلام المرتجع)' : 'Warehouse (Unsold Return Receipt)'}</strong><br/><small>&nbsp;</small></div>
-    <div class="sig"><strong>${isAr ? 'الحسابات (الفاتورة النهائية)' : 'Accounting (Final Invoice)'}</strong><br/><small>&nbsp;</small></div>
+    <div class="sig"><strong>${isAr ? 'المبيعات' : 'Sales'}</strong><br/><small>${escHtml(order.retailSettledBy || '—')}</small></div>
+    <div class="sig"><strong>${isAr ? 'المخزن' : 'Warehouse'}</strong><br/><small>&nbsp;</small></div>
+    <div class="sig"><strong>${isAr ? 'الحسابات' : 'Accounting'}</strong><br/><small>&nbsp;</small></div>
   </div>
 
   <div class="no-print" style="margin-top:24px;text-align:center;">

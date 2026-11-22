@@ -13,7 +13,8 @@ import {
   serverTimestamp,
   onSnapshot
 } from 'firebase/firestore';
-import { APP_ARCHITECTURE } from '../config/appArchitecture';
+import { APP_ARCHITECTURE, DEFAULT_ROLE_PERMISSIONS, resolveEffectivePermissions } from '../config/appArchitecture';
+import { getRecordDepartmentIds } from './personnelDirectory';
 import { createActionRequired, completeActionRequired, cancelActionRequired, createNotification } from './notificationEngine';
 
 // =========================================================================
@@ -32,15 +33,27 @@ const TAB_TO_PERMISSION_KEY_MAP = {
   custodies_advances: 'cash_safes',
   sales_orders: 'sales_orders',
   loading_plan: 'loading_plan',
-  fg_inward: 'fg_inward'
+  truck_dispatch: 'truck_dispatch',
+  fg_inward: 'fg_inward',
+  fg_balances: 'fg_balances',
+  departments: 'departments',
+  employees: 'employees'
 };
 
 /**
  * Checks whether a user is authorized to access a given tab/module.
- * Respects General Admins, cloud permissions userOverrides, and role defaults.
+ * Evaluates full 3-layer permissions (Role Defaults -> Multi-Department Union -> User Override).
  */
-export function isUserAuthorizedForTab({ user, targetModule, targetTab, cloudPermissions = {} }) {
+export function isUserAuthorizedForTab({
+  user,
+  targetModule,
+  targetTab,
+  cloudPermissions = {},
+  departmentOverrides = {},
+  departments = [],
+}) {
   if (!user || !user.id) return false;
+  if (user.status === 'inactive' || user.isActive === false) return false;
 
   // 1. General Admins always have access to all tabs
   if (user.isGeneralAdmin || user.role === 'general_admin') {
@@ -48,38 +61,29 @@ export function isUserAuthorizedForTab({ user, targetModule, targetTab, cloudPer
   }
 
   const permKey = TAB_TO_PERMISSION_KEY_MAP[targetTab] || targetTab;
-  const userOverride = cloudPermissions[user.id] || user.permissions || {};
-  const userModules = userOverride.modules || {};
+  const userDeptIds = getRecordDepartmentIds(user, departments);
+  const effectiveUserOverrides =
+    cloudPermissions && Object.keys(cloudPermissions).length > 0
+      ? cloudPermissions
+      : user.permissions
+      ? { [user.id]: user.permissions }
+      : {};
 
-  // 2. Check explicit user overrides in cloudPermissions
-  if (
-    userModules[permKey] === false ||
-    userModules[targetTab] === false ||
-    (targetModule && userModules[targetModule] === false)
-  ) {
+  const eff = resolveEffectivePermissions({
+    user,
+    departmentIds: userDeptIds,
+    departmentOverrides,
+    userOverrides: effectiveUserOverrides,
+    defaultRolePermissions: DEFAULT_ROLE_PERMISSIONS,
+  });
+
+  if (eff.modules?.[permKey] === false || eff.modules?.[targetTab] === false) {
     return false;
   }
-  if (userModules[permKey] === true || userModules[targetTab] === true) {
-    return true;
+  if (targetModule && eff.modules?.[targetModule] === false) {
+    return false;
   }
-
-  // 3. Fallback to standard role defaults from DEFAULT_ROLE_PERMISSIONS or role heuristics
-  const userRole = user.role || 'standard';
-  const rolePerms = APP_ARCHITECTURE?.modules?.[targetModule]?.tabs?.[targetTab];
-  if (userRole === 'standard') {
-    // If standard role has false for this key (e.g. system_config or users), deny
-    if (permKey === 'users' || permKey === 'system_config') return false;
-    return true;
-  }
-
-  // Role affinity heuristic
-  const isRoleMatched =
-    (targetModule === 'purchases' && ['purchasing_manager', 'warehouse_keeper', 'accountant'].includes(userRole)) ||
-    (targetModule === 'production' && ['production_manager', 'production_supervisor', 'quality_inspector'].includes(userRole)) ||
-    (targetModule === 'finance' && ['financial_controller', 'accountant', 'safe_custodian'].includes(userRole)) ||
-    (targetModule === 'master_data' && ['purchasing_manager', 'production_manager', 'financial_controller'].includes(userRole));
-
-  return isRoleMatched;
+  return true;
 }
 
 /**
@@ -93,6 +97,8 @@ export function resolveAuthorizedUserIdsForComment({
   isSensitive = false,
   allUsers = [],
   cloudPermissions = {},
+  departmentOverrides = {},
+  departments = [],
   excludeUserId = null
 }) {
   if (!Array.isArray(allUsers) || allUsers.length === 0) return [];
@@ -103,21 +109,31 @@ export function resolveAuthorizedUserIdsForComment({
     if (!user || !user.id) return;
     if (excludeUserId && user.id === excludeUserId) return; // Author suppression
 
-    // 1. Tab & Module RBAC check
-    if (!isUserAuthorizedForTab({ user, targetModule, targetTab, cloudPermissions })) {
+    // 1. Tab & Module 3-Layer RBAC check
+    if (!isUserAuthorizedForTab({ user, targetModule, targetTab, cloudPermissions, departmentOverrides, departments })) {
       return;
     }
 
     // 2. Sensitive field check: if field is sensitive, user must have sensitive view permission
     if (isSensitive) {
+      const userDeptIds = getRecordDepartmentIds(user, departments);
+      const eff = resolveEffectivePermissions({
+        user,
+        departmentIds: userDeptIds,
+        departmentOverrides,
+        userOverrides: cloudPermissions || {},
+        defaultRolePermissions: DEFAULT_ROLE_PERMISSIONS,
+      });
+      const fieldPermKey = targetFieldKey ? `${TAB_TO_PERMISSION_KEY_MAP[targetTab] || targetTab}.${targetFieldKey}` : '';
       const hasSensitiveAccess =
         user.isGeneralAdmin ||
         user.role === 'general_admin' ||
         user.canViewSensitiveCosts ||
+        eff.sensitive?.canViewPrices === true ||
+        eff.sensitive?.canViewTotals === true ||
+        (fieldPermKey && eff.fields?.[fieldPermKey] === true) ||
         cloudPermissions[user.id]?.sensitive?.[targetFieldKey] === true ||
-        cloudPermissions[user.id]?.sensitive?.all === true ||
-        user.permissions?.sensitive?.[targetFieldKey] === true ||
-        user.permissions?.sensitive?.all === true;
+        cloudPermissions[user.id]?.sensitive?.all === true;
 
       if (!hasSensitiveAccess) {
         return; // Denied access to sensitive field comments

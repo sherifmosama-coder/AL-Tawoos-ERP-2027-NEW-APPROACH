@@ -176,7 +176,7 @@ export default function StockTransferPrintSlip({
                   {companyName}
                 </h1>
                 <h2 className="text-xs text-slate-700 font-bold mt-0.5">
-                  {isAr ? 'إذن تحويل وصرف مخزني داخلي (TRN)' : 'Internal Stock Transfer Voucher (TRN)'}
+                  {isAr ? 'إذن تحويل مخزني' : 'Stock Transfer Note'}
                 </h2>
                 <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5">
                   <span>{companyProfile.registeredAddress || 'المنطقة الصناعية، السادس من أكتوبر، الجيزة، مصر'}</span>
@@ -187,14 +187,14 @@ export default function StockTransferPrintSlip({
             <div className="text-end">
               <span className="text-sm md:text-base font-mono font-extrabold text-slate-900 block">{trn.id}</span>
               <span className="text-[11px] font-bold text-slate-600 block">
-                {isAr ? `(الإصدار ${trn.version || '1.0'})` : `(Rev ${trn.version || '1.0'})`}
+                {`v${trn.version || '1.0'}`}
               </span>
               <span className="text-[11px] text-slate-500 mt-0.5 block">
-                {isAr ? 'تاريخ التحويل:' : 'Date:'} {trn.transferDate || trn.date}
+                {isAr ? 'تاريخ:' : 'Date:'} {trn.transferDate || trn.date}
               </span>
               {trn.productionOrderRef && (
                 <span className="text-[11px] font-mono font-bold text-indigo-700 block">
-                  MO Ref: {trn.productionOrderRef}
+                  MO: {trn.productionOrderRef}
                 </span>
               )}
             </div>
@@ -203,18 +203,18 @@ export default function StockTransferPrintSlip({
           {/* Route Card */}
           <div className="grid grid-cols-2 gap-3.5 p-3 mb-3.5 rounded-xl border border-slate-200 bg-slate-50/60 text-xs">
             <div>
-              <span className="text-slate-400 block mb-0.5">{isAr ? 'المخزن المنصرف منه (المصدر):' : 'Source WH:'}</span>
+              <span className="text-slate-400 block mb-0.5">{isAr ? 'من:' : 'From:'}</span>
               <span className="font-bold text-slate-900 text-sm block">{getWarehouseName(trn.sourceWarehouse)}</span>
               <span className="text-slate-600 block mt-0.5 text-[11px]">
-                {isAr ? 'المسؤول / محرر الإذن:' : 'Issued By:'} <b className="text-slate-900">{trn.issuedBy || '-'}</b>
+                {isAr ? 'المحرر:' : 'By:'} <b className="text-slate-900">{trn.issuedBy || '-'}</b>
               </span>
             </div>
             <div className="text-end">
-              <span className="text-slate-400 block mb-0.5">{isAr ? 'المخزن المحول إليه (الوجهة):' : 'Destination WH:'}</span>
+              <span className="text-slate-400 block mb-0.5">{isAr ? 'إلى:' : 'To:'}</span>
               <span className="font-bold text-slate-900 text-sm block">{getWarehouseName(trn.targetWarehouse)}</span>
               {trn.verifiedBy && (
                 <span className="text-emerald-800 font-bold block mt-0.5 text-[11px]">
-                  {isAr ? 'اعتماد واستلام أمين العهدة:' : 'Verified By:'} {trn.verifiedBy}
+                  {isAr ? 'المستلم:' : 'Received:'} {trn.verifiedBy}
                 </span>
               )}
             </div>
@@ -225,11 +225,11 @@ export default function StockTransferPrintSlip({
             <table className="w-full border-collapse text-xs">
               <thead>
                 <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
-                  <th className="p-2 text-start border-e border-slate-200 w-8">{isAr ? 'م' : 'No.'}</th>
-                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'الكود والتنوع' : 'Code & Var'}</th>
-                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'اسم الخامة والمواصفات والشدة' : 'Description & Specs'}</th>
-                  <th className="p-2 text-center border-e border-slate-200">{isAr ? 'الكمية المحولة' : 'Transferred Qty'}</th>
-                  <th className="p-2 text-start">{isAr ? 'رقم التشغيلة' : 'Batch #'}</th>
+                  <th className="p-2 text-start border-e border-slate-200 w-8">{isAr ? 'م' : '#'}</th>
+                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'الكود' : 'Code'}</th>
+                  <th className="p-2 text-start border-e border-slate-200">{isAr ? 'الصنف' : 'Item'}</th>
+                  <th className="p-2 text-center border-e border-slate-200">{isAr ? 'الكمية' : 'Qty'}</th>
+                  <th className="p-2 text-start">{isAr ? 'التشغيلة' : 'Batch'}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -263,21 +263,16 @@ export default function StockTransferPrintSlip({
 
           {/* QR Code & Notes */}
           <div className="flex justify-between items-start gap-4 mb-4">
-            <div className="flex items-center gap-3 p-2.5 rounded-xl border border-slate-200 bg-slate-50/40">
+            <div className="flex flex-col items-center gap-1 p-2 rounded-xl border border-slate-200 bg-slate-50/40 shrink-0">
               {qrDataUrl ? (
-                <img src={qrDataUrl} alt="TRN QR Verification" className="w-16 h-16 rounded border border-slate-200" />
+                <img src={qrDataUrl} alt="QR" className="w-16 h-16 rounded border border-slate-200" />
               ) : (
                 <div className="w-16 h-16 bg-slate-100 rounded flex items-center justify-center">
                   <QrCode className="h-8 w-8 text-slate-400" />
                 </div>
               )}
-              <div className="text-[10px] text-slate-500 space-y-0.5">
-                <span className="font-bold text-slate-800 block text-[11px]">
-                  {isAr ? 'التحقق المخزني الرقمي' : 'Digital Verification'}
-                </span>
-                <span>{isAr ? 'رمز QR يربط بسجل التحويل الموثق' : 'QR links to verified transfer record'}</span>
-                <span className="font-mono block text-slate-400">{trn.id}</span>
-              </div>
+              <span className="text-[8.5px] font-black text-slate-900">{isAr ? 'للنظام' : 'ERP'}</span>
+              <span className="text-[8px] font-mono text-slate-400">{trn.id}</span>
             </div>
 
             {trn.notes && (
@@ -292,25 +287,25 @@ export default function StockTransferPrintSlip({
           <div className="grid grid-cols-4 gap-3 pt-3 border-t border-slate-200 text-xs text-center">
             <div className="p-2 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'أمين مخزن المصدر' : 'Source Storekeeper'}
+                {isAr ? 'المصدر' : 'Source'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">{trn.issuedBy || '................'}</span>
             </div>
             <div className="p-2 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'أمين مخزن الوجهة' : 'Target Storekeeper'}
+                {isAr ? 'الوجهة' : 'Target'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">{trn.verifiedBy || '................'}</span>
             </div>
             <div className="p-2 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'مسؤول الحركة / النقل' : 'Logistics / Transport'}
+                {isAr ? 'النقل' : 'Transport'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">........................</span>
             </div>
             <div className="p-2 rounded-xl border border-slate-200 bg-slate-50/40">
               <span className="text-slate-400 block mb-1 text-[10px]">
-                {isAr ? 'إدارة مراقبة المخزون' : 'Inventory Manager'}
+                {isAr ? 'المخزون' : 'Inventory'}
               </span>
               <span className="font-bold text-slate-900 block text-[11px]">........................</span>
             </div>

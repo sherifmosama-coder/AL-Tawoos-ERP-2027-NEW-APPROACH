@@ -60,8 +60,8 @@ export default function CustodyAcknowledgmentPrintSlip({
     : (companyProfile.tradeNameEn || companyProfile.legalName);
 
   const docTitle = isCustody
-    ? (isAr ? 'إقرار وتعهد استلام عهدة نقدية مؤقتة' : 'Temporary Cash Custody Acknowledgment')
-    : (isAr ? 'إقرار وتفويض استلام سلفة شخصية' : 'Salary Advance Acknowledgment');
+    ? (isAr ? 'إقرار استلام عهدة نقدية' : 'Cash Custody Acknowledgment')
+    : (isAr ? 'إقرار استلام سلفة شخصية' : 'Salary Advance Acknowledgment');
 
   // Concise, direct, legally binding text without verbose filler
   const undertakingClause = isCustody
@@ -218,9 +218,6 @@ export default function CustodyAcknowledgmentPrintSlip({
                     <span>{isAr ? 'س.ت:' : 'CR:'}</span>
                     <span>{companyProfile.commercialRegister || '—'}</span>
                   </div>
-                  <p className="text-[9.5px] text-slate-400">
-                    {isAr ? 'الإدارة المالية — قسم العهد والسلف' : 'Finance Dept. — Custodies & Advances'}
-                  </p>
                 </div>
               </div>
 
@@ -231,7 +228,7 @@ export default function CustodyAcknowledgmentPrintSlip({
                 {isCustody ? (isAr ? 'عهدة نقدية' : 'Custody') : (isAr ? 'سلفة شخصية' : 'Advance')}
               </span>
               <div className="text-xs font-mono font-black text-slate-900 mt-1">
-                <span className="text-[10px] font-normal text-slate-400 me-1">{isAr ? 'رقم الإقرار:' : 'No:'}</span>
+                <span className="text-[10px] font-normal text-slate-400 me-1">{isAr ? 'رقم:' : 'No:'}</span>
                 {documentData.id}
               </div>
               <div className="text-[9.5px] text-slate-500 mt-0.5 font-mono">
@@ -266,13 +263,13 @@ export default function CustodyAcknowledgmentPrintSlip({
               {/* Disbursement Channel */}
               <div className="p-2">
                 <span className="text-[10px] text-slate-400 block font-bold mb-0.5">
-                  {isAr ? 'جهة الصرف:' : 'Disbursed From:'}
+                  {isAr ? 'الخزينة:' : 'Safe:'}
                 </span>
                 <span className="font-extrabold text-slate-800 block text-xs">
                   {documentData.sourceSafeName || documentData.sourceSafeId}
                 </span>
                 <span className="text-[9.5px] text-slate-400 font-mono block mt-0.5">
-                  {documentData.sourceSafeId?.startsWith('BANK-') ? (isAr ? 'تحويل بنكي' : 'Bank Wire') : (isAr ? 'خزينة نقدية' : 'Cash Vault')}
+                  {documentData.sourceSafeId?.startsWith('BANK-') ? (isAr ? 'بنك' : 'Bank') : (isAr ? 'نقدي' : 'Cash')}
                 </span>
               </div>
             </div>
@@ -281,7 +278,7 @@ export default function CustodyAcknowledgmentPrintSlip({
             <div className="p-2.5 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200">
               <div className="space-y-0.5 flex-1">
                 <span className="text-[10px] font-bold text-slate-400 block uppercase">
-                  {isAr ? 'المبلغ كتابة:' : 'In Words:'}
+                  {isAr ? 'كتابة:' : 'In Words:'}
                 </span>
                 <p className="text-xs sm:text-sm font-black text-slate-900 font-serif leading-relaxed">
                   {tafqeetText}
@@ -307,7 +304,7 @@ export default function CustodyAcknowledgmentPrintSlip({
                 {isAr ? 'الغرض:' : 'Purpose:'}
               </span>
               <p className="text-slate-800 font-medium leading-relaxed text-xs">
-                {documentData.notes || (isCustody ? (isAr ? 'صرف عهدة نقدية تشغيلية' : 'Operational cash custody') : (isAr ? 'صرف سلفة شخصية على الراتب' : 'Salary advance'))}
+                {documentData.notes || (isCustody ? (isAr ? 'عهدة تشغيلية' : 'Operational custody') : (isAr ? 'سلفة راتب' : 'Salary advance'))}
               </p>
             </div>
           </div>
@@ -317,7 +314,7 @@ export default function CustodyAcknowledgmentPrintSlip({
             <div className="border border-slate-200 rounded-xl p-1.5 mb-2 bg-slate-50/50 text-xs">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] font-bold text-slate-600">
-                  {isAr ? 'فئات النقدية:' : 'Cash Breakdown:'}
+                  {isAr ? 'الفئات:' : 'Denominations:'}
                 </span>
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -353,7 +350,7 @@ export default function CustodyAcknowledgmentPrintSlip({
           <div className="p-2.5 bg-slate-50/60 border border-slate-200 rounded-xl mb-2 text-slate-800">
             <h4 className="text-[10.5px] font-black text-slate-900 mb-0.5 flex items-center gap-1.5">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-700" />
-              <span>{isAr ? 'التعهد والإقرار:' : 'Acknowledgment & Undertaking:'}</span>
+              <span>{isAr ? 'الإقرار:' : 'Acknowledgment:'}</span>
             </h4>
             <p className="text-[10px] leading-relaxed font-medium text-slate-700">
               {undertakingClause}
@@ -365,26 +362,19 @@ export default function CustodyAcknowledgmentPrintSlip({
         <div className="pt-2 border-t border-slate-300">
           <div className="flex items-end justify-between gap-4">
             {/* QR Code Deep-Link */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col items-center gap-0.5 shrink-0">
               {qrDataUrl ? (
                 <img
                   src={qrDataUrl}
                   alt="QR"
-                  className="h-16 w-16 border border-slate-200 rounded-lg p-1 bg-white shrink-0"
+                  className="h-16 w-16 border border-slate-200 rounded-lg p-1 bg-white"
                 />
               ) : (
-                <div className="h-16 w-16 border border-dashed border-slate-300 rounded-lg flex items-center justify-center text-slate-300 shrink-0">
+                <div className="h-16 w-16 border border-dashed border-slate-300 rounded-lg flex items-center justify-center text-slate-300">
                   <QrCode className="h-5 w-5" />
                 </div>
               )}
-              <div className="text-[9.5px] text-slate-500">
-                <span className="font-bold text-slate-800 block">
-                  {isAr ? 'التحقق المباشر' : 'Direct Link'}
-                </span>
-                <p className="text-[9px] text-slate-400">
-                  {isAr ? 'مسح الرمز للمطابقة بالنظام' : 'Scan to view in ERP'}
-                </p>
-              </div>
+              <span className="text-[8.5px] font-black text-slate-900">{isAr ? 'للنظام' : 'ERP'}</span>
             </div>
 
             {/* 3 Dedicated Airy Signature Blocks */}
@@ -402,7 +392,7 @@ export default function CustodyAcknowledgmentPrintSlip({
               {/* 2. Disbursing Officer */}
               <div className="flex-1 border border-slate-200 rounded-xl p-2 bg-slate-50/30 flex flex-col justify-between h-20">
                 <div className="font-bold text-slate-700 text-[10.5px]">
-                  {isAr ? 'أمين الخزينة' : 'Disbursing Officer'}
+                  {isAr ? 'الخزينة' : 'Cashier'}
                 </div>
                 <div className="text-[9.5px] font-bold text-emerald-700 truncate">
                   {documentData.issuedByName || ''}
@@ -415,19 +405,18 @@ export default function CustodyAcknowledgmentPrintSlip({
               {/* 3. Financial Approval */}
               <div className="flex-1 border border-slate-200 rounded-xl p-2 bg-slate-50/30 flex flex-col justify-between h-20">
                 <div className="font-bold text-slate-700 text-[10.5px]">
-                  {isAr ? 'الاعتماد المالي' : 'Financial Approval'}
+                  {isAr ? 'الاعتماد' : 'Approval'}
                 </div>
                 <div className="border-t border-dashed border-slate-400 pt-1 text-[9px] text-slate-400">
-                  {isAr ? 'الاعتماد' : 'Approval'}
+                  {isAr ? 'التوقيع' : 'Approval'}
                 </div>
               </div>
             </div>
           </div>
 
           {/* Footer Notice */}
-          <div className="mt-2 pt-1 border-t border-slate-200 text-center text-[9px] text-slate-400 flex items-center justify-between">
-            <span>{isAr ? 'نظام الطاووس لإدارة الموارد • نسخة أصلية معتمدة' : 'Al Tawoos ERP • Official Certified Document'}</span>
-            <span>{isAr ? 'صفحة 1 من 1' : 'Page 1 of 1'}</span>
+          <div className="mt-2 pt-1 border-t border-slate-200 text-end text-[9px] text-slate-400">
+            <span>{isAr ? '1 / 1' : '1 / 1'}</span>
           </div>
         </div>
       </div>

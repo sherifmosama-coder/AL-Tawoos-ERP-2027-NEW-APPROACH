@@ -154,3 +154,175 @@ export function resolveLocationInfo(targetBranch, clientObj, order = null) {
 
   return null;
 }
+
+/**
+ * Computes straight-line distance (in kilometers) between two { lat, lng } points
+ * using the Haversine formula.
+ */
+export function computeHaversineKm(coordA, coordB) {
+  if (!coordA || !coordB) return null;
+  const lat1 = Number(coordA.lat);
+  const lng1 = Number(coordA.lng);
+  const lat2 = Number(coordB.lat);
+  const lng2 = Number(coordB.lng);
+  if ([lat1, lng1, lat2, lng2].some((v) => !Number.isFinite(v))) return null;
+
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const R = 6371; // Earth mean radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c * 10) / 10;
+}
+
+/**
+ * Builds a proposed trip delivery route using nearest-neighbor ordering
+ * starting from the factory/warehouse GPS origin (or the first GPS stop if origin is absent),
+ * plus a single Multi-Stop Google Maps Directions URL.
+ *
+ * @param {object} params
+ * @param {string} [params.originRaw] - Factory/warehouse Google Maps URL or "lat, lng"
+ * @param {Array<{ key: string, label: string, rawLocation?: string, address?: string, url?: string }>} params.stops
+ */
+export function buildProposedTripRoute({ originRaw = '', stops = [] } = {}) {
+  const originCoords = extractCoordinates(originRaw);
+  const originToken = originCoords
+    ? `${originCoords.latStr},${originCoords.lngStr}`
+    : (originRaw && typeof originRaw === 'string' && originRaw.trim() && !/^https?:\/\//i.test(originRaw.trim())
+        ? originRaw.trim()
+        : null);
+
+  const normalizedStops = (Array.isArray(stops) ? stops : []).map((s, idx) => {
+    const coords = extractCoordinates(s.rawLocation || s.url || '');
+    const mapsToken = coords
+      ? `${coords.latStr},${coords.lngStr}`
+      : (s.address && String(s.address).trim() ? String(s.address).trim() : (s.label || ''));
+    const rawSeq = Number(s.manualSequence);
+    const manualSequence = Number.isFinite(rawSeq) && rawSeq > 0 ? Math.floor(rawSeq) : null;
+    return {
+      ...s,
+      originalIndex: idx,
+      manualSequence,
+      coords,
+      hasGps: Boolean(coords),
+      mapsToken,
+    };
+  });
+
+  const isManualSequence = normalizedStops.some((s) => s.manualSequence !== null);
+
+  let orderedStops = [];
+  let totalKm = 0;
+  let gpsStopCount = 0;
+  let hasAnyLegKm = false;
+
+  if (isManualSequence) {
+    // Manual Priority Mode: strictly follow planner's 1 -> 2 -> 3 sequence
+    const sorted = [...normalizedStops].sort((a, b) => {
+      const aHas = a.manualSequence !== null;
+      const bHas = b.manualSequence !== null;
+      if (aHas && bHas && a.manualSequence !== b.manualSequence) {
+        return a.manualSequence - b.manualSequence;
+      }
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      return a.originalIndex - b.originalIndex;
+    });
+
+    let prevCoords = originCoords || null;
+    orderedStops = sorted.map((s, i) => {
+      let legKm = null;
+      if (s.hasGps) {
+        gpsStopCount += 1;
+        if (prevCoords) {
+          legKm = computeHaversineKm(prevCoords, s.coords);
+          if (legKm !== null) {
+            totalKm = Math.round((totalKm + legKm) * 10) / 10;
+            hasAnyLegKm = true;
+          }
+        }
+        prevCoords = s.coords;
+      }
+      return {
+        ...s,
+        legKm,
+        stopNumber: i + 1,
+      };
+    });
+  } else {
+    // Automatic Nearest-Neighbor Mode (default when optional sequence is unset)
+    const gpsStops = normalizedStops.filter((s) => s.hasGps);
+    const nonGpsStops = normalizedStops.filter((s) => !s.hasGps);
+
+    const orderedGps = [];
+    const remaining = [...gpsStops];
+    let currentCoords = originCoords || null;
+
+    while (remaining.length > 0) {
+      let bestIdx = 0;
+      let bestDist = null;
+
+      if (currentCoords) {
+        bestDist = Infinity;
+        for (let i = 0; i < remaining.length; i++) {
+          const d = computeHaversineKm(currentCoords, remaining[i].coords);
+          if (d !== null && d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+          }
+        }
+        if (!Number.isFinite(bestDist)) bestDist = null;
+      }
+
+      const picked = remaining.splice(bestIdx, 1)[0];
+      if (bestDist !== null) {
+        totalKm = Math.round((totalKm + bestDist) * 10) / 10;
+        hasAnyLegKm = true;
+      }
+      orderedGps.push({
+        ...picked,
+        legKm: bestDist,
+      });
+      currentCoords = picked.coords;
+    }
+
+    gpsStopCount = orderedGps.length;
+    orderedStops = [
+      ...orderedGps,
+      ...nonGpsStops.map((s) => ({ ...s, legKm: null })),
+    ].map((s, i) => ({
+      ...s,
+      stopNumber: i + 1,
+    }));
+  }
+
+  // Build Google Maps Multi-Stop Directions URL
+  const routeTokens = orderedStops.map((s) => s.mapsToken).filter(Boolean);
+  let googleMapsRouteUrl = null;
+
+  if (routeTokens.length >= 1) {
+    const destination = routeTokens[routeTokens.length - 1];
+    const waypoints = routeTokens.slice(0, -1);
+    const qs = new URLSearchParams({ api: '1', travelmode: 'driving' });
+    if (originToken) {
+      qs.set('origin', originToken);
+    }
+    qs.set('destination', destination);
+    if (waypoints.length > 0) {
+      qs.set('waypoints', waypoints.join('|'));
+    }
+    googleMapsRouteUrl = `https://www.google.com/maps/dir/?${qs.toString()}`;
+  }
+
+  return {
+    isManualSequence,
+    hasOriginGps: Boolean(originCoords),
+    originCoords,
+    orderedStops,
+    gpsStopCount,
+    totalKm: hasAnyLegKm ? totalKm : null,
+    googleMapsRouteUrl,
+  };
+}

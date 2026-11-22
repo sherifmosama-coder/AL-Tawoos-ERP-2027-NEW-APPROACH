@@ -230,7 +230,7 @@ The `ScopedPermissionMatrixModal.jsx` and `AdminControlPanel.jsx` (Hierarchical 
   1. *Tab Navigation Visibility* (`modules[tabId]`)
   2. *Operational Actions Authority* (`actions['tabId.actionKey']`)
   3. *Field Privacy Masking* (`fields['tabId.fieldKey']`)
-- **Live Cloud Synchronization**: Changes are committed atomically to `system_config/permissions` via `setDoc(..., { merge: true })`, updating all active user sessions in real time via Firestore snapshot listeners.
+- **Live Cloud Synchronization**: Changes are committed atomically to `system_config/permissions` via `setDoc(..., { mergeFields: ['departmentOverrides', 'userOverrides', 'updatedAt', 'updatedBy'] })`, updating all active user sessions in real time via Firestore snapshot listeners. Supports both **Department Matrix** (`departmentOverrides`) and **Individual User Overrides** (`userOverrides`) with 3-Layer Cascade resolution (`Role Defaults → Multi-Department Union → User-Level Override`).
 
 ### Hierarchical Permission Cascade Rule (Tab Visibility $\rightarrow$ Actions & Fields)
 To prevent orphaned sub-permissions when a user is denied access to a tab, a strict parent-to-child cascade rule is enforced identically in **Admin Control Panel (`AdminControlPanel.jsx`)**, **Scoped Permissions Matrix (`ScopedPermissionMatrixModal.jsx`)**, and **Runtime Session Evaluation (`App.jsx` & `appArchitecture.js`)**:
@@ -589,7 +589,8 @@ Component: `src/components/AdminControlPanel.jsx`
 | `production_shifts` | `SHIFT-YYYY-MM-DD` | Daily shift closure records, break logs, OEE efficiency snapshots, and sealing audits |
 | `fg_receipts` | `FGR-YYYYMMDD-XX` | Finished Goods Inward receipts stamped upon physical gate acceptance |
 | `faulty_fg_returns` | `RTN-YYYYMMDD-XX` | Defective finished goods returned from trade or internal handling |
-| `production_workers` | `EMP-XXXX` | Production worker roster, roles, assigned lines, and active shifts |
+| `departments` | `DEPT-XXXX` | Organizational departments (`code`, `nameAr`, `nameEn`, `headEmployeeId`, `color`, `isActive`) powering multi-department permissions and future HR/routing |
+| `employees` | `EMP-XXXX` | Unified HR-ready staff, workers, and system users directory (`departmentIds[]`, `operationalTags[]`, `isSystemUser`, `linkedUserId`, `hrProfile`) — canonical SSOT replacing legacy `production_workers` |
 | `production_transformations`| `TRANS-TANK-*`, `TRANS-WO-*`| In-situ production transactions (M-credits, R-deductions, and WO component issues) |
 | `shift_handovers` | `SH-[Timestamp]-[Serial]` | Shift handover logs and physical serial sticker verification audits |
 | `spare_parts_issues` | `XISS-YYYYMMDD-01` | Non-production spare parts & consumables issue vouchers |
@@ -1611,6 +1612,102 @@ To prevent visual clutter in the Sales Orders master directory, dispatch executi
   - `RetailSettlementModal` reconciles loaded truck baseline against actual confirmed sold quantities and unsold warehouse returns, displaying live product breakdowns, buyer proof uploads (`retailSettlementAttachments`), printable trip settlement slips (`openPrintableRetailSettlementSlip`), and Force-Sync revision tracking (`retailSettlementRevision`).
   - Upon settlement or Force-Sync commit, `createNotification` directly alerts relevant Sales, Warehouse, Accounting, and Admin users with sold/returned cartons (`طن`) and settled invoice totals—without intermediate pending-acknowledgment buttons or states.
 
+---
+
+## 32. Finished Goods Stock Balances Overview & SSOT Engine (`fg_balances` & `fgStockEngine.js`)
+
+### 32.1 Architecture & Tab Integration
+- **Navigation Surface**: Registered under Production & Manufacturing (`production.tabs.fg_balances`) right after `fg_inward` across `appArchitecture.js`, `tabAppearanceConfig.js`, `App.jsx`, `LandingPage.jsx`, `TopNavbar.jsx`, `notificationEngine.js`, and `commentEngine.js`.
+- **View Component**: `src/components/FgBalancesMaster.jsx` provides a read-only SSOT inventory dashboard with KPI strip, multi-criteria filtering (search, production line category, brand ownership, stock health, inactive toggle), expandable SKU drill-downs (per-packaging option `A/B` lot traceability + active `prepare` sales orders), `<RowCommentButton>` threads, CSV export (`canExport`), and an interactive filterable/printable Movement Kardex modal (`canViewKardex`, `canPrint`).
+- **Units Policy**: Displays strictly Cartons (`كرتونة`) and Small Base Units (`عبوة`). Weight / Tons (`طن`) columns are omitted here (reserved for fleet/truck payload planning).
+
+### 32.2 Single Source of Truth (SSOT) Physical Balance & Pipeline Formula
+Implemented centrally in `src/utils/fgStockEngine.js` (`buildFgStockMatrix`, `buildFgProductKardex`) and shared by both `FgBalancesMaster.jsx` and `FinishedProductsMaster.jsx` (`liveStockMap`):
+1. **Physical FG On-Hand**:
+   - **`(+)` Opening Balance**: Ingested directly from `finished_products[].packagingOptions[]` (`openingQtySmall`, `openingQtyLarge`, `openingBatchNo`, `openingProdDate`, `openingExpDate`, `openingWarehouse`). Note: `goods_receipts` is dedicated exclusively to raw/packaging materials; `FinishedProductsMaster.jsx` preserves saved OB fields on edit and no longer generates redundant `OB-FG-*` docs into `goods_receipts` or `stock_ledger`.
+   - **`(+)` Accepted Production Pallets**: `staged_floor_pallets` where `status === 'transferred_to_fg' || status === 'accepted_in_fg' || stagingStatus === 'transferred_to_fg'`.
+   - **`(+)` Commercial Sales Returns**: `sales_orders` where `['return_deduct', 'return_no_deduct'].includes(orderType)`, `['delivered', 'paid'].includes(fulfillmentStatus)`, `!isSplitParent`, and `confirmationStatus !== 'canceled'`.
+   - **`(-)` Faulty FG Warehouse Pulls**: `faulty_fg_returns` where `sourceType === 'fg_warehouse' && status !== 'cancelled' && status !== 'rejected'` (supporting both `items[]` and legacy root fields).
+   - **`(-)` Dispatched Sales Orders**: `sales_orders` where `['supply', 'replacement_old', 'exchange'].includes(orderType)`, `['shipped', 'delivered', 'paid'].includes(fulfillmentStatus)`, `!isSplitParent`, and `confirmationStatus !== 'canceled'` (summing net `lines[].qty + lines[].bonus`).
+2. **Non-Deducted Commitments & Inward Pipeline**:
+   - **Preparing / Committed (`prepare`)**: Physical outbound `sales_orders` in `fulfillmentStatus === 'prepare'`; drives **`Net Available = Physical On-Hand - Preparing`**.
+   - **Pending Custodian Inward**: `stock_transfers` with `status === 'pending_custodian_verification'` targeting FG receipts (`TRN-FG-*` / `transferType === 'finished_goods'`).
+   - **Staged on Floor**: `staged_floor_pallets` with `status === 'staged_on_floor' && !isWaitingMaterials` (excluding pallets already queued inside pending custodian transfers).
+3. **Weighted Average Cost Valuation & RBAC Masking**:
+   - Aggregates pallet cost (`palletTotalCost` / `costPerSmall` / `costPerLarge`) to derive `avgCostPerSmall`, `avgCostPerLarge`, and `stockValue`. Masked (`••••`) unless `canAccessField(permissions, 'fg_balances', 'unitCost' | 'totalValue', currentUser)` is granted.
+
+### 32.3 Loading Plan FG Stock & Deficit Intelligence Sidebar (`LoadingPlanFgSidebar.jsx`)
+- **Persistent Opposite-Edge Drawer**: Mounted inside `SalesLoadingPlanMaster.jsx` on the `end-0` viewport edge (`fixed end-0 inset-y-0 z-40`), opposite the main navigation sidebar, defaulting to collapsed with a slim vertical trigger tab displaying a live red `deficitSkuCount` badge.
+- **Forecast Engine (`buildLoadingPlanFgForecast` in `src/utils/fgStockEngine.js`)**:
+  - **Same-Day Opening vs Live Current Balance (`targetPlanningDate <= todayStr`)**: When no outbound orders have been dispatched on `targetPlanningDate`, `openingCartons` equals Live Physical FG On-Hand from `buildFgStockMatrix`. Once one or more outbound orders are dispatched on `targetPlanningDate`, `openingCartons` reflects the previous day's closing balance (`endDate = targetPlanningDate - 1`), while `currentBalanceCartons` reflects live mid-day Physical FG On-Hand and `dispatchedOnTargetDayCartons` surfaces the dispatched volume so unshipped remaining commitments do not double-count already-shipped stock.
+  - **Future-Day Cumulative Forward Simulation (`targetPlanningDate > todayStr`)**: Simulates intermediate calendar days (`< targetPlanningDate`) from Live Physical FG On-Hand by subtracting unshipped open demand (`not_yet`, `prepare`, `shipped`) and adding remaining un-received active `work_orders` plus scheduled sales returns (`return_deduct` / `return_no_deduct`), producing an Estimated Opening Balance for `targetPlanningDate`.
+  - **Planned Inflows & Trip Extras Hook**: Counts active non-cancelled, non-completed `work_orders` on `planDate` net of already-accepted FG pallets (`max(0, plannedCartons - acceptedFgPalletsCartons)`), scheduled commercial returns, and a reserved `plannedTripExtrasCartons` hook for future Trip Dispatch Extras Slips (avoiding speculation on unsettled retail truck inventory).
+  - **Live Staged Edits & View Modes**: Recomputes immediately against unsaved `stagedAssignments` (`loadingDate` / `fulfillmentStatus`) in `SalesLoadingPlanMaster.jsx`; offers a 1-click **By SKU / By Packing** toggle (with `hasOptionDeficit` alert indicators when `'ANY'` or option pools create a sub-option shortfall), subtle monospace SKU/option IDs, product thumbnails (`imageFile`), click-to-expand equation details with **Client Name chips** for `prepare` and `ordered` commitments, and fixed 3-tier priority sorting (**Deficits** -> **Active Unfulfilled Orders** -> **Remaining Catalog**). Plus collapsible push-layout (`paddingInlineEnd`) and floating pulsing deficit icons on the edge handle.
+
+### 32.4 Per-Order & Row-Level Trip Priority Stock Availability (`buildOrderTripAvailabilityMap` & `OrderCartonsAvailabilityChip`)
+- **Sequential Priority Allocation (`buildOrderTripAvailabilityMap` in `src/utils/fgStockEngine.js`)**:
+  - Ranks all open outbound physical orders (`prepare`, `not_yet`) by **Effective Loading Date (asc) → `prepare` before `not_yet` → Trip # (`loadingOrderNumber`, asc; unassigned last) → Order Serial # (asc)** tie-breaker.
+  - Feeds Today/Past dates strictly from **Live Physical FG On-Hand** (`buildFgStockMatrix`), while progressively unlocking active remaining `work_orders` and scheduled sales returns for future loading dates (`> todayStr`).
+  - Matches explicit packing options (`A`/`B`) strictly against their respective option balances, while `'ANY'` draws flexibly from the largest available active option balance of that SKU.
+- **UI Surfacing (`SalesLoadingPlanMaster.jsx`)**:
+  - Enlarged 2-line clickable **`OrderCartonsAvailabilityChip`** on every order card displaying Cartons + Availability tier (**Green**: `ALL Available` at `100%`, **Amber**: `50%–99%`, **Red**: `0%–49%`, counting `qty + bonus` cartons; neutral badges for `Dispatched` and `Incoming Return`).
+  - Clicking opens **`OrderProductsDetailsModal`**, displaying an order priority banner and a per-line **Availability (`التوفر`)** chip on every SKU row matching the allocated carton count and packing option.
+
+### 32.5 FG Warehouse Truck Dispatch & Return Receiving (`truck_dispatch` & `truck_dispatches`)
+- **Navigation Surface**: Registered directly after `loading_plan` inside **Sales & Distribution (`sales.tabs.truck_dispatch`)** across `appArchitecture.js`, `tabAppearanceConfig.js`, `App.jsx`, `LandingPage.jsx`, `TopNavbar.jsx`, `notificationEngine.js`, and `commentEngine.js`.
+- **View Component & Helpers**: `src/components/TruckDispatchMaster.jsx` + pure utility module `src/utils/truckDispatchUtils.js`.
+  - **Chronological Trip Grouping & Gate**: Groups physical `sales_orders` by `${loadingDate}_LO-${loadingOrderNumber}`, defaulting focus to **Today** (`loadingDate === todayStr`) sorted most recent first. Trips containing `not_yet` (Pending) orders remain disabled until transitioned to `prepare`.
+  - **Dual Pre-Requisite Gate**: Confirming the Dispatch Modal writes `truck_dispatches/{tripId}` (`dispatchStatus: 'loaded'`) and stamps `fgWarehouseDispatched: true` on included `sales_orders` (establishing the FG Warehouse pre-requisite gate ahead of `shipped`, paired alongside the upcoming Accounting Financial Documents gate).
+  - **Dispatch Matrix, Precautionary Extras & Dual Labour Effort**: Features a read-only **Client (Rows) × Product/Packing-Option (Columns)** matrix with locked totals, an editable **`+ Trip Extras`** row (plus optional extra-only SKU columns), **`Total Dispatched` (`Locked + Extras`)**, and dual **Warehouse Loading Crew** + **Offloading/Accompanying Crew** selectors with auto-equalizing `100%` effort split inputs.
+  - **SSOT FG Inventory & Sidebar Sync (`fgStockEngine.js`)**: Dispatched Extras deduct from Physical FG On-Hand (`TRIP_EXTRAS_OUT`), unreturned Extras populate `plannedTripExtrasCartons` (`+ExtRet`) inside `LoadingPlanFgSidebar`, and reconciled Good Returned Extras re-credit Physical FG On-Hand (`TRIP_EXTRAS_RETURN`).
+  - **Return / Receiving Matrix & Two-Way Task Handshake**: Both Accountant and FG Warehouse Custodian share `TruckReturnReceivingModal` (Extras row + Client Returns per order type + Variance Footer + unified `stockReturnDate`). Return inspection strictly unlocks only once the trip reaches `shipped`/`delivered`.
+  - **Retail Settlement ↔ Warehouse Hold & EOD `جرد` Deferral (`stockReturnDate`)**: `RetailSettlementModal` syncs unsold returns into `truck_dispatches` (`pending_wh_confirm`) and assigns `truck_return_wh_confirm` to FG custodians. Dispatched loaded quantities stay deducted (`SALES_DISPATCH`) until both sides reconcile (`reconciled`) AND `stockReturnDate` arrives (`TRIP_CLIENT_RETURN`), while EOD `جرد`-deferred returns (`stockReturnDate > todayStr`) remain excluded from Today's live shelf balance and feed `LoadingPlanFgSidebar` forward simulation for `stockReturnDate`.
+  - **Discrepancy Escalation**: WH exact match marks `reconciled`, while any variance enters `discrepancy_pending_accounting` and assigns `truck_return_accountant_review` via `user_actions_queue`.
+  - **Immutable Dispatch Documents Registry (`dispatch_documents` & `system_config/dispatch_doc_counter`)**: Assigns monotonic sequential numbers (`DD-00001`, `DD-00002`, ...) persisted with frozen `modelSnapshot` payloads and live `Valid` vs. `Legacy` evaluation (trips that moved into `shipped` keep their Dispatch Document `Valid` and route undelivered orders into `undeliveredOrders[]` → Expected Returns, while pre-shipment reversals/cancellations/edits flip the doc to `Legacy`). Surfaceable via the date-filterable `DispatchDocumentsHistoryModal` even when trips are unlinked or cancelled.
+  - **Concise Generated Documents Standard**: Enforces crisp 1-word Arabic labels, 1-word QR captions (`للنظام`, `المسار`, `الموقع`, `الأحدث`), smart conditional pruning of empty sections/fields, 1-line Legacy/status strips, generous breathing room, light-fill/dark-ink print palette (no dark-filled printable cells/rows/pills), and a `0.78` auto-fit readability floor with clean multi-page flow (`src/utils/dispatchDocumentBuilder.js`).
 
 
+
+
+
+
+---
+
+## 25. Unified HR-Ready Personnel Directory, Multi-Department Architecture & 3-Layer Permissions
+
+### 25.1 Canonical Master Data Collections
+- **`departments` (`DepartmentsMaster.jsx`)**: First-class organizational departments (`id`, `code`, `nameAr`, `nameEn`, `description`, `headEmployeeId`, `color`, `isActive`). Replaces legacy free-text department strings across the ERP.
+- **`employees` (`EmployeesDirectoryMaster.jsx`)**: Unified HR-ready staff, workers, and system users directory (`id`, `employeeCode`, `nameAr`, `nameEn`, `phone`, `email`, `departmentIds[]`, `departmentId` primary, `departmentNameAr`, `jobTitle`, `operationalTags[]`, `isSystemUser`, `linkedUserId`, `role`, `status`, `hrProfile { nationalId, hireDate, contractType, shiftType, notes }`).
+  - Supports **multi-department membership** (`departmentIds: string[]`).
+  - Automatically syncs active/revoked system login accounts to `users/{linkedUserId}` when `isSystemUser` is toggled.
+  - All operational modules (`TruckDispatchMaster`, `SalesLoadingPlanMaster`, `VehiclesMaster`, `WorkOrdersMaster`, `ProductionProcessesMaster`, `CashSafesMaster`, `ChartOfAccountsMaster`, `cashLedgerEngine`) consume `employees` as the single source of truth via `buildUnifiedPersonnelPool` (`src/utils/personnelDirectory.js`).
+
+### 25.2 Navigation Consolidation (Sidebar, Landing Page & Top Navbar)
+- Master Data exposes a clean 2-tab personnel & access structure across all 3 navigation surfaces (`App.jsx`, `LandingPage.jsx`, `TopNavbar.jsx`) and `tabAppearanceConfig.js`:
+  1. `#departments` — **الأقسام وصلاحياتها / Departments & Permissions**
+  2. `#employees` — **الموظفون والعمالة والمستخدمون / Staff, Workers & Users**
+- Legacy `#users` and `#production_workers` URLs cleanly redirect into `EmployeesDirectoryMaster` pre-filtered to `system` or `worker`.
+
+### 25.3 3-Layer Permission Resolution (`src/config/appArchitecture.js`)
+- `resolveEffectivePermissions` & `getPermissionCellMeta` evaluate permissions in strict precedence:
+  1. **General Admin Bypass**: `isGeneralAdmin || role === 'general_admin'` → full access.
+  2. **Layer 1 — Role Defaults**: `DEFAULT_ROLE_PERMISSIONS.standard`.
+  3. **Layer 2 — Multi-Department Union**: evaluates each assigned department's `departmentOverrides[deptId]` (with per-department tab cascade) and takes the union across all of the user's departments.
+  4. **Layer 3 — Individual User Override**: `userOverrides[user.id]` wins over the department union (supports both granting extra access and explicitly revoking a department permission).
+  5. **Tab Cascade Deselection**: if `effectiveModules[tabId] === false`, all `actions[tabId.*]` and `fields[tabId.*]` evaluate to `false`.
+- Persisted in `system_config/permissions` via `setDoc(..., { mergeFields: ['departmentOverrides', 'userOverrides', 'updatedAt', 'updatedBy'] })` in `ScopedPermissionMatrixModal.jsx` (2-mode Departments / User Overrides grid with `Inherited` vs `Custom` badges and 1-click `Reset to Dept`).
+
+---
+
+## 26. Hybrid Automated System Restore (Time Machine)
+
+- **Access & Placement (`SystemRestoreHub.jsx` inside `AdminControlPanel.jsx`)**: Exclusively accessible to General Admin via `#admin_panel?subTab=system_restore` (`الاستعادة الزمنية / System Restore`), with zero buttons exposed on individual operational tab banners.
+- **Hybrid Capture Engine (`src/utils/systemRestoreEngine.js` & `functions/index.js`)**:
+  - **Spark-Compatible In-App Scheduler (`startAutoRestoreScheduler`)**: Mounted in `App.jsx` for active user sessions using an atomic Firestore transaction lease (`system_restore_config/scheduler`), idle-skip optimization (60m heartbeat), and a configurable daily Firestore read quota guard.
+  - **Optional 24/7 Cloud Function (`scheduledSystemRestoreSnapshot` in `functions/index.js`)**: Ready for Blaze plan deployment (`firebase deploy --only functions`) in `me-central2` (`Africa/Cairo` timezone, every 15 minutes).
+- **Content-Addressed Compression & Retention (`src/utils/systemRestoreScopeCatalog.js`)**:
+  - Canonicalizes documents cleanly (`Timestamp` / `Date` preservation + sorted keys), computes SHA-256 hashes, compresses changed collections with `gzip+base64`, and chunks blobs (`<650 KB` per doc via `__p{i}`) inside `system_restore_blobs`. Unchanged collections reuse existing blob hashes across snapshots.
+  - Retention defaults: **15m interval**, **12h intra-day**, **14d daily anchors**, **8 safety (`pre_restore`/`pre_purge`) points**, and permanent retention for `manual` / `pinned` checkpoints, with reference-counted orphan blob GC.
+- **3-Level Rollback with Always-Full-Relational-Cascade (`resolveRestoreScopePlan` & `computeRestoreDiffPlan`)**:
+  - Supports **System-Wide**, **Module**, and **Tab** rollback with Date/Time jump matching (`findNearestRestorePointForDateTime`), live per-collection Diff Preview (`+Recreate`, `~Revert`, `-Remove`, `Unchanged`, `Untouched`), automatic `pre_restore` safety checkpoint + `RESTORE` typed confirmation, post-restore recalculation of `items.stock` & `cash_safes`/`corporate_banks`, and 1-click Undo via `system_restore_logs`.
 

@@ -60,7 +60,14 @@ Every new module, tab, or feature must align with the global system architecture
 - **Dropdowns**: Any selector for GL accounts, cost centers, or partners must use `SearchableSelect`.
 - **Text Accommodation**: Description and notes fields must allow long text without clipping or truncation.
 - **Native Routing & Refresh Standard**: The browser URL hash must always dynamically reflect the active tab, module, and sub-tab (`#tab?subTab=...&module=...`). On tab changes, previous parameters must be cleanly discarded. Native browser reload (F5 / Cmd+R) and mobile pull-to-refresh reliably restore the exact active screen and sub-route. Redundant in-app refresh buttons in the navbar or page header banners are deprecated to keep the UI clean.
-- **Print Optimization**: All modal/tab print actions must use dedicated print slips optimized for A4 (or thermal label specifications), completely isolating print content from navigation sidebars and page backgrounds.
+- **Print Optimization & Concise Generated Documents Standard (Mandatory Across All Printable/Generated Documents)**:
+  - All modal/tab print actions must use dedicated print slips optimized for A4 (or thermal label specifications), completely isolating print content from navigation sidebars and page backgrounds.
+  - **Zero Verbose Prose**: Never include explanatory sentences, helper instructions, or parenthetical descriptions (e.g., `"امسح للانتقال..."`, `"يُملأ يدوياً..."`, `"مرتبة حسب..."`).
+  - **1-Word Labels & 1-Word QR Captions**: Use crisp 1-word Arabic labels (`تاريخ:`, `شاحنة:`, `سائق:`, `منطقة:`, `هاتف:`, `عنوان:`, `مسؤول:`, `عمل:`, `إجازة:`, `ملاحظة:`) and 1-word QR captions (`للنظام`, `المسار`, `الموقع`, `الأحدث`).
+  - **Smart Conditional Pruning**: Omit empty sections, empty metadata fields, and placeholder `"لا يوجد"` / `"غير مسجل"` boxes completely. Keep core financial/operational summary rows consistent and 1-word labeled.
+  - **1-Line Status / Legacy Strips**: Status, Draft, Cancelled, or Legacy notices must fit on a single compact strip with no duplicated sentences.
+  - **Readable Typography & `0.78` Floor**: Provide generous whitespace and `10.5px–11px` readable typography; auto-fit scaling must stop at `0.78` and allow clean multi-page flow (`break-inside: avoid`, repeating `thead`) rather than crushing fonts or clipping overflow.
+  - **Light-Fill / Dark-Ink Print Palette**: Never fill printed fields, cells, badges, pills, or total rows with dark backgrounds and white text. Always use light/white/soft-tint backgrounds (`#ffffff`, `#f8fafc`, `#f1f5f9`, `#e2e8f0`) with dark high-contrast text (`#0f172a`) and crisp borders for emphasis.
 
 ---
 
