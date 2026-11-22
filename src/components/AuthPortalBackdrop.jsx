@@ -32,7 +32,7 @@ export default function AuthPortalBackdrop({ isAr = true, children }) {
         >
           <path
             d={PEACOCK_PARTIAL_PATH}
-            fill="rgba(6, 33, 71, 0.03)"
+            fill="none"
             stroke="rgba(1, 78, 168, 0.16)"
             strokeWidth="1.6"
             vectorEffect="non-scaling-stroke"
@@ -47,7 +47,7 @@ export default function AuthPortalBackdrop({ isAr = true, children }) {
         >
           <path
             d={PEACOCK_PARTIAL_PATH}
-            fill="rgba(6, 33, 71, 0.015)"
+            fill="none"
             stroke="rgba(6, 33, 71, 0.12)"
             strokeWidth="1.35"
             vectorEffect="non-scaling-stroke"
