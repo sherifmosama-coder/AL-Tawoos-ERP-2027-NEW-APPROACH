@@ -14,6 +14,26 @@ import {
   saveSmtpConfig,
   sendTestSmtpEmail,
 } from "./auth/brandedMailer.js";
+import {
+  financePostCashVoucher,
+  financeApproveCashVoucher,
+  financeRejectCashVoucher,
+  financeReverseCashVoucher,
+  financeUpdateCashVoucher,
+  financeInitiateInterSafeTransfer,
+  financeConfirmInterSafeTransfer,
+  financeRejectInterSafeTransfer,
+  financeExecuteChangeExchange,
+  financeExecuteSafeCountAudit,
+} from "./finance/cashSafesEngine.js";
+import {
+  financePostManualJournalEntry,
+  financeReverseJournalEntry,
+} from "./finance/journalEngine.js";
+import {
+  financeReleaseDuesBatchPayment,
+  financeIssueWhtNote,
+} from "./finance/duesSettlementEngine.js";
 
 initializeApp();
 const db = getFirestore();
@@ -26,6 +46,20 @@ export {
   getSmtpConfigStatus,
   saveSmtpConfig,
   sendTestSmtpEmail,
+  financePostCashVoucher,
+  financeApproveCashVoucher,
+  financeRejectCashVoucher,
+  financeReverseCashVoucher,
+  financeUpdateCashVoucher,
+  financeInitiateInterSafeTransfer,
+  financeConfirmInterSafeTransfer,
+  financeRejectInterSafeTransfer,
+  financeExecuteChangeExchange,
+  financeExecuteSafeCountAudit,
+  financePostManualJournalEntry,
+  financeReverseJournalEntry,
+  financeReleaseDuesBatchPayment,
+  financeIssueWhtNote,
 };
 
 // Note: Firestore Eventarc triggers (onDocumentCreated / onDocumentWritten) require co-located

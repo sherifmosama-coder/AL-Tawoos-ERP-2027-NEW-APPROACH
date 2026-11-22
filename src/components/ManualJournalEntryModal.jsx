@@ -16,8 +16,9 @@ import {
   CornerDownRight,
   Sparkles
 } from 'lucide-react';
-import { db, fileToDataUrl } from '../firebase.js';
-import { doc, setDoc, onSnapshot, getDoc } from 'firebase/firestore';
+import { db, functions, fileToDataUrl } from '../firebase.js';
+import { doc, onSnapshot, getDoc } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import SearchableSelect from './SearchableSelect.jsx';
 
 export const MANUAL_ENTRY_CATEGORIES = [
@@ -430,10 +431,15 @@ export default function ManualJournalEntryModal({
         updatedAt: now
       };
 
-      await setDoc(doc(db, 'journal_entries', entryId), entryPayload);
+      const postManualJeFn = httpsCallable(functions, 'financePostManualJournalEntry');
+      const res = await postManualJeFn({
+        entry: entryPayload,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null
+      });
+      const persistedEntry = res?.data?.entryPayload || entryPayload;
 
       if (onSuccess) {
-        onSuccess(entryPayload);
+        onSuccess(persistedEntry);
       }
       onClose();
     } catch (err) {

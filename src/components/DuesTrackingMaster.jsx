@@ -7,7 +7,8 @@ import {
   setDoc,
   serverTimestamp
 } from 'firebase/firestore';
-import { db, fileToDataUrl } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions, fileToDataUrl } from '../firebase';
 import {
   Calendar,
   Clock,
@@ -806,83 +807,9 @@ export default function DuesTrackingMaster({ currentUser = {}, permissions = nul
 
     setIsSavingPayment(true);
     try {
-      const nowIso = new Date().toISOString();
-      const dateCompact = paymentDate.replace(/-/g, '');
-      const batchId = `PAY-${dateCompact}-${String(paymentBatches.length + 1).padStart(3, '0')}`;
       const supplierObj = suppliersById[modalSupplierId];
-
-      const allocatedItems = [];
-
-      for (const row of modalChronologicalRows) {
-        const releaseAmt = round2(Number(modalReleaseAmounts[row.id]) || 0);
-        const existingDoc = settlementsMap[row.id] || {};
-        const prevDirectPaid = round2(Number(existingDoc.paidAmount) || 0);
-        const newDirectPaid = round2(prevDirectPaid + releaseAmt);
-        const totalEffectivePaid = round2(newDirectPaid + (row.prePaidViaPoAdvanceAmount || 0));
-        const newRemaining =
-          row.docType === 'return'
-            ? Math.min(0, round2(row.originalDueAmount - newDirectPaid))
-            : Math.max(0, round2(row.originalDueAmount - totalEffectivePaid));
-
-        const newStatus = Math.abs(newRemaining) <= 0.009 ? 'closed' : 'partially_closed';
-
-        const paymentEntry = {
-          batchId,
-          amount: releaseAmt,
-          paymentDate,
-          paymentMethod,
-          sourceLabel: resolvedSourceLabel,
-          sourceSafeId: paymentMethod === 'cash' ? sourceSafeId : null,
-          sourceBankId: paymentMethod !== 'cash' ? sourceBankId : null,
-          transferRefNumber: paymentMethod === 'transfer' ? transferRefNumber : null,
-          chequeNumber: paymentMethod === 'cheque' ? chequeNumber : null,
-          chequeDueDate: paymentMethod === 'cheque' ? chequeDueDate : null,
-          notes: paymentNotes || '',
-          attachment: paymentAttachment || null,
-          recordedBy: currentUserName,
-          recordedAt: nowIso
-        };
-
-        const updatedHistory = [...(existingDoc.paymentsHistory || []), paymentEntry];
-
-        await setDoc(
-          doc(db, 'dues_settlements', row.id),
-          {
-            id: row.id,
-            docId: row.docId,
-            docType: row.docType,
-            poId: row.poId || null,
-            supplierId: row.supplierId,
-            supplierName: row.supplierName,
-            trancheIndex: row.trancheIndex,
-            originalDueAmount: row.originalDueAmount,
-            paidAmount: newDirectPaid,
-            remainingAmount: newRemaining,
-            status: newStatus,
-            lastPaymentMethod: paymentMethod,
-            lastPaymentSource: resolvedSourceLabel,
-            lastPaymentDate: paymentDate,
-            paymentsHistory: updatedHistory,
-            updatedAt: serverTimestamp()
-          },
-          { merge: true }
-        );
-
-        allocatedItems.push({
-          trancheId: row.id,
-          docId: row.docId,
-          docType: row.docType,
-          dueDate: row.dueDate,
-          remainingBefore: row.remainingAmount,
-          releasedAmount: releaseAmt,
-          remainingAfter: newRemaining,
-          resultingStatus: newStatus
-        });
-      }
-
-      // Save Batch Payment Record
-      await setDoc(doc(db, 'dues_batches', batchId), {
-        id: batchId,
+      const releaseDuesFn = httpsCallable(functions, 'financeReleaseDuesBatchPayment');
+      const res = await releaseDuesFn({
         supplierId: modalSupplierId,
         supplierName: supplierObj?.name || modalChronologicalRows[0]?.supplierName || '',
         paymentDate,
@@ -893,23 +820,31 @@ export default function DuesTrackingMaster({ currentUser = {}, permissions = nul
         transferRefNumber: paymentMethod === 'transfer' ? transferRefNumber : null,
         chequeNumber: paymentMethod === 'cheque' ? chequeNumber : null,
         chequeDueDate: paymentMethod === 'cheque' ? chequeDueDate : null,
-        totalPositiveRelease: modalBatchSummary.totalPositiveRelease,
-        totalReturnDeduction: modalBatchSummary.totalReturnDeduction,
-        netReleaseAmount: modalBatchSummary.netReleaseAmount,
-        allocatedItems,
-        notes: paymentNotes || '',
-        attachment: paymentAttachment || null,
-        createdBy: currentUserName,
-        createdAtIso: nowIso,
-        createdAt: serverTimestamp()
+        paymentNotes: paymentNotes || '',
+        paymentAttachment: paymentAttachment || null,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+        items: modalChronologicalRows.map((row) => ({
+          id: row.id,
+          docId: row.docId,
+          docType: row.docType,
+          poId: row.poId || null,
+          trancheIndex: row.trancheIndex,
+          dueDate: row.dueDate || null,
+          originalDueAmount: row.originalDueAmount,
+          prePaidViaPoAdvanceAmount: row.prePaidViaPoAdvanceAmount || 0,
+          releaseAmount: round2(Number(modalReleaseAmounts[row.id]) || 0)
+        }))
       });
+
+      const batchId = res?.data?.batchId || 'PAY-BATCH';
+      const netRelease = res?.data?.netReleaseAmount ?? modalBatchSummary.netReleaseAmount;
 
       setCheckedRowIds([]);
       setIsPaymentModalOpen(false);
       toast.success(
         isAr
-          ? `تم تسجيل الدفعة (${batchId}) بصافي ${modalBatchSummary.netReleaseAmount.toLocaleString()} ج.م بنجاح!`
-          : `Batch payment (${batchId}) of ${modalBatchSummary.netReleaseAmount.toLocaleString()} EGP saved!`
+          ? `تم تسجيل الدفعة (${batchId}) بصافي ${Number(netRelease).toLocaleString()} ج.م بنجاح!`
+          : `Batch payment (${batchId}) of ${Number(netRelease).toLocaleString()} EGP saved!`
       );
     } catch (err) {
       console.error('Error saving batch payment:', err);
@@ -944,50 +879,46 @@ export default function DuesTrackingMaster({ currentUser = {}, permissions = nul
       return;
     }
 
-    // Generate new sequential Internal WHT Serial No. (WHT-YYYY-XXXX)
-    const yearStr = (record.invoiceDate || record.sourceDate || new Date().toISOString()).slice(0, 4);
-    const currentYearCount = Object.values(whtNotesMap).filter((w) =>
-      String(w.serialNumber || '').startsWith(`WHT-${yearStr}-`)
-    ).length;
-    const serialNumber = `WHT-${yearStr}-${String(currentYearCount + 1).padStart(4, '0')}`;
-    const issueDate = new Date().toISOString().slice(0, 10);
-
-    const newWhtPayload = {
-      id: docId,
-      grnId: docId,
-      docType: record.docType,
-      serialNumber,
-      issueDate,
-      supplierId: record.supplierId,
-      supplierName: supplier?.name || record.supplierName || '',
-      taxpayerLegalName: supplier?.taxpayerLegalName || supplier?.name || '',
-      taxCardNumber: supplier?.taxCardNumber || '',
-      taxFileNumber: supplier?.taxFileNumber || '',
-      taxDistrict: supplier?.taxDistrict || '',
-      invoiceNumber: record.invoiceNumber || '',
-      invoiceDate: record.invoiceDate || record.sourceDate || issueDate,
-      receiptDate: record.sourceDate || issueDate,
-      subtotal: Math.abs(record.docSubtotal || 0),
-      totalVat: Math.abs(record.docTotalVat || 0),
-      totalWht: Math.abs(record.docTotalWht || 0),
-      netPayable: Math.abs(record.docNetPayable || 0),
-      whtPercent: 1,
-      isDeliveredToSupplier: false,
-      issuedBy: currentUserName,
-      createdAt: serverTimestamp()
-    };
-
     try {
-      await setDoc(doc(db, 'wht_notes', docId), newWhtPayload, { merge: true });
+      const issueWhtFn = httpsCallable(functions, 'financeIssueWhtNote');
+      const res = await issueWhtFn({
+        record: {
+          docId,
+          docType: record.docType,
+          supplierId: record.supplierId,
+          supplierName: record.supplierName || '',
+          invoiceNumber: record.invoiceNumber || '',
+          invoiceDate: record.invoiceDate || '',
+          sourceDate: record.sourceDate || '',
+          docSubtotal: record.docSubtotal || 0,
+          docTotalVat: record.docTotalVat || 0,
+          docTotalWht: record.docTotalWht || 0,
+          docNetPayable: record.docNetPayable || 0
+        },
+        supplier: supplier
+          ? {
+              name: supplier.name || '',
+              taxpayerLegalName: supplier.taxpayerLegalName || '',
+              taxCardNumber: supplier.taxCardNumber || '',
+              taxFileNumber: supplier.taxFileNumber || '',
+              taxDistrict: supplier.taxDistrict || ''
+            }
+          : null,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null
+      });
+      const issuedWht = res?.data?.whtData;
+      const serialNumber = issuedWht?.serialNumber || '';
       setActiveWhtSlip({
-        whtData: newWhtPayload,
+        whtData: issuedWht,
         supplier
       });
-      toast.success(
-        isAr
-          ? `تم إصدار إشعار الخصم والإضافة رقم ${serialNumber}`
-          : `Issued WHT Certificate ${serialNumber}`
-      );
+      if (!res?.data?.existing) {
+        toast.success(
+          isAr
+            ? `تم إصدار إشعار الخصم والإضافة رقم ${serialNumber}`
+            : `Issued WHT Certificate ${serialNumber}`
+        );
+      }
     } catch (err) {
       console.error('Error issuing WHT note:', err);
       showAlert(isAr ? 'خطأ' : 'Error', err.message || 'Failed to issue WHT Note');
