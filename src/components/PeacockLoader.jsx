@@ -20,6 +20,7 @@ export default function PeacockLoader({
   size = 'md', // 'xxs' | 'xs' | 'sm' | 'md' | 'lg' | 'xl'
   fullScreen = false,
   inline = false,
+  animate = true,
   variant = 'brand', // 'brand' | 'royal' | 'emerald' | 'white'
   text = '',
   message = '',
@@ -99,7 +100,7 @@ export default function PeacockLoader({
 
       {/* SVG Container */}
       <div className={`relative flex items-center justify-center shrink-0 ${SIZE_CLASSES[size] || SIZE_CLASSES.md}`}>
-        {!isCompact && (
+        {animate && !isCompact && (
           <div className={`absolute -bottom-2 w-3/4 h-1/2 ${palette.glowClass} rounded-full blur-xl tawoos-pivot-glow pointer-events-none`} />
         )}
 
@@ -143,20 +144,30 @@ export default function PeacockLoader({
             )}
           </defs>
 
-          <use
-            href={`#${pathId}`}
-            fill={palette.fill}
-            opacity={variant === 'white' ? '0.32' : '0.22'}
-          />
+          {animate ? (
+            <>
+              <use
+                href={`#${pathId}`}
+                fill={palette.fill}
+                opacity={variant === 'white' ? '0.32' : '0.22'}
+              />
 
-          <g mask={`url(#${maskId})`}>
+              <g mask={`url(#${maskId})`}>
+                <use
+                  href={`#${pathId}`}
+                  fill={palette.fill}
+                  filter={!isCompact ? `url(#${filterId})` : undefined}
+                  opacity="1"
+                />
+              </g>
+            </>
+          ) : (
             <use
               href={`#${pathId}`}
               fill={palette.fill}
-              filter={!isCompact ? `url(#${filterId})` : undefined}
               opacity="1"
             />
-          </g>
+          )}
         </svg>
       </div>
 
