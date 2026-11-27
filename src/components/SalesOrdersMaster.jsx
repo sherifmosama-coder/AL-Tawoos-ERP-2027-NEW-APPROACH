@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { db } from '../firebase';
@@ -641,9 +641,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [cancelReason, setCancelReason] = useState('');
   const [isCanceling, setIsCanceling] = useState(false);
 
-  // 3-Dots Action Menu Anchor
+  // 3-Dots Action Menu Anchor & Viewport-Aware Popover Refs
   const [activeActionsMenuOrderId, setActiveActionsMenuOrderId] = useState(null);
   const [actionsMenuAnchor, setActionsMenuAnchor] = useState(null);
+  const actionsMenuRef = useRef(null);
+  const closedByOwnTriggerOrderIdRef = useRef(null);
 
   // Split Portion Card Hover Tooltip (Portal-rendered for unclipped visibility)
   const [hoveredPortionTooltip, setHoveredPortionTooltip] = useState(null);
@@ -1033,18 +1035,113 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     };
   }, [orders, truckDispatches, canCreateSalesOrder, canEditSalesOrder, canAdjustDispatchedQty, canSettleRetailOrders]);
 
-  // Close 3-dots actions menu on outside click or scroll
+  const supportsNativePopover =
+    typeof HTMLElement !== 'undefined' && Object.hasOwn(HTMLElement.prototype, 'popover');
+
+  const closeActionsMenu = () => {
+    const el = actionsMenuRef.current;
+    if (el && supportsNativePopover && el.matches(':popover-open')) {
+      try {
+        el.hidePopover();
+      } catch (_) {}
+    }
+    setActiveActionsMenuOrderId(null);
+    setActionsMenuAnchor(null);
+  };
+
+  // Position & open the 3-dots actions popover cleanly inside the viewport (top layer + JS collision fallback)
+  useLayoutEffect(() => {
+    const el = actionsMenuRef.current;
+    const triggerEl = actionsMenuAnchor?.triggerEl;
+    if (!activeActionsMenuOrderId || !actionsMenuAnchor || !el) return;
+
+    const applyMeasuredFallbackCoords = () => {
+      const triggerRect = triggerEl?.getBoundingClientRect?.() || actionsMenuAnchor.rect;
+      if (!triggerRect) return;
+      const menuRect = el.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const pad = 8;
+      const gap = 4;
+
+      const spaceBelow = vh - triggerRect.bottom - pad;
+      const spaceAbove = triggerRect.top - pad;
+      const flipUp = menuRect.height + gap > spaceBelow && spaceAbove > spaceBelow;
+      let top = flipUp ? triggerRect.top - menuRect.height - gap : triggerRect.bottom + gap;
+      top = Math.max(pad, Math.min(vh - menuRect.height - pad, top));
+
+      let left = isAr ? triggerRect.left : triggerRect.right - menuRect.width;
+      if (left + menuRect.width > vw - pad) {
+        left = triggerRect.left;
+      }
+      if (left < pad) {
+        left = triggerRect.right - menuRect.width;
+      }
+      left = Math.max(pad, Math.min(vw - menuRect.width - pad, left));
+
+      el.style.position = 'fixed';
+      el.style.inset = 'auto';
+      el.style.margin = '0';
+      el.style.top = `${Math.round(top)}px`;
+      el.style.left = `${Math.round(left)}px`;
+      el.style.right = 'auto';
+      el.style.maxHeight = `${Math.max(120, vh - pad * 2)}px`;
+      el.style.overflowY = 'auto';
+    };
+
+    if (supportsNativePopover) {
+      const supportsCssAnchor =
+        typeof CSS !== 'undefined' &&
+        typeof CSS.supports === 'function' &&
+        CSS.supports('position-area: block-end');
+      const supportsToggleSource =
+        typeof ToggleEvent !== 'undefined' && 'source' in ToggleEvent.prototype;
+
+      // Clear any stale inline fallback coordinates when native anchor positioning takes over
+      if (supportsCssAnchor && supportsToggleSource && triggerEl) {
+        el.style.position = '';
+        el.style.inset = '';
+        el.style.margin = '';
+        el.style.top = '';
+        el.style.left = '';
+        el.style.right = '';
+        el.style.maxHeight = '';
+        el.style.overflowY = '';
+      }
+
+      try {
+        if (!el.matches(':popover-open')) {
+          if (supportsToggleSource && triggerEl) {
+            el.showPopover({ source: triggerEl });
+          } else {
+            el.showPopover();
+          }
+        }
+      } catch (_) {
+        try {
+          if (!el.matches(':popover-open')) el.showPopover();
+        } catch (__) {}
+      }
+
+      if (!supportsCssAnchor || !supportsToggleSource || !triggerEl) {
+        applyMeasuredFallbackCoords();
+      }
+    } else {
+      applyMeasuredFallbackCoords();
+    }
+  }, [activeActionsMenuOrderId, actionsMenuAnchor, isAr, supportsNativePopover]);
+
+  // Close 3-dots actions menu on outside click (fallback) or scroll/resize
   useEffect(() => {
     if (!activeActionsMenuOrderId) return;
     const handleClick = (e) => {
-      if (!e.target.closest('[data-order-menu]')) {
-        setActiveActionsMenuOrderId(null);
-        setActionsMenuAnchor(null);
+      if (!supportsNativePopover && !e.target.closest('[data-order-menu]')) {
+        closeActionsMenu();
       }
     };
-    const handleScrollOrResize = () => {
-      setActiveActionsMenuOrderId(null);
-      setActionsMenuAnchor(null);
+    const handleScrollOrResize = (e) => {
+      if (e?.target instanceof Element && e.target.closest('[data-order-menu]')) return;
+      closeActionsMenu();
     };
     document.addEventListener('click', handleClick);
     window.addEventListener('scroll', handleScrollOrResize, true);
@@ -1054,7 +1151,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
       window.removeEventListener('scroll', handleScrollOrResize, true);
       window.removeEventListener('resize', handleScrollOrResize);
     };
-  }, [activeActionsMenuOrderId]);
+  }, [activeActionsMenuOrderId, supportsNativePopover]);
 
   // Clients options for SearchableSelect:
   // FLATTENED LIST SORTED ASCENDINGLY with bilingual search support (Arabic & English names, code, tax number)
@@ -2738,17 +2835,25 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                 <button
                                   type="button"
                                   data-order-menu
+                                  onPointerDown={() => {
+                                    closedByOwnTriggerOrderIdRef.current =
+                                      activeActionsMenuOrderId === order.id ? order.id : null;
+                                  }}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    if (activeActionsMenuOrderId === order.id) {
-                                      setActiveActionsMenuOrderId(null);
-                                      setActionsMenuAnchor(null);
+                                    if (
+                                      closedByOwnTriggerOrderIdRef.current === order.id ||
+                                      activeActionsMenuOrderId === order.id
+                                    ) {
+                                      closedByOwnTriggerOrderIdRef.current = null;
+                                      closeActionsMenu();
                                     } else {
-                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      closedByOwnTriggerOrderIdRef.current = null;
+                                      const triggerEl = e.currentTarget;
+                                      const rect = triggerEl.getBoundingClientRect();
                                       setActionsMenuAnchor({
-                                        top: rect.bottom + 4,
-                                        left: rect.left,
-                                        right: rect.right
+                                        triggerEl,
+                                        rect: { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right }
                                       });
                                       setActiveActionsMenuOrderId(order.id);
                                     }
@@ -3793,18 +3898,20 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         )}
       </div>
 
-      {/* Floating 3-Dots Portal Action Menu */}
+      {/* Floating 3-Dots Portal Action Menu (Top-Layer Popover + Viewport-Aware Flip) */}
       {activeActionsMenuOrderId && actionsMenuAnchor && activeOrderForMenu && createPortal(
         <div
+          ref={actionsMenuRef}
           data-order-menu
-          style={{
-            position: 'fixed',
-            top: `${actionsMenuAnchor.top}px`,
-            left: isAr ? `${actionsMenuAnchor.left}px` : undefined,
-            right: !isAr ? `${window.innerWidth - actionsMenuAnchor.right}px` : undefined,
-            zIndex: 9999
+          popover={supportsNativePopover ? 'auto' : undefined}
+          onToggle={(e) => {
+            if (e.newState === 'closed') {
+              setActiveActionsMenuOrderId(null);
+              setActionsMenuAnchor(null);
+            }
           }}
-          className="w-56 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
+          style={!supportsNativePopover ? { zIndex: 9999 } : undefined}
+          className="erp-viewport-popover w-56 bg-white border border-slate-200 rounded-2xl shadow-xl p-1.5 space-y-1 text-xs animate-in fade-in zoom-in-95 duration-100"
         >
           <button
             type="button"

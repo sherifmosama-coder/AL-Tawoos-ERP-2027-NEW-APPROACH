@@ -175,3 +175,15 @@
 [dir="rtl"] .animate-panel-expand {
   animation-name: panel-expand-rtl;
 }
+
+/* Viewport-aware action menu popover (top-layer + CSS Anchor Positioning with @supports guard) */
+@supports (position-area: block-end) {
+  [popover].erp-viewport-popover {
+    inset: auto;
+    margin: 0;
+    position-area: block-end span-inline-start;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+    max-block-size: calc(100dvh - 16px);
+    overflow-y: auto;
+  }
+}
