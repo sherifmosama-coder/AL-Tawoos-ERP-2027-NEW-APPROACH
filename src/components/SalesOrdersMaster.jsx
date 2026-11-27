@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
 import {
   collection,
   onSnapshot,
@@ -658,7 +659,9 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   // 1. Subscribe to Sales Orders
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'sales_orders'), (snapshot) => {
-      const loaded = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const loaded = snapshot.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((d) => !d.isDeleted);
       // Sort newest invoice date first, then base serial descending (with child split portions ascending under same base)
       loaded.sort((a, b) => {
         const dateComp = String(b.invoiceDate || '').localeCompare(String(a.invoiceDate || ''));
@@ -1629,15 +1632,20 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     setSplitModalOrder(order);
   };
 
-  // Delete Order Handler
+  // Delete Order Handler (Server Soft-Delete + Dispatch/Invoice Safeguard)
   const handleDeleteOrder = async (orderId) => {
     try {
-      await deleteDoc(doc(db, 'sales_orders', orderId));
+      const softDeleteFn = httpsCallable(functions, 'systemSoftDeleteDocument');
+      await softDeleteFn({
+        collectionName: 'sales_orders',
+        docId: orderId,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
       setDeleteConfirmOrder(null);
       setActiveActionsMenuOrderId(null);
     } catch (err) {
-      console.error('Error deleting sales order:', err);
-      alert(isAr ? 'حدث خطأ أثناء حذف أمر البيع.' : 'Error deleting sales order.');
+      console.error('Error soft-deleting sales order:', err);
+      alert(err?.message || (isAr ? 'حدث خطأ أثناء حذف أمر البيع.' : 'Error deleting sales order.'));
     }
   };
 
@@ -4431,40 +4439,74 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         </div>
       )}
 
-      {/* Delete Confirmation Alert Modal */}
-      {deleteConfirmOrder && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 text-center space-y-3">
-            <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
-              <AlertTriangle className="w-5 h-5" />
-            </div>
-            <h4 className="font-black text-slate-800 text-sm">
-              {isAr ? 'تأكيد حذف أمر البيع؟' : 'Delete Sales Order?'}
-            </h4>
-            <p className="text-xs text-slate-500">
-              {isAr
-                ? `هل أنت متأكد من حذف أمر البيع (#${resolveOrderSerial(deleteConfirmOrder, orders)})؟`
-                : `Are you sure you want to delete order (#${resolveOrderSerial(deleteConfirmOrder, orders)})?`}
-            </p>
-            <div className="flex items-center justify-center gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setDeleteConfirmOrder(null)}
-                className="px-4 py-1.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 cursor-pointer"
-              >
-                {isAr ? 'إلغاء' : 'Cancel'}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDeleteOrder(deleteConfirmOrder.id)}
-                className="px-4 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 cursor-pointer"
-              >
-                {isAr ? 'حذف نهائي' : 'Delete'}
-              </button>
+      {/* Delete Confirmation Alert Modal (with Dispatch/Invoice Safeguard) */}
+      {deleteConfirmOrder && (() => {
+        const hasProtectedDispatch = Boolean(
+          deleteConfirmOrder.fgWarehouseDispatched ||
+          POST_DISPATCH_STATUSES.includes(deleteConfirmOrder.fulfillmentStatus) ||
+          (truckDispatches || []).some(
+            (td) => Array.isArray(td.orderIds) && td.orderIds.includes(deleteConfirmOrder.id)
+          )
+        );
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 text-center space-y-3">
+              <div className={`w-10 h-10 rounded-xl ${hasProtectedDispatch ? 'bg-amber-100 text-amber-600' : 'bg-rose-100 text-rose-600'} flex items-center justify-center mx-auto`}>
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <h4 className="font-black text-slate-800 text-sm">
+                {hasProtectedDispatch
+                  ? (isAr ? 'أمر مرتبط بالصرف / الشحن' : 'Dispatched Order Protected')
+                  : (isAr ? 'تأكيد حذف أمر البيع؟' : 'Delete Sales Order?')}
+              </h4>
+              {hasProtectedDispatch ? (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-2.5 font-medium leading-relaxed">
+                  {isAr
+                    ? `لا يمكن حذف الأمر (#${resolveOrderSerial(deleteConfirmOrder, orders)}) لأنه مرتبط بإذن صرف شاحنة أو تم تسليمه/شحنه. يرجى استخدام (إلغاء أمر البيع) للحفاظ على سجل التدقيق.`
+                    : `Order (#${resolveOrderSerial(deleteConfirmOrder, orders)}) is linked to truck dispatch or shipped/delivered fulfillment and cannot be deleted. Use Cancel Order instead to preserve audit traceability.`}
+                </p>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  {isAr
+                    ? `هل أنت متأكد من أرشفة وحذف أمر البيع (#${resolveOrderSerial(deleteConfirmOrder, orders)})؟ سيظل محفوظاً في سجل التدقيق.`
+                    : `Archive & soft-delete order (#${resolveOrderSerial(deleteConfirmOrder, orders)})? It remains recorded in audit logs.`}
+                </p>
+              )}
+              <div className="flex items-center justify-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirmOrder(null)}
+                  className="px-4 py-1.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 cursor-pointer"
+                >
+                  {isAr ? 'إغلاق' : 'Close'}
+                </button>
+                {hasProtectedDispatch ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ord = deleteConfirmOrder;
+                      setDeleteConfirmOrder(null);
+                      setCancelModalOrder(ord);
+                      setCancelReason('');
+                    }}
+                    className="px-4 py-1.5 bg-amber-600 text-white rounded-xl text-xs font-bold hover:bg-amber-700 cursor-pointer"
+                  >
+                    {isAr ? 'إلغاء الأمر بدلاً من الحذف' : 'Cancel Order Instead'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteOrder(deleteConfirmOrder.id)}
+                    className="px-4 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 cursor-pointer"
+                  >
+                    {isAr ? 'تأكيد الحذف' : 'Soft Delete'}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Lightbox Modal for PO Attachments */}
       {lightboxImage && (

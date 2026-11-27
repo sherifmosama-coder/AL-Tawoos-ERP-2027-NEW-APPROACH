@@ -670,8 +670,11 @@ export default function App() {
     return startAutoRestoreScheduler({ currentUser: authenticatedErpUser });
   }, [authState.status, authState.claims?.isGeneralAdmin, authenticatedErpUser]);
 
-  // Live Real-Time Actions Required & Notifications Hub (Multi-Department Aware)
-  const headerAlerts = useHeaderAlerts(currentUser, departmentsList);
+  // Live Real-Time Actions Required & Notifications Hub (only subscribe once authenticated)
+  const headerAlerts = useHeaderAlerts(
+    authState.status === 'authenticated' ? currentUser : null,
+    departmentsList
+  );
 
   // Compute Effective Permissions Dynamically (3-Layer Cascade: Role Defaults -> Multi-Dept Union -> User Overrides)
   const effectivePermissions = useMemo(() => {

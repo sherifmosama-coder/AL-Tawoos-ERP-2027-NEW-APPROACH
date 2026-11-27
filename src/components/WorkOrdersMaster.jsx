@@ -704,7 +704,9 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
   // Subscribe to Cloud Firestore Collections
   useEffect(() => {
     const unsubOrders = onSnapshot(collection(db, 'work_orders'), (snap) => {
-      const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+      const list = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id }))
+        .filter((d) => !d.isDeleted);
       setWorkOrders(list);
       setLoading(false);
     });
@@ -5373,10 +5375,13 @@ export default function WorkOrdersMaster({ currentUser = {}, permissions = null 
     if (!confirmed) return;
 
     try {
-      await deleteDoc(doc(db, 'work_orders', orderId));
-      // Roll back any recorded component consumptions
-      await deleteDoc(doc(db, 'production_transformations', `TRANS-WO-${orderId}`));
-      toast.success(isAr ? `تم حذف أمر التشغيل (${orderTitle}) بنجاح.` : `Order (${orderTitle}) deleted.`);
+      const softDeleteFn = httpsCallable(functions, 'systemSoftDeleteDocument');
+      await softDeleteFn({
+        collectionName: 'work_orders',
+        docId: orderId,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
+      toast.success(isAr ? `تم حذف أمر التشغيل (${orderTitle}) مع التوثيق.` : `Order (${orderTitle}) soft-deleted.`);
     } catch (err) {
       console.error('Error deleting order:', err);
       toast.error(isAr ? 'حدث خطأ أثناء حذف أمر التشغيل.' : 'Error deleting order.');

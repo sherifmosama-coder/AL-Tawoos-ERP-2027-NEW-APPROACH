@@ -58,6 +58,11 @@ import {
   salesMintPrintDocNumber,
   salesCommitPrintedDocument,
 } from "./sales/truckDispatchEngine.js";
+import {
+  aggregatesRebuildAll,
+  scheduledAggregatesRollup,
+} from "./aggregates/rollupsEngine.js";
+import { systemSoftDeleteDocument } from "./shared/softDeleteEngine.js";
 
 initializeApp();
 const db = getFirestore();
@@ -100,6 +105,9 @@ export {
   salesFinalizeReturnHandshake,
   salesMintPrintDocNumber,
   salesCommitPrintedDocument,
+  aggregatesRebuildAll,
+  scheduledAggregatesRollup,
+  systemSoftDeleteDocument,
 };
 
 // Note: Firestore Eventarc triggers (onDocumentCreated / onDocumentWritten) require co-located

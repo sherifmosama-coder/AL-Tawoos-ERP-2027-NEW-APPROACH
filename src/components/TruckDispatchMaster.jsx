@@ -4048,7 +4048,7 @@ export default function TruckDispatchMaster({
     };
 
     const unsubOrders = onSnapshot(collection(db, 'sales_orders'), (snap) => {
-      setOrders(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setOrders(snap.docs.map((d) => ({ ...d.data(), id: d.id })).filter((d) => !d.isDeleted));
       loaded.orders = true;
       checkDone();
     });

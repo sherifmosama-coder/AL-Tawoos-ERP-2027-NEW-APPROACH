@@ -79,6 +79,12 @@ rules_version = '2';
 // 9. Master Collections (19) & Operational ERP Collections (34)
 //    - Explicitly scoped by collection name; read/write restricted to active allowlisted ERP users
 //      (`isSignedIn()`) with structural anti-DoS validation on all creates and updates.
+//    - Server-Authoritative Phase 3D/4 collections (`cash_count_sessions`, `dues_batches`,
+//      `spare_parts_issues`, `dispatch_documents`, `aggregates`, plus `wht_notes`,
+//      `journal_entries`, `cash_transactions`) deny direct client creates (`create: if false`)
+//      and restrict deletes to General Admin (`delete: if isGeneralAdmin()`).
+//    - `sales_orders`, `purchase_orders`, `work_orders`, and `corporate_banks` retain existing
+//      create/update rules alongside Phase 4 `systemSoftDeleteDocument` audited soft-deletes.
 //
 // ===============================================================
 
@@ -802,8 +808,9 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
     }
     match /aggregates/{docId} {
-      allow read, delete: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidErpRecord(request.resource.data);
+      allow read: if isSignedIn();
+      allow create, update: if false;
+      allow delete: if isGeneralAdmin();
     }
   }
 }

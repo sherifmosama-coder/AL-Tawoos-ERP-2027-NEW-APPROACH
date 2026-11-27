@@ -26,6 +26,7 @@ import TabAppearanceManager from './TabAppearanceManager';
 import OpeningStockSeederModal from './OpeningStockSeederModal';
 import NotificationControlCenter from './NotificationControlCenter';
 import SystemRestoreHub from './SystemRestoreHub';
+import AuditLogsHub from './AuditLogsHub';
 import { createRestorePoint } from '../utils/systemRestoreEngine';
 import { OPERATIONAL_COLLECTIONS_COMPLETE } from '../utils/systemRestoreScopeCatalog';
 import {
@@ -1192,7 +1193,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       if (raw.includes('?')) {
         const p = new URLSearchParams(raw.split('?')[1]);
         const s = p.get('subTab');
-        if (s && ['users', 'warehouses', 'permissions', 'tab_appearance', 'import', 'backup_restore', 'system_restore', 'factory_reset', 'db_inspector'].includes(s)) {
+        if (s && ['users', 'warehouses', 'permissions', 'tab_appearance', 'import', 'backup_restore', 'system_restore', 'audit_logs', 'factory_reset', 'db_inspector'].includes(s)) {
           return s;
         }
       }
@@ -4777,6 +4778,17 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
 
           <button
             type="button"
+            onClick={() => setActiveSubTab('audit_logs')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition cursor-pointer ${
+              activeSubTab === 'audit_logs' ? 'bg-emerald-700 text-white shadow-xs' : 'text-slate-300 hover:text-emerald-300'
+            }`}
+          >
+            <ShieldCheck className="h-3.5 w-3.5" />
+            <span>{isAr ? 'سجل التدقيق والملخصات' : 'Audit Logs & Rollups'}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               setActiveSubTab('db_inspector');
               if (discoveredCollections.length === 0) {
@@ -6813,6 +6825,13 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       {/* ========================================================================= */}
       {activeSubTab === 'system_restore' && (
         <SystemRestoreHub currentUser={currentUser} isAr={isAr} />
+      )}
+
+      {/* ========================================================================= */}
+      {/* SUB-TAB: IMMUTABLE AUDIT LOGS & CLOUD ROLLUPS                             */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'audit_logs' && (
+        <AuditLogsHub isAr={isAr} />
       )}
 
       {/* ========================================================================= */}
