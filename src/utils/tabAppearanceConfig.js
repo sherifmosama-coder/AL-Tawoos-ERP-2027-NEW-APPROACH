@@ -1267,6 +1267,17 @@ export const DEFAULT_TABS_CONFIG = {
     categoryAr: 'المبيعات والتوزيع',
     categoryEn: 'Sales & Distribution'
   },
+  sales_invoicing: {
+    id: 'sales_invoicing',
+    moduleKey: 'sales',
+    order: 4,
+    labelAr: 'الفواتير وإذون التسليم',
+    labelEn: 'Sales Invoicing',
+    iconName: 'Receipt',
+    color: '#4f46e5',
+    categoryAr: 'المبيعات والتوزيع',
+    categoryEn: 'Sales & Distribution'
+  },
   price_lists: {
     id: 'price_lists',
     moduleKey: 'sales',

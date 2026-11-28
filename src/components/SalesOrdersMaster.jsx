@@ -100,6 +100,10 @@ import {
   evaluateReturnDiscrepancySummary
 } from '../utils/truckDispatchUtils';
 import {
+  evaluateOrderInvoicingStatus,
+  extractDocsFromOrderInvoicing
+} from '../utils/salesInvoicingEngine';
+import {
   completeActionRequired,
   dispatchWorkflowEvent
 } from '../utils/notificationEngine';
@@ -343,6 +347,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     });
     return map;
   }, [truckDispatches]);
+
+  const productsMap = useMemo(() => {
+    const map = {};
+    (products || []).forEach((p) => {
+      if (p && p.id) map[p.id] = p;
+    });
+    return map;
+  }, [products]);
 
   // 9. Subscribe to Global Standard Retail Load List Config
   useEffect(() => {
@@ -1717,6 +1729,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                       const orderVehiclePlate = order.assignedVehiclePlate || matchedOrderVehicle?.plateNumber || '';
                       const orderDispatchDoc = resolveOrderTripDispatch(order, truckDispatchesById);
                       const orderReturnDisc = evaluateReturnDiscrepancySummary(orderDispatchDoc);
+                      const orderInvoicingEval = evaluateOrderInvoicingStatus(
+                        order,
+                        productsMap,
+                        extractDocsFromOrderInvoicing(order)
+                      );
 
                       // Client and Branch resolution
                       const clientObj = clients.find((c) => c.id === order.clientId) || null;
@@ -2096,104 +2113,153 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 7. Truck Assignment & Dispatch Documents Column (Right Before Status) */}
+                            {/* 7. Truck Assignment, Dispatch & Invoice Documents Column (Right Before Status) */}
                             <td className="py-3 px-3 whitespace-nowrap">
-                              {(orderVehicleDisplayName || order.loadingOrderNumber) ? (
-                                <div className="flex flex-col gap-1 items-start">
-                                  <div className="inline-flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleNavigateToLoadingPlan(order);
-                                      }}
-                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-black bg-indigo-50 text-indigo-800 hover:bg-indigo-100 hover:text-indigo-950 border border-indigo-200/90 shadow-2xs transition cursor-pointer max-w-[175px] truncate"
-                                      title={
-                                        isAr
-                                          ? `شاحنة: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — تحميل #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — سائق: ${order.assignedDriverName}` : ''}`
-                                          : `Truck: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — Trip #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — Driver: ${order.assignedDriverName}` : ''}`
-                                      }
-                                    >
-                                      <Truck className="w-3 h-3 text-indigo-600 shrink-0 rtl:-scale-x-100" />
-                                      <span className="truncate">{orderVehicleDisplayName || (isAr ? 'شاحنة' : 'Truck')}</span>
-                                      {order.loadingOrderNumber && (
-                                        <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-200/80 text-indigo-950 font-mono font-black shrink-0">
-                                          #{order.loadingOrderNumber}
-                                        </span>
+                              <div className="flex flex-col gap-1 items-start">
+                                {(orderVehicleDisplayName || order.loadingOrderNumber) ? (
+                                  <div className="flex flex-col gap-1 items-start">
+                                    <div className="inline-flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleNavigateToLoadingPlan(order);
+                                        }}
+                                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-black bg-indigo-50 text-indigo-800 hover:bg-indigo-100 hover:text-indigo-950 border border-indigo-200/90 shadow-2xs transition cursor-pointer max-w-[175px] truncate"
+                                        title={
+                                          isAr
+                                            ? `شاحنة: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — تحميل #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — سائق: ${order.assignedDriverName}` : ''}`
+                                            : `Truck: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — Trip #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — Driver: ${order.assignedDriverName}` : ''}`
+                                        }
+                                      >
+                                        <Truck className="w-3 h-3 text-indigo-600 shrink-0 rtl:-scale-x-100" />
+                                        <span className="truncate">{orderVehicleDisplayName || (isAr ? 'شاحنة' : 'Truck')}</span>
+                                        {order.loadingOrderNumber && (
+                                          <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-200/80 text-indigo-950 font-mono font-black shrink-0">
+                                            #{order.loadingOrderNumber}
+                                          </span>
+                                        )}
+                                      </button>
+                                      {orderVehiclePlate && (
+                                        <CopyButton
+                                          text={orderVehiclePlate}
+                                          title={isAr ? `نسخ رقم اللوحة (${orderVehiclePlate})` : `Copy Plate # (${orderVehiclePlate})`}
+                                          isAr={isAr}
+                                          className="border border-slate-200 bg-slate-50 p-1 rounded-md"
+                                        />
                                       )}
-                                    </button>
-                                    {orderVehiclePlate && (
-                                      <CopyButton
-                                        text={orderVehiclePlate}
-                                        title={isAr ? `نسخ رقم اللوحة (${orderVehiclePlate})` : `Copy Plate # (${orderVehiclePlate})`}
-                                        isAr={isAr}
-                                        className="border border-slate-200 bg-slate-50 p-1 rounded-md"
-                                      />
+                                    </div>
+
+                                    {(orderDispatchDoc?.latestDispatchDocNumber || orderReturnDisc.hasDiscrepancy || orderDispatchDoc?.latestReturnDocNumber) && (
+                                      <div className="flex flex-wrap items-center gap-1">
+                                        {orderDispatchDoc?.latestDispatchDocNumber && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleNavigateToTruckDispatch(order, { openReturn: false });
+                                            }}
+                                            title={isAr ? 'فتح رحلة الصرف في تبويب صرف الشاحنات' : 'Open Trip in Truck Dispatch'}
+                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-300 font-mono text-[9px] font-black cursor-pointer transition"
+                                          >
+                                            <FileText className="w-2.5 h-2.5 shrink-0" />
+                                            <span>{orderDispatchDoc.latestDispatchDocNumber}</span>
+                                          </button>
+                                        )}
+                                        {orderReturnDisc.hasDiscrepancy ? (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleNavigateToTruckDispatch(order, { openReturn: true });
+                                            }}
+                                            title={isAr ? 'تنبيه: يوجد فرق مرتجع — انقر للمراجعة' : 'Return discrepancy detected — click to review'}
+                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-400 font-mono text-[9px] font-black cursor-pointer animate-pulse"
+                                          >
+                                            <AlertTriangle className="w-2.5 h-2.5 text-rose-600 shrink-0" />
+                                            <span>{isAr ? 'فرق مرتجع' : 'Ret Variance'}</span>
+                                          </button>
+                                        ) : orderDispatchDoc?.latestReturnDocNumber ? (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleNavigateToTruckDispatch(order, { openReturn: true });
+                                            }}
+                                            title={isAr ? 'فتح إذن المرتجع في تبويب صرف الشاحنات' : 'Open Return Doc in Truck Dispatch'}
+                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-mono text-[9px] font-black cursor-pointer transition"
+                                          >
+                                            <RotateCcw className="w-2.5 h-2.5 shrink-0" />
+                                            <span>{orderDispatchDoc.latestReturnDocNumber} ✓</span>
+                                          </button>
+                                        ) : null}
+                                      </div>
                                     )}
                                   </div>
+                                ) : !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleNavigateToLoadingPlan(order);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-indigo-600 hover:bg-slate-100 px-1.5 py-0.5 rounded-md transition cursor-pointer border border-dashed border-slate-200"
+                                    title={isAr ? 'الطلب غير مسكن بشاحنة — انقر للتسكين في خطة التحميل' : 'Unassigned — Click to assign in Loading Plan'}
+                                  >
+                                    <Truck className="w-2.5 h-2.5 text-slate-300 rtl:-scale-x-100" />
+                                    <span className="italic">{isAr ? 'غير مسكن' : 'Unassigned'}</span>
+                                  </button>
+                                ) : null}
 
-                                  {(orderDispatchDoc?.latestDispatchDocNumber || orderReturnDisc.hasDiscrepancy || orderDispatchDoc?.latestReturnDocNumber) && (
-                                    <div className="flex flex-wrap items-center gap-1">
-                                      {orderDispatchDoc?.latestDispatchDocNumber && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleNavigateToTruckDispatch(order, { openReturn: false });
-                                          }}
-                                          title={isAr ? 'فتح رحلة الصرف في تبويب صرف الشاحنات' : 'Open Trip in Truck Dispatch'}
-                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-300 font-mono text-[9px] font-black cursor-pointer transition"
-                                        >
-                                          <FileText className="w-2.5 h-2.5 shrink-0" />
-                                          <span>{orderDispatchDoc.latestDispatchDocNumber}</span>
-                                        </button>
-                                      )}
-                                      {orderReturnDisc.hasDiscrepancy ? (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleNavigateToTruckDispatch(order, { openReturn: true });
-                                          }}
-                                          title={isAr ? 'تنبيه: يوجد فرق مرتجع — انقر للمراجعة' : 'Return discrepancy detected — click to review'}
-                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-400 font-mono text-[9px] font-black cursor-pointer animate-pulse"
-                                        >
-                                          <AlertTriangle className="w-2.5 h-2.5 text-rose-600 shrink-0" />
-                                          <span>{isAr ? 'فرق مرتجع' : 'Ret Variance'}</span>
-                                        </button>
-                                      ) : orderDispatchDoc?.latestReturnDocNumber ? (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleNavigateToTruckDispatch(order, { openReturn: true });
-                                          }}
-                                          title={isAr ? 'فتح إذن المرتجع في تبويب صرف الشاحنات' : 'Open Return Doc in Truck Dispatch'}
-                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-mono text-[9px] font-black cursor-pointer transition"
-                                        >
-                                          <RotateCcw className="w-2.5 h-2.5 shrink-0" />
-                                          <span>{orderDispatchDoc.latestReturnDocNumber} ✓</span>
-                                        </button>
-                                      ) : null}
-                                    </div>
+                                {/* Invoice & Delivery Note Chips (Click jumps to #sales_invoicing) */}
+                                {(orderInvoicingEval.summaryBadges.length > 0 || orderInvoicingEval.needsRevision) && (
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {orderInvoicingEval.summaryBadges.map((badge) => (
+                                      <button
+                                        key={`${badge.docType}-${badge.serialNo}`}
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          window.location.hash = `#sales_invoicing?highlight=${encodeURIComponent(order.id)}`;
+                                        }}
+                                        title={isAr ? 'فتح في تبويب الفواتير وإذون التسليم' : 'Open in Sales Invoicing'}
+                                        className={`inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded border font-mono text-[9px] font-black cursor-pointer transition ${
+                                          badge.needsRevision
+                                            ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-400'
+                                            : badge.docType === 'PL'
+                                              ? 'bg-purple-50 hover:bg-purple-100 text-purple-900 border-purple-300'
+                                              : badge.docType === 'DeliveryNote'
+                                                ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                                                : 'bg-blue-50 hover:bg-blue-100 text-blue-900 border-blue-300'
+                                        }`}
+                                      >
+                                        <Receipt className="w-2.5 h-2.5 shrink-0" />
+                                        <span>{badge.label}</span>
+                                      </button>
+                                    ))}
+                                    {orderInvoicingEval.needsRevision && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          window.location.hash = `#sales_invoicing?highlight=${encodeURIComponent(order.id)}`;
+                                        }}
+                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-amber-500 text-white font-black text-[9px] cursor-pointer"
+                                        title={isAr ? 'يتطلب تحديث الفاتورة (v2)' : 'Invoice needs revision (v2)'}
+                                      >
+                                        <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                                        <span>{isAr ? 'مراجعة' : 'Revise'}</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+
+                                {!(orderVehicleDisplayName || order.loadingOrderNumber) &&
+                                  ['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) &&
+                                  orderInvoicingEval.summaryBadges.length === 0 && (
+                                    <span className="text-slate-300 font-mono">—</span>
                                   )}
-                                </div>
-                              ) : !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) ? (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleNavigateToLoadingPlan(order);
-                                  }}
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-indigo-600 hover:bg-slate-100 px-1.5 py-0.5 rounded-md transition cursor-pointer border border-dashed border-slate-200"
-                                  title={isAr ? 'الطلب غير مسكن بشاحنة — انقر للتسكين في خطة التحميل' : 'Unassigned — Click to assign in Loading Plan'}
-                                >
-                                  <Truck className="w-2.5 h-2.5 text-slate-300 rtl:-scale-x-100" />
-                                  <span className="italic">{isAr ? 'غير مسكن' : 'Unassigned'}</span>
-                                </button>
-                              ) : (
-                                <span className="text-slate-300 font-mono">—</span>
-                              )}
+                              </div>
                             </td>
 
                             {/* 8. Status (Confirmation, Complementary Revised Toggle & Fulfillment) */}
@@ -3987,7 +4053,10 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
 
       {/* Delete Confirmation Alert Modal (with Dispatch/Invoice Safeguard) */}
       {deleteConfirmOrder && (() => {
+        const activeIssuedInvoices = extractDocsFromOrderInvoicing(deleteConfirmOrder);
+        const hasProtectedInvoice = activeIssuedInvoices.length > 0;
         const hasProtectedDispatch = Boolean(
+          hasProtectedInvoice ||
           deleteConfirmOrder.fgWarehouseDispatched ||
           POST_DISPATCH_STATUSES.includes(deleteConfirmOrder.fulfillmentStatus) ||
           (truckDispatches || []).some(
@@ -4001,11 +4070,19 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                 <AlertTriangle className="w-5 h-5" />
               </div>
               <h4 className="font-black text-slate-800 text-sm">
-                {hasProtectedDispatch
+                {hasProtectedInvoice
+                  ? (isAr ? 'أمر مرتبط بفواتير / إذون صادرة' : 'Invoiced Order Protected')
+                  : hasProtectedDispatch
                   ? (isAr ? 'أمر مرتبط بالصرف / الشحن' : 'Dispatched Order Protected')
                   : (isAr ? 'تأكيد حذف أمر البيع؟' : 'Delete Sales Order?')}
               </h4>
-              {hasProtectedDispatch ? (
+              {hasProtectedInvoice ? (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-2.5 font-medium leading-relaxed">
+                  {isAr
+                    ? `لا يمكن حذف الأمر (#${resolveOrderSerial(deleteConfirmOrder, orders)}) لأن لديه فواتير أو إذون تسليم صادرة. يرجى إلغاء المستندات (Void) من تبويب الفواتير أولاً.`
+                    : `Order (#${resolveOrderSerial(deleteConfirmOrder, orders)}) has active issued invoice/delivery note document(s). Void them in Sales Invoicing first before deleting.`}
+                </p>
+              ) : hasProtectedDispatch ? (
                 <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-2.5 font-medium leading-relaxed">
                   {isAr
                     ? `لا يمكن حذف الأمر (#${resolveOrderSerial(deleteConfirmOrder, orders)}) لأنه مرتبط بإذن صرف شاحنة أو تم تسليمه/شحنه. يرجى استخدام (إلغاء أمر البيع) للحفاظ على سجل التدقيق.`

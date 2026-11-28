@@ -34,6 +34,7 @@ const TAB_TO_PERMISSION_KEY_MAP = {
   sales_orders: 'sales_orders',
   loading_plan: 'loading_plan',
   truck_dispatch: 'truck_dispatch',
+  sales_invoicing: 'sales_invoicing',
   fg_inward: 'fg_inward',
   fg_balances: 'fg_balances',
   departments: 'departments',

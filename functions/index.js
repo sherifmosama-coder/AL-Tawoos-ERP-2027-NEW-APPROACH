@@ -59,6 +59,10 @@ import {
   salesCommitPrintedDocument,
 } from "./sales/truckDispatchEngine.js";
 import {
+  salesCommitInvoiceDocument,
+  salesVoidInvoiceDocument,
+} from "./sales/salesInvoicingEngine.js";
+import {
   aggregatesRebuildAll,
   scheduledAggregatesRollup,
 } from "./aggregates/rollupsEngine.js";
@@ -105,6 +109,8 @@ export {
   salesFinalizeReturnHandshake,
   salesMintPrintDocNumber,
   salesCommitPrintedDocument,
+  salesCommitInvoiceDocument,
+  salesVoidInvoiceDocument,
   aggregatesRebuildAll,
   scheduledAggregatesRollup,
   systemSoftDeleteDocument,

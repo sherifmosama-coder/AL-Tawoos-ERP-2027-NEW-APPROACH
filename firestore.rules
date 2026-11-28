@@ -76,13 +76,16 @@ rules_version = '2';
 //              targetDepartmentIds, targetRoles, includeGeneralAdmins, targetTab,
 //              targetModule, highlightId, createdBy, createdByName, readBy, createdAt, metadata.
 //
-// 9. Master Collections (19) & Operational ERP Collections (34)
+// 9. Master Collections (19) & Operational ERP Collections (35)
 //    - Explicitly scoped by collection name; read/write restricted to active allowlisted ERP users
 //      (`isSignedIn()`) with structural anti-DoS validation on all creates and updates.
 //    - Server-Authoritative Phase 3D/4 collections (`cash_count_sessions`, `dues_batches`,
 //      `spare_parts_issues`, `dispatch_documents`, `aggregates`, plus `wht_notes`,
 //      `journal_entries`, `cash_transactions`) deny direct client creates (`create: if false`)
 //      and restrict deletes to General Admin (`delete: if isGeneralAdmin()`).
+//    - `sales_invoices` is strictly server-owned (Admin SDK Cloud Functions `salesCommitInvoiceDocument`
+//      and `salesVoidInvoiceDocument` only): readable by active ERP users (`isSignedIn()`), with
+//      all client writes (`create`, `update`, `delete`) denied (`if false`).
 //    - `sales_orders`, `purchase_orders`, `work_orders`, and `corporate_banks` retain existing
 //      create/update rules alongside Phase 4 `systemSoftDeleteDocument` audited soft-deletes.
 //
@@ -662,7 +665,7 @@ service cloud.firestore {
     }
 
     // ===============================================================
-    // 7. Active Operational ERP Collections (34)
+    // 7. Active Operational ERP Collections (35)
     // ===============================================================
 
     match /purchase_orders/{docId} {
@@ -794,6 +797,10 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create, update: if false;
       allow delete: if isGeneralAdmin();
+    }
+    match /sales_invoices/{docId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if false;
     }
     match /price_lists/{docId} {
       allow read, delete: if isSignedIn();

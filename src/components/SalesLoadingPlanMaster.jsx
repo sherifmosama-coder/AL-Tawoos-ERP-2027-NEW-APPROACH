@@ -78,6 +78,10 @@ import ClientProfileModal from './ClientProfileModal.jsx';
 import TruckNameBadge from './TruckNameBadge.jsx';
 import { buildOrderTripAvailabilityMap } from '../utils/fgStockEngine.js';
 import { makeTripDispatchDocId, evaluateReturnDiscrepancySummary } from '../utils/truckDispatchUtils.js';
+import {
+  evaluateOrderInvoicingStatus,
+  extractDocsFromOrderInvoicing
+} from '../utils/salesInvoicingEngine.js';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
 
 const ORDER_TYPES = [
@@ -1228,6 +1232,45 @@ function CompactTruckCard({
               </span>
               <ExternalLink className="w-2 h-2 opacity-70 shrink-0" />
             </button>
+
+            {(() => {
+              const evals = (tripOrders || [])
+                .map((ord) => ({
+                  orderId: ord.id,
+                  ev: evaluateOrderInvoicingStatus(ord, {}, extractDocsFromOrderInvoicing(ord)),
+                }))
+                .filter((x) => x.ev.status !== 'not_applicable');
+              if (evals.length === 0) return null;
+              const allInvoiced = evals.every((x) => x.ev.status === 'invoiced');
+              const hasRev = evals.some((x) => x.ev.needsRevision);
+              const firstActionableId = (evals.find((x) => x.ev.status !== 'invoiced') || evals[0])?.orderId || '';
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    window.location.hash = `#sales_invoicing?highlight=${encodeURIComponent(firstActionableId)}`;
+                  }}
+                  title={isAr ? 'فتح الفواتير وإذون التسليم لأوامر هذه الرحلة' : 'Open Sales Invoicing for trip orders'}
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border font-mono text-[9.5px] font-black transition cursor-pointer ${
+                    allInvoiced
+                      ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                      : hasRev
+                      ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
+                      : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                  }`}
+                >
+                  <span>
+                    {allInvoiced
+                      ? (isAr ? 'مفوتر ✓' : 'Invoiced ✓')
+                      : hasRev
+                      ? (isAr ? 'تحديث فاتورة' : 'Revise Inv')
+                      : (isAr ? 'بانتظار الفوترة' : 'Pending Invoice')}
+                  </span>
+                  <ExternalLink className="w-2 h-2 opacity-70 shrink-0" />
+                </button>
+              );
+            })()}
 
             {(displayStatus === 'shipped' ||
               displayStatus === 'delivered' ||
@@ -6506,6 +6549,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
               {truckStatusModal.targetStep?.id === 'shipped' && (() => {
                 const allWhDispatched = truckStatusModal.affectedOrders.every((o) => Boolean(o.fgWarehouseDispatched));
+                const tripInvEvals = truckStatusModal.affectedOrders
+                  .map((o) => ({
+                    orderId: o.id,
+                    ev: evaluateOrderInvoicingStatus(o, {}, extractDocsFromOrderInvoicing(o)),
+                  }))
+                  .filter((x) => x.ev.status !== 'not_applicable');
+                const pendingInvOrders = tripInvEvals.filter((x) => x.ev.status !== 'invoiced');
+                const allInvoiced = tripInvEvals.length > 0 && pendingInvOrders.length === 0;
+                const firstMissingInvOrderId = pendingInvOrders[0]?.orderId || tripInvEvals[0]?.orderId || '';
                 return (
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 text-[11px] font-bold">
                     <span className={`px-2 py-1 rounded-lg border ${
@@ -6517,9 +6569,29 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                         ? (isAr ? 'بوابة مخزن التام: معتمد ✓' : 'FG Warehouse Dispatch Gate: Confirmed ✓')
                         : (isAr ? 'تنبيه: بانتظار اعتماد صرف الشاحنة من تبويب تسليم الشاحنات' : 'Note: FG Warehouse Truck Dispatch not yet confirmed')}
                     </span>
-                    <span className="px-2 py-1 rounded-lg border bg-slate-100 text-slate-600 border-slate-200">
-                      {isAr ? 'بوابة المستندات المالية: قيد الإنشاء لاحقاً' : 'Financial Docs Gate: Next Phase'}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (firstMissingInvOrderId) {
+                          window.location.hash = `#sales_invoicing?highlight=${encodeURIComponent(firstMissingInvOrderId)}`;
+                          setTruckStatusModal(null);
+                        }
+                      }}
+                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border transition cursor-pointer ${
+                        allInvoiced
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                      }`}
+                    >
+                      <span>
+                        {allInvoiced
+                          ? (isAr ? 'بوابة الفواتير: مفوتر بالكامل ✓' : 'Invoicing Gate: Ready ✓')
+                          : (isAr
+                              ? `تنبيه: ${pendingInvOrders.length} طلب بانتظار الفوترة/المراجعة — فتح الفواتير`
+                              : `Note: ${pendingInvOrders.length} order(s) pending invoice/revision`)}
+                      </span>
+                      <ExternalLink className="w-3 h-3 shrink-0" />
+                    </button>
                   </div>
                 );
               })()}

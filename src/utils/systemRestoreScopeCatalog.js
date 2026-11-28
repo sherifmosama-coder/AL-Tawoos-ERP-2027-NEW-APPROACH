@@ -58,6 +58,7 @@ export const OPERATIONAL_COLLECTIONS_COMPLETE = [
   'sales_orders',
   'truck_dispatches',
   'dispatch_documents',
+  'sales_invoices',
   'price_lists',
   'pricing_strategies',
   'client_contracts',
@@ -1115,6 +1116,20 @@ function buildTabRelationalDefinition(moduleId, tabId, architecture = APP_ARCHIT
           ['truck_dispatches', 'dispatch_documents'],
           ['truck_dispatch'],
           ['LO-', 'DD-', 'RET-']
+        ),
+      ],
+      recalculate: {},
+    };
+  }
+
+  if (moduleId === 'sales' && tabId === 'sales_invoicing') {
+    return {
+      primaryCollections: ['sales_invoices'],
+      cascadeRules: [
+        ...makeCollabCascadeRules(
+          ['sales_invoices', 'sales_orders'],
+          ['sales_invoicing'],
+          ['INV-', 'PL-', 'DN-', 'SO-']
         ),
       ],
       recalculate: {},

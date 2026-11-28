@@ -64,6 +64,7 @@ import ClientSegmentsMaster from './components/ClientSegmentsMaster';
 import SalesOrdersMaster from './components/SalesOrdersMaster';
 import SalesLoadingPlanMaster from './components/SalesLoadingPlanMaster';
 import TruckDispatchMaster from './components/TruckDispatchMaster';
+import SalesInvoicingMaster from './components/SalesInvoicingMaster';
 import PriceListsMaster from './components/PriceListsMaster';
 import CategoriesMaster from './components/CategoriesMaster';
 import FinishedProductsMaster from './components/FinishedProductsMaster';
@@ -493,6 +494,9 @@ export default function App() {
             if (tripId) highlightTargetRow(tripId);
           }, 450);
         }
+      } else if (targetTab === 'sales_invoicing') {
+        setActiveModule('sales');
+        setActiveTab('sales_invoicing');
       } else if (targetTab === 'cash_safes' || targetTab === 'cash_safes_hub' || targetTab === 'custodies_advances' || voucherId || recordId) {
         setActiveModule('finance');
         setActiveTab('cash_safes');
@@ -768,6 +772,7 @@ export default function App() {
       { id: 'sales_orders', labelAr: 'أوامر البيع والتوريد', labelEn: 'Sales Orders', icon: ShoppingCart, moduleKey: 'sales_orders' },
       { id: 'loading_plan', labelAr: 'خطة التحميل', labelEn: 'Loading Plan', icon: Truck, moduleKey: 'loading_plan' },
       { id: 'truck_dispatch', labelAr: 'تسليم واستلام الشاحنات', labelEn: 'Truck Dispatch & Receiving', icon: PackageCheck, moduleKey: 'truck_dispatch' },
+      { id: 'sales_invoicing', labelAr: 'الفواتير وإذون التسليم', labelEn: 'Sales Invoicing', icon: Receipt, moduleKey: 'sales_invoicing' },
       { id: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign, moduleKey: 'price_lists' },
       { id: 'client_contracts', labelAr: 'عقود وخصومات العملاء', labelEn: 'Client Contracts', icon: Handshake, moduleKey: 'client_contracts' },
     ],
@@ -1676,6 +1681,12 @@ export default function App() {
                 departmentOverrides={cloudDeptPermissions}
                 userOverrides={cloudPermissions}
                 usersList={usersList}
+              />
+            )}
+            {activeTab === 'sales_invoicing' && (
+              <SalesInvoicingMaster
+                currentUser={currentUser}
+                permissions={effectivePermissions}
               />
             )}
             {activeTab === 'price_lists' && (

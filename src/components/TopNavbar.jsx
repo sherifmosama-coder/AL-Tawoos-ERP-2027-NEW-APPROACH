@@ -386,6 +386,13 @@ export default function TopNavbar({
           icon: PackageCheck,
         },
         {
+          id: 'sales_invoicing',
+          moduleKey: 'sales_invoicing',
+          labelAr: 'الفواتير وإذون التسليم',
+          labelEn: 'Sales Invoicing',
+          icon: Receipt,
+        },
+        {
           id: 'price_lists',
           moduleKey: 'price_lists',
           labelAr: 'قوائم الأسعار',

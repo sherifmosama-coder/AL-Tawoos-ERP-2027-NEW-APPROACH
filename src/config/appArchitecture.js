@@ -1009,6 +1009,27 @@ export const APP_ARCHITECTURE = {
             offloadingWorkers: { labelAr: "عمالة التفريغ والتوزيع ونسب المجهود", labelEn: "Offloading Crew & Effort %", type: "array" }
           }
         },
+        sales_invoicing: {
+          id: "sales_invoicing",
+          collection: "sales_invoices",
+          labelAr: "الفواتير وإذون التسليم",
+          labelEn: "Sales Invoicing",
+          icon: "Receipt",
+          actions: [
+            { key: "canIssueInvoice", labelAr: "إصدار واعتماد وطباعة الفواتير وإذون التسليم", labelEn: "Issue, Commit & Print Invoices / Delivery Notes" },
+            { key: "canVoidInvoice", labelAr: "إلغاء (Void) فاتورة أو إذن تسليم صادر", labelEn: "Void Issued Invoice / Delivery Note" }
+          ],
+          fields: {
+            docType: { labelAr: "نوع المستند", labelEn: "Document Type", type: "enum", options: ["Tawoos", "PL", "DeliveryNote"], required: true, sample: "Tawoos" },
+            sequenceType: { labelAr: "نوع التسلسل", labelEn: "Sequence Type", type: "enum", options: ["tax", "dn"], required: true, sample: "tax" },
+            serialNo: { labelAr: "رقم المسلسل", labelEn: "Serial Number", type: "string", required: true, sample: "1001" },
+            version: { labelAr: "رقم الإصدار", labelEn: "Version", type: "number", sample: 1 },
+            status: { labelAr: "حالة المستند", labelEn: "Document Status", type: "enum", options: ["issued", "superseded", "voided"], sample: "issued" },
+            invoiceDate: { labelAr: "تاريخ الفاتورة", labelEn: "Invoice Date", type: "date", required: true, sample: "2026-11-28" },
+            isSplitLoad: { labelAr: "مشاركة مسلسل للتحميل المجزأ", labelEn: "Split-Load Serial Share", type: "boolean", sample: false },
+            cashSales: { labelAr: "بيع نقدي (بدون تسجيل ضريبي للمشتري)", labelEn: "Cash Sales Mask", type: "boolean", sample: false }
+          }
+        },
         price_lists: {
           id: "price_lists",
           collection: "price_lists",
@@ -1116,6 +1137,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       sales_orders: true,
       loading_plan: true,
       truck_dispatch: true,
+      sales_invoicing: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: true
@@ -1132,6 +1154,8 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       canReceiveWarehouseReturn: true,
       canRegisterAccountantReturn: true,
       canResolveReturnDiscrepancy: true,
+      canIssueInvoice: true,
+      canVoidInvoice: true,
       canCreate: true,
       canEdit: true,
       canApprove: true,
@@ -1239,6 +1263,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       sales_orders: true,
       loading_plan: true,
       truck_dispatch: true,
+      sales_invoicing: true,
       price_lists: true,
       client_contracts: true,
       admin_panel: false
@@ -1255,6 +1280,8 @@ export const DEFAULT_ROLE_PERMISSIONS = {
       canReceiveWarehouseReturn: false,
       canRegisterAccountantReturn: false,
       canResolveReturnDiscrepancy: false,
+      canIssueInvoice: true,
+      canVoidInvoice: false,
       canCreate: true,
       canEdit: true,
       canApprove: true,

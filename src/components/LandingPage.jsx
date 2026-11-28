@@ -177,6 +177,7 @@ export default function LandingPage({
         { id: 'sales_orders', moduleKey: 'sales_orders', labelAr: 'أوامر البيع والتوريد', labelEn: 'Sales Orders', icon: ShoppingCart },
         { id: 'loading_plan', moduleKey: 'loading_plan', labelAr: 'خطة التحميل', labelEn: 'Loading Plan', icon: Truck },
         { id: 'truck_dispatch', moduleKey: 'truck_dispatch', labelAr: 'تسليم واستلام الشاحنات', labelEn: 'Truck Dispatch & Receiving', icon: PackageCheck },
+        { id: 'sales_invoicing', moduleKey: 'sales_invoicing', labelAr: 'الفواتير وإذون التسليم', labelEn: 'Sales Invoicing', icon: Receipt },
         { id: 'price_lists', moduleKey: 'price_lists', labelAr: 'قوائم الأسعار', labelEn: 'Price Lists', icon: BadgeDollarSign },
         { id: 'client_contracts', moduleKey: 'client_contracts', labelAr: 'عقود وخصومات العملاء', labelEn: 'Client Contracts', icon: Handshake },
       ]
