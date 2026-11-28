@@ -20,6 +20,7 @@ import {
 } from '../../utils/truckDispatchUtils.js';
 import { ORDER_TYPE_META, fmtCtn } from './truckDispatchConstants.js';
 import LabourEffortRosterEditor from './LabourEffortRosterEditor.jsx';
+import TruckNameBadge from '../TruckNameBadge.jsx';
 
 // DISPATCH MATRIX MODAL (Clients × Products/Options + Extras + Dual Labour)
 // =========================================================================
@@ -528,10 +529,18 @@ export default function TruckDispatchModal({
                   </span>
                 )}
               </div>
-              <div className="text-[11px] text-slate-300 font-medium truncate mt-0.5">
-                {trip.vehicleDisplayName}
-                {trip.primaryDriverName ? ` • ${isAr ? 'السائق:' : 'Driver:'} ${trip.primaryDriverName}` : ''}
-                {trip.primaryRepName ? ` • ${isAr ? 'المندوب:' : 'Rep:'} ${trip.primaryRepName}` : ''}
+              <div className="text-[11px] text-slate-300 font-medium truncate mt-0.5 flex items-center gap-1.5 flex-wrap">
+                <TruckNameBadge
+                  vehicle={trip.vehicleObj}
+                  name={trip.vehicleDisplayName}
+                  plate={trip.plateNumber}
+                  isAr={isAr}
+                  showIcon={false}
+                  nameClassName="text-slate-100 font-bold truncate"
+                  copyClassName="text-slate-300 hover:text-white hover:bg-white/15"
+                />
+                {trip.primaryDriverName && <span>• {isAr ? 'السائق:' : 'Driver:'} {trip.primaryDriverName}</span>}
+                {trip.primaryRepName && <span>• {isAr ? 'المندوب:' : 'Rep:'} {trip.primaryRepName}</span>}
               </div>
             </div>
           </div>

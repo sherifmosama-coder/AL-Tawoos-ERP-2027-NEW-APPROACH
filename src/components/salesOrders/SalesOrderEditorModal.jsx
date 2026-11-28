@@ -77,6 +77,7 @@ import {
   resolveBranchDisplayName,
   CopyButton,
 } from './salesOrderConstants';
+import TruckNameBadge from '../TruckNameBadge';
 
 /**
  * =========================================================================
@@ -1829,12 +1830,11 @@ export function SalesOrderEditorModal({
                   {hasActiveAssignment && (() => {
                     const matchedVehModal = vehicles.find((v) => v.id === formData.assignedVehicleId);
                     const modalVehName = resolveVehicleDisplayName(matchedVehModal, formData.assignedVehicleName);
-                    const modalVehPlate = formData.assignedVehiclePlate || matchedVehModal?.plateNumber || '';
                     return (
                       <span className="text-[10px] text-amber-700 font-medium block mt-1 leading-tight">
                         {isAr
-                          ? `الطلب مُسكن بشاحنة (${modalVehName || modalVehPlate || ''}) ورحلة #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
-                          : `Order assigned to ${modalVehName || ''} (Trip #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
+                          ? `الطلب مُسكن بشاحنة (${modalVehName || '—'}) ورحلة #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
+                          : `Order assigned to ${modalVehName || '—'} (Trip #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
                       </span>
                     );
                   })()}
@@ -1879,15 +1879,15 @@ export function SalesOrderEditorModal({
                   </div>
                   <div>
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-xs font-black text-slate-900">
-                        {modalVehName || (isAr ? 'شاحنة معتمدة' : 'Assigned Truck')}
-                      </span>
-                      {modalVehPlate && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-white border border-slate-200 text-[10px] font-mono text-slate-700 font-bold">
-                          <span>{modalVehPlate}</span>
-                          <CopyButton text={modalVehPlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-                        </span>
-                      )}
+                      <TruckNameBadge
+                        vehicle={matchedVehModal}
+                        name={modalVehName || (isAr ? 'شاحنة معتمدة' : 'Assigned Truck')}
+                        plate={modalVehPlate}
+                        isAr={isAr}
+                        showIcon={false}
+                        nameClassName="text-xs font-black text-slate-900"
+                        copyClassName="bg-white border border-slate-200 p-1 rounded-md"
+                      />
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 border border-indigo-200 font-mono">
                         {isAr ? `رحلة #${formData.loadingOrderNumber}` : `Trip #${formData.loadingOrderNumber}`}
                       </span>

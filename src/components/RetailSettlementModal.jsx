@@ -24,6 +24,7 @@ import {
   FileImage
 } from 'lucide-react';
 import AttachmentViewerModal from './AttachmentViewerModal';
+import TruckNameBadge from './TruckNameBadge';
 import {
   calculateSalesOrderLineTotals,
   aggregateSalesOrderTotals,
@@ -183,9 +184,10 @@ export default function RetailSettlementModal({
   if (!isOpen || !order) return null;
 
   const matchedVehicle = vehicles.find((v) => v.id === order.assignedVehicleId);
+  const truckPlate = (order.assignedVehiclePlate || matchedVehicle?.plateNumber || '').trim();
   const truckLabel = resolveVehicleDisplayName
     ? resolveVehicleDisplayName(matchedVehicle, order.assignedVehicleName || (isAr ? 'شاحنة غير محددة' : 'Unassigned Truck'))
-    : (order.assignedVehicleName || order.assignedVehiclePlate || '—');
+    : (order.assignedVehicleName || matchedVehicle?.code || '—');
 
   // Dual synchronized updaters: updating Sold automatically adjusts Returned, and vice versa
   const handleSoldQtyChange = (productId, rawVal) => {
@@ -605,10 +607,15 @@ export default function RetailSettlementModal({
                   {order.region ? ` — ${order.region}` : ''}
                 </h3>
                 <div className="text-[11px] text-slate-300 flex flex-wrap items-center gap-3 mt-0.5">
-                  <span className="inline-flex items-center gap-1">
-                    <Truck className="w-3.5 h-3.5 text-cyan-400" />
-                    {truckLabel}
-                  </span>
+                  <TruckNameBadge
+                    vehicle={matchedVehicle}
+                    name={truckLabel}
+                    plate={truckPlate}
+                    isAr={isAr}
+                    iconClassName="w-3.5 h-3.5 text-cyan-400 shrink-0 rtl:-scale-x-100"
+                    nameClassName="text-slate-200 font-bold truncate"
+                    copyClassName="text-slate-300 hover:text-white hover:bg-white/15"
+                  />
                   {order.loadingOrderNumber && (
                     <span className="font-mono">
                       {isAr ? `رحلة #${order.loadingOrderNumber}` : `Trip #${order.loadingOrderNumber}`}

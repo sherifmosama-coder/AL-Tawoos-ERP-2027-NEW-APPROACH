@@ -132,15 +132,19 @@ export const SALES_FULFILLMENT_STYLE_MAP = {
 
 /**
  * Standardizes Vehicle Name (`vehicleModel` / `name` / `nameAr`) as the main human-recognizable reference.
+ * Plate numbers must never substitute for the display name.
  */
 export const resolveVehicleDisplayName = (veh, fallbackName = '') => {
   if (!veh && !fallbackName) return '';
+  const plateStr = String(veh?.plateNumber || '').trim();
+  const safeFallback =
+    fallbackName && String(fallbackName).trim() !== plateStr ? String(fallbackName).trim() : '';
   return (
     veh?.vehicleModel ||
     veh?.name ||
     veh?.nameAr ||
     veh?.nameEn ||
-    fallbackName ||
+    safeFallback ||
     veh?.code ||
     veh?.id ||
     ''

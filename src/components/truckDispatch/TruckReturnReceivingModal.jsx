@@ -37,6 +37,7 @@ import { SalesOrderEditorModal } from '../salesOrders/SalesOrderEditorModal.jsx'
 import RetailSettlementModal from '../RetailSettlementModal.jsx';
 import { DEFAULT_PRICING_STRATEGIES } from '../../utils/pricingEngine.js';
 import { ORDER_TYPE_META, fmtCtn } from './truckDispatchConstants.js';
+import TruckNameBadge from '../TruckNameBadge.jsx';
 
 // RETURN / RECEIVING MODAL (Strict Separation of Duties & 2-Party Alignment)
 // =========================================================================
@@ -1198,8 +1199,17 @@ export default function TruckReturnReceivingModal({
                   {isAr ? detectedRoleBadge.ar : detectedRoleBadge.en}
                 </span>
               </div>
-              <div className="text-[11px] text-slate-300 mt-0.5">
-                {trip.vehicleDisplayName} • {statusText}
+              <div className="text-[11px] text-slate-300 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                <TruckNameBadge
+                  vehicle={trip.vehicleObj}
+                  name={trip.vehicleDisplayName}
+                  plate={trip.plateNumber}
+                  isAr={isAr}
+                  showIcon={false}
+                  nameClassName="text-slate-100 font-bold"
+                  copyClassName="text-slate-300 hover:text-white hover:bg-white/15"
+                />
+                <span>• {statusText}</span>
               </div>
             </div>
           </div>

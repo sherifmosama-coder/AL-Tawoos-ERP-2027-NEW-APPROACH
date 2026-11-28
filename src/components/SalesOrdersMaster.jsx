@@ -131,6 +131,7 @@ import {
   CopyButton,
 } from './salesOrders/salesOrderConstants';
 import { SalesOrderEditorModal } from './salesOrders/SalesOrderEditorModal';
+import TruckNameBadge from './TruckNameBadge';
 
 export { SalesOrderEditorModal };
 
@@ -1082,10 +1083,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         key = o.assignedVehicleId || 'unassigned';
         const matchedVeh = vehicles.find((v) => v.id === o.assignedVehicleId);
         const vName = resolveVehicleDisplayName(matchedVeh, o.assignedVehicleName);
-        const vPlate = o.assignedVehiclePlate || matchedVeh?.plateNumber || '';
-        label = vName
-          ? `${vName}${vPlate ? ` (${vPlate})` : ''}`
-          : (isAr ? 'أوامر غير مسكنة بشاحنة' : 'Unassigned Orders');
+        label = vName || (isAr ? 'أوامر غير مسكنة بشاحنة' : 'Unassigned Orders');
       }
 
       if (!groupsMap[key]) {
@@ -1544,7 +1542,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               <option value="unassigned">{isAr ? 'غير مسكن بشاحنة' : 'Unassigned Only'}</option>
               {vehicles.map((v) => (
                 <option key={v.id} value={v.id}>
-                  {resolveVehicleDisplayName(v, v.plateNumber || (isAr ? 'شاحنة' : 'Truck'))}
+                  {resolveVehicleDisplayName(v, v.code || (isAr ? 'شاحنة' : 'Truck'))}
                 </option>
               ))}
             </select>
@@ -2609,16 +2607,18 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                                               <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
                                                 <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'الشاحنة المخصصة:' : 'Assigned Truck:'}</span>
-                                                <span className="font-black text-slate-900 flex items-center gap-1 mt-0.5">
-                                                  <Truck className="w-3.5 h-3.5 text-indigo-600 shrink-0 rtl:-scale-x-100" />
-                                                  <span className="truncate">{orderVehicleDisplayName || (isAr ? 'غير محدد' : 'Unknown')}</span>
-                                                </span>
-                                                {orderVehiclePlate && (
-                                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-[10px] text-slate-600 font-mono mt-1">
-                                                    <span>{orderVehiclePlate}</span>
-                                                    <CopyButton text={orderVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-                                                  </span>
-                                                )}
+                                                <div className="mt-0.5">
+                                                  <TruckNameBadge
+                                                    vehicle={matchedOrderVehicle}
+                                                    name={order.assignedVehicleName}
+                                                    plate={orderVehiclePlate}
+                                                    isAr={isAr}
+                                                    iconClassName="w-3.5 h-3.5 text-indigo-600 shrink-0 rtl:-scale-x-100"
+                                                    nameClassName="font-black text-slate-900 truncate"
+                                                    copyClassName="border border-slate-200 bg-slate-50 p-1 rounded-md"
+                                                    emptyText={isAr ? 'غير محدد' : 'Unknown'}
+                                                  />
+                                                </div>
                                               </div>
 
                                               <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">

@@ -75,6 +75,7 @@ import { buildUnifiedPersonnelPool } from '../utils/personnelDirectory.js';
 import RetailSettlementModal from './RetailSettlementModal.jsx';
 import LoadingPlanFgSidebar from './LoadingPlanFgSidebar.jsx';
 import ClientProfileModal from './ClientProfileModal.jsx';
+import TruckNameBadge from './TruckNameBadge.jsx';
 import { buildOrderTripAvailabilityMap } from '../utils/fgStockEngine.js';
 import { makeTripDispatchDocId, evaluateReturnDiscrepancySummary } from '../utils/truckDispatchUtils.js';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
@@ -226,22 +227,23 @@ const FULFILLMENT_CONFIG_MAP = {
 
 /**
  * Standardizes the Vehicle Name (`vehicleModel` / `name` / `nameAr`) as the main reference across the module,
- * falling back to `code` or `id` only if no name is defined.
+ * falling back to `code` or `id` only if no name is defined (never falling back to plateNumber).
  */
 const resolveVehicleDisplayName = (veh, fallbackName = '') => {
   if (!veh && !fallbackName) return '';
-  const candidate = (
+  const plateStr = String(veh?.plateNumber || '').trim();
+  const safeFallback =
+    fallbackName && String(fallbackName).trim() !== plateStr ? String(fallbackName).trim() : '';
+  return (
     veh?.vehicleModel ||
     veh?.name ||
     veh?.nameAr ||
     veh?.nameEn ||
-    fallbackName ||
+    safeFallback ||
     veh?.code ||
     veh?.id ||
     ''
   ).trim();
-  // If fallbackName was actually just the plateNumber or code and veh has a real vehicleModel, veh.vehicleModel wins above
-  return candidate;
 };
 
 const WORKER_ROLE_LABELS = {
@@ -857,16 +859,21 @@ function CompactTruckCard({
               </div>
             }
           >
-            <span className="text-xs font-black text-slate-900 hover:text-indigo-700 cursor-help truncate">
+            <span
+              className="text-xs font-black text-slate-900 hover:text-indigo-700 cursor-help truncate"
+              title={veh.plateNumber ? `${primaryVehicleName} • ${isAr ? 'رقم اللوحة:' : 'Plate #:'} ${veh.plateNumber}` : primaryVehicleName}
+            >
               {primaryVehicleName}
             </span>
           </FleetRichTooltip>
 
           {veh.plateNumber && (
-            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-slate-600 font-mono text-[9px] font-bold shrink-0">
-              <span>{veh.plateNumber}</span>
-              <CopyButton text={veh.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-            </span>
+            <CopyButton
+              text={veh.plateNumber}
+              title={isAr ? `نسخ رقم اللوحة (${veh.plateNumber})` : `Copy Plate # (${veh.plateNumber})`}
+              isAr={isAr}
+              className="border border-slate-200 bg-slate-50 p-1 rounded-md shrink-0"
+            />
           )}
         </div>
 
@@ -1948,7 +1955,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       loNumber: String(loNumber),
       loadingDate: targetPlanningDate,
       vehicleId: vehicleObj?.id || null,
-      vehicleName: resolveVehicleDisplayName(vehicleObj, vehicleObj?.plateNumber || ''),
+      vehicleName: resolveVehicleDisplayName(vehicleObj, vehicleObj?.code || ''),
       vehiclePlate: vehicleObj?.plateNumber || ''
     });
     setTimeout(() => {
@@ -3298,7 +3305,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     if (!truckStatusModal || !truckStatusModal.targetStep || !Array.isArray(truckStatusModal.affectedOrders) || truckStatusModal.affectedOrders.length === 0) return;
 
     const { truck, targetStep, affectedOrders, selectedOrderIds, unassignOnRevertToPending, loadingOrderNumber } = truckStatusModal;
-    const truckLabel = resolveVehicleDisplayName(truck, truck?.plateNumber || (isAr ? 'شاحنة' : 'Truck'));
+    const truckLabel = resolveVehicleDisplayName(truck, truck?.code || (isAr ? 'شاحنة' : 'Truck'));
     const selectedSet = Array.isArray(selectedOrderIds)
       ? new Set(selectedOrderIds)
       : new Set(affectedOrders.map((o) => o.id));
@@ -4222,16 +4229,15 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   <span className="font-mono px-2 py-0.5 rounded-md bg-white border border-rose-300 text-rose-800">
                     {isAr ? `رحلة #${loFilter.loNumber}` : `Trip #${loFilter.loNumber}`}
                   </span>
-                  {loFilter.vehicleName && (
-                    <span className="text-xs text-rose-900 font-black">
-                      ({loFilter.vehicleName})
-                    </span>
-                  )}
-                  {loFilter.vehiclePlate && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white border border-rose-200 font-mono text-[10px] font-bold text-rose-800">
-                      <span>{loFilter.vehiclePlate}</span>
-                      <CopyButton text={loFilter.vehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-                    </span>
+                  {(loFilter.vehicleName || loFilter.vehiclePlate) && (
+                    <TruckNameBadge
+                      name={loFilter.vehicleName}
+                      plate={loFilter.vehiclePlate}
+                      isAr={isAr}
+                      showIcon={false}
+                      nameClassName="text-xs text-rose-900 font-black"
+                      copyClassName="bg-white border border-rose-200 p-1 rounded-md text-rose-700"
+                    />
                   )}
                 </div>
                 <p className="text-[11px] text-rose-700 font-medium mt-0.5">
@@ -4702,7 +4708,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     >
                                       <option value="">{isAr ? '— اختر السيارة —' : '— Select Truck —'}</option>
                                       {vehicles.map((v) => {
-                                        const truckName = resolveVehicleDisplayName(v, v.plateNumber);
+                                        const truckName = resolveVehicleDisplayName(v, v.code || (isAr ? 'شاحنة' : 'Truck'));
                                         return (
                                           <option key={v.id} value={v.id}>
                                             {truckName}
@@ -5232,15 +5238,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     <span>{isAr ? `رحلة #${eff.loadingOrderNumber}` : `Trip #${eff.loadingOrderNumber}`}</span>
                                   </div>
 
-                                  {/* Cell 2: Vehicle Truck Name (Truck Name + copyable Plate) */}
-                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 flex items-center justify-between gap-1" title={truckDisplayName || eff.assignedVehiclePlate}>
-                                    <span className="truncate font-black text-slate-900">{truckDisplayName || eff.assignedVehiclePlate || '—'}</span>
-                                    {(eff.assignedVehiclePlate || selectedVehicle?.plateNumber) && (
-                                      <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-100 border border-slate-200 font-mono text-[9px] text-slate-600 shrink-0">
-                                        <span>{eff.assignedVehiclePlate || selectedVehicle?.plateNumber}</span>
-                                        <CopyButton text={eff.assignedVehiclePlate || selectedVehicle?.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-                                      </span>
-                                    )}
+                                  {/* Cell 2: Vehicle Truck Name (Hover Plate + Icon-Only Copy) */}
+                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 flex items-center justify-between gap-1 min-w-0">
+                                    <TruckNameBadge
+                                      vehicle={selectedVehicle}
+                                      name={truckDisplayName}
+                                      plate={eff.assignedVehiclePlate || selectedVehicle?.plateNumber || ''}
+                                      isAr={isAr}
+                                      showIcon={false}
+                                      className="w-full justify-between"
+                                      nameClassName="truncate font-black text-slate-900"
+                                      copyClassName="border border-slate-200 bg-slate-50 p-1 rounded-md shrink-0"
+                                    />
                                   </div>
 
                                   {/* Cell 3: Driver Name */}
@@ -5717,15 +5726,14 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                 <span className="font-mono text-xs font-black text-amber-400">
                                   {isAr ? `رحلة #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
                                 </span>
-                                <span className="font-bold text-white text-xs truncate max-w-[140px]" title={tm.primaryVehicleName}>
-                                  {tm.primaryVehicleName || (isAr ? 'شاحنة' : 'Truck')}
-                                </span>
-                                {tm.primaryVehiclePlate && (
-                                  <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-800 border border-slate-700 font-mono text-[9px] text-slate-300">
-                                    <span>{tm.primaryVehiclePlate}</span>
-                                    <CopyButton text={tm.primaryVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} className="text-slate-400 hover:text-white hover:bg-slate-700" />
-                                  </span>
-                                )}
+                                <TruckNameBadge
+                                  name={tm.primaryVehicleName}
+                                  plate={tm.primaryVehiclePlate}
+                                  isAr={isAr}
+                                  showIcon={false}
+                                  nameClassName="font-bold text-white text-xs truncate max-w-[160px]"
+                                  copyClassName="text-slate-400 hover:text-white hover:bg-slate-700 border border-slate-700 bg-slate-800/80 p-1 rounded-md"
+                                />
                               </div>
                               <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
                                 <span className="flex items-center gap-1">
@@ -6432,23 +6440,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     {isAr ? 'تأكيد تحديث حالة رحلة الشاحنة' : 'Confirm Truck Trip Transition'}
                   </h4>
                   <div className="text-xs text-slate-600 mt-0.5 flex items-center gap-1.5 flex-wrap">
-                    <span className="font-black text-slate-900">
-                      {resolveVehicleDisplayName(truckStatusModal.truck, isAr ? 'شاحنة' : 'Truck')}
-                    </span>
+                    <TruckNameBadge
+                      vehicle={truckStatusModal.truck}
+                      isAr={isAr}
+                      showIcon={false}
+                      nameClassName="font-black text-slate-900"
+                      copyClassName="border border-slate-200 bg-slate-100 p-1 rounded-md"
+                    />
                     {truckStatusModal.loadingOrderNumber && truckStatusModal.loadingOrderNumber !== 'unnumbered' && (
                       <>
                         <span>•</span>
                         <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono font-black">
                           {isAr ? `رحلة #${truckStatusModal.loadingOrderNumber}` : `Trip #${truckStatusModal.loadingOrderNumber}`}
-                        </span>
-                      </>
-                    )}
-                    {truckStatusModal.truck?.plateNumber && (
-                      <>
-                        <span>•</span>
-                        <span className="inline-flex items-center gap-1 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 font-mono font-bold text-slate-700">
-                          <span>{truckStatusModal.truck.plateNumber}</span>
-                          <CopyButton text={truckStatusModal.truck.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
                         </span>
                       </>
                     )}

@@ -14,6 +14,7 @@ import {
   Hash,
 } from 'lucide-react';
 import { filterDispatchDocumentsByDate } from '../utils/dispatchDocumentRegistry.js';
+import TruckNameBadge from './TruckNameBadge.jsx';
 
 const fmtDateTime = (iso, isAr) => {
   if (!iso) return '—';
@@ -284,14 +285,15 @@ export default function DispatchDocumentsHistoryModal({
                           <strong className="font-mono text-slate-900">{entry.loadingDate || '—'}</strong>
                         </span>
 
-                        {entry.vehicleName && (
-                          <span className="inline-flex items-center gap-1">
-                            <Truck className="w-3.5 h-3.5 text-teal-600" />
-                            <strong className="text-slate-900">{entry.vehicleName}</strong>
-                            {entry.plateNumber && (
-                              <span className="text-[11px] font-mono text-slate-500">({entry.plateNumber})</span>
-                            )}
-                          </span>
+                        {(entry.vehicleName || entry.plateNumber) && (
+                          <TruckNameBadge
+                            name={entry.vehicleName}
+                            plate={entry.plateNumber}
+                            isAr={isAr}
+                            iconClassName="w-3.5 h-3.5 text-teal-600 shrink-0 rtl:-scale-x-100"
+                            nameClassName="font-bold text-slate-900"
+                            copyClassName="border border-slate-200 bg-slate-50 p-1 rounded-md"
+                          />
                         )}
 
                         {entry.driverName && entry.driverName !== '—' && (

@@ -1021,7 +1021,7 @@ export default function OrderSplitModal({
                                 {isAr ? '— اختر شاحنة (اختياري للسعة) —' : '— Select Truck (Optional) —'}
                               </option>
                               {vehicles.map((v) => {
-                                const name = resolveVehicleDisplayName ? resolveVehicleDisplayName(v) : (v.vehicleModel || v.name || v.plateNumber);
+                                const name = resolveVehicleDisplayName ? resolveVehicleDisplayName(v) : (v.vehicleModel || v.name || v.code || '—');
                                 const capT = Number(v.maxCapacityKg) > 0 ? ` (${(Number(v.maxCapacityKg) / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'})` : '';
                                 return (
                                   <option key={v.id} value={v.id}>

@@ -1423,9 +1423,16 @@ export default function TruckDispatchMaster({
                       )}
                     </div>
 
-                    {/* Vehicle (Name/Model only + Copy Plate Icon), Driver & Summary Cartons */}
+                    {/* Vehicle (Name/Model only + Hover Plate + Copy Plate Icon), Driver & Summary Cartons */}
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 font-bold">
-                      <span className="inline-flex items-center gap-1.5 text-slate-900 font-extrabold">
+                      <span
+                        className="inline-flex items-center gap-1.5 text-slate-900 font-extrabold"
+                        title={
+                          trip.plateNumber
+                            ? `${trip.vehicleDisplayName} • ${isAr ? 'رقم اللوحة:' : 'Plate #:'} ${trip.plateNumber}`
+                            : trip.vehicleDisplayName
+                        }
+                      >
                         <Truck className="w-3.5 h-3.5 text-teal-600 rtl:-scale-x-100" />
                         <span>{trip.vehicleDisplayName}</span>
                         {trip.plateNumber && (
