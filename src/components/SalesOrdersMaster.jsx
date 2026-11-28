@@ -155,6 +155,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [segments, setSegments] = useState([]);
   const [products, setProducts] = useState([]);
   const [vehicles, setVehicles] = useState([]);
+  const [employees, setEmployees] = useState([]);
   const [truckDispatches, setTruckDispatches] = useState([]);
   const [productCategories, setProductCategories] = useState([]);
   const [priceLists, setPriceLists] = useState([]);
@@ -327,6 +328,14 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     return () => unsub();
   }, []);
 
+  // 8c. Subscribe to Unified Personnel Directory (for Sales Rep dropdown)
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'employees'), (snapshot) => {
+      setEmployees(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+
   const truckDispatchesById = useMemo(() => {
     const map = {};
     (truckDispatches || []).forEach((td) => {
@@ -440,7 +449,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         performedBy: currentUserName,
         performedById: currentUserId,
         action: 'truck_return_settlement_task_completed',
-        summaryAr: `تم تنفيذ مهمة تسوية أوامر البيع لرحلة #${tripDoc.loadingOrderNumber} بواسطة ${currentUserName}`,
+        summaryAr: `تم تنفيذ مهمة تسوية أوامر البيع لتحميل #${tripDoc.loadingOrderNumber} بواسطة ${currentUserName}`,
         summaryEn: `Completed Sales Order settlement task for Trip #${tripDoc.loadingOrderNumber} by ${currentUserName}`,
         changes: { metadata: [], lineChanges: [] },
       };
@@ -469,7 +478,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         eventKey: 'trip_return_alignment_accounting',
         docId: tripDoc.id,
         docNumber: `LO-${tripDoc.loadingOrderNumber}`,
-        titleAr: `تمت تسوية أوامر بيع مرتجع رحلة #${tripDoc.loadingOrderNumber} — جاهز لمطابقة المحاسبة`,
+        titleAr: `تمت تسوية أوامر بيع مرتجع تحميل #${tripDoc.loadingOrderNumber} — جاهز لمطابقة المحاسبة`,
         titleEn: `Order Settlement Completed for Trip #${tripDoc.loadingOrderNumber} — Ready for Accounting Alignment`,
         messageAr: `أتم (${currentUserName}) تعديل/إضافة أوامر البيع المطلوبة. يرجى مراجعة نافذة المرتجعات وتأكيد المطابقة النهائية.`,
         messageEn: `(${currentUserName}) completed the requested Sales Order settlement. Please open Return Receiving to confirm final alignment.`,
@@ -1278,7 +1287,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                   <div className="text-xs font-black text-indigo-950 flex items-center gap-2 flex-wrap">
                     <span>
                       {isAr
-                        ? `تسوية أوامر بيع مرتجعات رحلة #${activeSettlementTrip.loadingOrderNumber} (${activeSettlementTrip.loadingDate})`
+                        ? `تسوية أوامر بيع مرتجعات تحميل #${activeSettlementTrip.loadingOrderNumber} (${activeSettlementTrip.loadingDate})`
                         : `Trip #${activeSettlementTrip.loadingOrderNumber} (${activeSettlementTrip.loadingDate}) Return Settlement Workbench`}
                     </span>
                     <span className="px-2 py-0.5 rounded-md bg-white border border-indigo-200 font-mono text-[10px] font-black text-indigo-800">
@@ -2101,7 +2110,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-black bg-indigo-50 text-indigo-800 hover:bg-indigo-100 hover:text-indigo-950 border border-indigo-200/90 shadow-2xs transition cursor-pointer max-w-[175px] truncate"
                                       title={
                                         isAr
-                                          ? `شاحنة: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — رحلة #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — سائق: ${order.assignedDriverName}` : ''}`
+                                          ? `شاحنة: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — تحميل #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — سائق: ${order.assignedDriverName}` : ''}`
                                           : `Truck: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — Trip #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — Driver: ${order.assignedDriverName}` : ''}`
                                       }
                                     >
@@ -2641,7 +2650,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                                 <span className="text-[10px] text-slate-400 block font-sans">{isAr ? 'رقم وتاريخ الرحلة:' : 'Trip # & Loading Date:'}</span>
                                                 <span className="font-mono font-black text-indigo-700 text-xs flex items-center gap-1 mt-0.5">
                                                   <PackageCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                                                  <span>{order.loadingOrderNumber ? (isAr ? `رحلة #${order.loadingOrderNumber}` : `Trip #${order.loadingOrderNumber}`) : '—'}</span>
+                                                  <span>{order.loadingOrderNumber ? (isAr ? `تحميل #${order.loadingOrderNumber}` : `Trip #${order.loadingOrderNumber}`) : '—'}</span>
                                                 </span>
                                                 <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{order.loadingDate || order.invoiceDate || '—'}</span>
                                                 {(orderDispatchDoc?.latestDispatchDocNumber || orderDispatchDoc?.latestReturnDocNumber || orderReturnDisc.hasDiscrepancy) && (
@@ -3650,7 +3659,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                     <span className="truncate">{childVehName || (isAr ? 'بانتظار التسكين' : 'Awaiting Truck')}</span>
                     {child.loadingOrderNumber && (
                       <span className="font-mono text-indigo-200">
-                        · {isAr ? `رحلة #${child.loadingOrderNumber}` : `Trip #${child.loadingOrderNumber}`}
+                        · {isAr ? `تحميل #${child.loadingOrderNumber}` : `Trip #${child.loadingOrderNumber}`}
                       </span>
                     )}
                   </span>
@@ -3760,6 +3769,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           priceLists={priceLists}
           strategies={strategies}
           vehicles={vehicles}
+          employees={employees}
           allOrders={orders}
           stdRetailList={stdRetailListDoc.items || []}
           canManageStdRetailList={canManageStdRetailList}

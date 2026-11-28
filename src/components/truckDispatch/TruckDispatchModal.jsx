@@ -422,9 +422,9 @@ export default function TruckDispatchModal({
         action: isEditDispatch ? 'truck_dispatch_updated' : 'truck_dispatch_confirmed',
         summaryAr: isEditDispatch
           ? (planDrift.hasPlanDrift
-              ? `تحديث بيان الصرف بعد تعديل خطة رحلة #${trip.loadingOrderNumber}`
-              : `تحديث بيان تحميل رحلة #${trip.loadingOrderNumber}`)
-          : `اعتماد تحميل وصرف رحلة #${trip.loadingOrderNumber} (${trip.vehicleDisplayName}): مقفل ${totalLockedAll} + زيادات ${totalExtrasAll} = ${totalDispatchedAll} كرتونة`,
+              ? `تحديث بيان الصرف بعد تعديل خطة تحميل #${trip.loadingOrderNumber}`
+              : `تحديث بيان تحميل #${trip.loadingOrderNumber}`)
+          : `اعتماد تحميل وصرف تحميل #${trip.loadingOrderNumber} (${trip.vehicleDisplayName}): مقفل ${totalLockedAll} + زيادات ${totalExtrasAll} = ${totalDispatchedAll} كرتونة`,
         summaryEn: isEditDispatch
           ? (planDrift.hasPlanDrift
               ? `Re-confirmed dispatch after Loading Plan changes on Trip #${trip.loadingOrderNumber}`
@@ -517,7 +517,7 @@ export default function TruckDispatchModal({
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-sm sm:text-base font-black">
                   {isAr
-                    ? `بيان تحميل وصرف شاحنة — رحلة #${trip.loadingOrderNumber}`
+                    ? `بيان تحميل وصرف شاحنة — تحميل #${trip.loadingOrderNumber}`
                     : `Truck Loading & Dispatch Matrix — Trip #${trip.loadingOrderNumber}`}
                 </h3>
                 <span className="px-2 py-0.5 rounded-lg bg-white/10 text-teal-200 font-mono text-[11px] font-bold">

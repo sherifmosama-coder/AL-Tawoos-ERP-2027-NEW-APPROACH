@@ -31,6 +31,7 @@ import {
   CheckCircle2,
   Truck,
   Banknote,
+  Copy,
 } from 'lucide-react';
 import { db, openBase64Document } from '../firebase';
 import PeacockLoader from './PeacockLoader';
@@ -70,13 +71,15 @@ export default function ClientProfileModal({
   pricingStrategies = null,
   salesOrders = null,
   onEditClient = null,
+  onDuplicateOrder = null,
+  initialTab = 'profile',
   canViewCreditLimit = true,
   canViewTaxCard = true,
   canViewPricing = true,
   zIndexClass = 'z-[75]',
   isAr = true,
 }) {
-  const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'orders'
+  const [activeTab, setActiveTab] = useState(initialTab === 'orders' ? 'orders' : 'profile'); // 'profile' | 'orders'
   const [branchScopeOnly, setBranchScopeOnly] = useState(false);
   const [includeCanceled, setIncludeCanceled] = useState(false);
   const [expandedOrderIds, setExpandedOrderIds] = useState(() => new Set());
@@ -126,10 +129,10 @@ export default function ClientProfileModal({
   // Reset UI view state on open / target change
   useEffect(() => {
     if (!isOpen) return;
-    setActiveTab('profile');
+    setActiveTab(initialTab === 'orders' ? 'orders' : 'profile');
     setBranchScopeOnly(Boolean(focusBranchId || focusBranchName));
     setExpandedOrderIds(new Set());
-  }, [isOpen, resolvedClientId, focusBranchId, focusBranchName]);
+  }, [isOpen, resolvedClientId, focusBranchId, focusBranchName, initialTab]);
 
   // Close cleanly on Escape key
   useEffect(() => {
@@ -877,6 +880,27 @@ export default function ClientProfileModal({
                           </div>
 
                           <div className="flex items-center gap-2.5 text-xs font-mono">
+                            {typeof onDuplicateOrder === 'function' &&
+                              !ord.isAdministrative &&
+                              !['admin', 'collection'].includes(ord.orderType) &&
+                              ord.normalizedLines.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDuplicateOrder(ord);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-sans font-extrabold text-[11px] shadow-2xs transition cursor-pointer"
+                                  title={
+                                    isAr
+                                      ? 'تكرار أصناف هذا الطلب والكميات والبونص والضريبة إلى الطلب الحالي'
+                                      : 'Copy this order’s products, packing options, qty, bonus & VAT into the current order'
+                                  }
+                                >
+                                  <Copy className="w-3 h-3" />
+                                  <span>{isAr ? 'تكرار للطلب الحالي' : 'Duplicate Items & VAT'}</span>
+                                </button>
+                              )}
                             <span className="font-bold text-slate-700">
                               {Number(ord.totalCartons || ord.totalQty || 0).toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
                             </span>

@@ -618,7 +618,7 @@ export default function RetailSettlementModal({
                   />
                   {order.loadingOrderNumber && (
                     <span className="font-mono">
-                      {isAr ? `رحلة #${order.loadingOrderNumber}` : `Trip #${order.loadingOrderNumber}`}
+                      {isAr ? `تحميل #${order.loadingOrderNumber}` : `Trip #${order.loadingOrderNumber}`}
                     </span>
                   )}
                   {order.assignedDriverName && (

@@ -1060,7 +1060,7 @@ export default function OrderSplitModal({
                               <Truck className="w-3 h-3 shrink-0 rtl:-scale-x-100" />
                               <span className="truncate">
                                 {col.existingChild?.loadingOrderNumber
-                                  ? (isAr ? `رحلة #${col.existingChild.loadingOrderNumber}` : `Trip #${col.existingChild.loadingOrderNumber}`)
+                                  ? (isAr ? `تحميل #${col.existingChild.loadingOrderNumber}` : `Trip #${col.existingChild.loadingOrderNumber}`)
                                   : (isAr ? 'تعيين الشاحنة على الطلب' : 'Assign truck to order')}
                               </span>
                             </label>

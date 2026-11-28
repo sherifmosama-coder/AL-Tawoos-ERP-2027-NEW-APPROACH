@@ -1056,17 +1056,13 @@ export default function TruckDispatchMaster({
       if (dateFilter === 'today' && t.loadingDate !== todayStr) return false;
       if (dateFilter === 'custom' && customDate && t.loadingDate !== customDate) return false;
 
-      if (statusFilter === 'ready_to_load' && t.tripStage !== 'ready_to_load') return false;
-      if (
-        statusFilter === 'loaded' &&
-        !['loaded_pending_docs', 'dispatched', 'delivered', 'reconciled'].includes(t.tripStage)
-      ) {
-        return false;
-      }
+      if (statusFilter === 'not_yet' && t.tripFulfillmentStatus !== 'not_yet') return false;
+      if (statusFilter === 'prepare' && t.tripFulfillmentStatus !== 'prepare') return false;
+      if (statusFilter === 'shipped' && t.tripFulfillmentStatus !== 'shipped') return false;
       if (statusFilter === 'delivered' && !t.allDelivered) return false;
+      if (statusFilter === 'paid' && !t.allPaid) return false;
       if (statusFilter === 'return_needed' && !t.hasPendingReturnAction) return false;
       if (statusFilter === 'discrepancy' && !t.returnDiscrepancy?.hasDiscrepancy) return false;
-      if (statusFilter === 'pending' && t.tripStage !== 'pending') return false;
 
       if (q) {
         const vehMatch = (t.vehicleDisplayName || '').toLowerCase().includes(q);
@@ -1157,14 +1153,14 @@ export default function TruckDispatchMaster({
 
         <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-3 shadow-2xs">
           <span className="text-[11px] font-bold text-amber-800 block">
-            {isAr ? 'جاهزة للتحميل (Preparing)' : 'Ready to Load (Preparing)'}
+            {isAr ? 'جاري التجهيز' : 'Preparing'}
           </span>
           <span className="text-xl font-black font-mono text-amber-900">{kpis.readyToLoad}</span>
         </div>
 
         <div className="bg-emerald-50/70 border border-emerald-200 rounded-2xl p-3 shadow-2xs">
           <span className="text-[11px] font-bold text-emerald-800 block">
-            {isAr ? 'معتمدة مخزنياً ✓' : 'WH Dispatched ✓'}
+            {isAr ? 'إذن الصرف ✓' : 'Dispatch Doc ✓'}
           </span>
           <span className="text-xl font-black font-mono text-emerald-900">{kpis.whLoaded}</span>
         </div>
@@ -1235,19 +1231,20 @@ export default function TruckDispatchMaster({
             />
           )}
 
-          {/* Status Filter */}
+          {/* Status Filter (Aligned 5 Fulfillment Statuses + Secondary Return Actions) */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="text-xs font-bold border border-slate-300 rounded-xl px-3 py-1.5 bg-white outline-none focus:border-teal-600"
           >
-            <option value="all">{isAr ? 'كل حالات الرحلات' : 'All Trip Stages'}</option>
-            <option value="ready_to_load">{isAr ? 'جاري التجهيز (جاهز للتحميل)' : 'Preparing (Ready to Load)'}</option>
-            <option value="loaded">{isAr ? 'تم التحميل / جاري التوصيل' : 'Loaded / Out for Delivery'}</option>
-            <option value="delivered">{isAr ? 'تم التسليم ✓' : 'Delivered ✓'}</option>
+            <option value="all">{isAr ? 'كل الحالات' : 'All Fulfillment Statuses'}</option>
+            <option value="not_yet">{isAr ? 'قيد الانتظار' : 'Pending'}</option>
+            <option value="prepare">{isAr ? 'جاري التجهيز' : 'Preparing'}</option>
+            <option value="shipped">{isAr ? 'جاري التوصيل' : 'Out for Delivery'}</option>
+            <option value="delivered">{isAr ? 'تم التسليم' : 'Delivered'}</option>
+            <option value="paid">{isAr ? 'مدفوع' : 'Paid'}</option>
             <option value="return_needed">{isAr ? 'يتطلب تأكيد / مطابقة مرتجع' : 'Return Inspection Needed'}</option>
-            <option value="discrepancy">{isAr ? 'فرق مرتجعات ⚠️' : 'Return Discrepancy ⚠️'}</option>
-            <option value="pending">{isAr ? 'قيد الانتظار (Pending)' : 'Pending (Disabled)'}</option>
+            <option value="discrepancy">{isAr ? 'فرق مرتجعات ⚠️' : 'Return Variance ⚠️'}</option>
           </select>
         </div>
 
@@ -1337,7 +1334,7 @@ export default function TruckDispatchMaster({
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="inline-flex items-baseline gap-1 px-2.5 py-1 rounded-xl bg-slate-900 text-white shadow-2xs">
                         <span className="text-[10px] font-normal text-slate-300 leading-none">
-                          {isAr ? 'رحلة#' : 'Trip#'}
+                          {isAr ? 'تحميل#' : 'Trip#'}
                         </span>
                         <span className="font-mono text-base font-black leading-none">
                           {trip.loadingOrderNumber}
@@ -1350,19 +1347,22 @@ export default function TruckDispatchMaster({
 
                       {/* Synced Fulfillment Status Badge (SSOT across Sales Orders, Loading Plan & Truck Dispatch) */}
                       {isDisabledPending ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-slate-200 text-slate-600 text-[11px] font-extrabold">
+                        <span
+                          className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-slate-200 text-slate-700 text-[11px] font-extrabold"
+                          title={isAr ? 'مغلق لحين بدء التجهيز من خطة التحميل' : 'Locked until moved to Preparing in Loading Plan'}
+                        >
                           <Clock className="w-3 h-3" />
-                          {isAr ? 'قيد الانتظار (مغلق لحين التجهيز)' : 'Pending — Disabled'}
+                          {isAr ? 'قيد الانتظار' : 'Pending'}
                         </span>
                       ) : trip.allPaid ? (
                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-indigo-100 text-indigo-900 border border-indigo-300 text-[11px] font-black">
                           <CheckCircle2 className="w-3 h-3" />
-                          {isAr ? 'مدفوع ✓' : 'Paid ✓'}
+                          {isAr ? 'مدفوع' : 'Paid'}
                         </span>
                       ) : trip.allDelivered ? (
                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-emerald-100 text-emerald-900 border border-emerald-300 text-[11px] font-black">
                           <CheckCircle2 className="w-3 h-3" />
-                          {isAr ? 'تم التسليم ✓' : 'Delivered ✓'}
+                          {isAr ? 'تم التسليم' : 'Delivered'}
                         </span>
                       ) : trip.allDispatchedOut ? (
                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-sky-100 text-sky-900 border border-sky-300 text-[11px] font-black">
@@ -1376,9 +1376,12 @@ export default function TruckDispatchMaster({
                             {isAr ? 'جاري التجهيز' : 'Preparing'}
                           </span>
                           {trip.isWarehouseConfirmed && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-teal-100 text-teal-900 border border-teal-300 text-[10.5px] font-black">
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-teal-100 text-teal-900 border border-teal-300 text-[10.5px] font-black"
+                              title={isAr ? 'تم إصدار إذن الصرف من مخزن التام' : 'Dispatch document generated'}
+                            >
                               <PackageCheck className="w-3 h-3" />
-                              {isAr ? 'تم التحميل بالمخزن ✓' : 'WH Loaded ✓'}
+                              {isAr ? 'إذن الصرف ✓' : 'Dispatch Doc ✓'}
                             </span>
                           )}
                         </>
@@ -2117,7 +2120,7 @@ export default function TruckDispatchMaster({
           onSaved={() => {
             showToast(
               isAr
-                ? `تم اعتماد بيان التحميل والصرف لرحلة #${activeDispatchTrip.loadingOrderNumber} بنجاح`
+                ? `تم اعتماد بيان التحميل والصرف لتحميل #${activeDispatchTrip.loadingOrderNumber} بنجاح`
                 : `Confirmed FG Dispatch Gate for Trip #${activeDispatchTrip.loadingOrderNumber}`
             );
           }}
@@ -2203,7 +2206,7 @@ export default function TruckDispatchMaster({
                   <div>
                     <h3 className="text-sm font-black">
                       {isAr
-                        ? `إصدارات مستند الصرف وسجل التعديلات — رحلة #${versionsModalTrip.loadingOrderNumber}`
+                        ? `إصدارات مستند الصرف وسجل التعديلات — تحميل #${versionsModalTrip.loadingOrderNumber}`
                         : `Dispatch Document Versions & History — Trip #${versionsModalTrip.loadingOrderNumber}`}
                     </h3>
                     <p className="text-[11px] text-slate-300">

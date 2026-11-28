@@ -278,7 +278,7 @@ export default function TruckReturnReceivingModal({
   const handleAutoFillTaskNotes = () => {
     const deltaText = buildSkuDeltaSummary();
     const prefix = isAr
-      ? `يرجى تسوية فروقات مرتجع رحلة #${trip.loadingOrderNumber} (${trip.loadingDate}) بتعديل أوامر البيع أو إضافة أمر توريد/مرتجع:\n`
+      ? `يرجى تسوية فروقات مرتجع تحميل #${trip.loadingOrderNumber} (${trip.loadingDate}) بتعديل أوامر البيع أو إضافة أمر توريد/مرتجع:\n`
       : `Please settle return variance for Trip #${trip.loadingOrderNumber} (${trip.loadingDate}) by adjusting orders or adding a Supply/Return order:\n`;
     setTaskNotes(`${prefix}${deltaText || ''}`.trim());
   };
@@ -342,7 +342,7 @@ export default function TruckReturnReceivingModal({
         performedBy: actorName,
         performedById: actorId,
         action: 'truck_return_settlement_task_assigned',
-        summaryAr: `توجيه مهمة تسوية أوامر بيع لرحلة #${trip.loadingOrderNumber} (${resolvedTargetNames.length > 0 ? resolvedTargetNames.join('، ') : 'المؤهلون تلقائياً'}) — ${taskNotes.trim()}`,
+        summaryAr: `توجيه مهمة تسوية أوامر بيع لتحميل #${trip.loadingOrderNumber} (${resolvedTargetNames.length > 0 ? resolvedTargetNames.join('، ') : 'المؤهلون تلقائياً'}) — ${taskNotes.trim()}`,
         summaryEn: `Assigned Sales Order settlement task for Trip #${trip.loadingOrderNumber} (${resolvedTargetNames.length > 0 ? resolvedTargetNames.join(', ') : 'Eligible Users'}) — ${taskNotes.trim()}`,
         changes: { metadata: [], lineChanges: [] },
       };
@@ -365,7 +365,7 @@ export default function TruckReturnReceivingModal({
         eventKey: 'trip_return_order_settlement_task',
         docId: trip.id,
         docNumber: `LO-${trip.loadingOrderNumber}`,
-        titleAr: `مطلوب تسوية أوامر بيع لرحلة #${trip.loadingOrderNumber} (${trip.loadingDate})`,
+        titleAr: `مطلوب تسوية أوامر بيع لتحميل #${trip.loadingOrderNumber} (${trip.loadingDate})`,
         titleEn: `Sales Order Settlement Task — Trip #${trip.loadingOrderNumber} (${trip.loadingDate})`,
         messageAr: `من المحاسب (${actorName}): ${taskNotes.trim()}${skuDeltaSummary ? ` | الفروقات: ${skuDeltaSummary}` : ''}`,
         messageEn: `From Accounting (${actorName}): ${taskNotes.trim()}${skuDeltaSummary ? ` | Variance: ${skuDeltaSummary}` : ''}`,
@@ -581,7 +581,7 @@ export default function TruckReturnReceivingModal({
         eventKey: 'trip_return_expected_warehouse',
         docId: trip.id,
         docNumber: `LO-${trip.loadingOrderNumber}`,
-        titleAr: `مطلوب تأكيد استلام مرتجعات رحلة #${trip.loadingOrderNumber} (${trip.loadingDate})`,
+        titleAr: `مطلوب تأكيد استلام مرتجعات تحميل #${trip.loadingOrderNumber} (${trip.loadingDate})`,
         titleEn: `Confirm Physical Receipt for Trip #${trip.loadingOrderNumber} (${trip.loadingDate})`,
         messageAr: `تمت تسوية أوامر البيع وأصبح المرتجع المتوقع للرحلة ${postEval.totalExpected} كرتونة. يرجى الفحص وتأكيد الاستلام الفعلي بالمخزن.`,
         messageEn: `Sales Orders settled; expected return is now ${postEval.totalExpected} ctn. Please confirm physical receipt in Warehouse.`,
@@ -642,7 +642,7 @@ export default function TruckReturnReceivingModal({
         performedBy: actorName,
         performedById: actorId,
         action: 'truck_return_admin_reopened',
-        summaryAr: `إعادة فتح مطابقة مرتجع رحلة #${trip.loadingOrderNumber} بواسطة المدير العام — السبب: ${adminReopenReason.trim()}`,
+        summaryAr: `إعادة فتح مطابقة مرتجع تحميل #${trip.loadingOrderNumber} بواسطة المدير العام — السبب: ${adminReopenReason.trim()}`,
         summaryEn: `General Admin reopened reconciled return for Trip #${trip.loadingOrderNumber} — Reason: ${adminReopenReason.trim()}`,
         changes: {
           metadata: [
@@ -844,9 +844,9 @@ export default function TruckReturnReceivingModal({
           submitRole === 'accountant'
             ? `اعتماد المحاسب للمرتجع (${finalEval.totalExpected} كرتونة) — حالة: ${finalEval.nextStatus}`
             : submitRole === 'admin_writeoff'
-            ? `تسوية إدارية لفروقات مرتجع رحلة #${trip.loadingOrderNumber} (المستلم ${finalEval.totalReceived} / المتوقع ${finalEval.totalExpected}) — السبب: ${adminWriteOffReason.trim()}`
+            ? `تسوية إدارية لفروقات مرتجع تحميل #${trip.loadingOrderNumber} (المستلم ${finalEval.totalReceived} / المتوقع ${finalEval.totalExpected}) — السبب: ${adminWriteOffReason.trim()}`
             : submitRole === 'admin_settle_both'
-            ? `اعتماد وإقفال القسمين بواسطة المدير العام لرحلة #${trip.loadingOrderNumber} (${finalEval.totalReceived} كرتونة)`
+            ? `اعتماد وإقفال القسمين بواسطة المدير العام لتحميل #${trip.loadingOrderNumber} (${finalEval.totalReceived} كرتونة)`
             : `استلام مخزن التام الفعلي (${finalEval.totalReceived} / ${finalEval.totalExpected}) — تاريخ المخزن: ${effStockRetDate}${whAmendReason.trim() ? ` — سبب التعديل: ${whAmendReason.trim()}` : ''}`,
         summaryEn:
           submitRole === 'accountant'
@@ -1189,7 +1189,7 @@ export default function TruckReturnReceivingModal({
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-sm sm:text-base font-black">
                   {isAr
-                    ? `استلام ومطابقة مرتجعات الشاحنة — رحلة #${trip.loadingOrderNumber}`
+                    ? `استلام ومطابقة مرتجعات الشاحنة — تحميل #${trip.loadingOrderNumber}`
                     : `Truck Return & Receiving Reconciliation — Trip #${trip.loadingOrderNumber}`}
                 </h3>
                 <span className="px-2 py-0.5 rounded-lg bg-white/10 font-mono text-[11px] font-bold">

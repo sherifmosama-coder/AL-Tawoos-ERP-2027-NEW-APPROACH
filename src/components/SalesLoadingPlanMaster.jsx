@@ -588,7 +588,7 @@ function TripRoadwayCarousel({
                   ? 'bg-rose-950/90 border-rose-500/60 text-rose-200 hover:bg-rose-900'
                   : 'bg-slate-800/95 border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
               }`}
-              title={isAr ? `عرض رحلة #${prevTrip.loadingOrderNumber}` : `View Trip #${prevTrip.loadingOrderNumber}`}
+              title={isAr ? `عرض تحميل #${prevTrip.loadingOrderNumber}` : `View Trip #${prevTrip.loadingOrderNumber}`}
             >
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${renderStatusDot(prevTrip)}`}></span>
               <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
@@ -621,8 +621,8 @@ function TripRoadwayCarousel({
             <Truck className="w-3.5 h-3.5 shrink-0 rtl:-scale-x-100" />
             <span>
               {activeTrip.loadingOrderNumber === 'unnumbered'
-                ? (isAr ? 'بدون رحلة' : 'No Trip#')
-                : (isAr ? `رحلة #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`)}
+                ? (isAr ? 'بدون تحميل' : 'No Trip#')
+                : (isAr ? `تحميل #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`)}
             </span>
             {activeTrip.hasStatusConflict && (
               <button
@@ -656,7 +656,7 @@ function TripRoadwayCarousel({
                   ? 'bg-rose-950/90 border-rose-500/60 text-rose-200 hover:bg-rose-900'
                   : 'bg-slate-800/95 border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
               }`}
-              title={isAr ? `عرض رحلة #${nextTrip.loadingOrderNumber}` : `View Trip #${nextTrip.loadingOrderNumber}`}
+              title={isAr ? `عرض تحميل #${nextTrip.loadingOrderNumber}` : `View Trip #${nextTrip.loadingOrderNumber}`}
             >
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${renderStatusDot(nextTrip)}`}></span>
               <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
@@ -1151,7 +1151,7 @@ function CompactTruckCard({
               <span onClick={(e) => e.stopPropagation()} className="inline-flex">
                 <RowCommentButton
                   docId={tripCommentDocId}
-                  docNumber={isAr ? `رحلة #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`}
+                  docNumber={isAr ? `تحميل #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`}
                   tab="loading_plan"
                   module="sales"
                 />
@@ -1173,7 +1173,7 @@ function CompactTruckCard({
                   {activeTrip?.hasStatusConflict && (
                     <div className="text-rose-900 font-semibold leading-snug">
                       • {isAr
-                        ? `رحلة #${activeTrip.loadingOrderNumber} تحتوي على أكثر من حالة تنفيذ — انقر لتصفية الطلبات وإصلاحها يدوياً.`
+                        ? `تحميل #${activeTrip.loadingOrderNumber} يحتوي على أكثر من حالة تنفيذ — انقر لتصفية الطلبات وإصلاحه يدوياً.`
                         : `Trip #${activeTrip.loadingOrderNumber} has mixed statuses — click to filter orders & fix manually.`}
                     </div>
                   )}
@@ -1223,7 +1223,7 @@ function CompactTruckCard({
                 {activeTrip.dispatchDocNumber
                   ? activeTrip.dispatchDocNumber
                   : activeTrip.isWarehouseConfirmed
-                  ? (isAr ? 'محمل ✓' : 'Loaded ✓')
+                  ? (isAr ? 'إذن الصرف ✓' : 'Dispatch Doc ✓')
                   : (isAr ? 'صرف' : 'Dispatch')}
               </span>
               <ExternalLink className="w-2 h-2 opacity-70 shrink-0" />
@@ -1300,7 +1300,7 @@ function CompactTruckCard({
             <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0 animate-pulse" />
             <span className="truncate">
               {isAr
-                ? `تعارض حالات رحلة #${activeTrip.loadingOrderNumber} — انقر للإصلاح يدوياً`
+                ? `تعارض حالات تحميل #${activeTrip.loadingOrderNumber} — انقر للإصلاح يدوياً`
                 : `Trip #${activeTrip.loadingOrderNumber} Conflict — Click to Fix`}
             </span>
           </button>
@@ -1396,10 +1396,15 @@ function OrderCartonsAvailabilityChip({ order, availability, onClick, isAr = tru
       subCls = 'text-rose-700';
     }
   } else if (mode === 'dispatched') {
-    const isDel = availability?.fulfillmentStatus === 'delivered' || availability?.fulfillmentStatus === 'paid';
+    const isPaid = availability?.fulfillmentStatus === 'paid';
+    const isDel = availability?.fulfillmentStatus === 'delivered';
     chipCls = 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-800';
     iconCls = 'text-slate-500';
-    subLabel = isDel ? (isAr ? 'تم التسليم' : 'Delivered') : (isAr ? 'تم الشحن' : 'Dispatched');
+    subLabel = isPaid
+      ? (isAr ? 'مدفوع' : 'Paid')
+      : isDel
+      ? (isAr ? 'تم التسليم' : 'Delivered')
+      : (isAr ? 'جاري التوصيل' : 'Out for Delivery');
     subCls = 'text-slate-500';
   } else if (mode === 'return') {
     chipCls = 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-900';
@@ -1596,7 +1601,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, availability = null
               <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold">
                 {availability.tripNum ? (
                   <span className="px-2 py-0.5 rounded-lg bg-white/80 border border-current/20">
-                    {isAr ? `أولوية رحلة #${availability.tripNum}` : `Trip #${availability.tripNum} Priority`}
+                    {isAr ? `أولوية تحميل #${availability.tripNum}` : `Trip #${availability.tripNum} Priority`}
                   </span>
                 ) : (
                   <span className="px-2 py-0.5 rounded-lg bg-white/80 border border-current/20">
@@ -1719,7 +1724,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, availability = null
                             if (lineAvail.mode === 'dispatched') {
                               return (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-sans font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                                  {isAr ? 'تم الصرف' : 'Dispatched'}
+                                  {isAr ? 'جاري التوصيل' : 'Out for Delivery'}
                                 </span>
                               );
                             }
@@ -2747,7 +2752,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         const tName = resolveVehicleDisplayName(vObj, eff.assignedVehicleName);
         key = eff.loadingOrderNumber ? `lo_${eff.loadingOrderNumber}` : 'unassigned';
         label = eff.loadingOrderNumber
-          ? `${isAr ? 'رحلة #' : 'Trip #'}${eff.loadingOrderNumber}${tName ? ` — ${tName}` : ''}`
+          ? `${isAr ? 'تحميل #' : 'Trip #'}${eff.loadingOrderNumber}${tName ? ` — ${tName}` : ''}`
           : (isAr ? 'غير مسكن برحلة / شاحنة' : 'Unassigned to Trip / Truck');
       } else if (groupBy === 'fulfillmentStatus') {
         const fulf = FULFILLMENT_STATUSES.find((f) => f.id === order.fulfillmentStatus);
@@ -3364,7 +3369,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             action: 'truck_bulk_fulfillment_transition',
             summaryAr: shouldClearAssignment
               ? `إرجاع الطلب إلى "${targetStep.labelAr}" وإلغاء تسكين الشاحنة (${truckLabel})`
-              : `تحديث مجمّع لحالة تنفيذ الرحلة #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) إلى "${targetStep.labelAr}"`,
+              : `تحديث مجمّع لحالة تنفيذ تحميل #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) إلى "${targetStep.labelAr}"`,
             summaryEn: shouldClearAssignment
               ? `Reverted order to "${targetStep.labelEn}" & cleared truck assignment (${truckLabel})`
               : `Trip #${loadingOrderNumber || order.loadingOrderNumber || ''} bulk transition (${truckLabel}) to "${targetStep.labelEn}"`,
@@ -3446,7 +3451,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             performedBy: currentUserName,
             performedById: currentUserId,
             action: 'partial_delivery_return',
-            summaryAr: `استثناء/ارتجاع الطلب من رحلة #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) وإعادته إلى "قيد الانتظار" لإعادة الجدولة`,
+            summaryAr: `استثناء/ارتجاع الطلب من تحميل #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) وإعادته إلى "قيد الانتظار" لإعادة الجدولة`,
             summaryEn: `Detached returned/undelivered order from Trip #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) & reverted to Pending`,
             changes: {
               metadata: [
@@ -3531,7 +3536,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       } else {
         showToast(
           isAr
-            ? `تم تحديث حالة ${advancedCount} أوامر للرحلة #${loadingOrderNumber || ''} (${truckLabel}) إلى "${targetStep.labelAr}" بنجاح`
+            ? `تم تحديث حالة ${advancedCount} أوامر لتحميل #${loadingOrderNumber || ''} (${truckLabel}) إلى "${targetStep.labelAr}" بنجاح`
             : `Successfully updated ${advancedCount} orders on Trip #${loadingOrderNumber || ''} (${truckLabel}) to "${targetStep.labelEn}"`
         );
       }
@@ -3589,7 +3594,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
     showToast(
       isAr
-        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق للرحلة #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح`
+        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق لتحميل #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح`
         : `Truck and driver aligned for Trip #${loNumber} on ${targetLoadingDate}`
     );
   };
@@ -3619,11 +3624,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       const targetStatus = eff.fulfillmentStatus || originalOrder?.fulfillmentStatus || 'not_yet';
       if (targetStatus !== 'not_yet' && eff.loadingOrderNumber) {
         if (!eff.assignedVehicleId) {
-          alert(isAr ? `رحلة #${eff.loadingOrderNumber} ينقصها اختيار السيارة!` : `Trip #${eff.loadingOrderNumber} is missing a selected truck!`);
+          alert(isAr ? `تحميل #${eff.loadingOrderNumber} ينقصه اختيار السيارة!` : `Trip #${eff.loadingOrderNumber} is missing a selected truck!`);
           return;
         }
         if (!eff.assignedDriverId) {
-          alert(isAr ? `رحلة #${eff.loadingOrderNumber} ينقصها تعيين السائق!` : `Trip #${eff.loadingOrderNumber} is missing an assigned driver!`);
+          alert(isAr ? `تحميل #${eff.loadingOrderNumber} ينقصه تعيين السائق!` : `Trip #${eff.loadingOrderNumber} is missing an assigned driver!`);
           return;
         }
       }
@@ -4227,7 +4232,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 <div className="text-xs font-black text-rose-900 flex items-center gap-1.5 flex-wrap">
                   <span>{isAr ? 'وضع معالجة التعارض:' : 'Conflict Fix Filter Active:'}</span>
                   <span className="font-mono px-2 py-0.5 rounded-md bg-white border border-rose-300 text-rose-800">
-                    {isAr ? `رحلة #${loFilter.loNumber}` : `Trip #${loFilter.loNumber}`}
+                    {isAr ? `تحميل #${loFilter.loNumber}` : `Trip #${loFilter.loNumber}`}
                   </span>
                   {(loFilter.vehicleName || loFilter.vehiclePlate) && (
                     <TruckNameBadge
@@ -5235,7 +5240,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   {/* Cell 1: Trip Number */}
                                   <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs font-mono font-black text-xs text-slate-800 flex items-center gap-1 truncate">
                                     <Truck className="w-3 h-3 text-emerald-600 shrink-0 rtl:-scale-x-100" />
-                                    <span>{isAr ? `رحلة #${eff.loadingOrderNumber}` : `Trip #${eff.loadingOrderNumber}`}</span>
+                                    <span>{isAr ? `تحميل #${eff.loadingOrderNumber}` : `Trip #${eff.loadingOrderNumber}`}</span>
                                   </div>
 
                                   {/* Cell 2: Vehicle Truck Name (Hover Plate + Icon-Only Copy) */}
@@ -5724,7 +5729,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             <div>
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="font-mono text-xs font-black text-amber-400">
-                                  {isAr ? `رحلة #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
+                                  {isAr ? `تحميل #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
                                 </span>
                                 <TruckNameBadge
                                   name={tm.primaryVehicleName}
@@ -5748,7 +5753,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             <div className="flex items-center gap-1.5 shrink-0">
                               <RowCommentButton
                                 docId={tm.compoundKey}
-                                docNumber={isAr ? `رحلة #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
+                                docNumber={isAr ? `تحميل #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
                                 tab="loading_plan"
                                 module="sales"
                                 className="bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700"
@@ -5943,7 +5948,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             <div className="mt-3 p-2 rounded-xl bg-rose-900/80 border border-rose-600 text-rose-100 text-[11px] space-y-1.5">
                               <div className="flex items-center gap-1 font-bold">
                                 <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-                                <span>{isAr ? `تعارض في رحلة #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in Trip #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
+                                <span>{isAr ? `تعارض في تحميل #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in Trip #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
                               </div>
                               <p className="text-[10px] text-rose-200">
                                 {isAr ? 'أوامر مختلفة بنفس رقم الرحلة لنفس اليوم مسندة لشاحنات وسائقين متباينين.' : 'Different orders in this Trip # on this date have conflicting trucks/drivers.'}
@@ -6283,7 +6288,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     >
                       <div className="flex items-center justify-between font-bold text-slate-900">
                         <span className="font-mono text-amber-700">
-                          {isAr ? 'رحلة #' : 'Trip #'}{t.loadingOrderNumber}
+                          {isAr ? 'تحميل #' : 'Trip #'}{t.loadingOrderNumber}
                         </span>
                         <span className="text-[10px] font-mono text-slate-500">
                           {t.loadingDate}
@@ -6451,7 +6456,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                       <>
                         <span>•</span>
                         <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono font-black">
-                          {isAr ? `رحلة #${truckStatusModal.loadingOrderNumber}` : `Trip #${truckStatusModal.loadingOrderNumber}`}
+                          {isAr ? `تحميل #${truckStatusModal.loadingOrderNumber}` : `Trip #${truckStatusModal.loadingOrderNumber}`}
                         </span>
                       </>
                     )}
@@ -6603,7 +6608,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                       <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                       <div>
                         {isAr
-                          ? `سيتم تحديث (${selectedIds.length}) طلب إلى "${truckStatusModal.targetStep.labelAr}"، بينما سيتم إرجاع (${uncheckedCount}) طلب غير محدد تلقائياً إلى "قيد الانتظار" وفصله عن الرحلة #${truckStatusModal.loadingOrderNumber || ''} لإعادة جدولته.`
+                          ? `سيتم تحديث (${selectedIds.length}) طلب إلى "${truckStatusModal.targetStep.labelAr}"، بينما سيتم إرجاع (${uncheckedCount}) طلب غير محدد تلقائياً إلى "قيد الانتظار" وفصله عن التحميل #${truckStatusModal.loadingOrderNumber || ''} لإعادة جدولته.`
                           : `${selectedIds.length} order(s) will advance to "${truckStatusModal.targetStep.labelEn}", while ${uncheckedCount} unchecked order(s) will revert to "Pending" and detach from Trip #${truckStatusModal.loadingOrderNumber || ''}.`}
                       </div>
                     </div>
@@ -6703,7 +6708,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 <ListOrdered className="w-4 h-4 text-indigo-400" />
                 <div>
                   <h3 className="text-sm font-black">
-                    {isAr ? `أولوية التسليم — رحلة #${sequenceModal.trip.loadingOrderNumber}` : `Delivery Sequence — Trip #${sequenceModal.trip.loadingOrderNumber}`}
+                    {isAr ? `أولوية التسليم — تحميل #${sequenceModal.trip.loadingOrderNumber}` : `Delivery Sequence — Trip #${sequenceModal.trip.loadingOrderNumber}`}
                   </h3>
                   <p className="text-[11px] text-slate-300 font-medium">
                     {isAr ? 'رتّب العملاء حسب أولوية النزول (اختياري)' : 'Order clients by delivery priority (optional)'}

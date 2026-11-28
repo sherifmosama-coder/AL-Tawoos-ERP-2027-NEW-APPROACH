@@ -3,6 +3,7 @@ import { db } from '../../firebase';
 import {
   collection,
   doc,
+  getDocs,
   setDoc,
   serverTimestamp,
 } from 'firebase/firestore';
@@ -52,7 +53,10 @@ import {
   aggregateSalesOrderTotals,
   isOrderRetailRoute,
   isRetailSegmentRecord,
+  resolveSalesRepOptions,
+  extractPastOrderDuplicationSpec,
 } from '../../utils/salesOrderUtils';
+import ClientProfileModal from '../ClientProfileModal';
 import { normalizeLocationUrl } from '../../utils/locationUtils';
 import { SEGMENT_ICON_MAP, PRESET_DEFAULT_SEGMENTS } from '../ClientSegmentsMaster';
 import {
@@ -68,13 +72,13 @@ import {
   SALES_ORDER_TYPES,
   ADMIN_ORDER_TYPES,
   CONFIRMATION_STATUSES,
-  FULFILLMENT_STATUSES,
   resolveVehicleDisplayName,
   VAT_MODES,
   TAXABLE_VAT_MODES,
   resolveOrderSerial,
   generateNextOrderSerial,
   resolveBranchDisplayName,
+  renderVatAbbrChip,
   CopyButton,
 } from './salesOrderConstants';
 import TruckNameBadge from '../TruckNameBadge';
@@ -101,6 +105,7 @@ export function SalesOrderEditorModal({
   priceLists = [],
   strategies = [],
   vehicles = [],
+  employees = [],
   allOrders = [],
   stdRetailList = [],
   canManageStdRetailList = false,
@@ -191,6 +196,7 @@ export function SalesOrderEditorModal({
     poTawoos: editingOrder?.poTawoos || '',
     poPrivateLabel: editingOrder?.poPrivateLabel || '',
     salesRep: editingOrder?.salesRep || '',
+    salesRepId: editingOrder?.salesRepId || '',
     internalComments: editingOrder?.internalComments || '',
     externalComments: editingOrder?.externalComments || '',
     poAttachments: editingOrder?.poAttachments ? [...editingOrder.poAttachments] : [],
@@ -245,15 +251,56 @@ export function SalesOrderEditorModal({
     return isAdminModal ? ADMIN_ORDER_TYPES : SALES_ORDER_TYPES;
   }, [isAdminModal]);
 
-  // Allowed Fulfillment Statuses:
-  // On creation: strictly 'not_yet' (Pending) and 'prepare' (Preparing)
-  // On editing: show all options
-  const availableFulfillmentStatuses = useMemo(() => {
-    if (!editingOrder) {
-      return FULFILLMENT_STATUSES.filter((s) => s.id === 'not_yet' || s.id === 'prepare');
-    }
-    return FULFILLMENT_STATUSES;
-  }, [editingOrder]);
+  // Unified Personnel fallback hydration when caller doesn't pass `employees`
+  const [fetchedEmployees, setFetchedEmployees] = useState([]);
+  useEffect(() => {
+    if (!isOpen || (Array.isArray(employees) && employees.length > 0)) return;
+    let cancelled = false;
+    getDocs(collection(db, 'employees'))
+      .then((snap) => {
+        if (!cancelled) {
+          setFetchedEmployees(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, employees]);
+
+  const effectiveEmployees = useMemo(
+    () => (Array.isArray(employees) && employees.length > 0 ? employees : fetchedEmployees),
+    [employees, fetchedEmployees]
+  );
+
+  const salesRepOptions = useMemo(
+    () => resolveSalesRepOptions(effectiveEmployees, formData.salesRep, isAr),
+    [effectiveEmployees, formData.salesRep, isAr]
+  );
+
+  // Client Profile & Past Order Duplication UI State
+  const [clientProfileModalTab, setClientProfileModalTab] = useState(null); // null | 'profile' | 'orders'
+  const [isDuplicatePickerOpen, setIsDuplicatePickerOpen] = useState(false);
+  const [confirmDuplicateOrder, setConfirmDuplicateOrder] = useState(null);
+  const [duplicateFeedback, setDuplicateFeedback] = useState(null);
+
+  const clientPastDuplicableOrders = useMemo(() => {
+    if (!formData.clientId) return [];
+    return (allOrders || [])
+      .filter((o) => {
+        if (!o || o.clientId !== formData.clientId) return false;
+        if (editingOrder?.id && o.id === editingOrder.id) return false;
+        if (o.isSplitParent) return false;
+        if (o.confirmationStatus === 'canceled') return false;
+        if (o.isAdministrative || PHYSICAL_DELIVERY_EXCLUDED_TYPES.includes(o.orderType)) return false;
+        return Array.isArray(o.lines) && o.lines.length > 0;
+      })
+      .sort((a, b) => {
+        const dDiff = String(b.invoiceDate || '').localeCompare(String(a.invoiceDate || ''));
+        if (dDiff !== 0) return dDiff;
+        return String(b.serial || b.id || '').localeCompare(String(a.serial || a.id || ''), 'en', { numeric: true });
+      });
+  }, [allOrders, formData.clientId, editingOrder?.id]);
 
   // Allowed VAT Modes (Taxable only for invoice_only, or all 5 for sales orders)
   const availableVatModes = useMemo(() => {
@@ -560,6 +607,10 @@ export function SalesOrderEditorModal({
     const region = br?.region || selectedClient?.region || '';
     const deliveryAddress = br?.address || selectedClient?.address || '';
 
+    setIsDuplicatePickerOpen(false);
+    setConfirmDuplicateOrder(null);
+    setDuplicateFeedback(null);
+
     setFormData((prev) => {
       const updatedLines = prev.lines.map((line) => {
         const resolved = detectProductPrice({
@@ -777,8 +828,8 @@ export function SalesOrderEditorModal({
     });
   }, [products, formData.clientId, formData.clientName, selectedCategory, isAr]);
 
-  // Shared line builder for single product addition & Standard Retail List population
-  const buildOrderLineFromProduct = (prod, qty = 1, bonus = 0, requestedSuffix = null) => {
+  // Shared line builder for single product addition, Standard Retail List & Past Order Duplication
+  const buildOrderLineFromProduct = (prod, qty = 1, bonus = 0, requestedSuffix = null, overrideVatMode = null) => {
     const resolved = detectProductPrice({
       clientId: formData.clientId,
       clientName: formData.clientName,
@@ -844,7 +895,7 @@ export function SalesOrderEditorModal({
       resolved.price || 0,
       resolved.isPromotional,
       promoInfo.discountPct,
-      formData.vatMode
+      overrideVatMode || formData.vatMode
     );
   };
 
@@ -939,6 +990,73 @@ export function SalesOrderEditorModal({
       return;
     }
     applyStandardRetailList();
+  };
+
+  // Duplicate strictly Products (with packaging option), Qty, Bonus & VAT Mode from a past order
+  const applyDuplicatePastOrder = (sourceOrder) => {
+    if (!sourceOrder || isStructureLocked) return;
+    const allowedVatIds = availableVatModes.map((v) => v.id);
+    const { vatMode: targetVatMode, items } = extractPastOrderDuplicationSpec(sourceOrder, allowedVatIds);
+
+    const prodMap = {};
+    products.forEach((p) => {
+      if (p?.id) prodMap[p.id] = p;
+    });
+
+    const nextLines = [];
+    let skippedCount = 0;
+
+    items.forEach((item) => {
+      const prod = prodMap[item.productId];
+      if (!prod || prod.isActive === false || !isProductAllowedForClient(prod, formData.clientId, formData.clientName)) {
+        skippedCount += 1;
+        return;
+      }
+      nextLines.push(buildOrderLineFromProduct(prod, item.qty, item.bonus, item.packagingOptionSuffix, targetVatMode));
+    });
+
+    if (nextLines.length === 0) {
+      setConfirmDuplicateOrder(null);
+      setIsDuplicatePickerOpen(false);
+      setClientProfileModalTab(null);
+      setDuplicateFeedback({
+        type: 'warning',
+        message: isAr
+          ? 'لا توجد أصناف متاحة للتكرار من الطلب المحدد (قد تكون الأصناف موقوفة أو غير مخصصة للعميل).'
+          : 'No eligible catalog items could be duplicated from the selected order.'
+      });
+      return;
+    }
+
+    const vatObj = VAT_MODES.find((v) => v.id === targetVatMode) || VAT_MODES[0];
+    const sourceSerial = resolveOrderSerial(sourceOrder, allOrders);
+
+    setFormData((prev) => ({
+      ...prev,
+      vatMode: targetVatMode,
+      lines: nextLines
+    }));
+    setConfirmDuplicateOrder(null);
+    setIsDuplicatePickerOpen(false);
+    setClientProfileModalTab(null);
+    setDuplicateFeedback({
+      type: skippedCount > 0 ? 'warning' : 'success',
+      message: isAr
+        ? `تم تكرار ${nextLines.length} صنفاً (بالتعبئة والكميات والبونص) وضبط الضريبة إلى (${vatObj.labelAr.split('(')[0].trim()}) من الطلب #${sourceSerial} مع احتساب الأسعار الحالية${skippedCount > 0 ? ` — تم تخطي ${skippedCount} صنف غير متاح` : ''}.`
+        : `Duplicated ${nextLines.length} item(s) (packing, qty, bonus) & VAT (${vatObj.labelEn.split('(')[0].trim()}) from Order #${sourceSerial} with live catalog pricing${skippedCount > 0 ? ` (${skippedCount} unavailable skipped)` : ''}.`
+    });
+  };
+
+  const handleRequestDuplicatePastOrder = (sourceOrder) => {
+    if (!sourceOrder || isStructureLocked) return;
+    setIsDuplicatePickerOpen(false);
+    setClientProfileModalTab(null);
+    setDuplicateFeedback(null);
+    if (formData.lines.length > 0) {
+      setConfirmDuplicateOrder(sourceOrder);
+      return;
+    }
+    applyDuplicatePastOrder(sourceOrder);
   };
 
   // Line item change (qty, bonus, manualDiscount, packagingOptionSuffix)
@@ -1623,10 +1741,10 @@ export function SalesOrderEditorModal({
                 <span>
                   {formData.settledFromTripExtras && formData.orderType === 'supply'
                     ? (isAr
-                        ? `أمر توريد تسوية مرتبط تلقائياً برحلة #${prefillTripContext.loadingOrderNumber} (${prefillTripContext.loadingDate}) — سيُخصم من زيادات الرحلة دون خصم إضافي من المخزن`
+                        ? `أمر توريد تسوية مرتبط تلقائياً بتحميل #${prefillTripContext.loadingOrderNumber} (${prefillTripContext.loadingDate}) — سيُخصم من زيادات التحميل دون خصم إضافي من المخزن`
                         : `Pre-linked Supply Order from Trip #${prefillTripContext.loadingOrderNumber} Extras (${prefillTripContext.loadingDate})`)
                     : (isAr
-                        ? `أمر تسوية مرتبط تلقائياً برحلة #${prefillTripContext.loadingOrderNumber} (${prefillTripContext.loadingDate}) لإغلاق فروقات المرتجعات`
+                        ? `أمر تسوية مرتبط تلقائياً بتحميل #${prefillTripContext.loadingOrderNumber} (${prefillTripContext.loadingDate}) لإغلاق فروقات المرتجعات`
                         : `Pre-linked Order for Trip #${prefillTripContext.loadingOrderNumber} (${prefillTripContext.loadingDate}) Return Settlement`)}
                 </span>
               </div>
@@ -1833,7 +1951,7 @@ export function SalesOrderEditorModal({
                     return (
                       <span className="text-[10px] text-amber-700 font-medium block mt-1 leading-tight">
                         {isAr
-                          ? `الطلب مُسكن بشاحنة (${modalVehName || '—'}) ورحلة #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
+                          ? `الطلب مُسكن بشاحنة (${modalVehName || '—'}) وتحميل #${formData.loadingOrderNumber || ''} — تعديل موعد التسكين يُجرى حصرياً من تبويب خطة التحميل`
                           : `Order assigned to ${modalVehName || '—'} (Trip #${formData.loadingOrderNumber || ''}) — Rescheduling must be done in Loading Plan`}
                       </span>
                     );
@@ -1889,7 +2007,7 @@ export function SalesOrderEditorModal({
                         copyClassName="bg-white border border-slate-200 p-1 rounded-md"
                       />
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 border border-indigo-200 font-mono">
-                        {isAr ? `رحلة #${formData.loadingOrderNumber}` : `Trip #${formData.loadingOrderNumber}`}
+                        {isAr ? `تحميل #${formData.loadingOrderNumber}` : `Trip #${formData.loadingOrderNumber}`}
                       </span>
                     </div>
                     <div className="text-[11px] text-slate-600 font-medium flex items-center gap-2 mt-0.5 flex-wrap">
@@ -1982,18 +2100,44 @@ export function SalesOrderEditorModal({
             {clientOperationalProfile && (
               <div className="mt-3 p-3.5 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-50 to-indigo-50/30 border border-slate-200/90 rounded-xl space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <Building2 className="w-4 h-4 text-indigo-600 shrink-0" />
                     <span className="font-extrabold text-slate-800 text-xs">
                       {isAr ? 'الملف التشغيلي للفرع والعميل:' : 'Operational Profile:'}
                     </span>
-                    <span className="font-bold text-indigo-900 bg-indigo-50 border border-indigo-200/60 px-2 py-0.5 rounded-md text-[11px]">
-                      {formData.clientName} — {clientOperationalProfile.branchName}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setClientProfileModalTab('profile')}
+                      className="font-bold text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/80 px-2.5 py-0.5 rounded-lg text-[11px] inline-flex items-center gap-1 transition cursor-pointer"
+                      title={isAr ? 'عرض ملف العميل والفرع والطلبات السابقة' : 'Open Client & Branch Profile'}
+                    >
+                      <span>{formData.clientName} — {clientOperationalProfile.branchName}</span>
+                      <Eye className="w-3 h-3 text-indigo-600 shrink-0" />
+                    </button>
                   </div>
-                  <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-medium">
-                    <span>{isAr ? 'جهة الاتصال:' : 'Contact:'}</span>
-                    <span className="font-bold text-slate-800">{clientOperationalProfile.contactPerson}</span>
+                  <div className="flex items-center gap-2 flex-wrap text-[11px] text-slate-500 font-medium">
+                    <span>
+                      {isAr ? 'جهة الاتصال:' : 'Contact:'}{' '}
+                      <strong className="text-slate-800">{clientOperationalProfile.contactPerson}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setClientProfileModalTab('profile')}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 font-extrabold text-[10.5px] shadow-2xs transition cursor-pointer"
+                    >
+                      <Building2 className="w-3 h-3 shrink-0" />
+                      <span>{isAr ? 'ملف العميل والفرع' : 'Client Profile'}</span>
+                    </button>
+                    {!isStructureLocked && (!isAdminModal || formData.orderType.startsWith('invoice_only')) && (
+                      <button
+                        type="button"
+                        onClick={() => setClientProfileModalTab('orders')}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-extrabold text-[10.5px] shadow-2xs transition cursor-pointer"
+                      >
+                        <History className="w-3 h-3 shrink-0" />
+                        <span>{isAr ? 'الطلبات السابقة / تكرار' : 'Past Orders & Duplicate'}</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -2380,6 +2524,131 @@ export function SalesOrderEditorModal({
                       />
                     </div>
 
+                    {/* Duplicate Past Order Quick Picker */}
+                    {formData.clientId && (
+                      <div className="relative shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setIsDuplicatePickerOpen((v) => !v)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-2 border rounded-xl text-xs font-extrabold transition cursor-pointer ${
+                            isDuplicatePickerOpen
+                              ? 'bg-indigo-600 text-white border-indigo-700 shadow-xs'
+                              : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-200'
+                          }`}
+                          title={
+                            isAr
+                              ? 'تكرار الأصناف والتعبئة والكميات والبونص والضريبة من طلب سابق لهذا العميل'
+                              : 'Duplicate products, packing, qty, bonus & VAT from a past order'
+                          }
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>{isAr ? 'تكرار طلب سابق' : 'Duplicate Past Order'}</span>
+                          {clientPastDuplicableOrders.length > 0 && (
+                            <span className={`px-1.5 py-0.2 rounded text-[10px] font-black font-mono ${
+                              isDuplicatePickerOpen ? 'bg-white/20 text-white' : 'bg-indigo-200/70 text-indigo-900'
+                            }`}>
+                              {clientPastDuplicableOrders.length}
+                            </span>
+                          )}
+                        </button>
+
+                        {isDuplicatePickerOpen && (
+                          <div className="absolute end-0 top-full mt-1.5 w-80 sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-2xl z-30 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                            <div className="px-3.5 py-2.5 bg-slate-900 text-white flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-xs font-black truncate">
+                                  {isAr ? 'اختر طلباً لتكرار بنوده والضريبة' : 'Select Past Order to Duplicate'}
+                                </div>
+                                <div className="text-[10px] text-slate-300">
+                                  {isAr ? 'ينسخ الأصناف والتعبئة والكميات والبونص والضريبة بالأسعار الحالية' : 'Copies SKUs, packing, qty, bonus & VAT with live pricing'}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setIsDuplicatePickerOpen(false)}
+                                className="p-1 rounded-lg hover:bg-white/15 text-slate-300 hover:text-white cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+
+                            {clientPastDuplicableOrders.length === 0 ? (
+                              <div className="p-5 text-center text-xs text-slate-500 font-semibold">
+                                {isAr ? 'لا توجد طلبات سابقة متاحة للتكرار لهذا العميل.' : 'No past orders available to duplicate for this client.'}
+                              </div>
+                            ) : (
+                              <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
+                                {clientPastDuplicableOrders.slice(0, 12).map((pastOrd) => {
+                                  const pSerial = resolveOrderSerial(pastOrd, allOrders);
+                                  const totalCtn = (pastOrd.lines || []).reduce(
+                                    (s, ln) => s + Number(ln.qty || 0) + Number(ln.bonus || 0),
+                                    0
+                                  );
+                                  const isSameBranch =
+                                    formData.branchId &&
+                                    pastOrd.branchId &&
+                                    String(pastOrd.branchId) === String(formData.branchId);
+                                  return (
+                                    <button
+                                      key={pastOrd.id}
+                                      type="button"
+                                      onClick={() => handleRequestDuplicatePastOrder(pastOrd)}
+                                      className="w-full px-3.5 py-2.5 text-start hover:bg-indigo-50/70 transition flex items-start justify-between gap-2 cursor-pointer"
+                                    >
+                                      <div className="min-w-0 space-y-0.5">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <span className="font-mono text-xs font-black text-slate-900">#{pSerial}</span>
+                                          <span className="text-[10px] font-mono text-slate-500">{pastOrd.invoiceDate || '—'}</span>
+                                          {pastOrd.branchName && (
+                                            <span className={`px-1.5 py-0.2 rounded text-[9.5px] font-bold border ${
+                                              isSameBranch
+                                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                                : 'bg-slate-100 text-slate-600 border-slate-200'
+                                            }`}>
+                                              {pastOrd.branchName}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="text-[10.5px] text-slate-500 truncate">
+                                          {(pastOrd.lines || [])
+                                            .slice(0, 3)
+                                            .map((ln) => isAr ? (ln.productNameAr || ln.productNameEn) : (ln.productNameEn || ln.productNameAr))
+                                            .filter(Boolean)
+                                            .join('، ')}
+                                          {(pastOrd.lines || []).length > 3 ? ` +${(pastOrd.lines || []).length - 3}` : ''}
+                                        </div>
+                                      </div>
+
+                                      <div className="flex flex-col items-end gap-1 shrink-0">
+                                        <span className="font-mono text-[10.5px] font-black text-indigo-700">
+                                          {totalCtn.toLocaleString()} {isAr ? 'كرتونة' : 'ctn'}
+                                        </span>
+                                        {renderVatAbbrChip(pastOrd.vatMode, pastOrd.orderType, isAr)}
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsDuplicatePickerOpen(false);
+                                  setClientProfileModalTab('orders');
+                                }}
+                                className="text-[11px] font-extrabold text-indigo-700 hover:text-indigo-900 inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <History className="w-3.5 h-3.5" />
+                                <span>{isAr ? 'فتح السجل الكامل في ملف العميل' : 'View Full History in Client Profile'}</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {/* Standard Retail Load List Quick Fill (Retail Route Orders only) */}
                     {retailContext.isRetailEffective && (
                       <button
@@ -2461,6 +2730,59 @@ export function SalesOrderEditorModal({
                       <button
                         type="button"
                         onClick={() => setStdListFeedback(null)}
+                        className="p-0.5 rounded hover:bg-black/5 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Inline Confirmation Prompt when Replacing Existing Lines with Past Order */}
+                  {confirmDuplicateOrder && (
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 text-amber-900 font-bold">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>
+                          {isAr
+                            ? `يحتوي الطلب حالياً على ${formData.lines.length} بنود. هل تريد استبدالها وضبط الضريبة من الطلب #${resolveOrderSerial(confirmDuplicateOrder, allOrders)}؟`
+                            : `Order already has ${formData.lines.length} line(s). Replace items & VAT from Order #${resolveOrderSerial(confirmDuplicateOrder, allOrders)}?`}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => applyDuplicatePastOrder(confirmDuplicateOrder)}
+                          className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-[11px] transition cursor-pointer"
+                        >
+                          {isAr ? 'تأكيد التكرار والاستبدال' : 'Replace Items & VAT'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDuplicateOrder(null)}
+                          className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-[11px] transition cursor-pointer"
+                        >
+                          {isAr ? 'إلغاء' : 'Cancel'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Feedback Notice after Duplicating Past Order */}
+                  {duplicateFeedback && (
+                    <div
+                      className={`p-2.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold ${
+                        duplicateFeedback.type === 'warning'
+                          ? 'bg-amber-50 border-amber-200 text-amber-900'
+                          : 'bg-indigo-50 border-indigo-200 text-indigo-900'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Info className="w-3.5 h-3.5 shrink-0" />
+                        <span>{duplicateFeedback.message}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setDuplicateFeedback(null)}
                         className="p-0.5 rounded hover:bg-black/5 cursor-pointer"
                       >
                         <X className="w-3.5 h-3.5" />
@@ -2835,7 +3157,7 @@ export function SalesOrderEditorModal({
               </span>
             </h4>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">
                   {isAr ? 'حالة التأكيد / الاعتماد' : 'Confirmation Status'}
@@ -2854,60 +3176,34 @@ export function SalesOrderEditorModal({
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center justify-between">
-                  <span>{isAr ? 'حالة التنفيذ والتحميل' : 'Fulfillment Status'}</span>
-                  <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
-                    <Lock className="w-2.5 h-2.5" />
-                    {isAr ? 'تُدار من خطة التحميل' : 'Managed in Loading Plan'}
-                  </span>
-                </label>
-                {(() => {
-                  const currentFulfillment =
-                    availableFulfillmentStatuses.find((f) => f.id === formData.fulfillmentStatus) ||
-                    availableFulfillmentStatuses[0] || {
-                      id: 'not_yet',
-                      labelAr: 'قيد الانتظار',
-                      labelEn: 'Pending',
-                      color: 'bg-slate-100 text-slate-700 border-slate-300'
-                    };
-                  return (
-                    <div
-                      className="w-full py-2 px-3 bg-slate-100/80 border border-slate-200 rounded-xl flex items-center justify-between cursor-not-allowed select-none"
-                      title={
-                        isAr
-                          ? 'تُدار مراحل التحميل والتوصيل حصرياً من تبويب خطة التحميل'
-                          : 'Fulfillment stages are managed exclusively from the Loading Plan tab'
-                      }
-                    >
-                      <span
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-black border ${
-                          currentFulfillment.color || 'bg-slate-100 text-slate-700 border-slate-300'
-                        }`}
-                      >
-                        {isAr ? currentFulfillment.labelAr : currentFulfillment.labelEn}
-                      </span>
-                      <span className="text-[10px] font-medium text-slate-500">
-                        {isAr ? 'للقراءة فقط' : 'Read-only'}
-                      </span>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              <div>
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">
                   {isAr ? 'مندوب المبيعات / المسؤول' : 'Sales Rep / Officer'}
                 </label>
-                <input
-                  type="text"
+                <select
                   value={formData.salesRep}
-                  onChange={(e) => setFormData({ ...formData, salesRep: e.target.value })}
-                  placeholder={isAr ? 'اسم المندوب أو المسؤول...' : 'Sales rep name...'}
-                  className="w-full py-2 px-3 bg-white border border-slate-300 rounded-xl font-semibold text-slate-800 focus:outline-none"
-                />
+                  onChange={(e) => {
+                    const selectedName = e.target.value;
+                    const matchedOpt = salesRepOptions.find((o) => o.value === selectedName);
+                    setFormData((prev) => ({
+                      ...prev,
+                      salesRep: selectedName,
+                      salesRepId: matchedOpt?.id || '',
+                    }));
+                  }}
+                  className="w-full py-2 px-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:outline-none cursor-pointer"
+                >
+                  <option value="">
+                    {isAr ? '— اختر مندوب المبيعات —' : '— Select Sales Rep —'}
+                  </option>
+                  {salesRepOptions.map((opt) => (
+                    <option key={opt.id || opt.value} value={opt.value}>
+                      {opt.label}{opt.isLegacy ? (isAr ? ' (قيمة سابقة)' : ' (Legacy)') : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <div className="sm:col-span-3 grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1 flex items-center gap-1">
                     <MessageSquare className="w-3.5 h-3.5 text-slate-500 shrink-0" />
@@ -3119,6 +3415,28 @@ export function SalesOrderEditorModal({
           </div>
         </form>
       </div>
+
+      {/* Standardized Client & Branch Profile + Past Order Duplication Popup */}
+      <ClientProfileModal
+        isOpen={Boolean(clientProfileModalTab && formData.clientId)}
+        onClose={() => setClientProfileModalTab(null)}
+        client={selectedClient}
+        clientId={formData.clientId}
+        focusBranchId={formData.branchId}
+        focusBranchName={formData.branchName}
+        clients={clients}
+        segments={segments}
+        pricingStrategies={strategies}
+        salesOrders={allOrders}
+        initialTab={clientProfileModalTab || 'profile'}
+        onDuplicateOrder={
+          !isStructureLocked && (!isAdminModal || formData.orderType.startsWith('invoice_only'))
+            ? handleRequestDuplicatePastOrder
+            : null
+        }
+        zIndexClass="z-[90]"
+        isAr={isAr}
+      />
     </div>
   );
 }

@@ -228,7 +228,7 @@ export default function DispatchDocumentsHistoryModal({
                         </span>
 
                         <span className="px-2 py-0.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 font-mono text-[11px] font-black">
-                          {isAr ? `رحلة #${entry.loadingOrderNumber || '—'}` : `Trip #${entry.loadingOrderNumber || '—'}`}
+                          {isAr ? `تحميل #${entry.loadingOrderNumber || '—'}` : `Trip #${entry.loadingOrderNumber || '—'}`}
                           {entry.versionNumber ? ` · v${entry.versionNumber}` : ''}
                         </span>
 
