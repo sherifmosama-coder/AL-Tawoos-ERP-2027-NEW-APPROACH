@@ -3878,7 +3878,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             const lpFilterCount =
               (fulfillmentFilter !== 'all' ? 1 : 0) +
               (searchTerm.trim() ? 1 : 0) +
-              (confirmedOnly ? 1 : 0) +
+              (!confirmedOnly ? 1 : 0) +
               (groupBy !== 'status_hierarchy' ? 1 : 0) +
               (sortBy !== 'trip_asc' ? 1 : 0);
             const fleetConflictsCount = truckFleetAnalysis.filter((t) => t.operationalStatus === 'conflict').length;
@@ -3891,12 +3891,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   aria-label={isFiltersOpen ? (isAr ? 'إخفاء شريط الفلاتر' : 'Hide Filter Bar') : (isAr ? 'إظهار شريط الفلاتر' : 'Show Filter Bar')}
                   aria-expanded={isFiltersOpen}
                   className={`relative w-12 min-h-[48px] rounded-2xl border flex items-center justify-center transition cursor-pointer shadow-2xs ${
-                    isFiltersOpen || lpFilterCount > 0
+                    isFiltersOpen
                       ? 'bg-slate-900 text-white border-slate-900'
                       : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
                   }`}
                 >
-                  <Filter className={`w-5 h-5 ${isFiltersOpen || lpFilterCount > 0 ? 'text-emerald-400' : 'text-slate-600'}`} />
+                  <Filter className={`w-5 h-5 ${isFiltersOpen ? 'text-emerald-400' : 'text-slate-600'}`} />
                   {lpFilterCount > 0 && (
                     <span className="absolute -top-1.5 -end-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-white font-mono text-[10px] font-black flex items-center justify-center shadow-xs">
                       {lpFilterCount}

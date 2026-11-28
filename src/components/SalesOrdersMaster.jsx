@@ -1433,14 +1433,15 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             <button
               type="button"
               onClick={() => setIsFiltersOpen((prev) => !prev)}
+              aria-expanded={isFiltersOpen}
               className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
-                isFiltersOpen || activeFiltersCount > 0
+                isFiltersOpen
                   ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                   : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
               }`}
               title={isFiltersOpen ? (isAr ? 'إخفاء شريط الفلاتر' : 'Hide Filters') : (isAr ? 'إظهار شريط الفلاتر' : 'Show Filters')}
             >
-              <Filter className={`w-3.5 h-3.5 ${isFiltersOpen || activeFiltersCount > 0 ? 'text-emerald-400' : 'text-slate-500'}`} />
+              <Filter className={`w-3.5 h-3.5 ${isFiltersOpen ? 'text-emerald-400' : 'text-slate-500'}`} />
               <span>{isAr ? 'تصفية' : 'Filters'}</span>
               {activeFiltersCount > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full bg-emerald-500 text-white font-mono text-[10px] font-black">
