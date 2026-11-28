@@ -10,8 +10,8 @@
  */
 
 export const APP_ARCHITECTURE = {
-  version: "3.8.0",
-  lastUpdated: "2026-10-15",
+  version: "4.1.0",
+  lastUpdated: "2026-11-28",
   
   modules: {
     master_data: {
@@ -949,8 +949,10 @@ export const APP_ARCHITECTURE = {
             loadingDate: { labelAr: "تاريخ التحميل", labelEn: "Loading Date", type: "date", required: true, sample: "2026-11-09" },
             orderType: { labelAr: "نوع الطلب", labelEn: "Order Type", type: "enum", options: ["supply", "return_deduct", "return_no_deduct", "replacement_old", "exchange", "collection", "admin", "invoice_only_with_tax", "invoice_only_no_tax"], sample: "supply" },
             confirmationStatus: { labelAr: "حالة التأكيد", labelEn: "Confirmation Status", type: "enum", options: ["confirmed", "not_confirmed", "revised", "canceled"], sample: "confirmed" },
-            fulfillmentStatus: { labelAr: "حالة التنفيذ والتحميل", labelEn: "Fulfillment Status", type: "enum", options: ["not_yet", "prepare", "shipped", "delivered", "paid"], sample: "not_yet" },
+            fulfillmentStatus: { labelAr: "حالة التنفيذ (قيد الانتظار / جاري التجهيز / جاري التوصيل / تم التسليم / مدفوع)", labelEn: "Fulfillment Status (Pending / Preparing / Out for Delivery / Delivered / Paid)", type: "enum", options: ["not_yet", "prepare", "shipped", "delivered", "paid"], sample: "not_yet" },
             vatMode: { labelAr: "المعاملة الضريبية", labelEn: "Tax / VAT Mode", type: "enum", options: ["none", "exclusive", "exclusive_wht", "inclusive", "inclusive_wht"], sample: "none" },
+            salesRep: { labelAr: "مندوب المبيعات / المسؤول", labelEn: "Sales Rep / Officer", type: "string", sample: "أحمد سعيد" },
+            salesRepId: { labelAr: "معرف مندوب المبيعات (Personnel ID)", labelEn: "Sales Rep Employee ID", type: "string", sample: "EMP-101" },
             poTawoos: { labelAr: "أمر شراء طاووس", labelEn: "PO # Tawoos", type: "string", sample: "PO-TW-2026-01" },
             poPrivateLabel: { labelAr: "أمر شراء العلامة الخاصة", labelEn: "PO # Private Label", type: "string", sample: "PO-PL-4401" },
             isSplitParent: { labelAr: "أمر رئيسي مقسّم إلى شحنات", labelEn: "Is Split Parent Order", type: "boolean", sample: false },
@@ -975,10 +977,11 @@ export const APP_ARCHITECTURE = {
             { key: "canModifyClosedOrders", labelAr: "تعديل الطلبات المسلمة والمسددة", labelEn: "Modify Delivered/Paid Orders" }
           ],
           fields: {
-            loadingOrderNumber: { labelAr: "رقم أمر التحميل", labelEn: "Loading Order #", type: "number", sample: 1 },
+            loadingOrderNumber: { labelAr: "رقم التحميل / أمر التحميل", labelEn: "Trip / Loading Order #", type: "number", sample: 1 },
             assignedVehicleId: { labelAr: "معرف الشاحنة / السيارة", labelEn: "Assigned Vehicle ID", type: "string", sample: "VEH-01" },
             assignedDriverId: { labelAr: "معرف السائق", labelEn: "Assigned Driver ID", type: "string", sample: "EMP-101" },
-            loadingDate: { labelAr: "تاريخ التحميل المعتمد", labelEn: "Scheduled Loading Date", type: "date", sample: "2026-11-10" }
+            loadingDate: { labelAr: "تاريخ التحميل المعتمد", labelEn: "Scheduled Loading Date", type: "date", sample: "2026-11-10" },
+            deliverySequence: { labelAr: "أولوية وترتيب التسليم للعملاء", labelEn: "Manual Delivery Stop Sequence", type: "number", sample: 1 }
           }
         },
         truck_dispatch: {
@@ -995,10 +998,13 @@ export const APP_ARCHITECTURE = {
             { key: "canResolveReturnDiscrepancy", labelAr: "اعتماد وإقفال فروقات المرتجعات (المحاسبة)", labelEn: "Resolve & Reconcile Return Variance" }
           ],
           fields: {
-            loadingOrderNumber: { labelAr: "رقم الرحلة / أمر التحميل", labelEn: "Trip / Loading Order #", type: "number", required: true, sample: 1 },
+            loadingOrderNumber: { labelAr: "رقم التحميل (تحميل #)", labelEn: "Trip # (Loading Order #)", type: "number", required: true, sample: 1 },
             loadingDate: { labelAr: "تاريخ التحميل", labelEn: "Loading Date", type: "date", required: true, sample: "2026-11-18" },
             dispatchStatus: { labelAr: "حالة التحميل والصرف المخزني", labelEn: "Warehouse Dispatch Status", type: "enum", options: ["draft", "loaded", "dispatched", "returned"], sample: "loaded" },
+            latestDispatchDocNumber: { labelAr: "رقم مستند الصرف الساري (DD-XXXXX)", labelEn: "Current Valid Dispatch Doc #", type: "string", sample: "DD-00001" },
+            latestReturnDocNumber: { labelAr: "رقم إذن المرتجع (RET-XXXXX)", labelEn: "Return Receiving Doc #", type: "string", sample: "RET-00001" },
             returnHandshakeStatus: { labelAr: "حالة مطابقة المرتجعات", labelEn: "Return Handshake Status", type: "enum", options: ["none", "pending_wh_confirm", "pending_accounting_confirm", "discrepancy_pending_accounting", "reconciled"], sample: "reconciled" },
+            stockReturnDate: { labelAr: "تاريخ إضافة المرتجع الفعلي للمخزن (جرد)", labelEn: "Physical Stock Return Date (EOD Deferral)", type: "date", sample: "2026-11-19" },
             loadingWorkers: { labelAr: "عمالة التحميل ونسب المجهود", labelEn: "Loading Crew & Effort %", type: "array" },
             offloadingWorkers: { labelAr: "عمالة التفريغ والتوزيع ونسب المجهود", labelEn: "Offloading Crew & Effort %", type: "array" }
           }
@@ -1863,5 +1869,19 @@ export const AUTOMATED_SYSTEM_RESTORE_ARCHITECTURE = {
     contentAddressedDedup: 'Canonicalizes documents (sorted keys, preserved Timestamps/Dates) and stores gzip+Base64 payloads content-addressed by SHA-256 hash inside system_restore_blobs (split into <650KB __pN chunks) so unchanged collections across snapshots reuse existing blobs with zero extra storage.',
     threeLevelRelationalCascade: 'Supports System-Wide, Module, and Tab rollback via resolveRestoreScopePlan with Always-Full-Relational-Cascade semantics, selectively diffing and reverting primary + predicate-scoped linked records (journal_entries, stock_ledger, cash_transactions, dues_settlements, wht_notes, record_comments, user_actions_queue, system_notifications) while leaving unrelated records untouched.',
     safetyAndRecalculation: 'Guarantees an automatic pre_restore safety checkpoint (plus pre_purge before Factory Reset), requires typing RESTORE after inspecting live Diff Preview (+create/~update/-delete), recalculates items.stock & cash_safes/corporate_banks balances on partial rollbacks, and retains 12h intra-day / 14d daily anchors / pinned / 8 safety points with safe orphan blob GC.'
+  }
+};
+
+/**
+ * Standardized Sales UX, Terminology & App-Wide Profile Specifications
+ */
+export const SALES_DISTRIBUTION_UX_ARCHITECTURE = {
+  version: '4.1-standardized-sales-ux',
+  standards: {
+    standardizedFulfillmentStatuses: ['not_yet:Pending/قيد الانتظار', 'prepare:Preparing/جاري التجهيز', 'shipped:Out for Delivery/جاري التوصيل', 'delivered:Delivered/تم التسليم', 'paid:Paid/مدفوع'],
+    standardizedTerminology: 'Arabic UI & printed dispatch/return docs use تحميل # (English: Trip #). Confirmed warehouse dispatch slips display "Dispatch Doc ✓ / إذن الصرف ✓".',
+    truckDisplayStandard: 'TruckNameBadge renders the vehicle display name only (vehicleModel || name || code); plateNumber is limited to hover metadata and adjacent copy icon outside VehiclesMaster & printed gate slips.',
+    clientBranchProfileStandard: 'ClientProfileModal serves as the single app-wide popup for branch contact/schedule spotlight, commercial/tax overview, past SKU/packing/price/VAT breakdown, and 1-click Past Order Duplication (strictly copying products, packing option, qty, bonus & VAT mode with live pricing recalculation).',
+    loadingPlanPreSaveAndComments: 'Filter bars and Fleet Operational Dashboard default collapsed; status toggling is allowed prior to mandatory assignment fields with order-level Save enforcing Trip #, Truck & Driver on non-Pending orders; trip comments sync via YYYY-MM-DD_#LO between Floating Dock and Fleet Dashboard.'
   }
 };

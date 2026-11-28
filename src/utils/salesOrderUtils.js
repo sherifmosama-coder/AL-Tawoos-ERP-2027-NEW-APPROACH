@@ -721,3 +721,138 @@ export function openPrintableRetailSettlementSlip(order, isAr = true) {
     win.document.close();
   }
 }
+
+/**
+ * Validates mandatory Loading Plan assignment fields on order-level Save.
+ * Users can freely switch fulfillment statuses before entering Trip #, Truck, and Driver:
+ * - 'not_yet' (Pending) requires zero mandatory fields to save.
+ * - Any status beyond Pending ('prepare', 'shipped', 'delivered', 'paid') requires all 3.
+ */
+export function validateLoadingPlanOrderMandatoryFields({
+  fulfillmentStatus = 'not_yet',
+  loadingOrderNumber = null,
+  assignedVehicleId = '',
+  assignedDriverId = '',
+} = {}) {
+  const normStatus = fulfillmentStatus || 'not_yet';
+  if (normStatus === 'not_yet') {
+    return { valid: true, missing: [] };
+  }
+  const missing = [];
+  if (!loadingOrderNumber || Number(loadingOrderNumber) <= 0) missing.push('tripNumber');
+  if (!assignedVehicleId) missing.push('vehicle');
+  if (!assignedDriverId) missing.push('driver');
+  return { valid: missing.length === 0, missing };
+}
+
+/**
+ * Canonical compound trip identifier shared by Loading Plan floating dock & Fleet Dashboard comments.
+ */
+export function buildTripCommentDocId(loadingDate = '', loadingOrderNumber = null) {
+  const loNum = Number(loadingOrderNumber);
+  if (!loadingDate || !loNum || loNum <= 0) return '';
+  return `${String(loadingDate).trim()}_#${loNum}`;
+}
+
+/**
+ * Resolves Sales Rep dropdown options from the unified `employees` pool.
+ * Prioritizes active personnel tagged 'sales' or assigned to a Sales department (DEPT-SALES / SALES),
+ * gracefully falling back to all active employees if no Sales-tagged staff exist yet,
+ * and preserving any legacy custom string currently stored on an edited order.
+ */
+export function resolveSalesRepOptions(employees = [], currentSalesRep = '', isAr = true) {
+  const list = Array.isArray(employees) ? employees : [];
+  const active = list.filter((e) => e && e.isActive !== false && e.status !== 'inactive');
+
+  const isSalesMember = (emp) => {
+    const tags = Array.isArray(emp.operationalTags) ? emp.operationalTags : [];
+    if (tags.includes('sales')) return true;
+    const deptIds = [
+      ...(Array.isArray(emp.departmentIds) ? emp.departmentIds : []),
+      emp.departmentId || '',
+    ].map((d) => String(d).toUpperCase());
+    if (deptIds.some((d) => d === 'DEPT-SALES' || d === 'SALES' || d.includes('SALES'))) return true;
+    const rawDept = String(emp.department || '').toLowerCase();
+    return rawDept.includes('sales') || rawDept.includes('مبيعات');
+  };
+
+  const salesOnly = active.filter(isSalesMember);
+  const pool = salesOnly.length > 0 ? salesOnly : active;
+
+  const seenNames = new Set();
+  const options = [];
+  pool.forEach((emp) => {
+    const nameAr = String(emp.nameAr || emp.name || '').trim();
+    const nameEn = String(emp.nameEn || emp.name || emp.nameAr || '').trim();
+    const displayName = isAr ? (nameAr || nameEn) : (nameEn || nameAr);
+    if (!displayName) return;
+    const key = displayName.toLowerCase();
+    if (seenNames.has(key)) return;
+    seenNames.add(key);
+    options.push({
+      id: emp.id || '',
+      value: displayName,
+      label: displayName,
+      nameAr,
+      nameEn,
+      code: emp.code || emp.employeeCode || '',
+    });
+  });
+
+  options.sort((a, b) => a.label.localeCompare(b.label, isAr ? 'ar' : 'en'));
+
+  const legacyRep = String(currentSalesRep || '').trim();
+  if (legacyRep) {
+    const exists = options.some(
+      (o) =>
+        o.value.toLowerCase() === legacyRep.toLowerCase() ||
+        o.nameAr.toLowerCase() === legacyRep.toLowerCase() ||
+        o.nameEn.toLowerCase() === legacyRep.toLowerCase()
+    );
+    if (!exists) {
+      options.unshift({
+        id: '',
+        value: legacyRep,
+        label: legacyRep,
+        nameAr: legacyRep,
+        nameEn: legacyRep,
+        isLegacy: true,
+      });
+    }
+  }
+
+  return options;
+}
+
+/**
+ * Extracts strictly products/packaging-option, qty, bonus, and VAT mode when duplicating a past order.
+ * Explicitly excludes historical prices, dates, comments, POs, or truck/trip assignments.
+ */
+export function extractPastOrderDuplicationSpec(sourceOrder = null, allowedVatModeIds = []) {
+  if (!sourceOrder) {
+    return { vatMode: 'none', items: [] };
+  }
+  const rawVat = String(sourceOrder.vatMode || 'none').trim() || 'none';
+  const validVatIds = Array.isArray(allowedVatModeIds) && allowedVatModeIds.length > 0
+    ? allowedVatModeIds
+    : ['none', 'exclusive', 'exclusive_wht', 'inclusive', 'inclusive_wht'];
+  const vatMode = validVatIds.includes(rawVat) ? rawVat : validVatIds[0];
+
+  const rawLines = Array.isArray(sourceOrder.lines) ? sourceOrder.lines : [];
+  const items = rawLines
+    .filter((ln) => ln && ln.productId)
+    .map((ln) => {
+      const suffix =
+        ln.packagingOptionSuffix ||
+        (ln.packagingOptionId && ln.packagingOptionId !== 'any' ? ln.packagingOptionId : null) ||
+        null;
+      return {
+        productId: ln.productId,
+        qty: Math.max(1, Math.floor(Number(ln.qty || 1))),
+        bonus: Math.max(0, Math.floor(Number(ln.bonus || 0))),
+        packagingOptionSuffix: suffix,
+      };
+    });
+
+  return { vatMode, items };
+}

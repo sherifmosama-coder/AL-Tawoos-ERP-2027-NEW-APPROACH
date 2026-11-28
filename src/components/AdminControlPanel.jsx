@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { db } from '../firebase';
+import { db, functions, openBase64Document } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
+import {
+  normalizeUserEmails,
+  findEmailConflictUser,
+  isGoogleEmailAddress,
+  detectNonGoogleEmails,
+  getDefaultPasswordProvisionEmail,
+} from '../schemas/personnelSchema';
 import {
   collection,
   doc,
@@ -18,6 +26,32 @@ import TabAppearanceManager from './TabAppearanceManager';
 import OpeningStockSeederModal from './OpeningStockSeederModal';
 import NotificationControlCenter from './NotificationControlCenter';
 import SystemRestoreHub from './SystemRestoreHub';
+import AuditLogsHub from './AuditLogsHub';
+import DatabaseInspectorHub from './admin/DatabaseInspectorHub';
+import BackupRestoreHub from './admin/BackupRestoreHub';
+import FactoryResetHub from './admin/FactoryResetHub';
+import PeacockLoader from './PeacockLoader';
+import {
+  STATIC_GRAPH_METADATA,
+  resolveDynamicEntityRelations,
+  MASTER_COLLECTIONS_REGISTRY,
+  OPERATIONAL_COLLECTIONS_REGISTRY,
+  BACKUP_COLLECTIONS_REGISTRY,
+  COLLECTION_DISPLAY_NAMES,
+  getCollectionDisplayName,
+  PURGE_TARGETS_CATALOG,
+} from '../utils/adminCatalogs';
+
+export {
+  STATIC_GRAPH_METADATA,
+  resolveDynamicEntityRelations,
+  MASTER_COLLECTIONS_REGISTRY,
+  OPERATIONAL_COLLECTIONS_REGISTRY,
+  BACKUP_COLLECTIONS_REGISTRY,
+  COLLECTION_DISPLAY_NAMES,
+  getCollectionDisplayName,
+  PURGE_TARGETS_CATALOG,
+};
 import { createRestorePoint } from '../utils/systemRestoreEngine';
 import { OPERATIONAL_COLLECTIONS_COMPLETE } from '../utils/systemRestoreScopeCatalog';
 import {
@@ -86,166 +120,13 @@ import {
   ArrowRightLeft,
   Workflow,
   KeyRound,
-  EyeOff
+  EyeOff,
+  Mail,
+  Send
 } from 'lucide-react';
 import { getMasterPin, saveMasterPinToFirestore } from '../utils/dualLedgerEngine.js';
 import { getTabConfig, getIconComponent, hexToRgb } from '../utils/tabAppearanceConfig';
 
-// Base Registry for Standard Entity Descriptions & Categories
-export const STATIC_GRAPH_METADATA = {
-  items: { labelAr: 'سجل الخامات ومستلزمات الإنتاج', labelEn: 'Item Master (Raw Materials)', category: 'Master Data', color: '#059669' },
-  suppliers: { labelAr: 'سجل الموردين المعتمدين', labelEn: 'Suppliers Master', category: 'Master Data', color: '#0d6cba' },
-  warehouses: { labelAr: 'سجل المستودعات والصالات', labelEn: 'Warehouses Master', category: 'Master Data', color: '#4f46e5' },
-  users: { labelAr: 'سجل المستخدمين والمشرفين', labelEn: 'User Accounts', category: 'Master Data', color: '#0284c7' },
-  departments: { labelAr: 'الأقسام والإدارات وصلاحياتها', labelEn: 'Departments & Permissions', category: 'Master Data', color: '#4f46e5' },
-  employees: { labelAr: 'سجل الموظفين والعمالة والمستخدمين الموحد', labelEn: 'Unified Staff, Workers & Users', category: 'Master Data', color: '#0d9488' },
-  categories: { labelAr: 'مجموعات وتصنيفات التكويد', labelEn: 'Category Groups', category: 'Master Data', color: '#6366f1' },
-  finished_products: { labelAr: 'سجل المنتجات التامة', labelEn: 'Finished Goods Master', category: 'Master Data', color: '#e11d48' },
-  finished_product_categories: { labelAr: 'تصنيفات ومجموعات المنتج التام', labelEn: 'FG Categories', category: 'Master Data', color: '#6366f1' },
-  bom_recipes: { labelAr: 'شجرة وقوائم المكونات (BOM)', labelEn: 'Finished Goods BOM', category: 'Master Data', color: '#b45309' },
-  intermediate_recipes: { labelAr: 'تركيبات الخامات الوسيطة (IBOM)', labelEn: 'Intermediate Recipes', category: 'Master Data', color: '#d97706' },
-  production_processes: { labelAr: 'مسارات وعمليات التشغيل (SOPs)', labelEn: 'Production Processes & SOPs', category: 'Master Data', color: '#6366f1' },
-  production_workers: { labelAr: 'سجل عمالة الإنتاج والورديات', labelEn: 'Production Workers Master', category: 'Master Data', color: '#8b5cf6' },
-  system_config: { labelAr: 'إعدادات وتهيئة النظام', labelEn: 'System Configuration', category: 'Master Data', color: '#64748b' },
-  cash_safes: { labelAr: 'سجل الخزائن والخزن النقدية', labelEn: 'Safes & Cash Vaults Master', category: 'Master Data', color: '#059669' },
-  corporate_banks: { labelAr: 'سجل الحسابات والودائع البنكية', labelEn: 'Corporate Bank Accounts Master', category: 'Master Data', color: '#0d6cba' },
-  vehicles: { labelAr: 'سجل أسطول الشاحنات والمركبات', labelEn: 'Vehicles & Fleet Master', category: 'Master Data', color: '#d97706' },
-  chart_of_accounts: { labelAr: 'دليل شجرة الحسابات المحاسبية', labelEn: 'Chart of Accounts', category: 'Master Data', color: '#0284c7' },
-  liquid_tanks: { labelAr: 'تشغيل وتانكات الخامات (M)', labelEn: 'Bulk Liquid Tanks', category: 'Production', color: '#0891b2' },
-  floor_liquid_vessels: { labelAr: 'خزانات وتدفق السوائل بالصالة', labelEn: 'Floor Liquid Storage & Vessels', category: 'Production', color: '#0284c7' },
-  production_transformations: { labelAr: 'حركات التحويل والتصنيع الداخلي', labelEn: 'Production Transformations', category: 'Inventory & Production', color: '#7c3aed' },
-  work_orders: { labelAr: 'أوامر التشغيل والإنتاج (MO)', labelEn: 'Work Orders', category: 'Manufacturing', color: '#047857' },
-  production_breaks: { labelAr: 'سجل فترات الراحة والتوقف', labelEn: 'Production Breaks & Downtime', category: 'Production', color: '#f43f5e' },
-  staged_floor_materials: { labelAr: 'خامات ومستلزمات الصالة قيد التشغيل', labelEn: 'Staged Floor Materials', category: 'Production & Inventory', color: '#f59e0b' },
-  staged_floor_pallets: { labelAr: 'بالتات الصالة المشدودة والمرحلة', labelEn: 'Staged Floor Pallets', category: 'Production & Inventory', color: '#10b981' },
-  shift_handovers: { labelAr: 'تسليم واستلام الورديات وتتبع السيريال', labelEn: 'Shift Handovers & Serials', category: 'Production', color: '#06b6d4' },
-  faulty_fg_returns: { labelAr: 'مرتجعات ومعيب المنتج التام (RTN)', labelEn: 'Faulty FG Returns', category: 'Quality & Production', color: '#ef4444' },
-  fg_receipts: { labelAr: 'استلام وحفظ المنتج التام (FGR)', labelEn: 'FG Receipts', category: 'Finished Goods', color: '#10b981' },
-  purchase_orders: { labelAr: 'أوامر الشراء (PO)', labelEn: 'Purchase Orders', category: 'Procurement', color: '#1d4ed8' },
-  goods_receipts: { labelAr: 'أذون استلام المخزن (GRN/RTN)', labelEn: 'Goods Receipts & Returns', category: 'Inventory', color: '#0f766e' },
-  stock_transfers: { labelAr: 'أذون التحويل المخزني (TRN)', labelEn: 'Stock Transfers', category: 'Inventory', color: '#6366f1' },
-  stock_counts: { labelAr: 'الجرد الفعلي والتسويات', labelEn: 'Physical Stock Counts', category: 'Auditing', color: '#9333ea' },
-  stock_ledger: { labelAr: 'سجل الحركات الدفتري العام', labelEn: 'Central Stock Ledger', category: 'Audit & Accounting', color: '#334155' },
-  spare_parts_issues: { labelAr: 'صرف واستهلاك قطع الغيار (XISS)', labelEn: 'Spare Parts Consumption', category: 'Maintenance & Spares', color: '#f59e0b' },
-};
-
-// Dynamic Foreign Key & Relationship Inference Engine (100% Zero-Hardcoding)
-export function resolveDynamicEntityRelations(targetCollection, sampleDocs = [], allDiscovered = []) {
-  const meta = STATIC_GRAPH_METADATA[targetCollection] || {
-    labelAr: targetCollection,
-    labelEn: targetCollection,
-    category: 'Dynamic Collection',
-    color: '#0891b2',
-  };
-
-  const detectedUpstream = new Map();
-  const detectedDownstream = new Map();
-
-  // Known target collection mapping heuristic
-  const knownForeignKeyPatterns = [
-    { pattern: /(supplierId|vendorId|supplier)/i, target: 'suppliers', labelAr: 'المورد المعتمد', labelEn: 'Supplier' },
-    { pattern: /(targetWarehouse|sourceWarehouse|warehouseId|warehouse)/i, target: 'warehouses', labelAr: 'المستودع', labelEn: 'Warehouse' },
-    { pattern: /(itemId|itemCode|targetItemId|componentId)/i, target: 'items', labelAr: 'الخامة / الصنف', labelEn: 'Item Master' },
-    { pattern: /(finishedProductId|productId|fgId)/i, target: 'finished_products', labelAr: 'المنتج التام', labelEn: 'Finished Product' },
-    { pattern: /(poId|purchaseOrderId)/i, target: 'purchase_orders', labelAr: 'أمر الشراء', labelEn: 'Purchase Order' },
-    { pattern: /(grnId|goodsReceiptId)/i, target: 'goods_receipts', labelAr: 'إذن الاستلام', labelEn: 'Goods Receipt' },
-    { pattern: /(transferId|pipeTransferDocId)/i, target: 'stock_transfers', labelAr: 'إذن التحويل', labelEn: 'Stock Transfer' },
-    { pattern: /(workOrderId|moId)/i, target: 'work_orders', labelAr: 'أمر الإنتاج', labelEn: 'Work Order' },
-    { pattern: /(bomId|recipeId)/i, target: 'bom_recipes', labelAr: 'شجرة المكونات', labelEn: 'BOM Recipe' },
-    { pattern: /(tankId)/i, target: 'liquid_tanks', labelAr: 'سجل التانك', labelEn: 'Liquid Tank' },
-    { pattern: /(vesselId|liquidVesselId)/i, target: 'floor_liquid_vessels', labelAr: 'خزان تدفق السوائل', labelEn: 'Floor Liquid Vessel' },
-    { pattern: /(processCode|processId)/i, target: 'production_processes', labelAr: 'مسار التشغيل', labelEn: 'Production Process' },
-    { pattern: /(palletId|palletCode|floorPalletId)/i, target: 'staged_floor_pallets', labelAr: 'بالتة الصالة', labelEn: 'Floor Pallet' },
-    { pattern: /(breakId)/i, target: 'production_breaks', labelAr: 'استراحة تشغيل', labelEn: 'Production Break' },
-    { pattern: /(departmentId)/i, target: 'departments', labelAr: 'القسم / الإدارة', labelEn: 'Department' },
-    { pattern: /(employeeId|workerId|technicianId|driverId)/i, target: 'employees', labelAr: 'الموظف / العامل', labelEn: 'Staff / Worker' },
-    { pattern: /(returnId|faultyReturnId)/i, target: 'faulty_fg_returns', labelAr: 'إشعار المرتجع المعيب', labelEn: 'Faulty FG Return' },
-    { pattern: /(fgReceiptId|fgrId)/i, target: 'fg_receipts', labelAr: 'إذن استلام التام', labelEn: 'FG Receipt' },
-    { pattern: /(transformationId|transformationDocId)/i, target: 'production_transformations', labelAr: 'حركة التحويل', labelEn: 'Transformation' },
-    { pattern: /(categoryId)/i, target: 'categories', labelAr: 'مجموعة التكويد', labelEn: 'Category' },
-    { pattern: /(safeId|cashSafeId)/i, target: 'cash_safes', labelAr: 'الخزينة النقدية', labelEn: 'Cash Safe' },
-    { pattern: /(bankAccountId|bankId)/i, target: 'corporate_banks', labelAr: 'الحساب البنكي', labelEn: 'Bank Account' },
-    { pattern: /(vehicleId|truckId)/i, target: 'vehicles', labelAr: 'المركبة / الشاحنة', labelEn: 'Vehicle' },
-    { pattern: /(accountId|glAccountId|chartAccountId)/i, target: 'chart_of_accounts', labelAr: 'الحساب المحاسبي', labelEn: 'GL Account' },
-    { pattern: /(userId|issuedById|verifiedById|responsibleUserId|createdById)/i, target: 'users', labelAr: 'المستخدم المسؤول', labelEn: 'User Account' },
-  ];
-
-  // 1. Infer Upstream Relationships from the target collection's document fields
-  sampleDocs.slice(0, 20).forEach((docData) => {
-    // Scan root fields
-    Object.keys(docData).forEach((fieldKey) => {
-      knownForeignKeyPatterns.forEach(({ pattern, target, labelAr, labelEn }) => {
-        if (target !== targetCollection && pattern.test(fieldKey) && docData[fieldKey]) {
-          if (!detectedUpstream.has(`${target}_${fieldKey}`)) {
-            detectedUpstream.set(`${target}_${fieldKey}`, {
-              collection: target,
-              key: fieldKey,
-              labelAr,
-              labelEn,
-              type: 'many-to-one',
-            });
-          }
-        }
-      });
-
-      // Scan nested line item arrays
-      if (Array.isArray(docData[fieldKey])) {
-        docData[fieldKey].slice(0, 3).forEach((lineItem) => {
-          if (typeof lineItem === 'object' && lineItem !== null) {
-            Object.keys(lineItem).forEach((lineKey) => {
-              knownForeignKeyPatterns.forEach(({ pattern, target, labelAr, labelEn }) => {
-                if (target !== targetCollection && pattern.test(lineKey) && lineItem[lineKey]) {
-                  const mapKey = `${target}_${fieldKey}.${lineKey}`;
-                  if (!detectedUpstream.has(mapKey)) {
-                    detectedUpstream.set(mapKey, {
-                      collection: target,
-                      key: `${fieldKey}.${lineKey}`,
-                      labelAr,
-                      labelEn,
-                      type: 'many-to-many',
-                    });
-                  }
-                }
-              });
-            });
-          }
-        });
-      }
-    });
-  });
-
-  // 2. Infer Downstream Relationships by checking other discovered collections referencing this one
-  allDiscovered.forEach((otherCol) => {
-    if (otherCol.name === targetCollection || !otherCol.sampleDoc) return;
-    const docData = otherCol.sampleDoc;
-
-    Object.keys(docData).forEach((fieldKey) => {
-      knownForeignKeyPatterns.forEach(({ pattern, target }) => {
-        if (target === targetCollection && pattern.test(fieldKey)) {
-          const mapKey = `${otherCol.name}_${fieldKey}`;
-          if (!detectedDownstream.has(mapKey)) {
-            const targetMeta = STATIC_GRAPH_METADATA[otherCol.name] || { labelAr: otherCol.name, labelEn: otherCol.name };
-            detectedDownstream.set(mapKey, {
-              collection: otherCol.name,
-              key: fieldKey,
-              labelAr: targetMeta.labelAr,
-              labelEn: targetMeta.labelEn,
-              type: 'one-to-many',
-            });
-          }
-        }
-      });
-    });
-  });
-
-  return {
-    ...meta,
-    upstream: Array.from(detectedUpstream.values()),
-    downstream: Array.from(detectedDownstream.values()),
-  };
-}
-import { openBase64Document } from '../firebase';
-import PeacockLoader from './PeacockLoader';
 
 const WAREHOUSE_COLOR_PALETTE = [
   { label: 'Sapphire Blue', hex: '#0d6cba' },
@@ -276,885 +157,6 @@ const ICON_MAP = {
   LayoutDashboard
 };
 
-// Dynamically derived from APP_ARCHITECTURE.modules.master_data.tabs + core master tables
-export const MASTER_COLLECTIONS_REGISTRY = getMasterCollectionsRegistry(APP_ARCHITECTURE);
-
-export const OPERATIONAL_COLLECTIONS_REGISTRY = OPERATIONAL_COLLECTIONS_COMPLETE;
-
-export const BACKUP_COLLECTIONS_REGISTRY = Array.from(
-  new Set([
-    ...MASTER_COLLECTIONS_REGISTRY,
-    ...OPERATIONAL_COLLECTIONS_REGISTRY,
-  ])
-);
-
-export const COLLECTION_DISPLAY_NAMES = {
-  users: { ar: 'حسابات دخول النظام (متزامن مع الموظفين)', en: 'System Login Accounts (Synced with Employees)' },
-  departments: { ar: 'الأقسام والإدارات وصلاحياتها', en: 'Departments & Permissions' },
-  employees: { ar: 'سجل الموظفين والعمالة والمستخدمين الموحد', en: 'Unified Staff, Workers & Users' },
-  system_config: { ar: 'إعدادات النظام والروابط المحاسبية ومراكز التكلفة', en: 'System Config, Accounting Links & Cost Centers' },
-  suppliers: { ar: 'سجل الموردين المعتمدين', en: 'Suppliers Master' },
-  clients: { ar: 'سجل العملاء', en: 'Clients Master' },
-  client_segments: { ar: 'تصنيفات وقطاعات العملاء', en: 'Client Segments Master' },
-  items: { ar: 'سجل الخامات ومستلزمات الإنتاج', en: 'Item Master (Raw Materials)' },
-  categories: { ar: 'مجموعات وتصنيفات التكويد', en: 'Category Groups' },
-  finished_products: { ar: 'سجل المنتجات التامة', en: 'Finished Goods Master' },
-  finished_product_categories: { ar: 'تصنيفات المنتج التام', en: 'FG Categories' },
-  warehouses: { ar: 'سجل المستودعات والصالات', en: 'Warehouses Master' },
-  bom_recipes: { ar: 'شجرة وقوائم المكونات (BOM)', en: 'BOM Recipes' },
-  intermediate_recipes: { ar: 'خلطات الخامات الوسيطة (IBOM)', en: 'Intermediate Recipes' },
-  production_processes: { ar: 'مسارات ومراحل التشغيل (SOP)', en: 'Production Processes' },
-  production_workers: { ar: 'سجل عمالة الإنتاج والورديات', en: 'Production Workers' },
-  cash_safes: { ar: 'سجل الخزائن والخزن النقدية', en: 'Safes & Cash Vaults Master' },
-  corporate_banks: { ar: 'سجل الحسابات والودائع البنكية', en: 'Corporate Bank Accounts Master' },
-  bank_accounts: { ar: 'سجل الحسابات البنكية', en: 'Bank Accounts Master' },
-  vehicles: { ar: 'سجل أسطول الشاحنات والمركبات', en: 'Vehicles & Logistics Fleet' },
-  chart_of_accounts: { ar: 'دليل شجرة الحسابات وإعدادات التوجيه المالي', en: 'Chart of Accounts & Statement Routing Setup' },
-  floor_liquid_vessels: { ar: 'إعدادات خزانات السوائل بالصالة', en: 'Floor Liquid Vessels Master Config' },
-
-  purchase_orders: { ar: 'أوامر الشراء (PO)', en: 'Purchase Orders' },
-  goods_receipts: { ar: 'أذون استلام المخزن والمرتجعات (GRN/RTN)', en: 'Goods Receipts & Returns' },
-  stock_transfers: { ar: 'أذون التحويل المخزني (TRN)', en: 'Stock Transfers' },
-  transfers: { ar: 'حركات النقل الفرعية (Transfers)', en: 'Warehouse Transfers' },
-  stock_ledger: { ar: 'سجل الحركات الدفتري (Ledger)', en: 'Stock Ledger' },
-  stock_counts: { ar: 'الجرد الفعلي والتسويات', en: 'Physical Stock Counts' },
-  spare_parts_issues: { ar: 'صرف قطع الغيار (XISS)', en: 'Spare Parts Issues' },
-  work_orders: { ar: 'أوامر التشغيل والإنتاج (MO)', en: 'Work Orders' },
-  production_work_orders: { ar: 'أوامر إعادة التشغيل والتصنيع', en: 'Rework & Production Work Orders' },
-  staged_floor_pallets: { ar: 'بالتات الصالة المشدودة', en: 'Staged Floor Pallets' },
-  staged_floor_materials: { ar: 'خامات ومستلزمات الصالة', en: 'Staged Floor Materials' },
-  production_breaks: { ar: 'سجل فترات الراحة والتوقف', en: 'Production Breaks' },
-  production_shifts: { ar: 'سجل الورديات الإنتاجية', en: 'Production Shifts' },
-  liquid_tanks: { ar: 'تشغيل وتانكات الخامات (M)', en: 'Bulk Liquid Tanks' },
-  production_transformations: { ar: 'حركات التحويل والتصنيع الداخلي', en: 'Production Transformations' },
-  shift_handovers: { ar: 'تسليم واستلام الورديات', en: 'Shift Handovers' },
-  faulty_fg_returns: { ar: 'مرتجعات ومعيب المنتج التام', en: 'Faulty FG Returns' },
-  fg_receipts: { ar: 'استلام وحفظ المنتج التام', en: 'FG Receipts' },
-  cash_transactions: { ar: 'سجل حركات وسندات الخزينة والبنوك', en: 'Cash & Bank Vouchers' },
-  cash_count_sessions: { ar: 'محاضر جرد ومطابقة الخزينة', en: 'Cash Count Audit Sessions' },
-  journal_entries: { ar: 'دفتر قيود اليومية العامة', en: 'Journal Entries Ledger' },
-  custody_ledger: { ar: 'سجل العهد النقدية والسلف', en: 'Custodies & Advances Ledger' },
-  custody_advance_drafts: { ar: 'مسودات وطلبات العهد والسلف', en: 'Custody & Advance Drafts' },
-  custodies_and_advances: { ar: 'حركات العهد والسلف المؤقتة', en: 'Custodies & Advances Records' },
-  dues_settlements: { ar: 'سجل تسويات ودفعات الموردين والعملاء', en: 'Dues & Installments Settlements' },
-  dues_batches: { ar: 'حافظات السداد المجمعة للموردين', en: 'Batch Payment Ledgers' },
-  wht_notes: { ar: 'إشعارات وشهادات الخصم والإضافة (1%)', en: '1% WHT Certificates' },
-  sales_orders: { ar: 'أوامر البيع والتوريد وخطط التحميل والتوزيع', en: 'Sales Orders & Dispatch Loading Plans' },
-  truck_dispatches: { ar: 'رحلات التوزيع واستلام المرتجعات', en: 'Truck Dispatches & Receiving' },
-  dispatch_documents: { ar: 'سجل أذون صرف الشاحنات المرقمة', en: 'Dispatch Documents Registry' },
-  price_lists: { ar: 'قوائم الأسعار وفترات التسعير', en: 'Price Lists & Periods' },
-  pricing_strategies: { ar: 'استراتيجيات التسعير المخصصة', en: 'Pricing Strategies' },
-  client_contracts: { ar: 'عقود وخصومات العملاء', en: 'Client Contracts & Discounts' },
-  record_comments: { ar: 'التعليقات والمهام التشغيلية على السجلات', en: 'Record Comments & Tasks' },
-  user_actions_queue: { ar: 'طابور المهام والاعتمادات المعلقة', en: 'Pending User Actions Queue' },
-  system_notifications: { ar: 'سجل التنبيهات والإشعارات', en: 'System Notifications' },
-};
-
-/**
- * Universal Display Name Resolver for Firestore Collections.
- * If not in static dictionary, dynamically resolves label from APP_ARCHITECTURE modules & tabs.
- */
-export function getCollectionDisplayName(collKey, isAr = false) {
-  if (COLLECTION_DISPLAY_NAMES[collKey]) {
-    return isAr ? COLLECTION_DISPLAY_NAMES[collKey].ar : COLLECTION_DISPLAY_NAMES[collKey].en;
-  }
-  // Dynamic lookup across all modules & tabs in APP_ARCHITECTURE
-  for (const mod of Object.values(APP_ARCHITECTURE.modules || {})) {
-    for (const tab of Object.values(mod.tabs || {})) {
-      if (tab.collection === collKey) {
-        return isAr ? tab.labelAr : tab.labelEn;
-      }
-    }
-  }
-  return collKey;
-}
-
-/**
- * Helper to match collaborative comments, pending user actions, and notifications
- * generated for a given set of collections, tabs, or document ID prefixes.
- */
-const makeCollabCascadeEntries = (targetCollections = [], targetTabs = [], docPrefixes = []) => {
-  const matchDocPrefix = (val) => {
-    const s = String(val || '').toUpperCase();
-    return docPrefixes.some((p) => s.startsWith(p.toUpperCase()));
-  };
-  const matchCollOrTab = (d) =>
-    targetCollections.includes(d.collectionName) ||
-    targetCollections.includes(d.sourceCollection) ||
-    targetCollections.includes(d.targetCollection) ||
-    targetTabs.includes(d.targetTab) ||
-    targetTabs.includes(d.tabId) ||
-    targetTabs.includes(d.moduleKey) ||
-    matchDocPrefix(d.recordId) ||
-    matchDocPrefix(d.docId) ||
-    matchDocPrefix(d.highlightId);
-
-  return [
-    {
-      collection: 'record_comments',
-      labelAr: 'التعليقات والمهام المرتبطة بهذه السجلات (record_comments)',
-      labelEn: 'Collaborative comments linked to these records (record_comments)',
-      predicate: (d) => matchCollOrTab(d),
-    },
-    {
-      collection: 'user_actions_queue',
-      labelAr: 'طلبات الاعتماد والمهام المعلقة المرتبطة (user_actions_queue)',
-      labelEn: 'Pending approval actions linked to these records (user_actions_queue)',
-      predicate: (d) => matchCollOrTab(d),
-    },
-    {
-      collection: 'system_notifications',
-      labelAr: 'إشعارات وتنبيهات النظام المرتبطة (system_notifications)',
-      labelEn: 'System notifications linked to these records (system_notifications)',
-      predicate: (d) => matchCollOrTab(d),
-    },
-  ];
-};
-
-/**
- * Comprehensive Relational Cascade Purge Catalog.
- * Aligns every operational module and master table in the ERP with its exact
- * Firestore collection(s) and auto-generated cross-collection records.
- */
-export const PURGE_TARGETS_CATALOG = [
-  // =========================================================================
-  // GROUP A: OPERATIONAL MODULES WITH AUTO-MADE CROSS-COLLECTION CASCADES
-  // =========================================================================
-  {
-    key: 'goods_receipts',
-    category: 'operational',
-    labelAr: 'أذون استلام الخامات ومرتجعات المشتريات (GRNs & Supplier Returns)',
-    labelEn: 'Goods Receipts & Supplier Returns (GRNs & RTNs)',
-    collectionsLabel: 'goods_receipts + Auto-Made Ledger, JEs, Vouchers & Dues',
-    primaryCollections: [], // Uses selective predicate on goods_receipts so stock count ADJ-* records are not wiped unless stock_count is selected
-    relatedCascades: [
-      {
-        collection: 'goods_receipts',
-        labelAr: 'أذون الاستلام الفعلي ومرتجعات الموردين (goods_receipts: GRN-* & RTN-*)',
-        labelEn: 'Supplier Goods Receipts & Return Notes (goods_receipts: GRN-* & RTN-*)',
-        predicate: (d, docId) =>
-          d.docType !== 'inventory_reconciliation' &&
-          !d.isDirectAdjustment &&
-          !String(docId || d.id || '').startsWith('ADJ-'),
-      },
-      {
-        collection: 'stock_ledger',
-        labelAr: 'حركات كارت الصنف التلقائية للاستلامات والمرتجعات (stock_ledger)',
-        labelEn: 'Auto-generated stock ledger movements for GRNs/RTNs (stock_ledger)',
-        predicate: (d) =>
-          ['receipt', 'return', 'GRN', 'RTN'].includes(d.docType) ||
-          [
-            'initial_receipt',
-            'receipt_modified',
-            'supplier_return',
-            'receipt_cancelled_reversal',
-            'return_cancelled_restored',
-            'receipt_reversed_admin',
-            'return_reversed_admin',
-          ].includes(d.action) ||
-          String(d.grnId || '').startsWith('GRN-') ||
-          String(d.grnId || '').startsWith('RTN-'),
-      },
-      {
-        collection: 'journal_entries',
-        labelAr: 'قيود اليومية التلقائية للاستلامات والمرتجعات وعكوساتها (journal_entries)',
-        labelEn: 'Auto-generated journal entries for GRNs/RTNs & reversals (journal_entries)',
-        predicate: (d, docId) => {
-          const idStr = String(docId || d.id || '');
-          const refStr = String(d.sourceDocId || d.referenceNumber || '');
-          return (
-            d.sourceCollection === 'goods_receipts' ||
-            ['goods_receipt', 'goods_receipt_return'].includes(d.originType) ||
-            idStr.startsWith('JE-GRN-') ||
-            idStr.startsWith('JE-RTN-') ||
-            idStr.startsWith('JE-REV-GRN-') ||
-            idStr.startsWith('JE-REV-RTN-') ||
-            refStr.startsWith('GRN-') ||
-            refStr.startsWith('RTN-')
-          );
-        },
-      },
-      {
-        collection: 'cash_transactions',
-        labelAr: 'سندات الصرف والتحصيل المرتبطة بأذون الاستلام والمرتجعات (cash_transactions)',
-        labelEn: 'Auto-generated cash/bank vouchers linked to GRNs/RTNs (cash_transactions)',
-        predicate: (d) =>
-          Boolean(d.grnId) ||
-          String(d.referenceNumber || '').startsWith('GRN-') ||
-          String(d.referenceNumber || '').startsWith('RTN-') ||
-          (Array.isArray(d.linkedDocs) && d.linkedDocs.some((ld) => ld.docType === 'GRN' || ld.docType === 'RTN' || String(ld.docId || '').startsWith('GRN-') || String(ld.docId || '').startsWith('RTN-'))),
-      },
-      {
-        collection: 'dues_settlements',
-        labelAr: 'تسويات الاستحقاقات المرتبطة بأذون الاستلام والمرتجعات (dues_settlements)',
-        labelEn: 'Dues settlements linked to GRNs/RTNs (dues_settlements)',
-        predicate: (d) =>
-          Boolean(d.grnId) ||
-          String(d.docId || '').startsWith('GRN-') ||
-          String(d.docId || '').startsWith('RTN-') ||
-          (Array.isArray(d.linkedDocs) && d.linkedDocs.some((ld) => ld.docType === 'GRN' || ld.docType === 'RTN' || String(ld.docId || '').startsWith('GRN-') || String(ld.docId || '').startsWith('RTN-'))),
-      },
-      {
-        collection: 'wht_notes',
-        labelAr: 'شهادات الخصم الضريبي 1% الصادرة لأذون الاستلام (wht_notes)',
-        labelEn: '1% WHT certificates issued for GRNs/RTNs (wht_notes)',
-        predicate: (d) =>
-          Boolean(d.grnId) ||
-          String(d.sourceDocId || d.docId || '').startsWith('GRN-') ||
-          String(d.sourceDocId || d.docId || '').startsWith('RTN-'),
-      },
-      ...makeCollabCascadeEntries(['goods_receipts'], ['goods_receipts'], ['GRN-', 'RTN-']),
-    ],
-    recalculate: {
-      recalcItemsStock: true,
-      recalcSafesAndBanks: true,
-      resetPoReceivedQuantities: true,
-    },
-    descAr: 'يمسح أذون استلام المشتريات (GRN) ومرتجعات الموردين (RTN)، ويحذف تلقائياً كافة السجلات المرتبطة بها في كارت الصنف (stock_ledger)، وقيود اليومية التلقائية (journal_entries)، وسندات الخزينة، وتسويات الاستحقاقات، وشهادات الخصم 1%، مع إعادة احتساب أرصدة الخامات والخزائن والبنوك تلقائياً.',
-    descEn: 'Wipes all Supplier Goods Receipts (GRN) and Return Notes (RTN), automatically purging their auto-made records in stock_ledger, journal_entries, cash_transactions, dues_settlements, and wht_notes, and dynamically recalculating item stock and safe/bank balances.',
-  },
-  {
-    key: 'purchase_orders',
-    category: 'operational',
-    labelAr: 'أوامر الشراء والدفعات المقدمة المرتبطة بها (Purchase Orders & PO Advances)',
-    labelEn: 'Purchase Orders & Linked PO Advances (purchase_orders)',
-    collectionsLabel: 'purchase_orders + Auto-Made PO Advances, JEs & Dues',
-    primaryCollections: ['purchase_orders'],
-    relatedCascades: [
-      {
-        collection: 'cash_transactions',
-        labelAr: 'سندات الدفعات المقدمة المرتبطة بأوامر الشراء (cash_transactions)',
-        labelEn: 'Auto-generated PO Advance payment vouchers (cash_transactions)',
-        predicate: (d) =>
-          Boolean(d.poId) ||
-          String(d.referenceNumber || '').startsWith('PO-') ||
-          (Array.isArray(d.linkedDocs) && d.linkedDocs.some((ld) => ld.docType === 'PO' || String(ld.docId || '').startsWith('PO-'))),
-      },
-      {
-        collection: 'journal_entries',
-        labelAr: 'قيود اليومية التلقائية للدفعات المقدمة لأوامر الشراء (journal_entries)',
-        labelEn: 'Auto-generated journal entries for PO Advances (journal_entries)',
-        predicate: (d, docId) =>
-          d.sourceCollection === 'purchase_orders' ||
-          String(docId || d.id || '').startsWith('JE-PO-') ||
-          String(d.sourceDocId || d.referenceNumber || '').startsWith('PO-'),
-      },
-      {
-        collection: 'dues_settlements',
-        labelAr: 'تسويات الدفعات المقدمة لأوامر الشراء (dues_settlements)',
-        labelEn: 'PO Advance settlements in dues_settlements',
-        predicate: (d) =>
-          Boolean(d.poId) ||
-          String(d.docId || '').startsWith('PO-') ||
-          (Array.isArray(d.linkedDocs) && d.linkedDocs.some((ld) => ld.docType === 'PO' || String(ld.docId || '').startsWith('PO-'))),
-      },
-      {
-        collection: 'wht_notes',
-        labelAr: 'إشعارات الخصم المرتبطة بأوامر الشراء (wht_notes)',
-        labelEn: 'WHT notes linked to Purchase Orders (wht_notes)',
-        predicate: (d) =>
-          Boolean(d.poId) ||
-          String(d.sourceDocId || d.docId || '').startsWith('PO-'),
-      },
-      ...makeCollabCascadeEntries(['purchase_orders'], ['purchase_orders'], ['PO-']),
-    ],
-    recalculate: {
-      recalcSafesAndBanks: true,
-      unlinkGrnPoRefs: true,
-    },
-    descAr: 'يمسح كافة أوامر الشراء (PO)، ويحذف تلقائياً سندات الدفعات المقدمة المرتبطة بها في الخزينة والبنوك، وقيودها المحاسبية، وتسوياتها في شاشة الاستحقاقات، ويفك ارتباط أذون الاستلام بأوامر الشراء المحذوفة مع إعادة احتساب أرصدة الخزائن والبنوك.',
-    descEn: 'Wipes all Purchase Orders (PO) and automatically purges their linked PO Advance cash vouchers, journal entries, and dues settlements, unlinking PO references on existing GRNs and recalculating safe/bank balances.',
-  },
-  {
-    key: 'transfers',
-    category: 'operational',
-    labelAr: 'التحويلات المخزنية وحركات النقل بين المستودعات (Stock Transfers)',
-    labelEn: 'Warehouse Stock Transfers (stock_transfers & transfers)',
-    collectionsLabel: 'stock_transfers + transfers + Auto-Made Stock Ledger & Floor Materials',
-    primaryCollections: ['transfers'],
-    relatedCascades: [
-      {
-        collection: 'stock_transfers',
-        labelAr: 'أذون التحويل المخزني بين المستودعات (stock_transfers)',
-        labelEn: 'Warehouse stock transfer vouchers (stock_transfers)',
-        predicate: (d) => !d.isFinishedGoods && d.transferType !== 'finished_goods' && !d.isPipelineTransfer,
-      },
-      {
-        collection: 'stock_ledger',
-        labelAr: 'حركات النقل المخزني المسجلة في كارت الصنف (stock_ledger)',
-        labelEn: 'Transfer movements recorded in stock_ledger',
-        predicate: (d) =>
-          d.docType === 'transfer' ||
-          ['transfer_in', 'transfer_out', 'transfer_reversal'].includes(d.action) ||
-          String(d.grnId || '').startsWith('TRN-') ||
-          String(d.transferId || '').startsWith('TRN-'),
-      },
-      {
-        collection: 'staged_floor_materials',
-        labelAr: 'خامات الصالة المحولة عبر أذون التحويل (staged_floor_materials)',
-        labelEn: 'Staged floor materials originating from stock transfers',
-        predicate: (d) => Boolean(d.transferId) || String(d.id || '').startsWith('TRN-'),
-      },
-      ...makeCollabCascadeEntries(['stock_transfers', 'transfers'], ['transfers'], ['TRN-']),
-    ],
-    recalculate: {
-      recalcItemsStock: true,
-    },
-    descAr: 'يمسح أذون التحويل المخزني بين المستودعات، ويحذف تلقائياً حركاتها المقابلة في كارت الصنف (stock_ledger) وخامات الصالة المحولة، مع إعادة احتساب أرصدة الخامات.',
-    descEn: 'Wipes warehouse stock transfers and automatically removes their corresponding movements in stock_ledger and staged_floor_materials, recalculating item stock.',
-  },
-  {
-    key: 'stock_count',
-    category: 'operational',
-    labelAr: 'جلسات الجرد الفعلي وتسويات الفروقات المخزنية (Stock Counts & Reconciliations)',
-    labelEn: 'Physical Stock Count Sessions & Reconciliations (stock_counts)',
-    collectionsLabel: 'stock_counts + Auto-Made ADJ-* Receipts & Stock Ledger Variances',
-    primaryCollections: ['stock_counts'],
-    relatedCascades: [
-      {
-        collection: 'goods_receipts',
-        labelAr: 'سندات التسوية الجردية التلقائية (goods_receipts: ADJ-* / inventory_reconciliation)',
-        labelEn: 'Auto-generated adjustment vouchers in goods_receipts (ADJ-* / inventory_reconciliation)',
-        predicate: (d, docId) =>
-          d.docType === 'inventory_reconciliation' ||
-          Boolean(d.isDirectAdjustment) ||
-          String(docId || d.id || '').startsWith('ADJ-') ||
-          ['STOCK_COUNT_RECONCILIATION', 'STOCK_COUNT_ADJUSTMENT'].includes(d.supplierId),
-      },
-      {
-        collection: 'stock_ledger',
-        labelAr: 'حركات فروقات الجرد (الزيادة والعجز) في كارت الصنف (stock_ledger)',
-        labelEn: 'Auto-generated inventory surplus/deficit entries in stock_ledger',
-        predicate: (d) =>
-          d.docType === 'inventory_reconciliation' ||
-          Boolean(d.sessionId) ||
-          Boolean(d.isDirectAdjustment) ||
-          [
-            'reconciliation_surplus',
-            'reconciliation_deficit',
-            'direct_adjustment_surplus',
-            'direct_adjustment_deficit',
-          ].includes(d.action) ||
-          String(d.grnId || '').startsWith('ADJ-'),
-      },
-      {
-        collection: 'journal_entries',
-        labelAr: 'قيود تسويات فروقات الجرد في دفتر اليومية (journal_entries)',
-        labelEn: 'Auto-generated inventory variance journal entries (journal_entries)',
-        predicate: (d, docId) =>
-          d.sourceCollection === 'stock_counts' ||
-          String(docId || d.id || '').startsWith('JE-ADJ-') ||
-          String(d.sourceDocId || '').startsWith('ADJ-') ||
-          String(d.sourceDocId || '').startsWith('STK-'),
-      },
-      ...makeCollabCascadeEntries(['stock_counts'], ['stock_count'], ['STK-', 'ADJ-']),
-    ],
-    recalculate: {
-      recalcItemsStock: true,
-    },
-    descAr: 'يمسح جلسات الجرد الفعلي (stock_counts)، ويحذف تلقائياً كافة سندات التسوية الجردية (ADJ-*) التي أُنشئت تلقائياً داخل (goods_receipts) وحركات الزيادة والعجز في (stock_ledger)، مع إعادة احتساب أرصدة الخامات بدقة.',
-    descEn: 'Wipes all physical stock count sessions (stock_counts) and automatically deletes their auto-made adjustment documents (ADJ-*) in goods_receipts and variance entries in stock_ledger, recalculating item stock.',
-  },
-  {
-    key: 'spare_parts_issue',
-    category: 'operational',
-    labelAr: 'أذون صرف واستهلاك قطع الغيار والمهمات (Spare Parts Consumption)',
-    labelEn: 'Spare Parts Consumption & Issue Vouchers (spare_parts_issues)',
-    collectionsLabel: 'spare_parts_issues + Auto-Made Stock Ledger & JEs',
-    primaryCollections: ['spare_parts_issues'],
-    relatedCascades: [
-      {
-        collection: 'stock_ledger',
-        labelAr: 'حركات خصم وعكس قطع الغيار في كارت الصنف (stock_ledger: XISS-*)',
-        labelEn: 'Auto-generated spare parts deduction & reversal entries in stock_ledger',
-        predicate: (d) =>
-          ['spare_parts_issue', 'spare_parts_reversal'].includes(d.docType) ||
-          ['spare_parts_consumption', 'spare_parts_reversal'].includes(d.action) ||
-          String(d.grnId || '').startsWith('XISS-') ||
-          String(d.grnId || '').startsWith('REV-XISS-'),
-      },
-      {
-        collection: 'journal_entries',
-        labelAr: 'قيود مصروفات قطع الغيار التلقائية (journal_entries)',
-        labelEn: 'Auto-generated spare parts expense journal entries',
-        predicate: (d) =>
-          d.sourceCollection === 'spare_parts_issues' ||
-          String(d.sourceDocId || d.referenceNumber || '').startsWith('XISS-'),
-      },
-      ...makeCollabCascadeEntries(['spare_parts_issues'], ['spare_parts_issue'], ['XISS-', 'REV-XISS-']),
-    ],
-    recalculate: {
-      recalcItemsStock: true,
-    },
-    descAr: 'يمسح أذون صرف واستهلاك قطع الغيار (XISS-*)، ويحذف تلقائياً حركات الخصم والعكس المرتبطة بها في كارت الصنف (stock_ledger)، ويعيد احتساب أرصدة قطع الغيار والمهمات تلقائياً.',
-    descEn: 'Wipes spare parts consumption vouchers (spare_parts_issues) and their auto-made deduction/reversal entries in stock_ledger, dynamically restoring spare parts stock balances.',
-  },
-  {
-    key: 'liquid_tanks',
-    category: 'operational',
-    labelAr: 'تشغيل وتانكات السوائل، التحويلات الوسيطة، والضخ بالأنابيب (Bulk Liquid Tanks)',
-    labelEn: 'Bulk Liquid Tanks, Transformations & Pipeline Transfers (liquid_tanks)',
-    collectionsLabel: 'liquid_tanks + shift_handovers + Auto-Made TRANS-*, TRN-PIPE-* & Vessel Reset',
-    primaryCollections: ['liquid_tanks', 'shift_handovers'],
-    relatedCascades: [
-      {
-        collection: 'production_transformations',
-        labelAr: 'سجلات التحويل والتصنيع الداخلي للتانكات (production_transformations: TRANS-TANK-*)',
-        labelEn: 'Auto-generated tank transformation records (production_transformations)',
-        predicate: (d, docId) =>
-          Boolean(d.tankId) ||
-          String(docId || d.id || '').startsWith('TRANS-TANK-') ||
-          String(docId || d.id || '').startsWith('TRANS-BATCH-') ||
-          String(d.lotNumber || '').startsWith('TANK-'),
-      },
-      {
-        collection: 'stock_transfers',
-        labelAr: 'أذون الضخ التلقائية عبر خطوط الأنابيب لصالة الإنتاج (stock_transfers: TRN-PIPE-*)',
-        labelEn: 'Auto-generated pipeline transfer records (stock_transfers: TRN-PIPE-*)',
-        predicate: (d, docId) =>
-          Boolean(d.isPipelineTransfer) ||
-          Boolean(d.tankId) ||
-          String(docId || d.id || '').startsWith('TRN-PIPE-'),
-      },
-      ...makeCollabCascadeEntries(['liquid_tanks', 'shift_handovers'], ['liquid_tanks', 'liquid_storage'], ['TANK-', 'BATCH-', 'TRN-PIPE-']),
-    ],
-    recalculate: {
-      resetFloorVessels: true,
-      recalcItemsStock: true,
-    },
-    descAr: 'يمسح سجلات تانكات السوائل (liquid_tanks) وتسليم الورديات، ويحذف تلقائياً حركات التحويل الداخلي (TRANS-TANK-*) وأذون الضخ عبر الأنابيب (TRN-PIPE-*)، ويصفر الكميات الحالية العابرة داخل خزانات الصالة (floor_liquid_vessels) مع الحفاظ الكامل على إعدادات سعة الخزانات.',
-    descEn: 'Wipes bulk liquid tanks and shift handovers, automatically deleting their auto-made transformation records (TRANS-TANK-*) and pipeline transfers (TRN-PIPE-*), and resets transient volumes in floor_liquid_vessels while preserving vessel capacity configurations.',
-  },
-  {
-    key: 'work_orders',
-    category: 'operational',
-    labelAr: 'أوامر التشغيل، الباليتات المرحلية، خامات الصالة، والورديات (Work Orders & Floor Ops)',
-    labelEn: 'Work Orders, Staged Pallets, Floor Materials & Shifts (work_orders)',
-    collectionsLabel: 'work_orders + staged_floor_pallets + staged_floor_materials + breaks/shifts + Auto-Made TRANS-PAL-* & TRN-*',
-    primaryCollections: [
-      'work_orders',
-      'production_work_orders',
-      'staged_floor_pallets',
-      'staged_floor_materials',
-      'production_breaks',
-      'production_shifts',
-    ],
-    relatedCascades: [
-      {
-        collection: 'production_transformations',
-        labelAr: 'حركات استهلاك الخامات وتصنيع الباليتات وأوامر التشغيل (production_transformations: TRANS-PAL-* / TRANS-WO-*)',
-        labelEn: 'Auto-generated pallet & work order transformations (production_transformations)',
-        predicate: (d, docId) => {
-          const idStr = String(docId || d.id || '');
-          return (
-            idStr.startsWith('TRANS-PAL-') ||
-            idStr.startsWith('TRANS-WO-') ||
-            Boolean(d.workOrderId) ||
-            Boolean(d.palletId) ||
-            !d.tankId
-          );
-        },
-      },
-      {
-        collection: 'stock_transfers',
-        labelAr: 'أذون ترحيل الباليتات التامة ومرتجعات الهالك وأوامر التشغيل (stock_transfers)',
-        labelEn: 'Auto-generated FG pallet transfers & floor scrap returns (stock_transfers)',
-        predicate: (d, docId) => {
-          const idStr = String(docId || d.id || '');
-          return (
-            Boolean(d.isFinishedGoods) ||
-            ['finished_goods', 'floor_feeding', 'scrap_return'].includes(d.transferType) ||
-            String(d.productionOrderRef || '').startsWith('MO-') ||
-            idStr.startsWith('TRN-SCRAP') ||
-            idStr.startsWith('TRN-PALLET') ||
-            idStr.startsWith('TRN-FG') ||
-            (Array.isArray(d.lines) && d.lines.some((l) => Boolean(l.palletId) || Boolean(l.workOrderId)))
-          );
-        },
-      },
-      {
-        collection: 'stock_ledger',
-        labelAr: 'حركات استهلاك الإنتاج والهالك المسجلة في كارت الصنف (stock_ledger)',
-        labelEn: 'Production consumption & scrap entries in stock_ledger',
-        predicate: (d) =>
-          Boolean(d.workOrderId) ||
-          String(d.productionOrderRef || '').startsWith('MO-') ||
-          ['production_consumption', 'scrap_return', 'floor_feeding'].includes(d.docType || d.action),
-      },
-      {
-        collection: 'journal_entries',
-        labelAr: 'قيود التكاليف والإنتاج التلقائية لأوامر التشغيل (journal_entries)',
-        labelEn: 'Auto-generated production journal entries (journal_entries)',
-        predicate: (d) =>
-          d.sourceCollection === 'work_orders' ||
-          String(d.sourceDocId || d.referenceNumber || '').startsWith('MO-'),
-      },
-      ...makeCollabCascadeEntries(
-        ['work_orders', 'production_work_orders', 'staged_floor_pallets', 'staged_floor_materials'],
-        ['work_orders', 'production_reports'],
-        ['MO-', 'PAL-']
-      ),
-    ],
-    recalculate: {
-      recalcItemsStock: true,
-    },
-    descAr: 'يمسح أوامر التشغيل والإنتاج، وباليتات الصالة، وخامات الصالة، وسجلات التوقف والورديات، ويحذف تلقائياً كافة حركات التصنيع والاستهلاك (TRANS-PAL-*) وأذون ترحيل الباليتات والهالك (stock_transfers) المرتبطة بها.',
-    descEn: 'Wipes all production work orders, staged floor pallets, staged materials, breaks, and shifts, automatically purging their auto-made pallet transformation records (TRANS-PAL-*) and FG/scrap transfer vouchers.',
-  },
-  {
-    key: 'fg_inward',
-    category: 'operational',
-    labelAr: 'استلامات وإيداعات باليتات المنتج التام بالمستودعات (Finished Goods Inward)',
-    labelEn: 'Finished Goods Inward Transfers & Receipts (fg_inward)',
-    collectionsLabel: 'fg_receipts + Auto-Made FG Transfers in stock_transfers & Pallet Status Reset',
-    primaryCollections: ['fg_receipts'],
-    relatedCascades: [
-      {
-        collection: 'stock_transfers',
-        labelAr: 'أذون استلام وترحيل باليتات المنتج التام (stock_transfers: isFinishedGoods)',
-        labelEn: 'Finished Goods pallet inward transfer vouchers in stock_transfers',
-        predicate: (d, docId) => {
-          const idStr = String(docId || d.id || '');
-          return (
-            Boolean(d.isFinishedGoods) ||
-            d.transferType === 'finished_goods' ||
-            idStr.startsWith('TRN-FG') ||
-            idStr.startsWith('TRN-PALLET') ||
-            (Array.isArray(d.lines) && d.lines.some((l) => Boolean(l.palletId)))
-          );
-        },
-      },
-      ...makeCollabCascadeEntries(['fg_receipts', 'stock_transfers'], ['fg_inward'], ['FGR-', 'TRN-FG', 'TRN-PALLET']),
-    ],
-    recalculate: {
-      resetStagedPalletsToFloor: true,
-      recalcItemsStock: true,
-    },
-    descAr: 'يمسح أذون استلام وترحيل باليتات المنتج التام (stock_transfers الخاصة بالمنتج التام + fg_receipts)، ويعيد حالة الباليتات في صالة الإنتاج إلى (مشدودة بالصالة - staged_on_floor) لتجنب أي ارتباطات معلقة.',
-    descEn: 'Wipes all Finished Goods inward transfer vouchers in stock_transfers and fg_receipts, resetting staged floor pallets back to staged_on_floor status so no dangling transfer links remain.',
-  },
-  {
-    key: 'faulty_fg',
-    category: 'operational',
-    labelAr: 'إشعارات مرتجعات ومعيب المنتج التام وأوامر إعادة التشغيل (Faulty FG & Rework)',
-    labelEn: 'Faulty FG Returns & Linked Rework Orders (faulty_fg_returns)',
-    collectionsLabel: 'faulty_fg_returns + Auto-Made Rework Orders',
-    primaryCollections: ['faulty_fg_returns'],
-    relatedCascades: [
-      {
-        collection: 'work_orders',
-        labelAr: 'أوامر إعادة التشغيل المنشأة تلقائياً من مرتجعات المعيب (work_orders: isRework)',
-        labelEn: 'Auto-created Rework work orders in work_orders',
-        predicate: (d) =>
-          Boolean(d.isRework) ||
-          (Array.isArray(d.reworkSourceVouchers) && d.reworkSourceVouchers.length > 0),
-      },
-      {
-        collection: 'production_work_orders',
-        labelAr: 'سجلات إعادة التشغيل المرتبطة (production_work_orders)',
-        labelEn: 'Linked rework records in production_work_orders',
-        predicate: (d) =>
-          Boolean(d.isRework) ||
-          (Array.isArray(d.reworkSourceVouchers) && d.reworkSourceVouchers.length > 0),
-      },
-      ...makeCollabCascadeEntries(['faulty_fg_returns'], ['faulty_fg'], ['RTN-FG-']),
-    ],
-    recalculate: {},
-    descAr: 'يمسح كافة إشعارات مرتجعات ومعيب المنتج التام (faulty_fg_returns)، ويحذف تلقائياً أوامر إعادة التشغيل (Rework Work Orders) المرتبطة بها.',
-    descEn: 'Wipes all Faulty FG return vouchers (faulty_fg_returns) and automatically deletes any Rework Work Orders generated from them.',
-  },
-  {
-    key: 'cash_transactions_hub',
-    category: 'operational',
-    labelAr: 'حركات وسندات الخزائن والبنوك، العهد والسلف، ومحاضر الجرد (مع بقاء الخزائن والبنوك)',
-    labelEn: 'Cash & Bank Vouchers, Custodies & Cash Audits (Preserves Safe/Bank Master Definitions)',
-    collectionsLabel: 'cash_transactions + custody_ledger + cash_count_sessions + Auto-Made JEs & Dues',
-    primaryCollections: [
-      'cash_transactions',
-      'custody_ledger',
-      'custody_advance_drafts',
-      'custodies_and_advances',
-      'cash_count_sessions',
-    ],
-    relatedCascades: [
-      {
-        collection: 'journal_entries',
-        labelAr: 'قيود اليومية التلقائية لسندات الخزينة والبنوك والعهد وجرد النقدية (journal_entries)',
-        labelEn: 'Auto-generated journal entries for cash/bank vouchers, custodies & cash audits',
-        predicate: (d, docId) => {
-          const idStr = String(docId || d.id || '');
-          const refStr = String(d.sourceDocId || d.referenceNumber || '');
-          return (
-            ['cash_transactions', 'custody_ledger', 'cash_count_sessions', 'custodies_and_advances'].includes(d.sourceCollection) ||
-            ['cash_receipt', 'cash_disbursement', 'custody_advance', 'custody_liquidation', 'cash_audit', 'safe_transfer'].includes(d.originType) ||
-            idStr.startsWith('JE-VCH-') ||
-            idStr.startsWith('JE-LIQ-') ||
-            idStr.startsWith('JE-CSH-') ||
-            refStr.startsWith('VCH-') ||
-            refStr.startsWith('ADV-') ||
-            refStr.startsWith('LIQ-')
-          );
-        },
-      },
-      {
-        collection: 'dues_settlements',
-        labelAr: 'تسويات الاستحقاقات المسددة عبر سندات الخزينة والبنوك (dues_settlements)',
-        labelEn: 'Dues settlements paid via cash/bank vouchers (dues_settlements)',
-        predicate: (d) => Boolean(d.voucherId) || Boolean(d.cashTransactionId) || Boolean(d.safeId) || Boolean(d.bankId),
-      },
-      {
-        collection: 'dues_batches',
-        labelAr: 'حافظات السداد المجمعة المرتبطة بسندات الصرف (dues_batches)',
-        labelEn: 'Batch payment ledgers linked to cash/bank vouchers (dues_batches)',
-        predicate: () => true,
-      },
-      ...makeCollabCascadeEntries(
-        ['cash_transactions', 'custody_ledger', 'custody_advance_drafts', 'cash_count_sessions'],
-        ['cash_safes', 'cash_safes_hub', 'custodies_advances'],
-        ['VCH-', 'ADV-', 'LIQ-', 'CSH-']
-      ),
-    ],
-    recalculate: {
-      recalcSafesAndBanks: true,
-    },
-    descAr: 'يمسح كافة سندات الصرف والتحصيل والتحويلات النقدية، وسجل العهد والسلف، ومحاضر جرد الخزينة، ويحذف قيود اليومية التلقائية الناتجة عنها، ويصفر الأرصدة والفئات النقدية الحالية في (cash_safes) و(corporate_banks) مع الحفاظ التام (100%) على تعريفات الخزائن والحسابات البنكية.',
-    descEn: 'Wipes all cash & bank vouchers, custodies/advances, and cash count audit sessions along with their auto-generated journal entries and dues settlements, resetting safe & bank balances to 0 while 100% preserving Safe & Bank Master records.',
-  },
-  {
-    key: 'dues_tracking',
-    category: 'operational',
-    labelAr: 'تسويات الاستحقاقات، حافظات السداد المجمعة، وشهادات الخصم 1% (Dues & WHT)',
-    labelEn: 'Dues Settlements, Payment Batches & 1% WHT Certificates (dues_tracking)',
-    collectionsLabel: 'dues_settlements + dues_batches + wht_notes + Auto-Made Vouchers & JEs',
-    primaryCollections: ['dues_settlements', 'dues_batches', 'wht_notes'],
-    relatedCascades: [
-      {
-        collection: 'cash_transactions',
-        labelAr: 'سندات الصرف والتحصيل المنشأة تلقائياً من شاشة الاستحقاقات (cash_transactions)',
-        labelEn: 'Auto-generated cash/bank vouchers created by Dues Tracking (cash_transactions)',
-        predicate: (d) =>
-          d.originModule === 'dues_tracking' ||
-          Boolean(d.duesBatchId) ||
-          Boolean(d.duesSettlementId) ||
-          (Array.isArray(d.linkedDocs) && d.linkedDocs.length > 0),
-      },
-      {
-        collection: 'journal_entries',
-        labelAr: 'قيود اليومية التلقائية لتسويات الموردين والعملاء وشهادات الخصم (journal_entries)',
-        labelEn: 'Auto-generated journal entries for Dues Settlements & WHT certificates',
-        predicate: (d, docId) => {
-          const idStr = String(docId || d.id || '');
-          const refStr = String(d.sourceDocId || d.referenceNumber || '');
-          return (
-            ['dues_settlements', 'dues_batches', 'wht_notes'].includes(d.sourceCollection) ||
-            d.originType === 'dues_settlement' ||
-            Boolean(d.duesBatchId) ||
-            idStr.startsWith('JE-WHT-') ||
-            idStr.startsWith('JE-DUE-') ||
-            refStr.startsWith('WHT-') ||
-            refStr.startsWith('BAT-')
-          );
-        },
-      },
-      ...makeCollabCascadeEntries(['dues_settlements', 'dues_batches', 'wht_notes'], ['dues_tracking'], ['WHT-', 'BAT-']),
-    ],
-    recalculate: {
-      recalcSafesAndBanks: true,
-    },
-    descAr: 'يمسح كافة تسويات دفعات الموردين والعملاء (dues_settlements)، وحافظات السداد المجمعة (dues_batches)، وشهادات الخصم الضريبي 1% (wht_notes)، ويحذف تلقائياً سندات الصرف والتحصيل وقيود اليومية الناتجة عنها، مع إعادة احتساب أرصدة الخزائن والبنوك.',
-    descEn: 'Wipes all supplier/client dues settlements, batch payment ledgers, and 1% WHT certificates, automatically deleting their auto-generated cash/bank vouchers and journal entries and recalculating safe/bank balances.',
-  },
-  {
-    key: 'journal_entries_only',
-    category: 'operational',
-    labelAr: 'قيود دفتر اليومية العامة فقط — مع الحفاظ التام على دليل الحسابات (Journal Entries Only)',
-    labelEn: 'General Journal Entries Only — Preserves Chart of Accounts (journal_entries)',
-    collectionsLabel: 'journal_entries (100% Preserves chart_of_accounts)',
-    primaryCollections: ['journal_entries'],
-    relatedCascades: [
-      ...makeCollabCascadeEntries(['journal_entries'], ['accounts'], ['JE-']),
-    ],
-    recalculate: {},
-    descAr: 'يمسح قيود دفتر اليومية العامة (journal_entries) فقط مع الحفاظ التام والكامل (100%) على شجرة دليل الحسابات وإعدادات التوجيه المالي (chart_of_accounts).',
-    descEn: 'Wipes all General Journal Entries (journal_entries) while 100% preserving your Chart of Accounts and Financial Statement routing setup (chart_of_accounts).',
-  },
-  {
-    key: 'opening_balances_only',
-    category: 'operational',
-    labelAr: 'الأرصدة الافتتاحية المخزنية والمالية فقط (Opening Stock & Financial Balances)',
-    labelEn: 'Opening Stock & Financial Opening Balances Only',
-    collectionsLabel: 'stock_ledger (OB-*) + journal_entries (JE-OB-*) + items.openingQtySmall',
-    primaryCollections: [],
-    relatedCascades: [
-      {
-        collection: 'stock_ledger',
-        labelAr: 'حركات الأرصدة الافتتاحية في كارت الصنف (stock_ledger: opening_balance / OB-*)',
-        labelEn: 'Opening stock balance movements in stock_ledger (opening_balance / OB-*)',
-        predicate: (d) =>
-          d.docType === 'opening_balance' ||
-          ['opening_balance', 'opening_balance_initial', 'fg_opening_balance'].includes(d.action) ||
-          String(d.lotNumber || '').startsWith('OB-') ||
-          d.supplierId === 'INITIAL_BALANCE',
-      },
-      {
-        collection: 'journal_entries',
-        labelAr: 'قيود الأرصدة الافتتاحية في دفتر اليومية (journal_entries: JE-OB-*)',
-        labelEn: 'Opening balance journal entries in journal_entries (JE-OB-*)',
-        predicate: (d, docId) =>
-          d.originType === 'opening_balance' ||
-          String(docId || d.id || '').startsWith('JE-OB-') ||
-          String(d.referenceNumber || '').startsWith('OB-'),
-      },
-    ],
-    recalculate: {
-      clearOpeningFieldsOnItems: true,
-      recalcItemsStock: true,
-    },
-    descAr: 'يمسح حركات الأرصدة الافتتاحية فقط من كارت الصنف (stock_ledger) وقيود اليومية الافتتاحية، ويصفر حقول الرصيد الافتتاحي في كارت الأصناف مع إعادة احتساب المخزون الفعلي من باقي الحركات.',
-    descEn: 'Selectively removes only Opening Stock movements from stock_ledger and Opening Balance journal entries, clearing opening balance fields on Item Master variations and recalculating stock from remaining movements.',
-  },
-  {
-    key: 'all_inventory_movements',
-    category: 'operational',
-    labelAr: 'سجل الحركات الدفتري للمخزون والتحويلات الشامل (Full Stock Ledger & Transfers)',
-    labelEn: 'Full Central Stock Ledger & All Transfers (stock_ledger & stock_transfers)',
-    collectionsLabel: 'stock_ledger + stock_transfers + transfers + items.stock = 0',
-    primaryCollections: ['stock_ledger', 'stock_transfers', 'transfers'],
-    relatedCascades: [
-      ...makeCollabCascadeEntries(['stock_ledger', 'stock_transfers', 'transfers'], ['stock', 'transfers'], ['TRN-', 'OB-']),
-    ],
-    recalculate: {
-      clearOpeningFieldsOnItems: true,
-      recalcItemsStock: true,
-    },
-    descAr: 'يمسح سجل الحركات الدفتري للمخزون (stock_ledger) وكافة أذون التحويل (stock_transfers) بالكامل، ويصفر أرصدة الخامات الدفترية في كارت الأصناف إلى (0) مع بقاء تعريفات الأصناف.',
-    descEn: 'Wipes the entire Central Stock Ledger (stock_ledger) and all Stock Transfers (stock_transfers), resetting item stock balances to 0 while preserving Item Master definitions.',
-  },
-  {
-    key: 'comments_and_notifications',
-    category: 'operational',
-    labelAr: 'التعليقات التعاونية، طابور الاعتمادات، وسجل التنبيهات فقط (Comments, Queue & Alerts)',
-    labelEn: 'Collaborative Comments, Pending Actions Queue & System Notifications Only',
-    collectionsLabel: 'record_comments + user_actions_queue + system_notifications',
-    primaryCollections: ['record_comments', 'user_actions_queue', 'system_notifications'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'يمسح كافة التعليقات التعاونية على السجلات (record_comments)، وطابور المهام والاعتمادات (user_actions_queue)، وسجل الإشعارات (system_notifications) دون المساس بأي مستندات أو حركات.',
-    descEn: 'Wipes all row-level collaborative comments, pending user action tasks, and system notifications without touching any operational or master records.',
-  },
-
-  // =========================================================================
-  // GROUP B: MASTER DATA TABLES (ADMIN RESET FOR SPECIFIC MASTER COLLECTIONS)
-  // =========================================================================
-  {
-    key: 'master_items',
-    category: 'master',
-    labelAr: 'قاعدة بيانات كارت الأصناف والخامات (Item Master — يحذف تعريفات الخامات)',
-    labelEn: 'Item Master Database (items — Deletes Raw Material Definitions)',
-    collectionsLabel: 'items',
-    primaryCollections: ['items'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف سجل تعريفات الخامات والأصناف وتنوعاتها (items) بالكامل من قاعدة البيانات الأساسية.',
-    descEn: 'WARNING: Permanently deletes all Raw Material & Item Master definitions (items).',
-  },
-  {
-    key: 'master_suppliers',
-    category: 'master',
-    labelAr: 'قاعدة بيانات سجل الموردين المعتمدين (Suppliers Master)',
-    labelEn: 'Suppliers Master Database (suppliers)',
-    collectionsLabel: 'suppliers',
-    primaryCollections: ['suppliers'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف سجل تعريفات الموردين وشروط الدفع والملفات الضريبية (suppliers) بالكامل.',
-    descEn: 'WARNING: Permanently deletes all Supplier Master records (suppliers).',
-  },
-  {
-    key: 'master_clients',
-    category: 'master',
-    labelAr: 'قاعدة بيانات سجل العملاء وتصنيفاتهم (Clients & Segments Master)',
-    labelEn: 'Clients & Segments Master Database (clients & client_segments)',
-    collectionsLabel: 'clients + client_segments',
-    primaryCollections: ['clients', 'client_segments'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف سجل تعريفات العملاء وتصنيفاتهم (clients, client_segments) بالكامل.',
-    descEn: 'WARNING: Permanently deletes all Client Master records and client segments.',
-  },
-  {
-    key: 'master_finished_products',
-    category: 'master',
-    labelAr: 'قاعدة بيانات المنتجات التامة وتصنيفاتها (Finished Products & Categories)',
-    labelEn: 'Finished Products & Categories Master (finished_products & finished_product_categories)',
-    collectionsLabel: 'finished_products + finished_product_categories',
-    primaryCollections: ['finished_products', 'finished_product_categories'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف سجل تعريفات المنتجات التامة وتصنيفاتها بالكامل.',
-    descEn: 'WARNING: Permanently deletes all Finished Products and FG Categories master definitions.',
-  },
-  {
-    key: 'master_boms_and_processes',
-    category: 'master',
-    labelAr: 'قوائم المكونات (BOM)، الخلطات الوسيطة (IBOM)، ومسارات التشغيل (SOPs)',
-    labelEn: 'BOM Recipes, Intermediate Recipes & Production Processes (bom_recipes, intermediate_recipes, production_processes)',
-    collectionsLabel: 'bom_recipes + intermediate_recipes + production_processes',
-    primaryCollections: ['bom_recipes', 'intermediate_recipes', 'production_processes'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف شجرة المكونات (bom_recipes) والخلطات الوسيطة (intermediate_recipes) ومسارات التشغيل القياسية (production_processes).',
-    descEn: 'WARNING: Permanently deletes all BOM recipes, intermediate recipes, and production processes.',
-  },
-  {
-    key: 'master_warehouses_and_vessels',
-    category: 'master',
-    labelAr: 'سجل المستودعات وإعدادات خزانات السوائل بالصالة (Warehouses & Floor Vessels Master)',
-    labelEn: 'Warehouses & Floor Liquid Vessels Master (warehouses & floor_liquid_vessels)',
-    collectionsLabel: 'warehouses + floor_liquid_vessels',
-    primaryCollections: ['warehouses', 'floor_liquid_vessels'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف تعريفات المستودعات والصالات (warehouses) وإعدادات سعة خزانات السوائل (floor_liquid_vessels).',
-    descEn: 'WARNING: Permanently deletes all Warehouse definitions and Floor Liquid Vessel capacity configurations.',
-  },
-  {
-    key: 'master_safes_and_banks',
-    category: 'master',
-    labelAr: 'تعريفات الخزائن النقدية والحسابات البنكية (Safes & Corporate Banks Master)',
-    labelEn: 'Cash Safes & Corporate Banks Master Definitions (cash_safes & corporate_banks)',
-    collectionsLabel: 'cash_safes + corporate_banks + bank_accounts',
-    primaryCollections: ['cash_safes', 'corporate_banks', 'bank_accounts'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف بطاقات تعريف الخزائن النقدية والحسابات البنكية نفسها. (إذا كنت تريد تصفير الحركات والأرصدة فقط مع بقاء الخزائن والبنوك، اختر "حركات وسندات الخزائن والبنوك" من القائمة التشغيلية أعلاه).',
-    descEn: 'WARNING: Deletes the Master Safe & Bank definitions themselves. (To wipe vouchers and zero balances while keeping safes/banks, choose "Cash & Bank Vouchers" from the Operational group above).',
-  },
-  {
-    key: 'master_chart_of_accounts',
-    category: 'master',
-    labelAr: 'دليل شجرة الحسابات المحاسبية (Chart of Accounts Master — chart_of_accounts)',
-    labelEn: 'Chart of Accounts Master Directory (chart_of_accounts)',
-    collectionsLabel: 'chart_of_accounts',
-    primaryCollections: ['chart_of_accounts'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف شجرة دليل الحسابات وإعدادات التوجيه المالي بالكامل. (إذا كنت تريد مسح قيود اليومية فقط مع بقاء دليل الحسابات، اختر "قيود دفتر اليومية العامة فقط" من القائمة التشغيلية أعلاه).',
-    descEn: 'WARNING: Deletes the entire Chart of Accounts directory. (To wipe journal entries only while keeping COA intact, choose "General Journal Entries Only" from the Operational group above).',
-  },
-  {
-    key: 'master_workers_and_vehicles',
-    category: 'master',
-    labelAr: 'سجل الموظفين والأقسام وأسطول المركبات (Employees, Departments & Vehicles)',
-    labelEn: 'Staff, Departments & Vehicles Fleet Master (employees, departments & vehicles)',
-    collectionsLabel: 'employees + departments + vehicles',
-    primaryCollections: ['employees', 'departments', 'vehicles'],
-    relatedCascades: [],
-    recalculate: {},
-    descAr: 'تحذير: يحذف سجل الموظفين والعمالة الموحد والأقسام وأسطول السيارات والشاحنات.',
-    descEn: 'WARNING: Permanently deletes all Staff/Workers, Departments, and Vehicles Fleet master records.',
-  },
-];
 
 
 export default function AdminControlPanel({ currentUser = {}, initialSubTab = null, initialTabFocus = null, onClose = null }) {
@@ -1182,7 +184,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       if (raw.includes('?')) {
         const p = new URLSearchParams(raw.split('?')[1]);
         const s = p.get('subTab');
-        if (s && ['users', 'warehouses', 'permissions', 'tab_appearance', 'import', 'backup_restore', 'system_restore', 'factory_reset', 'db_inspector'].includes(s)) {
+        if (s && ['users', 'warehouses', 'permissions', 'tab_appearance', 'import', 'backup_restore', 'system_restore', 'audit_logs', 'factory_reset', 'db_inspector'].includes(s)) {
           return s;
         }
       }
@@ -1242,30 +244,8 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   };
 
   // --- SUB-TAB: UNIVERSAL DATABASE INSPECTOR & DOCUMENT EDITOR STATE ---
-  const [discoveredCollections, setDiscoveredCollections] = useState([]);
-  const [selectedCollection, setSelectedCollection] = useState('');
-  const [customCollectionInput, setCustomCollectionInput] = useState('');
-  const [collectionDocs, setCollectionDocs] = useState([]);
-  const [isScanningCollections, setIsScanningCollections] = useState(false);
-  const [isLoadingDocs, setIsLoadingDocs] = useState(false);
-  const [inspectorViewMode, setInspectorViewMode] = useState('diagram'); // 'diagram' | 'table'
-  const [docSearchQuery, setDocSearchQuery] = useState('');
-  const [selectedDocForEdit, setSelectedDocForEdit] = useState(null); // { id, data, isNew }
-  const [docEditMode, setDocEditMode] = useState('fields'); // 'fields' | 'json'
-  const [docJsonString, setDocJsonString] = useState('');
-  const [docFieldsList, setDocFieldsList] = useState([]); // [{ key, value, type }]
-  const [isSavingDoc, setIsSavingDoc] = useState(false);
-  const [dbInspectorMsg, setDbInspectorMsg] = useState('');
 
   // --- SUB-TAB: FULL & SELECTIVE BACKUP & RESTORE ENGINE STATE ---
-  const [isBackingUp, setIsBackingUp] = useState(false);
-  const [isRestoring, setIsRestoring] = useState(false);
-  const [restoreFilePayload, setRestoreFilePayload] = useState(null);
-  const [restoreStrategy, setRestoreStrategy] = useState('clean_slate'); // 'clean_slate' | 'merge_upsert'
-  const [backupRestoreMsg, setBackupRestoreMsg] = useState('');
-  const [restoreProgressText, setRestoreProgressText] = useState('');
-  const [selectedBackupCollections, setSelectedBackupCollections] = useState([...BACKUP_COLLECTIONS_REGISTRY]);
-  const [selectedRestoreCollections, setSelectedRestoreCollections] = useState([]);
 
   // --- LIVE USERS STATE ---
   const [usersList, setUsersList] = useState([]);
@@ -1275,13 +255,129 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const [userForm, setUserForm] = useState({
     id: '',
     email: '',
+    secondaryEmail: '',
     name: '',
     nameAr: '',
     department: 'المشتريات',
     role: 'standard', // 'general_admin' | 'standard'
     allowedModules: ['purchases'],
     status: 'active',
+    initialPassword: '',
+    passwordTargetEmail: '',
   });
+  const [showUserInitPassword, setShowUserInitPassword] = useState(false);
+
+  // --- CORPORATE BRANDED SMTP EMAIL CONFIG (Server-Side Secrets) ---
+  const [smtpOpen, setSmtpOpen] = useState(false);
+  const [smtpForm, setSmtpForm] = useState({
+    host: '',
+    port: 465,
+    secure: true,
+    user: '',
+    pass: '',
+    fromName: 'Al-Tawoos ERP',
+    fromEmail: '',
+    hasPassword: false,
+    configured: false,
+  });
+  const [isLoadingSmtp, setIsLoadingSmtp] = useState(false);
+  const [isSavingSmtp, setIsSavingSmtp] = useState(false);
+  const [isTestingSmtp, setIsTestingSmtp] = useState(false);
+  const [smtpMsg, setSmtpMsg] = useState(null);
+
+  useEffect(() => {
+    if (activeSubTab !== 'users' || !(currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin')) {
+      return;
+    }
+    let active = true;
+    (async () => {
+      setIsLoadingSmtp(true);
+      try {
+        const fn = httpsCallable(functions, 'getSmtpConfigStatus');
+        const res = await fn({});
+        if (!active || !res?.data) return;
+        setSmtpForm((prev) => ({
+          ...prev,
+          host: res.data.host || '',
+          port: Number(res.data.port || 465),
+          secure: Boolean(res.data.secure ?? true),
+          user: res.data.user || '',
+          pass: '',
+          fromName: res.data.fromName || 'Al-Tawoos ERP',
+          fromEmail: res.data.fromEmail || res.data.user || '',
+          hasPassword: Boolean(res.data.hasPassword),
+          configured: Boolean(res.data.configured),
+        }));
+      } catch (err) {
+        console.warn('SMTP status load notice:', err?.message);
+      } finally {
+        if (active) setIsLoadingSmtp(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [activeSubTab, currentUser?.isGeneralAdmin, currentUser?.role]);
+
+  const handleSaveSmtp = async (e) => {
+    e.preventDefault();
+    setSmtpMsg(null);
+    setIsSavingSmtp(true);
+    try {
+      const fn = httpsCallable(functions, 'saveSmtpConfig');
+      const res = await fn({
+        host: smtpForm.host.trim(),
+        port: Number(smtpForm.port || 465),
+        secure: Boolean(smtpForm.secure),
+        user: smtpForm.user.trim(),
+        pass: smtpForm.pass,
+        fromName: smtpForm.fromName.trim() || 'Al-Tawoos ERP',
+        fromEmail: (smtpForm.fromEmail || smtpForm.user).trim(),
+        verifyConnection: true,
+      });
+      setSmtpForm((p) => ({
+        ...p,
+        pass: '',
+        hasPassword: true,
+        configured: Boolean(res?.data?.configured),
+      }));
+      setSmtpMsg({
+        type: 'success',
+        text: isAr
+          ? 'تم التحقق من الاتصال وحفظ إعدادات البريد المؤسسي بأمان على الخادم ✓'
+          : 'SMTP connection verified and saved securely on server ✓',
+      });
+    } catch (err) {
+      setSmtpMsg({
+        type: 'error',
+        text: err?.message || (isAr ? 'تعذر التحقق من خادم البريد' : 'SMTP verification failed'),
+      });
+    } finally {
+      setIsSavingSmtp(false);
+    }
+  };
+
+  const handleTestSmtp = async () => {
+    setSmtpMsg(null);
+    setIsTestingSmtp(true);
+    try {
+      const fn = httpsCallable(functions, 'sendTestSmtpEmail');
+      const res = await fn({ to: currentUser?.email || smtpForm.user, isAr });
+      setSmtpMsg({
+        type: 'success',
+        text: isAr
+          ? `تم إرسال رسالة اختبار منسقة إلى ${res?.data?.to || currentUser?.email} ✓`
+          : `Test email dispatched cleanly to ${res?.data?.to || currentUser?.email} ✓`,
+      });
+    } catch (err) {
+      setSmtpMsg({
+        type: 'error',
+        text: err?.message || (isAr ? 'تعذر إرسال رسالة الاختبار' : 'Failed sending test email'),
+      });
+    } finally {
+      setIsTestingSmtp(false);
+    }
+  };
 
   // --- LIVE WAREHOUSES MASTER STATE ---
   const [warehousesList, setWarehousesList] = useState([]);
@@ -1310,8 +406,6 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [isSavingWarehouse, setIsSavingWarehouse] = useState(false);
-  const [isPatchingLots, setIsPatchingLots] = useState(false);
-  const [patchSummaryMsg, setPatchSummaryMsg] = useState('');
 
   // --- SUB-TAB 3: BULK IMPORTER, ATTACHMENTS & VALIDATION STATE ---
   const [selectedImportTabKey, setSelectedImportTabKey] = useState('suppliers');
@@ -1323,198 +417,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const [isImporting, setIsImporting] = useState(false);
   const [importSuccessMsg, setImportSuccessMsg] = useState('');
 
-  // --- SUB-TAB 4: TARGETED FACTORY RESET STATE ---
-  const [selectedPurgeTargetKey, setSelectedPurgeTargetKey] = useState('operational_only');
-  const [resetModalOpen, setResetModalOpen] = useState(false);
-  const [confirmationPhrase, setConfirmationPhrase] = useState('');
-  const [isPurging, setIsPurging] = useState(false);
-  const [purgeSuccessMsg, setPurgeSuccessMsg] = useState('');
-  const [isStockSeederOpen, setIsStockSeederOpen] = useState(false);
 
-// =========================================================================
-  // 🔍 ZERO-HARDCODING DYNAMIC DATABASE SCANNER & LIVE CRUD ENGINE
-  // =========================================================================
-  const handleScanDatabaseCollections = async () => {
-    setIsScanningCollections(true);
-    setDbInspectorMsg('');
-    try {
-      // 1. Extract every known and custom collection dynamically
-      const candidateSet = new Set(BACKUP_COLLECTIONS_REGISTRY);
-
-      Object.values(APP_ARCHITECTURE.modules || {}).forEach((mod) => {
-        Object.values(mod.tabs || {}).forEach((tab) => {
-          if (tab.collection) candidateSet.add(tab.collection);
-        });
-      });
-
-      // Include previously discovered custom user collections
-      discoveredCollections.forEach((c) => candidateSet.add(c.name));
-      if (selectedCollection) candidateSet.add(selectedCollection);
-
-      // 2. Live Dynamic Probing: Query real document counts & sample payloads
-      const scannedResults = [];
-      for (const collName of Array.from(candidateSet)) {
-        try {
-          const snap = await getDocs(collection(db, collName));
-          scannedResults.push({
-            name: collName,
-            count: snap.size,
-            sampleDoc: snap.docs[0]?.data() || null,
-            allDocsSample: snap.docs.slice(0, 10).map((d) => d.data()),
-          });
-        } catch (err) {
-          // Skip inaccessible collections silently
-        }
-      }
-
-      // Automatically sort with non-empty collections first, then alphabetically
-      scannedResults.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-      setDiscoveredCollections(scannedResults);
-
-      // Keep active selection valid, or switch to first active collection
-      const targetStillExists = scannedResults.some((c) => c.name === selectedCollection);
-      if ((!selectedCollection || !targetStillExists) && scannedResults.length > 0) {
-        handleSelectCollection(scannedResults[0].name);
-      }
-
-      setDbInspectorMsg(
-        isAr
-          ? `اكتمل الفحص: تم اكتشاف (${scannedResults.length}) جدول وقاعدة بيانات نشطة بنجاح!`
-          : `Scan complete: Discovered (${scannedResults.length}) active Firestore collections!`
-      );
-      setTimeout(() => setDbInspectorMsg(''), 4000);
-    } catch (err) {
-      console.error('Error scanning collections:', err);
-      alert(isAr ? 'حدث خطأ أثناء فحص الجداول.' : 'Error scanning database.');
-    } finally {
-      setIsScanningCollections(false);
-    }
-  };
-
-  const handleSelectCollection = async (collName) => {
-    if (!collName) return;
-    setSelectedCollection(collName);
-    setIsLoadingDocs(true);
-    try {
-      const snap = await getDocs(collection(db, collName));
-      const list = snap.docs.map((d) => ({
-        _id: d.id,
-        ...serializeForBackup(d.data()),
-      }));
-      setCollectionDocs(list);
-    } catch (err) {
-      console.error('Error fetching collection documents:', err);
-      alert(isAr ? `فشل تحميل مستندات الجدول (${collName})` : `Failed to load docs for ${collName}`);
-    } finally {
-      setIsLoadingDocs(false);
-    }
-  };
-
-  const handleOpenEditDocument = (docItem) => {
-    const rawData = { ...docItem };
-    delete rawData._id;
-
-    // Convert object to field entries with inferred types
-    const fields = Object.entries(rawData).map(([key, val]) => {
-      let inferredType = typeof val;
-      if (val === null) inferredType = 'null';
-      else if (Array.isArray(val)) inferredType = 'array';
-      else if (typeof val === 'object' && val?._type === 'firestore_timestamp') inferredType = 'timestamp';
-      else if (typeof val === 'object') inferredType = 'object';
-
-      return {
-        key,
-        value: typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val),
-        type: inferredType,
-      };
-    });
-
-    setSelectedDocForEdit({
-      id: docItem._id,
-      isNew: false,
-    });
-    setDocFieldsList(fields);
-    setDocJsonString(JSON.stringify(rawData, null, 2));
-    setDocEditMode('fields');
-  };
-
-  const handleOpenCreateDocument = () => {
-    if (!selectedCollection) {
-      alert(isAr ? 'يرجى اختيار الجدول أولاً.' : 'Please select a collection first.');
-      return;
-    }
-
-    const newId = `doc_${Date.now().toString().slice(-6)}`;
-    setSelectedDocForEdit({
-      id: newId,
-      isNew: true,
-    });
-    setDocFieldsList([{ key: 'name', value: '', type: 'string' }]);
-    setDocJsonString('{\n  "name": ""\n}');
-    setDocEditMode('fields');
-  };
-
-  const handleSaveDocument = async (e) => {
-    e.preventDefault();
-    if (!selectedDocForEdit || !selectedCollection) return;
-
-    setIsSavingDoc(true);
-    try {
-      let payload = {};
-
-      if (docEditMode === 'json') {
-        try {
-          payload = JSON.parse(docJsonString);
-        } catch (jsonErr) {
-          alert(isAr ? 'صيغة JSON غير صحيحة.' : 'Invalid JSON format.');
-          setIsSavingDoc(false);
-          return;
-        }
-      } else {
-        docFieldsList.forEach((f) => {
-          if (!f.key.trim()) return;
-          const k = f.key.trim();
-          let v = f.value;
-
-          if (f.type === 'number') v = Number(f.value) || 0;
-          else if (f.type === 'boolean') v = String(f.value).toLowerCase() === 'true';
-          else if (f.type === 'null') v = null;
-          else if (f.type === 'array' || f.type === 'object') {
-            try {
-              v = JSON.parse(f.value);
-            } catch {
-              v = f.value;
-            }
-          }
-          payload[k] = v;
-        });
-      }
-
-      const hydrated = hydrateFromBackup(payload);
-      await setDoc(doc(db, selectedCollection, selectedDocForEdit.id), hydrated, { merge: true });
-
-      setSelectedDocForEdit(null);
-      handleSelectCollection(selectedCollection);
-      alert(isAr ? 'تم حفظ وتحديث المستند في السحابة بنجاح!' : 'Document saved successfully!');
-    } catch (err) {
-      console.error('Error saving document:', err);
-      alert(isAr ? 'حدث خطأ أثناء حفظ المستند.' : 'Error saving document.');
-    } finally {
-      setIsSavingDoc(false);
-    }
-  };
-
-  const handleDeleteDocument = async (docId) => {
-    if (!window.confirm(isAr ? `هل أنت متأكد من حذف المستند (${docId}) نهائياً؟` : `Delete document (${docId}) permanently?`)) return;
-
-    try {
-      await deleteDoc(doc(db, selectedCollection, docId));
-      handleSelectCollection(selectedCollection);
-    } catch (err) {
-      console.error('Error deleting document:', err);
-      alert(isAr ? 'حدث خطأ أثناء حذف المستند.' : 'Error deleting document.');
-    }
-  };
 
   // Flattened Tabs List from Architecture
   const allTabsList = useMemo(() => {
@@ -1635,39 +538,76 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   // ==========================================
   // SUB-TAB 1: USER MANAGEMENT FUNCTIONS
   // ==========================================
+  const detectedUserNonGoogleEmails = useMemo(
+    () => detectNonGoogleEmails({ email: userForm.email, secondaryEmail: userForm.secondaryEmail }),
+    [userForm.email, userForm.secondaryEmail]
+  );
+
   const handleOpenCreateUser = () => {
     setEditingUser(null);
+    setShowUserInitPassword(false);
     setUserForm({
       id: `usr_${Date.now().toString().slice(-6)}`,
       email: '',
+      secondaryEmail: '',
       name: '',
       nameAr: '',
       department: 'المشتريات',
       role: 'standard',
       allowedModules: ['purchases'],
       status: 'active',
+      initialPassword: '',
+      passwordTargetEmail: '',
     });
     setUserModalOpen(true);
   };
 
   const handleOpenEditUser = (user) => {
     setEditingUser(user);
+    setShowUserInitPassword(false);
+    const email1 = user.email || (Array.isArray(user.loginEmails) ? user.loginEmails[0] : '') || '';
+    const email2 = user.secondaryEmail || (Array.isArray(user.loginEmails) ? user.loginEmails[1] : '') || '';
     setUserForm({
       ...user,
-      email: user.email || '',
+      email: email1,
+      secondaryEmail: email2,
       role: user.role === 'general_admin' || user.isGeneralAdmin ? 'general_admin' : 'standard',
       allowedModules: user.allowedModules || ['purchases'],
+      initialPassword: '',
+      passwordTargetEmail: getDefaultPasswordProvisionEmail({ email: email1, secondaryEmail: email2 }),
     });
     setUserModalOpen(true);
   };
 
   const handleSaveUser = async (e) => {
     e.preventDefault();
-    const cleanEmail = String(userForm.email || '').trim().toLowerCase();
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    let normalizedEmails;
+    try {
+      normalizedEmails = normalizeUserEmails({
+        email: userForm.email,
+        secondaryEmail: userForm.secondaryEmail,
+      });
+    } catch {
+      alert(isAr ? 'يرجى إدخال صيغة بريد إلكتروني صحيحة.' : 'Please enter a valid email address format.');
+      return;
+    }
 
-    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
-      alert(isAr ? 'يرجى إدخال بريد إلكتروني صحيح ومعتمد لتسجيل الدخول.' : 'Please enter a valid login email address.');
+    if (normalizedEmails.loginEmails.length === 0) {
+      alert(
+        isAr
+          ? 'يلزم إدخال بريد إلكتروني واحد على الأقل لتسجيل الدخول.'
+          : 'At least 1 valid login email address is required to create a user.'
+      );
+      return;
+    }
+
+    const trimmedInitPwd = String(userForm.initialPassword || '').trim();
+    if (trimmedInitPwd.length > 0 && trimmedInitPwd.length < 6) {
+      alert(
+        isAr
+          ? 'كلمة المرور الأولية يجب أن لا تقل عن 6 أحرف.'
+          : 'Initial password must be at least 6 characters.'
+      );
       return;
     }
 
@@ -1676,30 +616,36 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       return;
     }
 
-    // Unique Email Check across live user list
-    const existingDuplicate = usersList.find(
-      (u) => u.id !== userForm.id && String(u.email || '').toLowerCase() === cleanEmail
+    const isGeneralAdminUser = userForm.role === 'general_admin';
+    const userDocId =
+      userForm.id || `usr_${normalizedEmails.primaryEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+    // Unique Email Check across primary + secondary + loginEmails[]
+    const existingDuplicate = findEmailConflictUser(
+      usersList,
+      normalizedEmails.loginEmails,
+      userDocId
     );
     if (existingDuplicate) {
       alert(
         isAr
-          ? `البريد الإلكتروني (${cleanEmail}) مسجل بالفعل لمستخدم آخر (${existingDuplicate.nameAr || existingDuplicate.name}).`
-          : `Email (${cleanEmail}) is already assigned to another user.`
+          ? `أحد عناوين البريد الإلكتروني مسجل بالفعل لمستخدم آخر (${existingDuplicate.nameAr || existingDuplicate.name}).`
+          : `One of the email addresses is already assigned to another user (${existingDuplicate.name || existingDuplicate.nameAr}).`
       );
       return;
     }
 
     setIsSavingUser(true);
     try {
-      const isGeneralAdminUser = userForm.role === 'general_admin';
-      const userDocId = userForm.id || `usr_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
+      const { initialPassword: _dropPwd, passwordTargetEmail: _dropTarget, ...restForm } = userForm;
       await setDoc(
         doc(db, 'users', userDocId),
         {
-          ...userForm,
+          ...restForm,
           id: userDocId,
-          email: cleanEmail,
+          email: normalizedEmails.primaryEmail,
+          secondaryEmail: normalizedEmails.secondaryEmail,
+          loginEmails: normalizedEmails.loginEmails,
           role: isGeneralAdminUser ? 'general_admin' : 'standard',
           isGeneralAdmin: isGeneralAdminUser,
           isPurchasingAdmin: isGeneralAdminUser || (userForm.allowedModules || []).includes('purchases'),
@@ -1710,6 +656,29 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
         },
         { merge: true }
       );
+
+      if (trimmedInitPwd.length >= 6) {
+        const pwdEmail =
+          (userForm.passwordTargetEmail && detectedUserNonGoogleEmails.includes(userForm.passwordTargetEmail.trim().toLowerCase()))
+            ? userForm.passwordTargetEmail.trim().toLowerCase()
+            : (detectedUserNonGoogleEmails[0] || normalizedEmails.primaryEmail);
+        if (pwdEmail) {
+          try {
+            const provisionFn = httpsCallable(functions, 'createEmployeeAuthAccount');
+            await provisionFn({ email: pwdEmail, password: trimmedInitPwd, userId: userDocId });
+          } catch (pwdErr) {
+            console.warn('User password provisioning failed:', pwdErr?.message);
+            alert(pwdErr?.message || (isAr ? 'تم حفظ الحساب ولكن تعذر ربط كلمة المرور' : 'Saved user, but password link failed'));
+          }
+        }
+      }
+
+      try {
+        const syncClaimsFn = httpsCallable(functions, 'syncErpUserClaims');
+        await syncClaimsFn({ userId: userDocId, extraEmails: normalizedEmails.loginEmails });
+      } catch (syncErr) {
+        console.warn('Non-blocking Auth claims sync notice:', syncErr?.message);
+      }
 
       setUserModalOpen(false);
     } catch (err) {
@@ -1738,6 +707,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const filteredUsers = usersList.filter(
     (u) =>
       u.email?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
+      u.secondaryEmail?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
       u.name?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
       u.nameAr?.includes(userSearchTerm) ||
       u.id?.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
@@ -2004,60 +974,6 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
   const activeTabSchema = activeModuleSchema?.tabs[selectedTabId] || Object.values(activeModuleSchema.tabs)[0];
 
   // ==========================================
-  // 1-CLICK LOT AUDIT & DIAGNOSTIC PATCHER
-  // ==========================================
-  const handleAuditAndPatchHistoricalLots = async () => {
-    setIsPatchingLots(true);
-    try {
-      const snap = await getDocs(collection(db, 'goods_receipts'));
-      let patchedCount = 0;
-      const batch = writeBatch(db);
-
-      snap.docs.forEach((docSnap) => {
-        const grn = docSnap.data();
-        const lines = grn.lines || [];
-        let modified = false;
-
-        const updatedLines = lines.map((l, lIdx) => {
-          if (!l.lotNumber) {
-            modified = true;
-            patchedCount++;
-            return {
-              ...l,
-              lotNumber: l.linkedGrnId ? `${l.linkedGrnId}-${String(lIdx + 1).padStart(2, '0')}` : `${grn.id}-${String(lIdx + 1).padStart(2, '0')}`,
-            };
-          }
-          return l;
-        });
-
-        if (modified) {
-          batch.set(docSnap.ref, { lines: updatedLines, updatedAt: serverTimestamp() }, { merge: true });
-        }
-      });
-
-      if (patchedCount > 0) {
-        await batch.commit();
-        setPatchSummaryMsg(
-          isAr
-            ? `اكتمل الفحص: تم تدقيق ومطابقة (${snap.docs.length}) إذن، ومعالجة وتعيين أرقام اللوطات لـ (${patchedCount}) بند تاريخي بنجاح!`
-            : `Audit complete: Scanned ${snap.docs.length} receipts, backfilled ${patchedCount} historical lot numbers successfully!`
-        );
-      } else {
-        setPatchSummaryMsg(
-          isAr
-            ? `فحص سليم 100%: جميع أذون الاستلام وسجلات المخزن (${snap.docs.length}) تحتوي على أرقام لوطات مطابقة ومعتمدة.`
-            : `100% verified: All ${snap.docs.length} inventory documents have valid structured lot numbers.`
-        );
-      }
-
-      setTimeout(() => setPatchSummaryMsg(''), 5000);
-    } catch (err) {
-      console.error('Error auditing lots:', err);
-      alert(isAr ? 'حدث خطأ أثناء تدقيق اللوطات.' : 'Error auditing historical lots.');
-    } finally {
-      setIsPatchingLots(false);
-    }
-  };
 
   // ==========================================
   // SUB-TAB 3: DYNAMIC BULK IMPORTER
@@ -3612,817 +2528,11 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
     }
   };
 
-  // =========================================================================
-  // 🦚 MASTER DATA BACKUP & CHUNKED RESTORE ENGINE (DYNAMIC MULTI-COLLECTION)
-  // =========================================================================
 
-  // Deep Serialization Helper (Preserves Firestore Timestamps, Dates & Base64 attachments)
-  const serializeForBackup = (value) => {
-    if (value === null || value === undefined) return value;
-    if (value instanceof Timestamp || (typeof value === 'object' && typeof value.toDate === 'function' && typeof value.seconds === 'number')) {
-      return {
-        _type: 'firestore_timestamp',
-        _seconds: value.seconds,
-        _nanoseconds: value.nanoseconds || 0,
-      };
-    }
-    if (value instanceof Date) {
-      return {
-        _type: 'date_iso',
-        _iso: value.toISOString(),
-      };
-    }
-    if (Array.isArray(value)) {
-      return value.map(serializeForBackup);
-    }
-    if (typeof value === 'object') {
-      const serializedObj = {};
-      Object.entries(value).forEach(([k, v]) => {
-        serializedObj[k] = serializeForBackup(v);
-      });
-      return serializedObj;
-    }
-    return value;
-  };
-
-  // Deep Hydration Helper (Reinstantiates exact Firestore Timestamps & Dates)
-  const hydrateFromBackup = (value) => {
-    if (value === null || value === undefined) return value;
-    if (typeof value === 'object' && value._type === 'firestore_timestamp') {
-      return new Timestamp(value._seconds, value._nanoseconds || 0);
-    }
-    if (typeof value === 'object' && value._type === 'date_iso') {
-      return new Date(value._iso);
-    }
-    if (Array.isArray(value)) {
-      return value.map(hydrateFromBackup);
-    }
-    if (typeof value === 'object') {
-      const hydratedObj = {};
-      Object.entries(value).forEach(([k, v]) => {
-        hydratedObj[k] = hydrateFromBackup(v);
-      });
-      return hydratedObj;
-    }
-    return value;
-  };
-
-  // 1. Export Targeted Multi-Collection JSON Backup File
-  const handleExportBackupJson = async () => {
-    if (selectedBackupCollections.length === 0) {
-      alert(isAr ? 'يرجى تحديد جدول واحد على الأقل للتصدير.' : 'Please select at least one collection to export.');
-      return;
-    }
-
-    const targetCollections = selectedBackupCollections;
-
-    setIsBackingUp(true);
-    try {
-      const collectionsData = {};
-      const collectionCounts = {};
-      let totalDocuments = 0;
-
-      for (const collName of targetCollections) {
-        const snap = await getDocs(collection(db, collName));
-        const docsArray = snap.docs.map((docSnap) => ({
-          _docId: docSnap.id,
-          ...serializeForBackup(docSnap.data()),
-        }));
-        collectionsData[collName] = docsArray;
-        collectionCounts[collName] = docsArray.length;
-        totalDocuments += docsArray.length;
-      }
-
-      const now = new Date();
-      const timestampIso = now.toISOString();
-      const dateCompact = timestampIso.split('T')[0];
-      const timeCompact = now.toTimeString().split(' ')[0].replace(/:/g, '-');
-
-      const isFull = targetCollections.length === BACKUP_COLLECTIONS_REGISTRY.length;
-      const filePrefix = isFull ? 'al_tawoos_erp_full_backup' : `al_tawoos_erp_partial_backup_${targetCollections.length}colls`;
-
-      const backupEnvelope = {
-        _backupHeader: {
-          app: 'Al-Tawoos FMCG ERP',
-          version: APP_ARCHITECTURE.version || '2.5',
-          backupDate: timestampIso,
-          exportedBy: isAr ? currentUser.nameAr : (currentUser.name || currentUser.email || 'General Admin'),
-          isPartialBackup: !isFull,
-          selectedCollections: targetCollections,
-          totalCollections: targetCollections.length,
-          totalDocuments,
-          collectionCounts,
-        },
-        collections: collectionsData,
-      };
-
-      const jsonString = JSON.stringify(backupEnvelope, null, 2);
-      const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', `${filePrefix}_${dateCompact}_${timeCompact}.json`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      setBackupRestoreMsg(
-        isAr
-          ? `تم إنشاء وتنزيل النسخة الاحتياطية بنجاح! تم تصدير (${totalDocuments}) مستند عبر (${targetCollections.length}) جدول مختار.`
-          : `Backup downloaded successfully! (${totalDocuments}) documents exported across (${targetCollections.length}) selected collections.`
-      );
-      setTimeout(() => setBackupRestoreMsg(''), 6000);
-    } catch (err) {
-      console.error('Error generating backup:', err);
-      alert(isAr ? 'حدث خطأ أثناء تصدير النسخة الاحتياطية.' : 'Error generating backup.');
-    } finally {
-      setIsBackingUp(false);
-    }
-  };
-
-  // 2. Select & Parse Backup File for Pre-Restore Verification
-  const handleSelectRestoreFile = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const parsed = JSON.parse(ev.target.result);
-        if (!parsed._backupHeader || !parsed.collections) {
-          alert(
-            isAr
-              ? 'ملف النسخة الاحتياطية غير صالح أو لا يحتوي على بنية البيانات المعتمدة.'
-              : 'Invalid backup file structure.'
-          );
-          return;
-        }
-        setRestoreFilePayload(parsed);
-        // Automatically pre-select all collections present in the loaded backup payload
-        setSelectedRestoreCollections(Object.keys(parsed.collections || {}));
-      } catch (err) {
-        console.error('Error parsing JSON backup file:', err);
-        alert(isAr ? 'فشل قراءة وتحليل ملف الـ JSON.' : 'Failed to parse JSON backup file.');
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  // 3. Execute Selective Chunked Batch Restore (Max 400 writes per batch)
-  const handleExecuteChunkedRestore = async () => {
-    if (!restoreFilePayload) return;
-
-    const collectionsMap = restoreFilePayload.collections || {};
-    const targetCollections = selectedRestoreCollections.filter((c) => Array.isArray(collectionsMap[c]));
-
-    if (targetCollections.length === 0) {
-      alert(isAr ? 'يرجى تحديد جدول واحد على الأقل للاستعادة.' : 'Please select at least one collection to restore.');
-      return;
-    }
-
-    const totalDocsToRestore = targetCollections.reduce((sum, c) => sum + (collectionsMap[c]?.length || 0), 0);
-
-    const confirmMsg = isAr
-      ? `تحذير هام: أنت على وشك استعادة (${totalDocsToRestore}) مستند عبر (${targetCollections.length}) جدول مختار باستخدام استراتيجية (${restoreStrategy === 'clean_slate' ? 'مسح الجداول المحددة واستبدالها' : 'دمج وتحديث'}). هل ترغب في المتابعة؟`
-      : `Warning: You are about to restore (${totalDocsToRestore}) documents across (${targetCollections.length}) selected collections using (${restoreStrategy}). Proceed?`;
-
-    if (!window.confirm(confirmMsg)) return;
-
-    setIsRestoring(true);
-    setRestoreProgressText(isAr ? 'جاري بدء معالجة حزم الاستعادة...' : 'Initializing batch chunks...');
-
-    try {
-      // Strategy 1: Clean Slate (Purge ONLY the selected collections prior to writing)
-      if (restoreStrategy === 'clean_slate') {
-        setRestoreProgressText(isAr ? 'جاري تفريغ الجداول المحددة لضمان مطابقة 100%...' : 'Purging selected collections...');
-        for (const collName of targetCollections) {
-          const snap = await getDocs(collection(db, collName));
-          if (!snap.empty) {
-            const docsToPurge = snap.docs;
-            const CHUNK_SIZE = 400;
-            for (let i = 0; i < docsToPurge.length; i += CHUNK_SIZE) {
-              const chunk = docsToPurge.slice(i, i + CHUNK_SIZE);
-              const purgeBatch = writeBatch(db);
-              chunk.forEach((d) => purgeBatch.delete(d.ref));
-              await purgeBatch.commit();
-            }
-          }
-        }
-      }
-
-      // Restore Documents with Hydration in Chunks of 400
-      let totalCommitted = 0;
-      for (const collName of targetCollections) {
-        const rawDocsList = collectionsMap[collName] || [];
-        if (rawDocsList.length === 0) continue;
-
-        setRestoreProgressText(
-          isAr
-            ? `جاري استعادة جدول (${collName}) - (${rawDocsList.length} مستند)...`
-            : `Restoring (${collName}) - (${rawDocsList.length} docs)...`
-        );
-
-        const CHUNK_SIZE = 400;
-        for (let i = 0; i < rawDocsList.length; i += CHUNK_SIZE) {
-          const chunk = rawDocsList.slice(i, i + CHUNK_SIZE);
-          const restoreBatch = writeBatch(db);
-
-          chunk.forEach((item) => {
-            const docId = item._docId;
-            if (!docId) return;
-
-            const docData = { ...item };
-            delete docData._docId;
-
-            const hydratedData = hydrateFromBackup(docData);
-            const targetRef = doc(db, collName, docId);
-
-            restoreBatch.set(targetRef, hydratedData, { merge: restoreStrategy === 'merge_upsert' });
-          });
-
-          await restoreBatch.commit();
-          totalCommitted += chunk.length;
-        }
-      }
-
-      setBackupRestoreMsg(
-        isAr
-          ? `اكتملت الاستعادة بنجاح تام! تم كتابة وتوثيق (${totalCommitted}) مستند عبر (${targetCollections.length}) جدول مختار.`
-          : `Restore completed successfully! Hydrated (${totalCommitted}) documents across (${targetCollections.length}) collections.`
-      );
-      setRestoreFilePayload(null);
-      setSelectedRestoreCollections([]);
-      setTimeout(() => setBackupRestoreMsg(''), 8000);
-    } catch (err) {
-      console.error('Error during chunked restore execution:', err);
-      alert(isAr ? 'حدث خطأ أثناء تنفيذ عملية الاستعادة.' : 'Error executing restore.');
-    } finally {
-      setIsRestoring(false);
-      setRestoreProgressText('');
-    }
-  };
-
-  // ==========================================
-  // SUB-TAB 4: TARGETED FACTORY RESET & RELATIONAL CASCADE PURGE ENGINE
-  // ==========================================
-  const handleExecuteDynamicPurge = async () => {
-    if (confirmationPhrase !== 'CONFIRM-RESET-ERP') {
-      alert(isAr ? 'عبارة التأكيد غير صحيحة.' : 'Incorrect confirmation phrase.');
-      return;
-    }
-
-    setIsPurging(true);
-
-    // Best-effort automatic pre-purge safety checkpoint so accidental Factory Resets remain 1-click recoverable
-    try {
-      await createRestorePoint({
-        kind: 'pre_purge',
-        source: 'safety_guard',
-        pinned: false,
-        labelAr: `نقطة أمان قبل التصفير (${selectedPurgeTargetKey})`,
-        labelEn: `Pre-Purge Safety Point (${selectedPurgeTargetKey})`,
-        notes: `Auto safety capture before Factory Reset / Purge (${selectedPurgeTargetKey})`,
-        actor: currentUser,
-      });
-    } catch (prePurgeErr) {
-      console.warn('Pre-purge safety snapshot warning (proceeding with requested purge):', prePurgeErr?.message);
-    }
-
-    // Helper: Commit operations in chunks of 400 to respect Firestore 500-op batch limit
-    const commitChunkedOperations = async (operations = []) => {
-      if (!operations.length) return 0;
-      const CHUNK_SIZE = 400;
-      for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
-        const chunk = operations.slice(i, i + CHUNK_SIZE);
-        const batch = writeBatch(db);
-        chunk.forEach((opFn) => opFn(batch));
-        await batch.commit();
-      }
-      return operations.length;
-    };
-
-    try {
-      const masterCollectionsSet = new Set(getMasterCollectionsRegistry(APP_ARCHITECTURE));
-      // Explicit safety guarantee for Chart of Accounts, System Config, Users & Floor Vessel Configs
-      masterCollectionsSet.add('chart_of_accounts');
-      masterCollectionsSet.add('system_config');
-      masterCollectionsSet.add('users');
-      masterCollectionsSet.add('floor_liquid_vessels');
-
-      const collectionsToPurge = [];
-      const cascadesByCollection = {}; // { [collName]: Array<(data, id) => boolean> }
-      let shouldZeroStock = false;
-      let shouldRecalcItemsStock = false;
-      let shouldClearOpeningFieldsOnItems = false;
-      let shouldZeroSafeAndBankBalances = false;
-      let shouldRecalcSafesAndBanks = false;
-      let shouldResetFloorVessels = false;
-      let shouldResetPoReceivedQuantities = false;
-      let shouldUnlinkGrnPoRefs = false;
-      let shouldResetStagedPalletsToFloor = false;
-
-      const targetCatalogEntry = PURGE_TARGETS_CATALOG.find((t) => t.key === selectedPurgeTargetKey);
-
-      if (selectedPurgeTargetKey === 'all') {
-        allTabsList.forEach((t) => {
-          if (t.collection) {
-            t.collection.split(',').map((s) => s.trim()).filter(Boolean).forEach((c) => collectionsToPurge.push(c));
-          }
-        });
-        collectionsToPurge.push(
-          ...BACKUP_COLLECTIONS_REGISTRY,
-          ...OPERATIONAL_COLLECTIONS_REGISTRY
-        );
-        shouldZeroStock = true;
-        shouldZeroSafeAndBankBalances = true;
-        shouldResetFloorVessels = true;
-      } else if (selectedPurgeTargetKey === 'operational_only') {
-        // Operational wipe: strictly exclude all master collections & chart_of_accounts
-        const safeOperational = OPERATIONAL_COLLECTIONS_REGISTRY.filter((coll) => !masterCollectionsSet.has(coll));
-        collectionsToPurge.push(...safeOperational);
-        shouldZeroStock = true;
-        shouldZeroSafeAndBankBalances = true;
-        shouldResetFloorVessels = true;
-      } else if (targetCatalogEntry) {
-        // Aligned Catalog Target (Operational Cascade or Master Table Reset)
-        const rawPrimary = targetCatalogEntry.primaryCollections || [];
-        if (targetCatalogEntry.category === 'operational') {
-          rawPrimary
-            .filter((coll) => !masterCollectionsSet.has(coll))
-            .forEach((coll) => collectionsToPurge.push(coll));
-        } else {
-          rawPrimary.forEach((coll) => collectionsToPurge.push(coll));
-        }
-
-        // Group selective cross-collection predicates by collection
-        (targetCatalogEntry.relatedCascades || []).forEach((cRule) => {
-          if (!cRule.collection || typeof cRule.predicate !== 'function') return;
-          // Never allow an operational cascade to delete a master collection
-          if (targetCatalogEntry.category === 'operational' && masterCollectionsSet.has(cRule.collection)) return;
-          if (!cascadesByCollection[cRule.collection]) {
-            cascadesByCollection[cRule.collection] = [];
-          }
-          cascadesByCollection[cRule.collection].push(cRule.predicate);
-        });
-
-        const recalc = targetCatalogEntry.recalculate || {};
-        if (recalc.recalcItemsStock) shouldRecalcItemsStock = true;
-        if (recalc.clearOpeningFieldsOnItems) shouldClearOpeningFieldsOnItems = true;
-        if (recalc.recalcSafesAndBanks) shouldRecalcSafesAndBanks = true;
-        if (recalc.resetFloorVessels) shouldResetFloorVessels = true;
-        if (recalc.resetPoReceivedQuantities) shouldResetPoReceivedQuantities = true;
-        if (recalc.unlinkGrnPoRefs) shouldUnlinkGrnPoRefs = true;
-        if (recalc.resetStagedPalletsToFloor) shouldResetStagedPalletsToFloor = true;
-      } else {
-        // Fallback for any legacy tab key
-        const targetTab = allTabsList.find((t) => t.id === selectedPurgeTargetKey);
-        if (targetTab?.collection) {
-          targetTab.collection.split(',').map((s) => s.trim()).filter(Boolean).forEach((c) => collectionsToPurge.push(c));
-        }
-      }
-
-      // 1. Purge Full Primary Collections (with Master Data & Chart of Accounts Immunity Lock for operational targets)
-      let finalCollectionsToPurge = Array.from(new Set(collectionsToPurge));
-      if (selectedPurgeTargetKey === 'operational_only' || targetCatalogEntry?.category === 'operational') {
-        finalCollectionsToPurge = finalCollectionsToPurge.filter(
-          (coll) => !masterCollectionsSet.has(coll) && coll !== 'chart_of_accounts' && coll !== 'system_config'
-        );
-      }
-
-      let deletedPrimaryCount = 0;
-      for (const collName of finalCollectionsToPurge) {
-        const snap = await getDocs(collection(db, collName));
-        if (!snap.empty) {
-          const ops = snap.docs.map((d) => (batch) => batch.delete(d.ref));
-          deletedPrimaryCount += await commitChunkedOperations(ops);
-        }
-      }
-
-      // 2. Execute Selective Cross-Collection Cascade Deletions (Auto-Made Records in Related Tables)
-      let deletedCascadeCount = 0;
-      const primaryPurgedSet = new Set(finalCollectionsToPurge);
-      for (const [collName, predicates] of Object.entries(cascadesByCollection)) {
-        // Skip if the entire collection was already purged in step 1
-        if (primaryPurgedSet.has(collName)) continue;
-        // Immunity check for operational targets
-        if (targetCatalogEntry?.category === 'operational' && masterCollectionsSet.has(collName)) continue;
-
-        const snap = await getDocs(collection(db, collName));
-        if (!snap.empty) {
-          const matchingDocs = snap.docs.filter((docSnap) => {
-            const data = docSnap.data() || {};
-            return predicates.some((predFn) => {
-              try {
-                return Boolean(predFn(data, docSnap.id));
-              } catch (_) {
-                return false;
-              }
-            });
-          });
-          if (matchingDocs.length > 0) {
-            const ops = matchingDocs.map((d) => (batch) => batch.delete(d.ref));
-            deletedCascadeCount += await commitChunkedOperations(ops);
-          }
-        }
-      }
-
-      // 3. Cascade: Zero or Dynamically Recalculate Stock in Item Master (preserves 100% of item definitions & specs)
-      if (shouldZeroStock) {
-        const itemsSnap = await getDocs(collection(db, 'items'));
-        if (!itemsSnap.empty) {
-          const ops = itemsSnap.docs.map((itemDoc) => (batch) => {
-            const data = itemDoc.data();
-            const resetVariations = (data.variations || []).map((v) => ({
-              ...v,
-              stock: 0,
-              openingQtySmall: 0,
-              openingWarehouse: '',
-              openingUnitCost: 0,
-              openingBatchNo: '',
-            }));
-            batch.set(
-              itemDoc.ref,
-              { stock: 0, variations: resetVariations, updatedAt: serverTimestamp() },
-              { merge: true }
-            );
-          });
-          await commitChunkedOperations(ops);
-        }
-      } else if (shouldRecalcItemsStock) {
-        // Dynamically recalculate items.stock from remaining stock_ledger records
-        const [itemsSnap, ledgerSnap] = await Promise.all([
-          getDocs(collection(db, 'items')),
-          getDocs(collection(db, 'stock_ledger')),
-        ]);
-        if (!itemsSnap.empty) {
-          const stockByVariant = {};
-          const stockByItem = {};
-          ledgerSnap.docs.forEach((lDoc) => {
-            const l = lDoc.data() || {};
-            if (l.status === 'cancelled' || l.isCancelled) return;
-            const qty = Number(l.qty) || 0;
-            const itemCode = String(l.itemId || '').trim();
-            const varCode = String(l.variantCode || '').trim();
-            if (varCode) stockByVariant[varCode] = (stockByVariant[varCode] || 0) + qty;
-            if (itemCode) stockByItem[itemCode] = (stockByItem[itemCode] || 0) + qty;
-          });
-
-          const ops = itemsSnap.docs.map((itemDoc) => (batch) => {
-            const data = itemDoc.data() || {};
-            const itemCode = data.code || itemDoc.id;
-            const variations = Array.isArray(data.variations) ? data.variations : [];
-            let computedItemTotal = 0;
-            const updatedVariations = variations.map((v) => {
-              const vSuffix = v.suffix || 'A';
-              const vCode = v.variantCode || `${itemCode}-${vSuffix}`;
-              const vStock = Math.max(0, Number((stockByVariant[vCode] || 0).toFixed(4)));
-              computedItemTotal += vStock;
-              const nextVar = { ...v, stock: vStock };
-              if (shouldClearOpeningFieldsOnItems) {
-                nextVar.openingQtySmall = 0;
-                nextVar.openingWarehouse = '';
-                nextVar.openingUnitCost = 0;
-                nextVar.openingBatchNo = '';
-              }
-              return nextVar;
-            });
-            const finalItemStock = variations.length > 0
-              ? computedItemTotal
-              : Math.max(0, Number((stockByItem[itemCode] || 0).toFixed(4)));
-            batch.set(
-              itemDoc.ref,
-              { stock: finalItemStock, variations: updatedVariations, updatedAt: serverTimestamp() },
-              { merge: true }
-            );
-          });
-          await commitChunkedOperations(ops);
-        }
-      }
-
-      // 4. Cascade: Zero or Dynamically Recalculate Cash Safes & Corporate Banks Balances (preserves 100% of safe/bank definitions)
-      const zeroDenominations = { 200: 0, 100: 0, 50: 0, 20: 0, 10: 0, 5: 0, 1: 0, '0.5': 0 };
-      if (shouldZeroSafeAndBankBalances) {
-        const safesSnap = await getDocs(collection(db, 'cash_safes'));
-        if (!safesSnap.empty) {
-          const ops = safesSnap.docs.map((safeDoc) => (batch) => {
-            const sData = safeDoc.data() || {};
-            const existingBalances = sData.balances && typeof sData.balances === 'object' ? sData.balances : {};
-            const resetBalances = {
-              EGP: { currentBalance: 0, denominations: { ...zeroDenominations } },
-            };
-            Object.keys(existingBalances).forEach((currKey) => {
-              resetBalances[currKey] = {
-                ...(existingBalances[currKey] || {}),
-                currentBalance: 0,
-                denominations: { ...zeroDenominations },
-              };
-            });
-            batch.set(
-              safeDoc.ref,
-              {
-                currentBalance: 0,
-                balance: 0,
-                denominations: { ...zeroDenominations },
-                balances: resetBalances,
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          });
-          await commitChunkedOperations(ops);
-        }
-
-        const banksSnap = await getDocs(collection(db, 'corporate_banks'));
-        if (!banksSnap.empty) {
-          const ops = banksSnap.docs.map((bankDoc) => (batch) => {
-            const bData = bankDoc.data() || {};
-            const payload = {
-              currentBalance: 0,
-              balance: 0,
-              updatedAt: serverTimestamp(),
-            };
-            if (bData.balances && typeof bData.balances === 'object') {
-              const resetBankBalances = {};
-              Object.keys(bData.balances).forEach((currKey) => {
-                resetBankBalances[currKey] = {
-                  ...(bData.balances[currKey] || {}),
-                  currentBalance: 0,
-                };
-              });
-              payload.balances = resetBankBalances;
-            }
-            batch.set(bankDoc.ref, payload, { merge: true });
-          });
-          await commitChunkedOperations(ops);
-        }
-      } else if (shouldRecalcSafesAndBanks) {
-        const [safesSnap, banksSnap, txSnap] = await Promise.all([
-          getDocs(collection(db, 'cash_safes')),
-          getDocs(collection(db, 'corporate_banks')),
-          getDocs(collection(db, 'cash_transactions')),
-        ]);
-
-        const safeBalances = {};
-        const safeDenoms = {};
-        const bankBalances = {};
-
-        const ensureSafeDenoms = (sId) => {
-          if (!safeDenoms[sId]) safeDenoms[sId] = { ...zeroDenominations };
-          return safeDenoms[sId];
-        };
-
-        const addDenomMap = (sId, denomObj, multiplier = 1) => {
-          if (!sId || !denomObj || typeof denomObj !== 'object') return;
-          const map = ensureSafeDenoms(sId);
-          Object.entries(denomObj).forEach(([k, v]) => {
-            const count = Number(v) || 0;
-            if (count !== 0) {
-              map[k] = Math.max(0, (Number(map[k]) || 0) + count * multiplier);
-            }
-          });
-        };
-
-        txSnap.docs.forEach((tDoc) => {
-          const tx = tDoc.data() || {};
-          if (
-            [
-              'cancelled',
-              'reversed',
-              'rejected',
-              'draft',
-              'pending_approval',
-              'pending_receiver_approval',
-            ].includes(tx.status)
-          ) {
-            return;
-          }
-          const txType = String(tx.type || tx.voucherType || '').toLowerCase();
-          const amt = Math.abs(Number(tx.amount || tx.totalAmount || 0));
-          const sourceSafe = tx.safeId || tx.sourceSafeId || tx.vaultId;
-          const targetSafe = tx.targetSafeId;
-          const targetBank = tx.bankId || tx.bankAccountId;
-
-          if (txType === 'safe_transfer') {
-            if (sourceSafe && amt) {
-              safeBalances[sourceSafe] = (safeBalances[sourceSafe] || 0) - amt;
-              addDenomMap(sourceSafe, tx.denominationsOut || tx.denominations, -1);
-            }
-            if (targetSafe && amt) {
-              safeBalances[targetSafe] = (safeBalances[targetSafe] || 0) + amt;
-              addDenomMap(targetSafe, tx.denominationsIn || tx.denominationsOut || tx.denominations, 1);
-            }
-            return;
-          }
-
-          if (txType === 'change_exchange') {
-            if (sourceSafe) {
-              addDenomMap(sourceSafe, tx.denominationsIn, 1);
-              addDenomMap(sourceSafe, tx.denominationsOut, -1);
-            }
-            return;
-          }
-
-          if (!amt && txType !== 'balance_adjustment') return;
-
-          const dir = String(tx.direction || '').toLowerCase();
-          const isInflow =
-            dir === 'in' ||
-            ['receipt', 'inflow', 'deposit', 'collection', 'custody_settle', 'advance_settle', 'opening_balance'].includes(txType);
-          const signedAmt = isInflow ? amt : -amt;
-
-          if (sourceSafe) {
-            safeBalances[sourceSafe] = (safeBalances[sourceSafe] || 0) + signedAmt;
-            if (tx.denominationsIn || tx.denominationsOut) {
-              addDenomMap(sourceSafe, tx.denominationsIn, 1);
-              addDenomMap(sourceSafe, tx.denominationsOut, -1);
-            } else if (tx.denominations) {
-              addDenomMap(sourceSafe, tx.denominations, isInflow ? 1 : -1);
-            }
-          }
-          if (targetBank) {
-            bankBalances[targetBank] = (bankBalances[targetBank] || 0) + signedAmt;
-          }
-        });
-
-        if (!safesSnap.empty) {
-          const ops = safesSnap.docs.map((safeDoc) => (batch) => {
-            const sData = safeDoc.data() || {};
-            const newBal = Number(((safeBalances[safeDoc.id] || 0) + (safeBalances[sData.code] || 0)).toFixed(2));
-            const computedDenoms = newBal === 0
-              ? { ...zeroDenominations }
-              : (safeDenoms[safeDoc.id] || safeDenoms[sData.code] || sData.balances?.EGP?.denominations || { ...zeroDenominations });
-            const existingBalances = sData.balances && typeof sData.balances === 'object' ? sData.balances : {};
-            const updatedBalances = {
-              ...existingBalances,
-              EGP: {
-                ...(existingBalances.EGP || {}),
-                currentBalance: newBal,
-                denominations: computedDenoms,
-              },
-            };
-            const payload = {
-              currentBalance: newBal,
-              balance: newBal,
-              denominations: computedDenoms,
-              balances: updatedBalances,
-              updatedAt: serverTimestamp(),
-            };
-            batch.set(safeDoc.ref, payload, { merge: true });
-          });
-          await commitChunkedOperations(ops);
-        }
-
-        if (!banksSnap.empty) {
-          const ops = banksSnap.docs.map((bankDoc) => (batch) => {
-            const bData = bankDoc.data() || {};
-            const newBal = Number(((bankBalances[bankDoc.id] || 0) + (bankBalances[bData.code] || 0)).toFixed(2));
-            const payload = {
-              currentBalance: newBal,
-              balance: newBal,
-              updatedAt: serverTimestamp(),
-            };
-            if (bData.balances && typeof bData.balances === 'object') {
-              payload.balances = {
-                ...bData.balances,
-                EGP: {
-                  ...(bData.balances.EGP || {}),
-                  currentBalance: newBal,
-                },
-              };
-            }
-            batch.set(bankDoc.ref, payload, { merge: true });
-          });
-          await commitChunkedOperations(ops);
-        }
-      }
-
-      // 5. Cascade: Reset Transient Operational Volumes in Floor Liquid Vessels (preserves 100% of vessel master capacity setup)
-      if (shouldResetFloorVessels) {
-        const vesselsSnap = await getDocs(collection(db, 'floor_liquid_vessels'));
-        if (!vesselsSnap.empty) {
-          const ops = vesselsSnap.docs.map((vDoc) => (batch) => {
-            batch.set(
-              vDoc.ref,
-              {
-                currentVolume: 0,
-                activeTanksCount: 0,
-                activeTanks: [],
-                historyTanks: [],
-                cleanoutLogs: [],
-                consumptionLogs: [],
-                overrideLogs: [],
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          });
-          await commitChunkedOperations(ops);
-        }
-      }
-
-      // 6. Relational Cleanup: Reset received quantities on POs when GRNs are wiped
-      if (shouldResetPoReceivedQuantities) {
-        const poSnap = await getDocs(collection(db, 'purchase_orders'));
-        if (!poSnap.empty) {
-          const ops = poSnap.docs.map((poDoc) => (batch) => {
-            const po = poDoc.data() || {};
-            const resetLines = (po.lines || []).map((l) => ({
-              ...l,
-              receivedQty: 0,
-              receivedSmallUnits: 0,
-              receivedLargeUnits: 0,
-            }));
-            batch.set(
-              poDoc.ref,
-              {
-                lines: resetLines,
-                deliveryStatus: 'pending',
-                receivedPercentage: 0,
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          });
-          await commitChunkedOperations(ops);
-        }
-      }
-
-      // 7. Relational Cleanup: Unlink deleted PO references on remaining GRNs when POs are wiped
-      if (shouldUnlinkGrnPoRefs) {
-        const grnSnap = await getDocs(collection(db, 'goods_receipts'));
-        if (!grnSnap.empty) {
-          const ops = grnSnap.docs
-            .filter((gDoc) => Boolean(gDoc.data()?.poId || gDoc.data()?.poNumber))
-            .map((gDoc) => (batch) => {
-              batch.set(
-                gDoc.ref,
-                { poId: '', poNumber: '', updatedAt: serverTimestamp() },
-                { merge: true }
-              );
-            });
-          await commitChunkedOperations(ops);
-        }
-      }
-
-      // 8. Relational Cleanup: Reset staged floor pallets status when FG Inward transfers are wiped
-      if (shouldResetStagedPalletsToFloor) {
-        const palletsSnap = await getDocs(collection(db, 'staged_floor_pallets'));
-        if (!palletsSnap.empty) {
-          const ops = palletsSnap.docs
-            .filter((pDoc) => {
-              const p = pDoc.data() || {};
-              return p.status === 'transferred_to_fg' || p.stagingStatus === 'transferred_to_fg' || Boolean(p.transferId);
-            })
-            .map((pDoc) => (batch) => {
-              batch.set(
-                pDoc.ref,
-                {
-                  status: 'staged_on_floor',
-                  stagingStatus: 'staged_on_floor',
-                  transferId: null,
-                  targetWarehouseId: null,
-                  updatedAt: serverTimestamp(),
-                },
-                { merge: true }
-              );
-            });
-          await commitChunkedOperations(ops);
-        }
-      }
-
-      setPurgeSuccessMsg(
-        selectedPurgeTargetKey === 'operational_only'
-          ? (isAr
-              ? `تم مسح وتصفير كافة الحركات التشغيلية والمحاسبية بنجاح (${deletedPrimaryCount} سجل) مع الحفاظ التام والكامل (100%) على دليل الحسابات وإعدادات التوجيه وكافة مجموعات البيانات الأساسية (${MASTER_COLLECTIONS_REGISTRY.length})!`
-              : `Operational transactions successfully wiped (${deletedPrimaryCount} docs)! Chart of Accounts setup & all ${MASTER_COLLECTIONS_REGISTRY.length} Master Collections have been 100% preserved.`)
-          : targetCatalogEntry
-          ? (isAr
-              ? `تم مسح (${targetCatalogEntry.labelAr}) بنجاح! [حُذف ${deletedPrimaryCount} سجل أساسي + ${deletedCascadeCount} سجل تلقائي مرتبط في الجداول الأخرى] وتمت إعادة معايرة الأرصدة المرتبطة.`
-              : `Successfully purged (${targetCatalogEntry.labelEn})! [Deleted ${deletedPrimaryCount} primary records + ${deletedCascadeCount} auto-made linked records in related collections] and recalculated balances.`)
-          : (isAr ? 'تم تصفير واستعادة ضبط المصنع بنجاح!' : 'Selected tables successfully purged to factory settings!')
-      );
-      setResetModalOpen(false);
-      setConfirmationPhrase('');
-      setTimeout(() => setPurgeSuccessMsg(''), 7000);
-    } catch (err) {
-      console.error('Error during purge:', err);
-      alert(isAr ? 'حدث خطأ أثناء مسح البيانات.' : 'Error during purge.');
-    } finally {
-      setIsPurging(false);
-    }
-  };
 
   return (
     <div className="space-y-6">
       {/* Full-Screen Loading Feedback for Admin Actions */}
-      {isPurging && (
-        <PeacockLoader
-          fullScreen
-          size="xl"
-          text={isAr ? 'جاري استعادة ضبط المصنع وتصفير الجداول...' : 'Executing Factory Reset & Purging Tables...'}
-        />
-      )}
       {isImporting && (
         <PeacockLoader
           fullScreen
@@ -4584,12 +2694,18 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
 
           <button
             type="button"
-            onClick={() => {
-              setActiveSubTab('db_inspector');
-              if (discoveredCollections.length === 0) {
-                handleScanDatabaseCollections();
-              }
-            }}
+            onClick={() => setActiveSubTab('audit_logs')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition cursor-pointer ${
+              activeSubTab === 'audit_logs' ? 'bg-emerald-700 text-white shadow-xs' : 'text-slate-300 hover:text-emerald-300'
+            }`}
+          >
+            <ShieldCheck className="h-3.5 w-3.5" />
+            <span>{isAr ? 'سجل التدقيق والملخصات' : 'Audit Logs & Rollups'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('db_inspector')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition cursor-pointer ${
               activeSubTab === 'db_inspector' ? 'bg-cyan-700 text-white shadow-xs' : 'text-slate-300 hover:text-cyan-300'
             }`}
@@ -4612,12 +2728,6 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       </div>
 
       {/* Global Alerts */}
-      {purgeSuccessMsg && (
-        <div className="p-3 bg-rose-50 border border-rose-200 text-rose-900 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in">
-          <CheckCircle2 className="h-4 w-4 text-rose-600" />
-          <span>{purgeSuccessMsg}</span>
-        </div>
-      )}
       {importSuccessMsg && (
         <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -4670,6 +2780,9 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                     <td className="p-3">
                       <div className="font-bold text-slate-900">{isAr ? u.nameAr : (u.name || u.nameAr)}</div>
                       <div className="font-mono text-[11px] text-indigo-700 font-semibold">{u.email || u.id}</div>
+                      {u.secondaryEmail && (
+                        <div className="font-mono text-[10px] text-amber-800 font-semibold">{u.secondaryEmail}</div>
+                      )}
                     </td>
                     <td className="p-3">
                       {u.role === 'general_admin' || u.isGeneralAdmin ? (
@@ -4743,6 +2856,188 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
               </tbody>
             </table>
           </div>
+
+          {/* Corporate Branded Email Server (SMTP) for Custom Password Reset Links */}
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-2xs overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setSmtpOpen((o) => !o)}
+              className="w-full p-4 flex flex-wrap items-center justify-between gap-3 hover:bg-slate-50/70 transition cursor-pointer text-start"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[#014EA8]/10 text-[#014EA8] border border-[#014EA8]/20 flex items-center justify-center shrink-0">
+                  <Mail className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-black text-slate-900">
+                    {isAr ? 'خادم البريد المؤسسي المخصص (SMTP) لاستعادة كلمات المرور' : 'Branded Corporate Email Server (SMTP) for Password Resets'}
+                  </h4>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    {isAr
+                      ? 'يرسل رسائل تعيين كلمة المرور باسم ونطاق الشركة مباشرةً إلى شاشة الاستعادة المخصصة للمنظومة'
+                      : 'Dispatches branded reset emails directly from your company domain to our custom /auth/action UI'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {isLoadingSmtp ? (
+                  <PeacockLoader size="xxs" inline />
+                ) : (
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-[10px] font-black border ${
+                      smtpForm.configured
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-amber-50 text-amber-800 border-amber-200'
+                    }`}
+                  >
+                    {smtpForm.configured
+                      ? (isAr ? `مفعل (${smtpForm.host})` : `Active (${smtpForm.host})`)
+                      : (isAr ? 'غير مضبوط (يعمل بالافتراضي)' : 'Not Configured (Default Active)')}
+                  </span>
+                )}
+              </div>
+            </button>
+
+            {smtpOpen && (
+              <form onSubmit={handleSaveSmtp} className="p-4 pt-3 border-t border-slate-200 bg-slate-50/50 space-y-3 text-xs">
+                {smtpMsg && (
+                  <div
+                    className={`p-3 rounded-xl font-bold flex items-center gap-2 ${
+                      smtpMsg.type === 'error'
+                        ? 'bg-rose-50 border border-rose-200 text-rose-900'
+                        : 'bg-emerald-50 border border-emerald-200 text-emerald-900'
+                    }`}
+                  >
+                    <span>{smtpMsg.text}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      {isAr ? 'عنوان خادم SMTP Host *' : 'SMTP Host *'}
+                    </label>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      required
+                      placeholder="mail.al-tawoos.com"
+                      value={smtpForm.host}
+                      onChange={(e) => setSmtpForm((p) => ({ ...p, host: e.target.value }))}
+                      className="w-full p-2 border border-slate-300 rounded-xl font-mono bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      {isAr ? 'المنفذ Port' : 'Port'}
+                    </label>
+                    <input
+                      type="number"
+                      dir="ltr"
+                      required
+                      value={smtpForm.port}
+                      onChange={(e) => {
+                        const portVal = Number(e.target.value || 465);
+                        setSmtpForm((p) => ({ ...p, port: portVal, secure: portVal === 465 }));
+                      }}
+                      className="w-full p-2 border border-slate-300 rounded-xl font-mono bg-white"
+                    />
+                  </div>
+                  <div className="flex items-end pb-1.5">
+                    <label className="inline-flex items-center gap-2 font-bold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={smtpForm.secure}
+                        onChange={(e) => setSmtpForm((p) => ({ ...p, secure: e.target.checked }))}
+                        className="w-4 h-4 rounded accent-[#014EA8]"
+                      />
+                      <span>{isAr ? 'اتصال SSL/TLS مباشر (منفذ 465)' : 'Implicit SSL/TLS (Port 465)'}</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      {isAr ? 'بريد / اسم مستخدم SMTP *' : 'SMTP Username / Email *'}
+                    </label>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      required
+                      placeholder="noreply@al-tawoos.com"
+                      value={smtpForm.user}
+                      onChange={(e) => setSmtpForm((p) => ({ ...p, user: e.target.value }))}
+                      className="w-full p-2 border border-slate-300 rounded-xl font-mono bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      {isAr ? 'كلمة مرور البريد SMTP Password *' : 'SMTP Password *'}
+                    </label>
+                    <input
+                      type="password"
+                      dir="ltr"
+                      required={!smtpForm.hasPassword}
+                      placeholder={smtpForm.hasPassword ? '•••••••• (saved securely — leave blank to keep)' : 'App password or mailbox password'}
+                      value={smtpForm.pass}
+                      onChange={(e) => setSmtpForm((p) => ({ ...p, pass: e.target.value }))}
+                      className="w-full p-2 border border-slate-300 rounded-xl font-mono bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      {isAr ? 'اسم المرسل الظاهر' : 'Sender Display Name'}
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Al-Tawoos ERP"
+                      value={smtpForm.fromName}
+                      onChange={(e) => setSmtpForm((p) => ({ ...p, fromName: e.target.value }))}
+                      className="w-full p-2 border border-slate-300 rounded-xl bg-white font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      {isAr ? 'بريد المرسل (From Email)' : 'From Email'}
+                    </label>
+                    <input
+                      type="email"
+                      dir="ltr"
+                      placeholder={smtpForm.user || 'noreply@al-tawoos.com'}
+                      value={smtpForm.fromEmail}
+                      onChange={(e) => setSmtpForm((p) => ({ ...p, fromEmail: e.target.value }))}
+                      className="w-full p-2 border border-slate-300 rounded-xl font-mono bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                  <button
+                    type="button"
+                    disabled={!smtpForm.configured || isTestingSmtp}
+                    onClick={handleTestSmtp}
+                    className="px-4 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-50 text-slate-800 font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {isTestingSmtp ? <PeacockLoader size="xxs" inline /> : <Send className="w-3.5 h-3.5 text-[#014EA8]" />}
+                    <span>{isAr ? 'إرسال بريد اختباري' : 'Send Test Email'}</span>
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isSavingSmtp}
+                    className="px-5 py-2 rounded-xl bg-[#014EA8] hover:bg-[#013F8B] disabled:opacity-50 text-white font-black inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    {isSavingSmtp ? <PeacockLoader size="xxs" inline variant="white" /> : <Save className="w-3.5 h-3.5" />}
+                    <span>{isAr ? 'فحص الاتصال وحفظ SMTP' : 'Verify & Save SMTP'}</span>
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
         </div>
       )}
 
@@ -4761,19 +3056,121 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
             </div>
 
             <div className="space-y-3.5 text-xs">
-              {/* Primary Unique Identifier: Email Address */}
-              <div>
-                <label className="block font-bold text-slate-800 mb-1">
-                  {isAr ? 'البريد الإلكتروني لتسجيل الدخول (Login Email) *' : 'Login Email Address *'}
-                </label>
-                <input
-                  type="email"
-                  required
-                  placeholder="user@altawoos.com"
-                  value={userForm.email}
-                  onChange={(e) => setUserForm({ ...userForm, email: e.target.value.toLowerCase().trim() })}
-                  className="w-full p-2 border border-slate-300 rounded-lg font-mono font-bold bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                />
+              {/* Primary & Secondary Login Emails (at least 1 required) */}
+              <div className="space-y-2.5">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-800">
+                      {isAr ? 'البريد الإلكتروني الأساسي (دخول 1)' : 'Primary Login Email (1)'}
+                      {!userForm.secondaryEmail?.trim() && <span className="text-rose-600 ms-1">*</span>}
+                    </label>
+                    {userForm.email?.trim().includes('@') && (
+                      <span
+                        className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          isGoogleEmailAddress(userForm.email)
+                            ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}
+                      >
+                        {isGoogleEmailAddress(userForm.email) ? 'Google' : (isAr ? 'نطاق غير Google' : 'Non-Google')}
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="email"
+                    dir="ltr"
+                    required={!userForm.secondaryEmail?.trim()}
+                    placeholder="user@gmail.com"
+                    value={userForm.email}
+                    onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
+                    className="w-full p-2 border border-slate-300 rounded-lg font-mono font-bold bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-800">
+                      {isAr ? 'البريد البديل للشركة (دخول 2 — اختياري)' : 'Secondary Company Email (2 — Optional)'}
+                    </label>
+                    {userForm.secondaryEmail?.trim().includes('@') && (
+                      <span
+                        className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          isGoogleEmailAddress(userForm.secondaryEmail)
+                            ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200'
+                        }`}
+                      >
+                        {isGoogleEmailAddress(userForm.secondaryEmail) ? 'Google' : (isAr ? 'نطاق غير Google' : 'Non-Google')}
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="email"
+                    dir="ltr"
+                    required={!userForm.email?.trim()}
+                    placeholder="user@altawoos.com"
+                    value={userForm.secondaryEmail || ''}
+                    onChange={(e) => setUserForm({ ...userForm, secondaryEmail: e.target.value })}
+                    className="w-full p-2 border border-slate-300 rounded-lg font-mono font-bold bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                {!userForm.email?.trim() && !userForm.secondaryEmail?.trim() && (
+                  <div className="px-2.5 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-bold">
+                    {isAr
+                      ? 'مطلوب بريد إلكتروني واحد على الأقل لإنشاء المستخدم.'
+                      : 'At least 1 valid email address is required to create a user.'}
+                  </div>
+                )}
+
+                {detectedUserNonGoogleEmails.length > 0 && (
+                  <div className="p-2.5 rounded-xl bg-amber-50/90 border border-amber-200 space-y-2">
+                    <div className="flex items-center gap-1.5 text-[11px] font-black text-amber-950">
+                      <KeyRound className="w-3.5 h-3.5 text-amber-700" />
+                      <span>
+                        {isAr
+                          ? 'تم اكتشاف بريد غير Google — تعيين كلمة مرور أولية'
+                          : 'Non-Google Email Detected — Initial Password'}
+                      </span>
+                    </div>
+                    {detectedUserNonGoogleEmails.length > 1 && (
+                      <select
+                        value={
+                          detectedUserNonGoogleEmails.includes(userForm.passwordTargetEmail)
+                            ? userForm.passwordTargetEmail
+                            : detectedUserNonGoogleEmails[0]
+                        }
+                        onChange={(e) => setUserForm({ ...userForm, passwordTargetEmail: e.target.value })}
+                        className="w-full p-1.5 rounded-lg border border-amber-300 bg-white font-mono text-[11px] font-bold"
+                      >
+                        {detectedUserNonGoogleEmails.map((em) => (
+                          <option key={em} value={em}>
+                            {em}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <div className="relative">
+                      <input
+                        type={showUserInitPassword ? 'text' : 'password'}
+                        dir="ltr"
+                        minLength={6}
+                        value={userForm.initialPassword || ''}
+                        onChange={(e) => setUserForm({ ...userForm, initialPassword: e.target.value })}
+                        placeholder={isAr ? 'كلمة المرور الأولية (6 أحرف فأكثر — اختياري عند التعديل)' : 'Initial password (min 6 chars)'}
+                        className="w-full pe-8 ps-2.5 py-1.5 rounded-lg border border-amber-300 bg-white font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowUserInitPassword((v) => !v)}
+                        className="p-1 text-slate-400 hover:text-slate-700 absolute end-1.5 top-1/2 -translate-y-1/2 cursor-pointer"
+                        aria-label="Toggle password visibility"
+                      >
+                        {showUserInitPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -4892,9 +3289,11 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
               </button>
               <button
                 type="submit"
-                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs"
+                disabled={isSavingUser}
+                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg text-xs font-bold shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
               >
-                {isAr ? 'حفظ الحساب' : 'Save User'}
+                {isSavingUser && <PeacockLoader size="xxs" inline variant="white" />}
+                <span>{isSavingUser ? (isAr ? 'جاري الحفظ...' : 'Saving...') : (isAr ? 'حفظ الحساب' : 'Save User')}</span>
               </button>
             </div>
           </form>
@@ -5247,7 +3646,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                 disabled={isSavingPerms}
                 className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition cursor-pointer shadow-xs"
               >
-                {isSavingPerms ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                {isSavingPerms ? <PeacockLoader size="xxs" inline variant="white" /> : <Save className="h-3.5 w-3.5" />}
                 <span>{isAr ? 'حفظ وتطبيق الصلاحيات' : 'Save Changes'}</span>
               </button>
             </div>
@@ -5307,7 +3706,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
               >
                 {isSavingPasscode ? (
                   <>
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <PeacockLoader size="xxs" inline variant="white" />
                     <span>{isAr ? 'جاري الحفظ...' : 'Saving...'}</span>
                   </>
                 ) : (
@@ -5752,7 +4151,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
                           : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                       }`}
                     >
-                      {isImporting ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <CheckSquare className="h-3.5 w-3.5" />}
+                      {isImporting ? <PeacockLoader size="xxs" inline variant="white" /> : <CheckSquare className="h-3.5 w-3.5" />}
                       <span>
                         {errorCount > 0
                           ? (isAr ? 'تأكيد وحفظ الكل (تجاوز الأخطاء)' : 'Force Commit All')
@@ -5928,402 +4327,7 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       {/* SUB-TAB: FULL SCHEMA-DRIVEN BACKUP & CHUNKED RESTORE HUB                  */}
       {/* ========================================================================= */}
       {activeSubTab === 'backup_restore' && (
-        <div className="space-y-5 animate-in fade-in duration-200">
-          {(isBackingUp || isRestoring) && (
-            <PeacockLoader
-              fullScreen
-              size="xl"
-              text={
-                isBackingUp
-                  ? (isAr ? 'جاري استخراج وتجميع النسخة الاحتياطية لكافة الجداول السحابية...' : 'Serializing all 16 collections to JSON...')
-                  : (restoreProgressText || (isAr ? 'جاري تنفيذ الاستعادة السحابية...' : 'Executing Chunked Restore...'))
-              }
-            />
-          )}
-
-          {backupRestoreMsg && (
-            <div className="p-4 bg-emerald-50 border border-emerald-300 text-emerald-950 rounded-2xl text-xs font-bold flex items-center gap-2.5 animate-in fade-in shadow-2xs">
-              <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
-              <span>{backupRestoreMsg}</span>
-            </div>
-          )}
-
-          {/* Dual Column Action Hub */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {/* 1. Selective Multi-Collection Backup Export Card */}
-            <div className="p-5 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4 flex flex-col justify-between">
-              <div className="space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-2xl shadow-2xs">
-                    <HardDriveDownload className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <h3 className="font-extrabold text-sm text-slate-900">
-                      {isAr ? '١- تصدير نسخة احتياطية محددة / شاملة' : '1. Export Selective Backup (.json)'}
-                    </h3>
-                    <p className="text-xs text-slate-500 font-medium mt-0.5">
-                      {isAr ? 'تحديد الجداول المطلوبة بدقة وتصدير مستنداتها مع المرفقات والتوقيتات' : 'Select target collections to serialize and download in JSON format'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Categorized Interactive Collection Selector */}
-                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-extrabold text-slate-800 flex items-center gap-1.5">
-                      <Layers className="h-3.5 w-3.5 text-indigo-600" />
-                      <span>{isAr ? 'اختر الجداول المراد تضمينها:' : 'Target Collections:'}</span>
-                    </span>
-
-                    {/* 1-Click Fast Presets */}
-                    <div className="flex items-center gap-1.5 flex-wrap font-bold text-[10px]">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedBackupCollections([...MASTER_COLLECTIONS_REGISTRY])}
-                        className="px-2 py-0.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-md cursor-pointer transition"
-                      >
-                        {isAr ? 'البيانات الأساسية فقط (١٢)' : 'Master Only (12)'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedBackupCollections([...OPERATIONAL_COLLECTIONS_REGISTRY])}
-                        className="px-2 py-0.5 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-md cursor-pointer transition"
-                      >
-                        {isAr ? 'الحركات التشغيلية فقط (١٦)' : 'Operational Only (16)'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedBackupCollections([...BACKUP_COLLECTIONS_REGISTRY])}
-                        className="px-2 py-0.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 rounded-md cursor-pointer transition"
-                      >
-                        {isAr ? 'تحديد الكل' : 'All (28)'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedBackupCollections([])}
-                        className="px-2 py-0.5 bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200 rounded-md cursor-pointer transition"
-                      >
-                        {isAr ? 'إلغاء' : 'None'}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 max-h-80 overflow-y-auto p-1 text-xs pe-1">
-                    {/* Category 1: Master Data */}
-                    <div className="p-2.5 bg-white border border-emerald-200/80 rounded-2xl space-y-2">
-                      <div className="flex items-center justify-between border-b border-emerald-100 pb-1.5">
-                        <span className="font-extrabold text-[11px] text-emerald-800 flex items-center gap-1.5">
-                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                          <span>{isAr ? 'البيانات الأساسية الثابتة (Master Data)' : 'Master Data Records'}</span>
-                        </span>
-                        <span className="text-[10px] font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                          {selectedBackupCollections.filter((c) => MASTER_COLLECTIONS_REGISTRY.includes(c)).length} / {MASTER_COLLECTIONS_REGISTRY.length}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                        {MASTER_COLLECTIONS_REGISTRY.map((collName) => {
-                          const isChecked = selectedBackupCollections.includes(collName);
-                          const meta = COLLECTION_DISPLAY_NAMES[collName] || {};
-                          return (
-                            <label
-                              key={collName}
-                              className={`p-1.5 rounded-xl border flex items-center gap-2 cursor-pointer transition select-none ${
-                                isChecked
-                                  ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950 font-bold shadow-2xs'
-                                  : 'bg-slate-50/60 border-slate-200 text-slate-500 hover:bg-slate-100'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={() => {
-                                  const next = isChecked
-                                    ? selectedBackupCollections.filter((c) => c !== collName)
-                                    : [...selectedBackupCollections, collName];
-                                  setSelectedBackupCollections(next);
-                                }}
-                                className="accent-emerald-600 rounded h-3.5 w-3.5 shrink-0"
-                              />
-                              <div className="min-w-0 flex-1 leading-tight">
-                                <span className="block text-[11px] font-bold truncate">
-                                  {isAr ? meta.ar || collName : meta.en || collName}
-                                </span>
-                                <span className="block font-mono text-[9px] text-slate-400 truncate">
-                                  {collName}
-                                </span>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Category 2: Operational Data */}
-                    <div className="p-2.5 bg-white border border-amber-200/80 rounded-2xl space-y-2">
-                      <div className="flex items-center justify-between border-b border-amber-100 pb-1.5">
-                        <span className="font-extrabold text-[11px] text-amber-800 flex items-center gap-1.5">
-                          <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
-                          <span>{isAr ? 'الحركات والبيانات التشغيلية والدفترية (Operational)' : 'Operational & Transactional'}</span>
-                        </span>
-                        <span className="text-[10px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                          {selectedBackupCollections.filter((c) => OPERATIONAL_COLLECTIONS_REGISTRY.includes(c)).length} / {OPERATIONAL_COLLECTIONS_REGISTRY.length}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                        {OPERATIONAL_COLLECTIONS_REGISTRY.map((collName) => {
-                          const isChecked = selectedBackupCollections.includes(collName);
-                          const meta = COLLECTION_DISPLAY_NAMES[collName] || {};
-                          return (
-                            <label
-                              key={collName}
-                              className={`p-1.5 rounded-xl border flex items-center gap-2 cursor-pointer transition select-none ${
-                                isChecked
-                                  ? 'bg-amber-50/90 border-amber-300 text-amber-950 font-bold shadow-2xs'
-                                  : 'bg-slate-50/60 border-slate-200 text-slate-500 hover:bg-slate-100'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={() => {
-                                  const next = isChecked
-                                    ? selectedBackupCollections.filter((c) => c !== collName)
-                                    : [...selectedBackupCollections, collName];
-                                  setSelectedBackupCollections(next);
-                                }}
-                                className="accent-amber-600 rounded h-3.5 w-3.5 shrink-0"
-                              />
-                              <div className="min-w-0 flex-1 leading-tight">
-                                <span className="block text-[11px] font-bold truncate">
-                                  {isAr ? meta.ar || collName : meta.en || collName}
-                                </span>
-                                <span className="block font-mono text-[9px] text-slate-400 truncate">
-                                  {collName}
-                                </span>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-between items-center text-[11px] pt-1 text-slate-500 border-t border-slate-200/60 font-mono">
-                    <span>{isAr ? 'عدد الجداول المحددة:' : 'Selected Collections:'}</span>
-                    <b className="text-indigo-700 font-extrabold">
-                      {selectedBackupCollections.length} / {BACKUP_COLLECTIONS_REGISTRY.length}
-                    </b>
-                  </div>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleExportBackupJson}
-                disabled={isBackingUp || selectedBackupCollections.length === 0}
-                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <HardDriveDownload className="h-4 w-4" />
-                <span>
-                  {selectedBackupCollections.length === 0
-                    ? (isAr ? 'يرجى تحديد جدول واحد على الأقل' : 'Select at least 1 collection')
-                    : (isAr
-                        ? `تنزيل النسخة الاحتياطية (${selectedBackupCollections.length} جدول)`
-                        : `Download Backup JSON (${selectedBackupCollections.length} collections)`)}
-                </span>
-              </button>
-            </div>
-
-            {/* 2. Selective Multi-Collection Restore Card */}
-            <div className="p-5 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4 flex flex-col justify-between">
-              <div className="space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-2xl shadow-2xs">
-                    <HardDriveUpload className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <h3 className="font-extrabold text-sm text-slate-900">
-                      {isAr ? '٢- استعادة محددة من ملف احتياطي (Selective Restore)' : '2. Selective Restore from File'}
-                    </h3>
-                    <p className="text-xs text-slate-500 font-medium mt-0.5">
-                      {isAr ? 'اختيار جداول ومستندات محددة للاستعادة مع خيار المسح أو الدمج' : 'Select collections from JSON to hydrate safely in 400-doc batches'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* File Upload Zone */}
-                <div className="p-3.5 bg-slate-50 border-2 border-dashed border-slate-300 rounded-2xl text-center space-y-2">
-                  <FileJson className="h-7 w-7 text-slate-400 mx-auto" />
-                  <div>
-                    <label className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold cursor-pointer transition shadow-2xs">
-                      <span>{isAr ? 'اختر ملف النسخة الاحتياطية (.json)' : 'Select Backup JSON File'}</span>
-                      <input type="file" accept=".json,application/json" onChange={handleSelectRestoreFile} className="hidden" />
-                    </label>
-                  </div>
-                  <span className="text-[10px] text-slate-400 block">
-                    {restoreFilePayload ? (
-                      <b className="text-emerald-700 font-mono">
-                        {isAr ? 'تم تحميل الملف بنجاح:' : 'Loaded:'} {restoreFilePayload._backupHeader.backupDate?.split('T')[0]} ({restoreFilePayload._backupHeader.totalDocuments} {isAr ? 'مستند عبر' : 'docs in'} {Object.keys(restoreFilePayload.collections || {}).length} {isAr ? 'جدول' : 'colls'})
-                      </b>
-                    ) : (
-                      (isAr ? 'يتم فحص بنية الملف واكتشاف الجداول تلقائياً' : 'Auto-inspects collections & doc counts before restore')
-                    )}
-                  </span>
-                </div>
-
-                {/* Restore Strategy Selection */}
-                {restoreFilePayload && (
-                  <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-2 text-xs">
-                    <span className="font-bold text-amber-950 block">
-                      {isAr ? 'استراتيجية استعادة الجداول المحددة:' : 'Restore Strategy for Selected Tables:'}
-                    </span>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className={`p-2 border rounded-xl cursor-pointer flex items-center gap-2 transition ${restoreStrategy === 'clean_slate' ? 'bg-amber-100 border-amber-400 font-bold text-amber-950 shadow-2xs' : 'bg-white border-slate-200 text-slate-700'}`}>
-                        <input
-                          type="radio"
-                          name="strategy"
-                          checked={restoreStrategy === 'clean_slate'}
-                          onChange={() => setRestoreStrategy('clean_slate')}
-                          className="accent-amber-600"
-                        />
-                        <span className="text-[11px]">{isAr ? 'مسح واستبدال الجداول المحددة فقط' : 'Wipe & Replace Selected Only'}</span>
-                      </label>
-
-                      <label className={`p-2 border rounded-xl cursor-pointer flex items-center gap-2 transition ${restoreStrategy === 'merge_upsert' ? 'bg-amber-100 border-amber-400 font-bold text-amber-950 shadow-2xs' : 'bg-white border-slate-200 text-slate-700'}`}>
-                        <input
-                          type="radio"
-                          name="strategy"
-                          checked={restoreStrategy === 'merge_upsert'}
-                          onChange={() => setRestoreStrategy('merge_upsert')}
-                          className="accent-amber-600"
-                        />
-                        <span className="text-[11px]">{isAr ? 'دمج وتحديث (Upsert)' : 'Merge & Upsert'}</span>
-                      </label>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Restore Action Button */}
-              <button
-                type="button"
-                disabled={!restoreFilePayload || isRestoring || selectedRestoreCollections.length === 0}
-                onClick={handleExecuteChunkedRestore}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <CheckCheck className="h-4 w-4" />
-                <span>
-                  {isAr
-                    ? `استعادة الجداول المحددة (${selectedRestoreCollections.length} جدول)`
-                    : `Restore Selected (${selectedRestoreCollections.length} collections)`}
-                </span>
-              </button>
-            </div>
-          </div>
-
-          {/* Granular Collection & Document Inspection & Checkbox Selector */}
-          {restoreFilePayload && (
-            <div className="p-5 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                <div className="flex items-center gap-2">
-                  <Archive className="h-4 w-4 text-indigo-600" />
-                  <span className="font-extrabold text-xs text-slate-900">
-                    {isAr ? 'حدد الجداول والمستندات المراد استعادتها من هذا الملف:' : 'Select Collections to Restore from File:'}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap text-xs font-bold">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const available = Object.keys(restoreFilePayload.collections || {});
-                      setSelectedRestoreCollections(available.filter((c) => MASTER_COLLECTIONS_REGISTRY.includes(c)));
-                    }}
-                    className="px-2 py-0.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-md cursor-pointer transition text-[11px]"
-                  >
-                    {isAr ? 'البيانات الأساسية فقط' : 'Master Only'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const available = Object.keys(restoreFilePayload.collections || {});
-                      setSelectedRestoreCollections(available.filter((c) => OPERATIONAL_COLLECTIONS_REGISTRY.includes(c)));
-                    }}
-                    className="px-2 py-0.5 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-md cursor-pointer transition text-[11px]"
-                  >
-                    {isAr ? 'الحركات التشغيلية فقط' : 'Operational Only'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRestoreCollections(Object.keys(restoreFilePayload.collections || {}))}
-                    className="text-emerald-700 hover:underline cursor-pointer text-[11px]"
-                  >
-                    {isAr ? 'تحديد الكل' : 'Select All'}
-                  </button>
-                  <span className="text-slate-300">•</span>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRestoreCollections([])}
-                    className="text-slate-500 hover:underline cursor-pointer text-[11px]"
-                  >
-                    {isAr ? 'إلغاء' : 'Deselect All'}
-                  </button>
-                  <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200 ms-1">
-                    {selectedRestoreCollections.length} / {Object.keys(restoreFilePayload.collections || {}).length} {isAr ? 'محدد' : 'Selected'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Collections Cards with Live Checkboxes */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-                {Object.entries(restoreFilePayload._backupHeader.collectionCounts || {}).map(([collName, count]) => {
-                  const isSelected = selectedRestoreCollections.includes(collName);
-                  const isMaster = MASTER_COLLECTIONS_REGISTRY.includes(collName);
-                  const meta = COLLECTION_DISPLAY_NAMES[collName] || {};
-                  return (
-                    <label
-                      key={collName}
-                      className={`p-2.5 rounded-2xl border transition-all cursor-pointer select-none space-y-1.5 ${
-                        isSelected
-                          ? isMaster
-                            ? 'bg-emerald-50/90 border-emerald-400 shadow-2xs ring-1 ring-emerald-400 text-emerald-950 font-bold'
-                            : 'bg-amber-50/90 border-amber-400 shadow-2xs ring-1 ring-amber-400 text-amber-950 font-bold'
-                          : 'bg-slate-50/70 border-slate-200 opacity-60 hover:opacity-100'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => {
-                            setSelectedRestoreCollections((prev) =>
-                              prev.includes(collName) ? prev.filter((c) => c !== collName) : [...prev, collName]
-                            );
-                          }}
-                          className={`rounded h-4 w-4 ${isMaster ? 'accent-emerald-600' : 'accent-amber-600'}`}
-                        />
-                        <span className="font-mono text-[11px] font-extrabold text-slate-800">{count} {isAr ? 'مستند' : 'docs'}</span>
-                      </div>
-                      <div className="min-w-0">
-                        <span className="text-[11px] font-bold block truncate" title={isAr ? meta.ar || collName : meta.en || collName}>
-                          {isAr ? meta.ar || collName : meta.en || collName}
-                        </span>
-                        <div className="flex items-center justify-between gap-1 mt-0.5">
-                          <span className="font-mono text-[9px] text-slate-400 block truncate" title={collName}>
-                            {collName}
-                          </span>
-                          <span className={`text-[8px] font-bold px-1 rounded uppercase shrink-0 ${isMaster ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                            {isMaster ? 'Master' : 'Ops'}
-                          </span>
-                        </div>
-                      </div>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
+        <BackupRestoreHub isAr={isAr} currentUser={currentUser} />
       )}
 
       {/* ========================================================================= */}
@@ -6334,292 +4338,17 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       )}
 
       {/* ========================================================================= */}
+      {/* SUB-TAB: IMMUTABLE AUDIT LOGS & CLOUD ROLLUPS                             */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'audit_logs' && (
+        <AuditLogsHub isAr={isAr} />
+      )}
+
+      {/* ========================================================================= */}
       {/* SUB-TAB 4: TARGETED FACTORY RESET (Scalable Selector & Cascade)           */}
       {/* ========================================================================= */}
       {activeSubTab === 'factory_reset' && (
-        <div className="space-y-5 animate-in fade-in duration-200">
-          {/* Quick Tool: Opening Stock Balances Seeder (Fast-Auto & Manual Matrix) */}
-          <div className="p-5 bg-gradient-to-r from-emerald-50 via-teal-50 to-white border border-emerald-200 rounded-3xl shadow-sm space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex items-start gap-3.5">
-                <div className="p-3 bg-emerald-600 text-white rounded-2xl shadow-xs shrink-0">
-                  <Boxes className="h-6 w-6" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="font-extrabold text-sm text-emerald-950">
-                      {isAr ? 'أداة ضخ وتوليد الأرصدة الافتتاحية للمخزون' : 'Opening Stock Balances Seeder Tool'}
-                    </h3>
-                    <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-300">
-                      {isAr ? 'توليد سريع + مصفوفة يدوية' : 'Fast-Auto + Manual Matrix'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-emerald-800 mt-1 leading-relaxed max-w-2xl">
-                    {isAr
-                      ? 'أداة متقدمة لتسهيل مرحلة التطوير والتأسيس: إضافة وتوزيع أرصدة واقعية لكافة الخامات دفعة واحدة على المستودعات مع تسعيرها، أو تعديلها يدوياً عبر جدول مصفوفة تفاعلية، وتوثيق كافة العمليات في سجل الحركات الدفتري العام (Stock Ledger) كمرجع وحيد للرصيد.'
-                      : 'Developer & onboarding utility: seed realistic stock balances across warehouses with prices in 1-click Fast-Auto mode or via interactive Manual Matrix, with SSOT audit logging in Stock Ledger.'}
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setIsStockSeederOpen(true)}
-                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-bold shadow-xs transition flex items-center justify-center gap-2 cursor-pointer shrink-0"
-              >
-                <Sparkles className="h-4 w-4" />
-                <span>{isAr ? 'فتح أداة ضخ الأرصدة الافتتاحية' : 'Launch Stock Seeder'}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* 1-Click Diagnostic & Historical Lot Number Patcher */}
-          <div className="p-5 bg-indigo-50/70 border border-indigo-200 rounded-2xl space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-indigo-950">
-                <ShieldCheck className="h-5 w-5 text-indigo-600 shrink-0" />
-                <div>
-                  <h3 className="text-sm font-bold">
-                    {isAr ? 'أداة تدقيق ومطابقة أرقام التشغيلات واللوطات (Lot Integrity Audit)' : 'Lot Integrity & Historical Patcher'}
-                  </h3>
-                  <p className="text-xs text-slate-600 mt-0.5">
-                    {isAr
-                      ? 'فحص كافة أذون الاستلام التاريخية وتوليد أرقام اللوطات التلقائية لضمان عمل محرك FIFO بنسبة 100% بدون أي مساس بالكميات أو الأسعار.'
-                      : 'Audit all historical receipts and backfill structured lot numbers to guarantee 100% FIFO compatibility.'}
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleAuditAndPatchHistoricalLots}
-                disabled={isPatchingLots}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
-              >
-                {isPatchingLots ? <Sparkles className="h-4 w-4 animate-spin" /> : <Tag className="h-4 w-4" />}
-                <span>{isAr ? 'بدء فحص وتدقيق اللوطات' : 'Run Lot Audit Now'}</span>
-              </button>
-            </div>
-
-            {patchSummaryMsg && (
-              <div className="p-3 bg-white border border-indigo-200 text-indigo-900 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                <span>{patchSummaryMsg}</span>
-              </div>
-            )}
-          </div>
-
-          <div className="p-5 bg-rose-50/60 border border-rose-200 rounded-2xl space-y-2">
-            <div className="flex items-center gap-2 text-rose-950">
-              <AlertOctagon className="h-5 w-5 text-rose-600 shrink-0" />
-              <h3 className="text-sm font-bold">
-                {isAr ? 'منطقة العمليات الحساسة: تصفير الجداول واستعادة ضبط المصنع' : 'Danger Zone: Metadata-Driven Database Purge'}
-              </h3>
-            </div>
-            <p className="text-xs text-rose-900 leading-relaxed">
-              {isAr
-                ? 'حدد النطاق المراد تصفيره من القائمة أدناه لمعاينة التأثير والمسح السحابي الآمن.'
-                : 'Select the purge target from the dropdown to review cascade effects and execute cloud reset.'}
-            </p>
-          </div>
-
-          <div className="p-5 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-4 max-w-3xl">
-            <div>
-              <label className="block text-xs font-bold text-slate-800 mb-1">
-                {isAr ? 'اختر الجدول أو النطاق المراد مسحه وتصفيره (متوافق 100% مع هيكل البيانات الفعلي):' : 'Select Aligned Purge Target & Relational Cascade Scope:'}
-              </label>
-              <select
-                value={selectedPurgeTargetKey}
-                onChange={(e) => setSelectedPurgeTargetKey(e.target.value)}
-                className="w-full p-2.5 border border-slate-300 rounded-xl text-xs bg-slate-50 font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-rose-500 focus:outline-none"
-              >
-                <optgroup label={isAr ? '🛡️ 1. المسح التشغيلي الشامل الموصى به (آمن 100% على البيانات الأساسية ودليل الحسابات)' : '🛡️ 1. Recommended Full Operational Wipe (100% Safe for Master Data & COA)'}>
-                  <option value="operational_only">
-                    ⚡ {isAr ? 'مسح وتصفير كافة الحركات التشغيلية والمحاسبية فقط — مع الحفاظ الكامل (100%) على البيانات الأساسية ودليل الحسابات (Wipe Operational Only)' : 'Wipe Operational Data Only (Keep Master Data & Chart of Accounts 100% Intact)'}
-                  </option>
-                </optgroup>
-
-                <optgroup label={isAr ? '🔗 2. مسح جدول تشغيلي محدد + كافة السجلات التلقائية المرتبطة به في الجداول الأخرى (Smart Relational Cascade)' : '🔗 2. Targeted Operational Table + Auto-Made Linked Records in Other Collections'}>
-                  {PURGE_TARGETS_CATALOG.filter((t) => t.category === 'operational').map((t) => (
-                    <option key={t.key} value={t.key}>
-                      🔹 {isAr ? t.labelAr : t.labelEn} [{t.collectionsLabel}]
-                    </option>
-                  ))}
-                </optgroup>
-
-                <optgroup label={isAr ? '🗂️ 3. مسح جدول بيانات أساسية محدد (Master Data Reset — يحذف التعريفات الأساسية)' : '🗂️ 3. Specific Master Data Table Reset (Deletes Master Definitions)'}>
-                  {PURGE_TARGETS_CATALOG.filter((t) => t.category === 'master').map((t) => (
-                    <option key={t.key} value={t.key}>
-                      ⚠️ {isAr ? t.labelAr : t.labelEn} ({t.collectionsLabel})
-                    </option>
-                  ))}
-                </optgroup>
-
-                <optgroup label={isAr ? '🚨 4. خطر: استعادة ضبط المصنع الشامل (يحذف كافة الجداول الأساسية والتشغيلية)' : '🚨 4. Danger: Full Factory Reset (Deletes All Operational & Master Tables)'}>
-                  <option value="all">
-                    🚨 {isAr ? 'استعادة ضبط المصنع الشامل لكامل النظام بما فيه البيانات الأساسية (Full Master Reset)' : 'Master Full Factory Reset (All Tables Including Master Data)'}
-                  </option>
-                </optgroup>
-              </select>
-            </div>
-
-            {/* Target Scope Explanation Box */}
-            {(() => {
-              const selectedCatalogItem = PURGE_TARGETS_CATALOG.find((t) => t.key === selectedPurgeTargetKey);
-              return (
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-3">
-                  <div className="font-bold text-slate-900 flex items-center justify-between gap-2 flex-wrap">
-                    <div className="flex items-center gap-1.5">
-                      <Info className="h-4 w-4 text-amber-600 shrink-0" />
-                      <span>{isAr ? 'بيان الأثر والتأثير التلقائي المترابط (Relational Cascade Breakdown):' : 'Relational Cascade Effect & Scope Breakdown:'}</span>
-                    </div>
-                    {(selectedPurgeTargetKey === 'operational_only' || selectedCatalogItem?.category === 'operational') && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 text-[10px] font-extrabold">
-                        <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-                        <span>{isAr ? 'محمي: لا يمس البيانات الأساسية أو دليل الحسابات' : 'Master Data & COA 100% Protected'}</span>
-                      </span>
-                    )}
-                  </div>
-
-                  <p className="text-slate-700 leading-relaxed font-medium">
-                    {selectedPurgeTargetKey === 'operational_only'
-                      ? (isAr
-                          ? `سيتم مسح وتصفير كافة الحركات التشغيلية والمحاسبية (${OPERATIONAL_COLLECTIONS_REGISTRY.length} جدول تشغيلي: أوامر الشراء، أذون الاستلام والمرتجعات، التحويلات، أوامر التشغيل، تانكات السوائل، قيود اليومية، سندات الخزينة والبنوك، العهد والسلف، تسويات الاستحقاقات، وشهادات الخصم) وتصفير الأرصدة الدفترية العابرة للخامات والخزائن والبنوك وخزانات الصالة إلى (0)، دون المساس نهائياً بأي سجل من البيانات الأساسية أو إعدادات دليل الحسابات.`
-                          : `Wipes all ${OPERATIONAL_COLLECTIONS_REGISTRY.length} operational/transactional collections (POs, GRNs/RTNs, Transfers, Work Orders, Liquid Tanks, Journal Entries, Cash Vouchers, Custodies, Dues Settlements, WHT Notes, etc.) and resets transient item stock, safe/bank balances, and floor vessel volumes to 0, while 100% preserving all Master Data and Chart of Accounts setups.`)
-                      : selectedPurgeTargetKey === 'all'
-                      ? (isAr ? 'تحذير شديد: سيتم مسح وتفريغ كافة الجداول التشغيلية والأساسية بالكامل وتصفير أرصدة الخامات والخزائن والبنوك إلى الصفر (0).' : 'CRITICAL WARNING: Purges all transactional and master collections and resets all balances to 0.')
-                      : selectedCatalogItem
-                      ? (isAr ? selectedCatalogItem.descAr : selectedCatalogItem.descEn)
-                      : (isAr ? `سيتم تفريغ كافة سجلات (${selectedPurgeTargetKey}) السحابية.` : `Wipes records in (${selectedPurgeTargetKey}).`)}
-                  </p>
-
-                  {/* Detailed Breakdown for Selected Catalog Item */}
-                  {selectedCatalogItem && (
-                    <div className="space-y-2.5 pt-1">
-                      {/* 1. Primary Collections */}
-                      {selectedCatalogItem.primaryCollections?.length > 0 && (
-                        <div className="p-2.5 bg-white border border-slate-200 rounded-xl space-y-1.5">
-                          <div className="text-[11px] font-extrabold text-slate-800 flex items-center gap-1.5">
-                            <Database className="h-3.5 w-3.5 text-rose-600 shrink-0" />
-                            <span>{isAr ? 'الجداول الأساسية المستهدفة بالمسح المباشر:' : 'Primary Collections Wiped Directly:'}</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {selectedCatalogItem.primaryCollections.map((collKey) => (
-                              <span
-                                key={collKey}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-50 border border-rose-200 text-[10px] font-bold text-rose-900"
-                              >
-                                <span>{getCollectionDisplayName(collKey, isAr)}</span>
-                                <span className="font-mono text-[9px] text-rose-700">({collKey})</span>
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 2. Related Auto-Made Cascades in Other Collections */}
-                      {selectedCatalogItem.relatedCascades?.length > 0 && (
-                        <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl space-y-1.5">
-                          <div className="text-[11px] font-extrabold text-amber-950 flex items-center gap-1.5">
-                            <GitBranch className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-                            <span>
-                              {isAr
-                                ? `السجلات التلقائية المرتبطة التي سيتم حذفها انتقائياً من الجداول الأخرى (${selectedCatalogItem.relatedCascades.length} مسارات ربط):`
-                                : `Auto-Made Linked Records Selectively Purged from Other Collections (${selectedCatalogItem.relatedCascades.length} cascade rules):`}
-                            </span>
-                          </div>
-                          <ul className="space-y-1 text-[11px] text-amber-900 font-medium list-disc list-inside">
-                            {selectedCatalogItem.relatedCascades.map((cRule, idx) => (
-                              <li key={`${cRule.collection}-${idx}`}>
-                                <span className="font-bold">{isAr ? cRule.labelAr : cRule.labelEn}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
-                      {/* 3. Dynamic Balance Recalculation Summary */}
-                      {selectedCatalogItem.recalculate && Object.values(selectedCatalogItem.recalculate).some(Boolean) && (
-                        <div className="p-2.5 bg-indigo-50/80 border border-indigo-200 rounded-xl space-y-1">
-                          <div className="text-[11px] font-extrabold text-indigo-950 flex items-center gap-1.5">
-                            <RefreshCw className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
-                            <span>{isAr ? 'إعادة المعايرة التلقائية للأرصدة والارتباطات بعد المسح:' : 'Automatic Post-Purge Balance & State Recalibration:'}</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5 pt-0.5">
-                            {selectedCatalogItem.recalculate.recalcItemsStock && (
-                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
-                                {isAr ? '📦 إعادة احتساب أرصدة الخامات (items.stock) من الحركات المتبقية في (stock_ledger)' : '📦 Recalculates items.stock from remaining stock_ledger entries'}
-                              </span>
-                            )}
-                            {selectedCatalogItem.recalculate.recalcSafesAndBanks && (
-                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
-                                {isAr ? '🏦 إعادة احتساب أرصدة وفئات الخزائن والبنوك من السندات المتبقية' : '🏦 Recalculates Safe & Bank balances from remaining vouchers'}
-                              </span>
-                            )}
-                            {selectedCatalogItem.recalculate.resetFloorVessels && (
-                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
-                                {isAr ? '🧪 تصفير الكميات العابرة بخزانات الصالة مع بقاء إعدادات السعة' : '🧪 Resets transient Floor Vessel volumes (keeps capacity config)'}
-                              </span>
-                            )}
-                            {selectedCatalogItem.recalculate.resetPoReceivedQuantities && (
-                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
-                                {isAr ? '📋 إعادة تعيين الكميات المستلمة بأوامر الشراء إلى (0 - قيد التوريد)' : '📋 Resets received quantities on Purchase Orders to 0'}
-                              </span>
-                            )}
-                            {selectedCatalogItem.recalculate.unlinkGrnPoRefs && (
-                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
-                                {isAr ? '🔗 فك ارتباط أذون الاستلام بأوامر الشراء المحذوفة' : '🔗 Unlinks deleted PO references on remaining GRNs'}
-                              </span>
-                            )}
-                            {selectedCatalogItem.recalculate.resetStagedPalletsToFloor && (
-                              <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-900">
-                                {isAr ? '🏷️ إعادة حالة الباليتات إلى (مشدودة بصالة الإنتاج)' : '🏷️ Resets staged pallets back to floor status'}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {selectedPurgeTargetKey === 'operational_only' && (
-                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1.5 mt-2">
-                      <div className="font-black text-emerald-900 flex items-center gap-1.5 text-[11px]">
-                        <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
-                        <span>
-                          {isAr
-                            ? `حصانة مطلقة (100% محمي ولن يتم لمسه — ${MASTER_COLLECTIONS_REGISTRY.length} جدول أساسي ومحاسبي):`
-                            : `100% Protected Master & Accounting Configurations (${MASTER_COLLECTIONS_REGISTRY.length} Collections Untouched):`}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5 pt-0.5">
-                        {MASTER_COLLECTIONS_REGISTRY.map((collKey) => (
-                          <span
-                            key={collKey}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-200 text-[10px] font-bold text-emerald-900 shadow-2xs"
-                          >
-                            <CheckCircle2 className="h-3 w-3 text-emerald-600 shrink-0" />
-                            <span>{getCollectionDisplayName(collKey, isAr)}</span>
-                            <span className="font-mono text-[9px] text-emerald-700">({collKey})</span>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-            <button
-              type="button"
-              onClick={() => setResetModalOpen(true)}
-              className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer flex items-center justify-center gap-1.5"
-            >
-              <Trash2 className="h-4 w-4" />
-              <span>{isAr ? 'بدء إجراءات التصفير والمسح' : 'Proceed to Purge Confirmation'}</span>
-            </button>
-          </div>
-        </div>
+        <FactoryResetHub isAr={isAr} currentUser={currentUser} warehousesList={warehousesList} allTabsList={allTabsList} />
       )}
 
       {/* ========================================================================= */}
@@ -6815,721 +4544,9 @@ export default function AdminControlPanel({ currentUser = {}, initialSubTab = nu
       {/* SUB-TAB: UNIVERSAL DYNAMIC DATABASE INSPECTOR & LIVE DOCUMENT EDITOR      */}
       {/* ========================================================================= */}
       {activeSubTab === 'db_inspector' && (
-        <div className="space-y-4 animate-in fade-in duration-200">
-          {isScanningCollections && (
-            <PeacockLoader
-              fullScreen
-              size="xl"
-              text={isAr ? 'جاري فحص الجداول واكتشاف قواعد البيانات النشطة...' : 'Scanning Database Collections...'}
-            />
-          )}
-
-          {dbInspectorMsg && (
-            <div className="p-3 bg-cyan-50 border border-cyan-200 text-cyan-950 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in">
-              <CheckCircle2 className="h-4 w-4 text-cyan-600 shrink-0" />
-              <span>{dbInspectorMsg}</span>
-            </div>
-          )}
-
-          {/* Top Control Bar: Scanner, Collection Selector & Custom Input */}
-          <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-2xs space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-cyan-50 text-cyan-700 border border-cyan-200 rounded-xl">
-                  <Database className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-extrabold text-slate-900">
-                    {isAr ? 'مستعرض ومحرر قواعد البيانات السحابية (Schema-Free DB Inspector)' : 'Universal Firestore Database Inspector & Editor'}
-                  </h3>
-                  <span className="text-[11px] text-slate-500 font-medium">
-                    {isAr ? 'فحص واكتشاف الجداول، معاينة المستندات الحية، وتعديل وتصحيح الحقول مباشرة' : 'Auto-discover collections, inspect real-time documents, and edit schema fields'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleScanDatabaseCollections}
-                  className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                >
-                  <RefreshCw className="h-3.5 w-3.5 text-indigo-600" />
-                  <span>{isAr ? 'إعادة فحص الجداول' : 'Rescan Collections'}</span>
-                </button>
-
-                {selectedCollection && (
-                  <button
-                    type="button"
-                    onClick={handleOpenCreateDocument}
-                    className="px-3.5 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
-                  >
-                    <Plus className="h-4 w-4" />
-                    <span>{isAr ? 'إنشاء مستند جديد' : 'New Document'}</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Collection Discovery Chips & Ad-Hoc Input */}
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-2 border-t border-slate-100 items-center">
-              <div className="md:col-span-8 flex flex-wrap items-center gap-1.5 max-h-28 overflow-y-auto p-1">
-                {discoveredCollections.map((col) => {
-                  const isSelected = selectedCollection === col.name;
-                  return (
-                    <button
-                      key={col.name}
-                      type="button"
-                      onClick={() => handleSelectCollection(col.name)}
-                      className={`px-2.5 py-1 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                        isSelected
-                          ? 'bg-slate-900 text-white shadow-xs'
-                          : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200'
-                      }`}
-                    >
-                      <span>{col.name}</span>
-                      <span className={`font-mono text-[10px] px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-cyan-500 text-slate-950 font-black' : 'bg-slate-200 text-slate-700'}`}>
-                        {col.count}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Ad-Hoc Custom Collection Query */}
-              <div className="md:col-span-4 flex items-center gap-1.5">
-                <input
-                  type="text"
-                  placeholder={isAr ? 'اكتب اسم أي جدول آخر...' : 'Custom collection name...'}
-                  value={customCollectionInput}
-                  onChange={(e) => setCustomCollectionInput(e.target.value.trim())}
-                  className="w-full p-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-cyan-500 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  disabled={!customCollectionInput}
-                  onClick={() => {
-                    handleSelectCollection(customCollectionInput);
-                    setCustomCollectionInput('');
-                  }}
-                  className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition disabled:opacity-40 cursor-pointer"
-                >
-                  {isAr ? 'فتح' : 'Open'}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Document Inspector & Entity Relationship Diagram Hub */}
-          {selectedCollection && (
-            <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden space-y-3.5 p-4">
-              {/* Top View Mode Switcher Bar */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <span className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5">
-                    <FolderOpen className="h-4 w-4 text-cyan-600" />
-                    <span>{isAr ? 'الجدول النشط:' : 'Active Collection:'}</span>
-                    <span className="font-mono text-cyan-800 bg-cyan-50 px-2 py-0.5 rounded-lg border border-cyan-200 font-extrabold">
-                      {selectedCollection}
-                    </span>
-                  </span>
-                  <span className="font-mono text-xs text-slate-400 font-bold">
-                    ({collectionDocs.length} {isAr ? 'مستند' : 'documents'})
-                  </span>
-                </div>
-
-                {/* View Switcher: Diagram / Relations Graph vs. Document Table */}
-                <div className="flex items-center gap-2">
-                  <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold border border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() => setInspectorViewMode('diagram')}
-                      className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                        inspectorViewMode === 'diagram'
-                          ? 'bg-white text-indigo-900 shadow-xs border border-slate-200/80 font-extrabold'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <Workflow className="h-3.5 w-3.5 text-indigo-600" />
-                      <span>{isAr ? 'مخطط العلاقات والربط (ERD Graph)' : 'Relationship Diagram'}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setInspectorViewMode('table')}
-                      className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                        inspectorViewMode === 'table'
-                          ? 'bg-white text-slate-900 shadow-xs border border-slate-200/80 font-extrabold'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <Table className="h-3.5 w-3.5 text-cyan-600" />
-                      <span>{isAr ? 'جدول المستندات الحية' : 'Live Documents Table'}</span>
-                    </button>
-                  </div>
-
-                  {inspectorViewMode === 'table' && (
-                    <div className="relative max-w-xs w-full">
-                      <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                      <input
-                        type="text"
-                        placeholder={isAr ? 'بحث في البيانات...' : 'Search docs...'}
-                        value={docSearchQuery}
-                        onChange={(e) => setDocSearchQuery(e.target.value)}
-                        className="w-full ps-8 pe-3 py-1 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:outline-none"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* ========================================================================= */}
-              {/* 📊 INTERACTIVE 3-TIER DYNAMIC ENTITY-RELATIONSHIP FLOW GRAPH              */}
-              {/* ========================================================================= */}
-              {inspectorViewMode === 'diagram' && (() => {
-                // Dynamically resolve real-time relationships from live document schemas
-                const relationMeta = resolveDynamicEntityRelations(
-                  selectedCollection,
-                  collectionDocs,
-                  discoveredCollections
-                );
-
-                const upstreams = relationMeta.upstream || [];
-                const downstreams = relationMeta.downstream || [];
-
-                return (
-                  <div className="p-5 bg-gradient-to-b from-slate-950 via-[#10141d] to-slate-950 text-white rounded-2xl border border-slate-800 space-y-6 shadow-inner animate-in fade-in">
-                    {/* Visual Diagram Legend & Header */}
-                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3 text-xs">
-                      <div className="flex items-center gap-2">
-                        <Network className="h-4 w-4 text-cyan-400" />
-                        <span className="font-extrabold text-sm text-white">
-                          {isAr ? `مخطط الربط والاعتماديات لجدول: (${selectedCollection})` : `ERD Dependency Flow: ${selectedCollection}`}
-                        </span>
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-cyan-950 border border-cyan-500/40 text-cyan-300">
-                          {relationMeta.category}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-3 text-[11px] font-medium text-slate-400">
-                        <span className="flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-indigo-400" />
-                          <span>{isAr ? 'جداول مدخلات / مرجعية (Upstream)' : 'Parent Dependencies'}</span>
-                        </span>
-                        <span>•</span>
-                        <span className="flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
-                          <span>{isAr ? 'الجدول المحدد (Center Node)' : 'Current Entity'}</span>
-                        </span>
-                        <span>•</span>
-                        <span className="flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                          <span>{isAr ? 'جداول مخرجات / تابعة (Downstream)' : 'Dependent Children'}</span>
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* 3-Column Node Flow Canvas (Upstream ➔ Center Node ➔ Downstream) */}
-                    <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-                      {/* Column 1: Upstream / Parent Dependencies */}
-                      <div className="md:col-span-4 space-y-2.5">
-                        <div className="text-[11px] font-extrabold text-indigo-400 uppercase tracking-wider flex items-center justify-between px-1">
-                          <span>{isAr ? 'الجداول المرجعية (الأصل):' : 'Upstream Parents:'}</span>
-                          <span className="font-mono text-[10px] bg-indigo-950/80 px-2 py-0.5 rounded border border-indigo-500/30">
-                            {upstreams.length} {isAr ? 'ارتباطات' : 'links'}
-                          </span>
-                        </div>
-
-                        {upstreams.length === 0 ? (
-                          <div className="p-4 rounded-2xl bg-slate-900/60 border border-dashed border-slate-800 text-center text-slate-500 text-xs italic">
-                            {isAr ? 'جدول رئيسي مستقل (لا يعتمد على جداول أصل)' : 'Root entity (No upstream parent references)'}
-                          </div>
-                        ) : (
-                          upstreams.map((rel, idx) => (
-                            <div
-                              key={idx}
-                              onClick={() => handleSelectCollection(rel.collection)}
-                              className="p-3 bg-[#151a27] hover:bg-[#1e2538] border border-indigo-500/30 hover:border-indigo-400 rounded-2xl transition cursor-pointer group shadow-2xs space-y-1.5"
-                              title={isAr ? `انقر للانتقال واستعراض جدول (${rel.collection})` : `Click to inspect ${rel.collection}`}
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="font-mono font-bold text-xs text-indigo-300 group-hover:text-white transition flex items-center gap-1">
-                                  <GitBranch className="h-3.5 w-3.5 text-indigo-400" />
-                                  <span>{rel.collection}</span>
-                                </span>
-                                <span className="text-[9px] font-mono font-extrabold text-indigo-300 bg-indigo-950/90 px-1.5 py-0.2 rounded border border-indigo-500/40">
-                                  {rel.type}
-                                </span>
-                              </div>
-
-                              <span className="text-[11px] text-slate-300 font-semibold block">{isAr ? rel.labelAr : rel.labelEn}</span>
-                              <div className="text-[10px] font-mono text-slate-400 bg-black/40 px-2 py-0.5 rounded border border-slate-800 flex items-center justify-between">
-                                <span>FK: {rel.key}</span>
-                                <ExternalLink className="h-3 w-3 text-indigo-400 opacity-60 group-hover:opacity-100" />
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      {/* Column 2: Center Node (Selected Collection) */}
-                      <div className="md:col-span-4 p-5 bg-[#172033] border-2 border-cyan-400 rounded-3xl text-center space-y-3.5 shadow-xl shadow-cyan-950/40 ring-4 ring-cyan-500/10 relative">
-                        <div className="w-12 h-12 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center mx-auto text-cyan-300">
-                          <Database className="h-6 w-6" />
-                        </div>
-
-                        <div>
-                          <span className="font-mono text-lg font-black text-white tracking-tight block">
-                            {selectedCollection}
-                          </span>
-                          <span className="text-xs font-bold text-cyan-300 block mt-0.5">
-                            {isAr ? relationMeta.labelAr : relationMeta.labelEn}
-                          </span>
-                          <span className="text-[10px] font-mono text-slate-400 block mt-1">
-                            Collection Key: `{selectedCollection}`
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-700/80 text-xs">
-                          <div className="p-2 bg-black/40 rounded-xl border border-slate-800">
-                            <span className="text-[10px] text-slate-400 block">{isAr ? 'عدد المستندات:' : 'Documents:'}</span>
-                            <span className="font-mono font-black text-cyan-400 text-sm">{collectionDocs.length}</span>
-                          </div>
-
-                          <div className="p-2 bg-black/40 rounded-xl border border-slate-800">
-                            <span className="text-[10px] text-slate-400 block">{isAr ? 'إجمالي الارتباطات:' : 'Total Relations:'}</span>
-                            <span className="font-mono font-black text-emerald-400 text-sm">{upstreams.length + downstreams.length}</span>
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => setInspectorViewMode('table')}
-                          className="w-full py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-xs font-extrabold transition shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <Table className="h-3.5 w-3.5" />
-                          <span>{isAr ? 'فتح جدول المستندات وتعديل الحقول' : 'Open Live Table & Edit'}</span>
-                        </button>
-                      </div>
-
-                      {/* Column 3: Downstream / Child Dependencies */}
-                      <div className="md:col-span-4 space-y-2.5">
-                        <div className="text-[11px] font-extrabold text-emerald-400 uppercase tracking-wider flex items-center justify-between px-1">
-                          <span>{isAr ? 'الجداول التابعة والمستهلكة (المصب):' : 'Downstream Children:'}</span>
-                          <span className="font-mono text-[10px] bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/30">
-                            {downstreams.length} {isAr ? 'تأثيرات' : 'links'}
-                          </span>
-                        </div>
-
-                        {downstreams.length === 0 ? (
-                          <div className="p-4 rounded-2xl bg-slate-900/60 border border-dashed border-slate-800 text-center text-slate-500 text-xs italic">
-                            {isAr ? 'جدول نهائي للمخرجات (لا توجد جداول أخرى تعتمد عليه)' : 'Terminal leaf table (No downstream child consumers)'}
-                          </div>
-                        ) : (
-                          <div className="space-y-2 max-h-96 overflow-y-auto pe-1">
-                            {downstreams.map((rel, idx) => (
-                              <div
-                                key={idx}
-                                onClick={() => handleSelectCollection(rel.collection)}
-                                className="p-3 bg-[#131e24] hover:bg-[#1a2932] border border-emerald-500/30 hover:border-emerald-400 rounded-2xl transition cursor-pointer group shadow-2xs space-y-1.5"
-                                title={isAr ? `انقر للانتقال واستعراض جدول (${rel.collection})` : `Click to inspect ${rel.collection}`}
-                              >
-                                <div className="flex items-center justify-between">
-                                  <span className="font-mono font-bold text-xs text-emerald-300 group-hover:text-white transition flex items-center gap-1">
-                                    <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
-                                    <span>{rel.collection}</span>
-                                  </span>
-                                  <span className="text-[9px] font-mono font-extrabold text-emerald-300 bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-500/40">
-                                    {rel.type}
-                                  </span>
-                                </div>
-
-                                <span className="text-[11px] text-slate-300 font-semibold block">{isAr ? rel.labelAr : rel.labelEn}</span>
-                                <div className="text-[10px] font-mono text-slate-400 bg-black/40 px-2 py-0.5 rounded border border-slate-800 flex items-center justify-between">
-                                  <span>Ref: {rel.key}</span>
-                                  <ExternalLink className="h-3 w-3 text-emerald-400 opacity-60 group-hover:opacity-100" />
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* Data Grid Table View */}
-              {inspectorViewMode === 'table' && (
-              <div className="overflow-x-auto max-h-[500px] border border-slate-200 rounded-xl">
-                {isLoadingDocs ? (
-                  <div className="p-12 text-center">
-                    <PeacockLoader size="md" text={isAr ? 'جاري قراءة المستندات...' : 'Loading documents...'} />
-                  </div>
-                ) : collectionDocs.length === 0 ? (
-                  <div className="p-8 text-center text-slate-400 text-xs italic">
-                    {isAr ? 'هذا الجدول فارغ حالياً ولا يحتوي على أي مستندات.' : 'This collection has no documents.'}
-                  </div>
-                ) : (() => {
-                  const filtered = collectionDocs.filter((d) => {
-                    if (!docSearchQuery) return true;
-                    return JSON.stringify(d).toLowerCase().includes(docSearchQuery.toLowerCase());
-                  });
-
-                  // Auto-detect all unique keys across documents
-                  const detectedKeys = Array.from(
-                    new Set(filtered.flatMap((d) => Object.keys(d).filter((k) => k !== '_id')))
-                  ).slice(0, 10);
-
-                  return (
-                    <table className="w-full text-start border-collapse text-xs">
-                      <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10">
-                        <tr>
-                          <th className="p-2.5 text-start border-e border-slate-200 w-44 font-mono">{isAr ? 'معرف المستند (ID)' : 'Document ID'}</th>
-                          {detectedKeys.map((k) => (
-                            <th key={k} className="p-2.5 text-start border-e border-slate-200 font-mono whitespace-nowrap">
-                              {k}
-                            </th>
-                          ))}
-                          <th className="p-2.5 text-center w-24">{isAr ? 'إجراء' : 'Actions'}</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
-                        {filtered.map((docItem) => (
-                          <tr key={docItem._id} className="hover:bg-slate-50 transition">
-                            <td className="p-2.5 border-e border-slate-200 font-bold text-indigo-700 truncate max-w-[180px]" title={docItem._id}>
-                              {docItem._id}
-                            </td>
-
-                            {detectedKeys.map((k) => {
-                              const val = docItem[k];
-                              const renderVal = typeof val === 'object' && val !== null ? JSON.stringify(val) : String(val ?? '—');
-
-                              return (
-                                <td key={k} className="p-2.5 border-e border-slate-100 text-slate-700 truncate max-w-[200px]" title={renderVal}>
-                                  {renderVal}
-                                </td>
-                              );
-                            })}
-
-                            <td className="p-2.5 text-center">
-                              <div className="flex items-center justify-center gap-1 font-sans">
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEditDocument(docItem)}
-                                  className="p-1 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
-                                  title={isAr ? 'تعديل المستند' : 'Edit Document'}
-                                >
-                                  <Edit3 className="h-3.5 w-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteDocument(docItem._id)}
-                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                                  title={isAr ? 'حذف المستند' : 'Delete'}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  );
-                })()}
-              </div>
-              )}
-            </div>
-          )}
-        </div>
+        <DatabaseInspectorHub isAr={isAr} />
       )}
 
-      {/* ========================================================================= */}
-      {/* 📝 LIVE DOCUMENT EDITOR & SCHEMA BUILDER MODAL                             */}
-      {/* ========================================================================= */}
-      {selectedDocForEdit && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 z-[99999] overflow-y-auto animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-auto max-h-[92vh] overflow-y-auto">
-            {/* Header */}
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-cyan-50 text-cyan-700 rounded-xl">
-                  <Edit3 className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-sm text-slate-900">
-                    {selectedDocForEdit.isNew ? (isAr ? 'إنشاء مستند جديد' : 'Create Document') : (isAr ? 'تعديل بيانات المستند' : 'Edit Document')}
-                  </h3>
-                  <span className="font-mono text-xs text-indigo-700 font-bold">
-                    {selectedCollection} / {selectedDocForEdit.id}
-                  </span>
-                </div>
-              </div>
-
-              {/* Mode Switcher */}
-              <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold">
-                <button
-                  type="button"
-                  onClick={() => {
-                    // Sync JSON to fields list
-                    try {
-                      const parsed = JSON.parse(docJsonString);
-                      const fList = Object.entries(parsed).map(([k, v]) => ({
-                        key: k,
-                        value: typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v),
-                        type: typeof v === 'object' ? 'object' : typeof v,
-                      }));
-                      setDocFieldsList(fList);
-                    } catch {}
-                    setDocEditMode('fields');
-                  }}
-                  className={`px-3 py-1 rounded-lg transition cursor-pointer ${
-                    docEditMode === 'fields' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'
-                  }`}
-                >
-                  {isAr ? 'حقول' : 'Fields'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    // Sync fields list to JSON
-                    const obj = {};
-                    docFieldsList.forEach((f) => {
-                      if (!f.key.trim()) return;
-                      let v = f.value;
-                      if (f.type === 'number') v = Number(f.value) || 0;
-                      else if (f.type === 'boolean') v = String(f.value).toLowerCase() === 'true';
-                      else if (f.type === 'array' || f.type === 'object') {
-                        try { v = JSON.parse(f.value); } catch { v = f.value; }
-                      }
-                      obj[f.key.trim()] = v;
-                    });
-                    setDocJsonString(JSON.stringify(obj, null, 2));
-                    setDocEditMode('json');
-                  }}
-                  className={`px-3 py-1 rounded-lg transition cursor-pointer ${
-                    docEditMode === 'json' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'
-                  }`}
-                >
-                  <Code className="h-3 w-3 inline me-1" />
-                  <span>JSON</span>
-                </button>
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveDocument} className="space-y-4 text-xs">
-              {/* Document ID */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1 font-mono">
-                  {isAr ? 'معرف المستند (Document ID) *' : 'Document ID *'}
-                </label>
-                <input
-                  type="text"
-                  required
-                  disabled={!selectedDocForEdit.isNew}
-                  value={selectedDocForEdit.id}
-                  onChange={(e) => setSelectedDocForEdit({ ...selectedDocForEdit, id: e.target.value })}
-                  className="w-full p-2 border border-slate-300 rounded-xl font-mono font-bold bg-slate-50 disabled:text-slate-500"
-                />
-              </div>
-
-              {/* Mode 1: Form Fields Builder */}
-              {docEditMode === 'fields' ? (
-                <div className="space-y-2.5 max-h-96 overflow-y-auto p-1">
-                  {docFieldsList.map((field, fIdx) => (
-                    <div key={fIdx} className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-12 gap-2 items-center">
-                      <div className="col-span-4">
-                        <input
-                          type="text"
-                          placeholder="fieldKey"
-                          value={field.key}
-                          onChange={(e) => {
-                            const updated = [...docFieldsList];
-                            updated[fIdx].key = e.target.value;
-                            setDocFieldsList(updated);
-                          }}
-                          className="w-full p-1.5 border border-slate-300 rounded-lg font-mono text-xs bg-white font-bold"
-                        />
-                      </div>
-
-                      <div className="col-span-3">
-                        <select
-                          value={field.type}
-                          onChange={(e) => {
-                            const updated = [...docFieldsList];
-                            updated[fIdx].type = e.target.value;
-                            setDocFieldsList(updated);
-                          }}
-                          className="w-full p-1.5 border border-slate-300 rounded-lg text-xs bg-white font-medium"
-                        >
-                          <option value="string">string</option>
-                          <option value="number">number</option>
-                          <option value="boolean">boolean</option>
-                          <option value="array">array (JSON)</option>
-                          <option value="object">object (JSON)</option>
-                          <option value="timestamp">timestamp</option>
-                        </select>
-                      </div>
-
-                      <div className="col-span-4">
-                        <input
-                          type="text"
-                          placeholder="value"
-                          value={field.value}
-                          onChange={(e) => {
-                            const updated = [...docFieldsList];
-                            updated[fIdx].value = e.target.value;
-                            setDocFieldsList(updated);
-                          }}
-                          className="w-full p-1.5 border border-slate-300 rounded-lg font-mono text-xs bg-white"
-                        />
-                      </div>
-
-                      <div className="col-span-1 text-center">
-                        <button
-                          type="button"
-                          onClick={() => setDocFieldsList(docFieldsList.filter((_, i) => i !== fIdx))}
-                          className="p-1 text-slate-400 hover:text-rose-600 rounded"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-
-                  <button
-                    type="button"
-                    onClick={() => setDocFieldsList([...docFieldsList, { key: '', value: '', type: 'string' }])}
-                    className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition flex items-center justify-center gap-1 cursor-pointer"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    <span>{isAr ? 'إضافة حقل جديد' : 'Add Field'}</span>
-                  </button>
-                </div>
-              ) : (
-                /* Mode 2: Raw JSON Editor */
-                <div>
-                  <textarea
-                    rows={12}
-                    value={docJsonString}
-                    onChange={(e) => setDocJsonString(e.target.value)}
-                    className="w-full p-3 font-mono text-xs bg-slate-900 text-emerald-400 rounded-xl border border-slate-700 focus:outline-none"
-                  />
-                </div>
-              )}
-
-              {/* Modal Actions */}
-              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setSelectedDocForEdit(null)}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold"
-                >
-                  {isAr ? 'إلغاء' : 'Cancel'}
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingDoc}
-                  className="px-5 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl font-bold shadow-xs flex items-center gap-1.5"
-                >
-                  {isSavingDoc ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                  <span>{isAr ? 'حفظ وتحديث المستند' : 'Save Document'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Opening Stock Seeder Modal */}
-      <OpeningStockSeederModal
-        isOpen={isStockSeederOpen}
-        onClose={() => setIsStockSeederOpen(false)}
-        currentUser={currentUser}
-        warehousesList={warehousesList}
-      />
-
-      {/* High-Security Confirmation Modal */}
-      {resetModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4 z-[90] animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border-2 border-rose-500 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2 text-rose-900">
-                <AlertOctagon className="h-6 w-6 text-rose-600 shrink-0" />
-                <h3 className="text-base font-bold">
-                  {isAr ? 'تأكيد أمني لمسح البيانات' : 'Security Confirmation Required'}
-                </h3>
-              </div>
-              <button onClick={() => setResetModalOpen(false)} className="p-1 text-slate-400 hover:text-slate-700">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {(() => {
-              const targetEntry = PURGE_TARGETS_CATALOG.find((t) => t.key === selectedPurgeTargetKey);
-              const labelText =
-                selectedPurgeTargetKey === 'all'
-                  ? isAr
-                    ? 'كافة جداول النظام بالكامل (استعادة ضبط المصنع الشامل)'
-                    : 'All ERP Tables (Full Factory Reset)'
-                  : selectedPurgeTargetKey === 'operational_only'
-                  ? isAr
-                    ? 'كافة الحركات التشغيلية والمحاسبية فقط — مع الحفاظ الكامل (100%) على البيانات الأساسية ودليل الحسابات'
-                    : 'All Operational Transactions Only — 100% Preserving Master Data & Chart of Accounts'
-                  : targetEntry
-                  ? `${isAr ? targetEntry.labelAr : targetEntry.labelEn} [${targetEntry.collectionsLabel}]`
-                  : selectedPurgeTargetKey;
-              return (
-                <p className="text-xs text-slate-700 leading-relaxed">
-                  {isAr
-                    ? `أنت على وشك مسح (${labelText}) وكافة السجلات التلقائية المرتبطة به نهائياً من قاعدة البيانات السحابية. لا يمكن التراجع عن هذا الإجراء.`
-                    : `You are about to permanently purge (${labelText}) and all its auto-generated linked records from Firestore cloud. This action cannot be undone.`}
-                </p>
-              );
-            })()}
-
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-1.5">
-              <label className="block text-xs font-bold text-rose-950">
-                {isAr ? 'اكتب عبارة التأكيد التالية للمتابعة:' : 'Type confirmation phrase:'}
-              </label>
-              <div className="font-mono text-xs font-extrabold text-rose-700 bg-white p-1.5 rounded border border-rose-300 text-center select-all">
-                CONFIRM-RESET-ERP
-              </div>
-              <input
-                type="text"
-                placeholder="CONFIRM-RESET-ERP"
-                value={confirmationPhrase}
-                onChange={(e) => setConfirmationPhrase(e.target.value)}
-                className="w-full p-2 border border-rose-300 rounded-lg text-xs bg-white text-center font-mono font-bold focus:ring-2 focus:ring-rose-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => {
-                  setResetModalOpen(false);
-                  setConfirmationPhrase('');
-                }}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
-              >
-                {isAr ? 'إلغاء' : 'Cancel'}
-              </button>
-
-              <button
-                type="button"
-                disabled={confirmationPhrase !== 'CONFIRM-RESET-ERP' || isPurging}
-                onClick={handleExecuteDynamicPurge}
-                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs flex items-center gap-1.5"
-              >
-                {isPurging ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                <span>{isAr ? 'تأكيد المسح النهائي' : 'Confirm Permanent Purge'}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

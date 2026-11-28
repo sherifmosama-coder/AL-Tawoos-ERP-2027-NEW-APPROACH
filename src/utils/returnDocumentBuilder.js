@@ -261,7 +261,7 @@ export function renderReturnDocumentHtml(model, qrAssets = {}) {
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
-  <title>إذن استلام مرتجع — رحلة #${escapeHtml(loadingOrderNumber)}</title>
+  <title>إذن استلام مرتجع — تحميل #${escapeHtml(loadingOrderNumber)}</title>
   <style>
     @page { size: A4 landscape; margin: 7mm; }
     * { box-sizing: border-box; }
@@ -516,7 +516,7 @@ export function renderReturnDocumentHtml(model, qrAssets = {}) {
 <body>
   ${hasDiscrepancy ? '<div class="discrepancy-watermark">فرق مرتجع — DISCREPANCY</div>' : ''}
   <div class="print-bar no-print">
-    <button onclick="window.print()">طباعة (${escapeHtml(returnDocNumber || `رحلة #${loadingOrderNumber}`)})</button>
+    <button onclick="window.print()">طباعة (${escapeHtml(returnDocNumber || `تحميل #${loadingOrderNumber}`)})</button>
   </div>
   <div id="return-sheet-root">
     ${hasDiscrepancy ? `
@@ -533,7 +533,7 @@ export function renderReturnDocumentHtml(model, qrAssets = {}) {
         <div class="doc-title-row">
           <span class="doc-title">إذن استلام مرتجع</span>
           ${returnDocNumber ? `<span class="doc-num-pill" dir="ltr">${escapeHtml(returnDocNumber)}</span>` : ''}
-          <span class="trip-pill">رحلة #${escapeHtml(loadingOrderNumber)}</span>
+          <span class="trip-pill">تحميل #${escapeHtml(loadingOrderNumber)}</span>
           ${dispatchDocNumber ? `<span class="ref-pill" dir="ltr">${escapeHtml(dispatchDocNumber)}</span>` : ''}
           <span class="${hasDiscrepancy ? 'status-pill-alert' : 'status-pill-ok'}">
             ${hasDiscrepancy

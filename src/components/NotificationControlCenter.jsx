@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { db } from '../firebase';
+import PeacockLoader from './PeacockLoader';
 import {
   collection,
   doc,
@@ -562,7 +563,7 @@ export default function NotificationControlCenter({ currentUser }) {
                   }}
                   className="w-full py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl font-black text-xs transition cursor-pointer shadow-sm flex items-center justify-center gap-1.5 disabled:opacity-50"
                 >
-                  <Sparkles className={`h-3.5 w-3.5 ${isSubscribing ? 'animate-spin' : ''}`} />
+                  {isSubscribing ? <PeacockLoader size="xxs" inline variant="white" /> : <Sparkles className="h-3.5 w-3.5" />}
                   <span>
                     {isSubscribing
                       ? (isAr ? 'جاري التوليد والربط...' : 'Generating & Subscribing...')
@@ -595,7 +596,7 @@ export default function NotificationControlCenter({ currentUser }) {
                     }}
                     className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs font-bold transition cursor-pointer"
                   >
-                    <RefreshCw className={`h-3.5 w-3.5 ${isSubscribing ? 'animate-spin' : ''}`} />
+                    {isSubscribing ? <PeacockLoader size="xxs" inline /> : <RefreshCw className="h-3.5 w-3.5" />}
                   </button>
                 </div>
               )}
@@ -653,7 +654,7 @@ export default function NotificationControlCenter({ currentUser }) {
               disabled={isSyncingCloud}
               className="w-full py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isSyncingCloud ? 'animate-spin text-emerald-600' : 'text-emerald-600'}`} />
+              {isSyncingCloud ? <PeacockLoader size="xxs" inline variant="emerald" /> : <RefreshCw className="h-3.5 w-3.5 text-emerald-600" />}
               <span>{isSyncingCloud ? (isAr ? 'جاري المزامنة...' : 'Syncing...') : (isAr ? 'مزامنة أجهزة السحابة (OneSignal)' : 'Sync Cloud Devices')}</span>
             </button>
             <button
@@ -662,7 +663,7 @@ export default function NotificationControlCenter({ currentUser }) {
               disabled={isReconciling}
               className="w-full py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isReconciling ? 'animate-spin' : ''}`} />
+              {isReconciling ? <PeacockLoader size="xxs" inline /> : <RefreshCw className="h-3.5 w-3.5" />}
               <span>{isAr ? 'تسوية المعلقات المكتملة تلقائياً' : 'Reconcile Stuck Actions'}</span>
             </button>
             {cloudSyncResult && (
@@ -700,7 +701,7 @@ export default function NotificationControlCenter({ currentUser }) {
               disabled={isSyncingCloud}
               className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+              {isSyncingCloud ? <PeacockLoader size="xxs" inline variant="white" /> : <RefreshCw className="h-3.5 w-3.5" />}
               <span>{isSyncingCloud ? (isAr ? 'جاري الفحص...' : 'Syncing...') : (isAr ? '🔄 مزامنة أجهزة السحابة' : '🔄 Sync Cloud Devices')}</span>
             </button>
             <span className="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-lg text-xs font-black">
@@ -856,7 +857,7 @@ export default function NotificationControlCenter({ currentUser }) {
             disabled={isSavingConfig}
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs transition cursor-pointer shadow-xs flex items-center gap-1.5 disabled:opacity-50"
           >
-            <Sparkles className={`h-3.5 w-3.5 ${isSavingConfig ? 'animate-spin' : ''}`} />
+            {isSavingConfig ? <PeacockLoader size="xxs" inline variant="white" /> : <Sparkles className="h-3.5 w-3.5" />}
             <span>{configSaveSuccess ? (isAr ? 'تم الحفظ بنجاح ✓' : 'Saved ✓') : (isAr ? 'حفظ إعدادات المنظومة' : 'Save Policies')}</span>
           </button>
         </div>

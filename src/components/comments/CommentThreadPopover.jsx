@@ -29,7 +29,6 @@ import {
   FileImage,
   FileText,
   Maximize2,
-  Loader2,
   Bell,
   BellOff,
   UserPlus,
@@ -40,6 +39,7 @@ import {
   Building2
 } from 'lucide-react';
 import { getRecordDepartmentIds } from '../../utils/personnelDirectory';
+import PeacockLoader from '../PeacockLoader';
 
 /**
  * Client-side Canvas Image Compression helper.
@@ -932,7 +932,7 @@ export default function CommentThreadPopover() {
             title={isAr ? 'تأكيد: تم إنجاز المهمة' : 'Complete this task'}
           >
             {isResolvingTask[msg.id] ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
+              <PeacockLoader size="xxs" inline variant="white" />
             ) : (
               <Check className="h-3 w-3" />
             )}
@@ -1467,7 +1467,7 @@ export default function CommentThreadPopover() {
                 title={isAr ? 'إرفاق صورة أو مستند (أو الصق لقطة الشاشة مباشرة)' : 'Attach image or PDF (or paste screenshot directly)'}
               >
                 {isProcessingFile ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-emerald-600" />
+                  <PeacockLoader size="xxs" inline variant="emerald" />
                 ) : (
                   <Paperclip className="h-4 w-4" />
                 )}

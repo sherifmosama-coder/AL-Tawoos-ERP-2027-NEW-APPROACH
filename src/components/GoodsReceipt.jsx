@@ -1,18 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCompanyProfile } from '../hooks/useCompanyProfile';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
 import {
   collection,
   onSnapshot,
   doc,
   setDoc,
-  writeBatch,
-  getDocs,
-  query,
-  where,
   serverTimestamp
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import {
   Plus,
   Search,
@@ -1476,190 +1473,20 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
 
     setIsSavingGrn(true);
     try {
-      const batch = writeBatch(db);
-      const grnRef = doc(db, 'goods_receipts', grnToCancel.id);
-      const nextVer = getNextVersion(grnToCancel.version || '1.0');
+      const reverseGrnFn = httpsCallable(functions, 'inventoryReverseGoodsReceipt');
+      await reverseGrnFn({
+        grnId: grnToCancel.id,
+        mode: 'cancelled',
+        nextVersion: getNextVersion(grnToCancel.version || '1.0'),
+        reason: `إلغاء ${docLabel} (${grnToCancel.id}) وعكس حركات المخزن بالكامل`,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
-      const newAudit = {
-        version: nextVer,
-        action: 'cancelled',
-        status: 'cancelled',
-        performedBy: currentUserName,
-        timestamp: new Date().toISOString(),
-        noteAr: `إلغاء ${docLabel} (${grnToCancel.id}) وعكس حركات المخزن بالكامل`,
-        noteEn: `${docLabel} cancelled & all inventory movements reversed`,
-      };
-
-      batch.set(
-        grnRef,
-        {
-          status: 'cancelled',
-          version: nextVer,
-          auditTrail: [...(grnToCancel.auditTrail || []), newAudit],
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      // If previously approved, reverse physical stock from Item Master
-      if (grnToCancel.status === 'approved') {
-        const itemDeltas = {};
-        const signMultiplier = isDocReturn ? 1 : -1; // Reversing a return adds back (+), reversing a receipt deducts (-)
-
-        (grnToCancel.lines || []).forEach((l) => {
-          const qty = Number(l.receivedSmallUnits) || 0;
-          const parentId = l.itemId || l.code?.split('-')[0];
-          const vCode = l.variantCode || l.code;
-          if (parentId && qty > 0) {
-            if (!itemDeltas[parentId]) itemDeltas[parentId] = { total: 0, variants: {} };
-            itemDeltas[parentId].total += qty * signMultiplier;
-            if (vCode) itemDeltas[parentId].variants[vCode] = (itemDeltas[parentId].variants[vCode] || 0) + (qty * signMultiplier);
-
-            // Ledger log for cancellation
-            const ledgerRef = doc(collection(db, 'stock_ledger'));
-            batch.set(ledgerRef, {
-              grnId: grnToCancel.id,
-              action: isDocReturn ? 'return_cancelled_restored' : 'receipt_cancelled_reversal',
-              docType: grnToCancel.docType || (isDocReturn ? 'return' : 'receipt'),
-              receivingType: grnToCancel.receivingType || 'direct',
-              poId: grnToCancel.poId || null,
-              itemId: parentId,
-              variantCode: vCode,
-              materialNameAr: l.nameAr,
-              qty: qty * signMultiplier,
-              unit: l.smallUnit,
-              warehouse: l.targetWarehouse,
-              supplierId: grnToCancel.supplierId,
-              supplierName: grnToCancel.supplierName || '',
-              receivedBy: currentUserName,
-              timestamp: serverTimestamp(),
-            });
-          }
-        });
-
-        Object.entries(itemDeltas).forEach(([itemId, data]) => {
-          const itemDoc = itemsMaster.find((i) => i.code === itemId);
-          if (itemDoc) {
-            const updatedVariations = (itemDoc.variations || []).map((v) => {
-              const deltaQty = data.variants[v.variantCode] || 0;
-              return {
-                ...v,
-                stock: Math.max(0, (Number(v.stock) || 0) + deltaQty),
-              };
-            });
-
-            const updatedTotalStock = updatedVariations.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
-
-            batch.set(
-              doc(db, 'items', itemId),
-              {
-                stock: updatedTotalStock,
-                variations: updatedVariations,
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          }
-        });
-
-        // Step down/recalculate linked PO status
-        if (grnToCancel.poId) {
-          const targetPo = purchaseOrders.find((p) => p.id === grnToCancel.poId);
-          if (targetPo) {
-            let totalRemainingReceived = 0;
-            let totalOrdered = 0;
-            let isAllCompleted = true;
-
-            (targetPo.lines || []).forEach((poLine) => {
-              const poLineKey = poLine.variantCode || poLine.code || poLine.itemId;
-              let lineSum = 0;
-              receipts
-                .filter((r) => r.poId === grnToCancel.poId && r.status === 'approved' && r.id !== grnToCancel.id)
-                .forEach((r) => {
-                  (r.lines || []).forEach((l) => {
-                    if ((l.variantCode || l.code || l.itemId) === poLineKey && (l.qcStatus === 'accepted' || r.docType === 'receipt')) {
-                      const effQty = Number(l.receivedSmallUnits) || 0;
-                      lineSum += r.docType === 'return' ? -effQty : effQty;
-                    }
-                  });
-                });
-
-              totalRemainingReceived += lineSum;
-              const ord = Number(poLine.qty) || 0;
-              totalOrdered += ord;
-              if (lineSum < ord) isAllCompleted = false;
-            });
-
-            let newPoStatus = 'approved';
-            if (totalRemainingReceived > 0) {
-              newPoStatus = isAllCompleted ? 'delivered' : 'partially_delivered';
-            }
-
-            const newPoAudit = {
-              version: targetPo.version || '1.0',
-              action: 'document_cancelled_reversal',
-              status: newPoStatus,
-              performedBy: currentUserName,
-              timestamp: new Date().toISOString(),
-              noteAr: `إلغاء ${docLabel} (${grnToCancel.id}) - تحديث حالة أمر الشراء إلى (${newPoStatus})`,
-              noteEn: `${docLabel} (${grnToCancel.id}) cancelled - PO status updated to (${newPoStatus})`,
-            };
-
-            batch.set(
-              doc(db, 'purchase_orders', grnToCancel.poId),
-              {
-                status: newPoStatus,
-                auditTrail: [...(targetPo.auditTrail || []), newPoAudit],
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          }
-        }
-      }
-
-      // Reverse General Ledger Journal Entry if document was previously approved
-      if (grnToCancel.status === 'approved') {
-        const revJe = buildGrnJournalEntry({
-          grnId: grnToCancel.id,
-          docType: (grnToCancel.docType === 'return' || grnToCancel.id?.startsWith('RTN')) ? 'receipt' : 'return',
-          receiptDate: new Date().toISOString().split('T')[0],
-          supplierId: grnToCancel.supplierId,
-          supplierName: grnToCancel.supplierName,
-          taxInvoiceNumber: grnToCancel.taxInvoiceNumber,
-          supplierDeliveryNote: grnToCancel.supplierDeliveryNote,
-          poId: grnToCancel.poId,
-          computedTotals: grnToCancel.financials || {},
-          accountingLinks,
-          accountsMaster: chartAccounts,
-          currentUserName,
-          isTaxOfficial: Boolean(grnToCancel.isTaxOfficial),
-          etaPortalRegistered: Boolean(grnToCancel.etaPortalRegistered),
-          attachments: grnToCancel.attachments || []
-        });
-        batch.set(doc(db, 'journal_entries', `JE-REV-${grnToCancel.id}`), {
-          ...revJe,
-          id: `JE-REV-${grnToCancel.id}`,
-          entryNumber: `JE-REV-${grnToCancel.id}`,
-          sourceDocType: 'reversal',
-          originalEntryId: `JE-${grnToCancel.id}`,
-          descriptionAr: `قيد عكسي لإلغاء ${docLabel} (${grnToCancel.id}) إدارياً وعكس آثاره المحاسبية`,
-          descriptionEn: `Reversal JE for cancelled ${docLabel} #${grnToCancel.id}`,
-          createdAt: serverTimestamp()
-        });
-        batch.set(doc(db, 'journal_entries', `JE-${grnToCancel.id}`), {
-          status: 'reversed',
-          reversedAt: serverTimestamp(),
-          reversalEntryId: `JE-REV-${grnToCancel.id}`
-        }, { merge: true });
-      }
-
-      await batch.commit();
       setShowModal(false);
       setEditingGrn(null);
     } catch (err) {
       console.error('Error cancelling document:', err);
-      alert(isAr ? 'حدث خطأ أثناء إلغاء الإذن.' : 'Error cancelling document.');
+      alert(err.message || (isAr ? 'حدث خطأ أثناء إلغاء الإذن.' : 'Error cancelling document.'));
     } finally {
       setIsSavingGrn(false);
     }
@@ -1837,183 +1664,16 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
 
     setAdminReversalModal((prev) => ({ ...prev, isSubmitting: true }));
     try {
-      const nowIso = new Date().toISOString();
-      const batch = writeBatch(db);
-      const grnRef = doc(db, 'goods_receipts', receipt.id);
-      const existingAudit = Array.isArray(receipt.auditTrail) ? receipt.auditTrail : [];
       const nextVer = getNextVersion(receipt.version || '1.0');
       const docLabel = isReturn ? (isAr ? 'إذن المرتجع' : 'Return') : (isAr ? 'إذن الاستلام' : 'GRN');
-
-      const newAudit = {
-        version: nextVer,
-        action: 'admin_reversal',
-        status: 'reversed',
-        performedBy: currentUserName,
-        timestamp: nowIso,
-        noteAr: `تم الإلغاء الإداري لـ ${docLabel} وعكس الأرصدة المخزنية: ${reason.trim()}`,
-        noteEn: `Admin reversal of ${docLabel}: ${reason.trim()}`,
-      };
-
-      batch.set(
-        grnRef,
-        {
-          status: 'reversed',
-          isReversed: true,
-          reversedBy: currentUserName,
-          reversedById: currentUser?.id || currentUser?.uid || '',
-          reversedAt: nowIso,
-          reversalReason: reason.trim(),
-          auditTrail: [newAudit, ...existingAudit].slice(0, 40),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      // If linked to PO, roll back received quantities
-      if (receipt.poId) {
-        const poRef = doc(db, 'purchase_orders', receipt.poId);
-        const poDoc = purchaseOrders.find((p) => p.id === receipt.poId);
-        if (poDoc) {
-          const poLines = (poDoc.lines || []).map((poLine) => {
-            const matchingGrnLine = (receipt.lines || []).find(
-              (gl) => (gl.variantCode && gl.variantCode === poLine.variantCode) || gl.itemId === poLine.itemId
-            );
-            if (matchingGrnLine) {
-              const rolledBackQty = Number(matchingGrnLine.receivedSmallUnits || 0);
-              const newReceived = Math.max(0, (Number(poLine.receivedSmallUnits || 0)) - rolledBackQty);
-              return {
-                ...poLine,
-                receivedSmallUnits: newReceived,
-              };
-            }
-            return poLine;
-          });
-
-          const totalReceivedAcrossPo = poLines.reduce((sum, l) => sum + (Number(l.receivedSmallUnits || 0)), 0);
-          const newPoStatus = totalReceivedAcrossPo > 0 ? 'partially_delivered' : 'approved';
-
-          const poAuditEntry = {
-            version: poDoc.version || '1.0',
-            action: 'grn_reversed_rollback',
-            status: newPoStatus,
-            performedBy: currentUserName,
-            timestamp: nowIso,
-            noteAr: `تم خصم كميات مستلمة في أمر الشراء بسبب إلغاء ${docLabel} (${receipt.id}) إدارياً`,
-            noteEn: `PO received quantities rolled back due to admin reversal of ${docLabel} (${receipt.id})`,
-          };
-
-          batch.set(
-            poRef,
-            {
-              lines: poLines,
-              status: newPoStatus,
-              auditTrail: [...(poDoc.auditTrail || []), poAuditEntry],
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
-        }
-      }
-
-      // Reverse physical stock in items collection if approved
-      if (receipt.status === 'approved') {
-        const itemDeltas = {};
-        const signMultiplier = isReturn ? 1 : -1;
-
-        (receipt.lines || []).forEach((l) => {
-          const qty = Number(l.receivedSmallUnits) || 0;
-          const parentId = l.itemId || l.code?.split('-')[0];
-          const vCode = l.variantCode || l.code;
-          if (parentId && qty > 0) {
-            if (!itemDeltas[parentId]) itemDeltas[parentId] = { total: 0, variants: {} };
-            itemDeltas[parentId].total += qty * signMultiplier;
-            if (vCode) itemDeltas[parentId].variants[vCode] = (itemDeltas[parentId].variants[vCode] || 0) + (qty * signMultiplier);
-
-            // Ledger log
-            const ledgerRef = doc(collection(db, 'stock_ledger'));
-            batch.set(ledgerRef, {
-              grnId: receipt.id,
-              action: isReturn ? 'return_reversed_admin' : 'receipt_reversed_admin',
-              docType: receipt.docType || (isReturn ? 'return' : 'receipt'),
-              receivingType: receipt.receivingType || 'direct',
-              poId: receipt.poId || null,
-              itemId: parentId,
-              variantCode: vCode,
-              materialNameAr: l.nameAr,
-              qty: qty * signMultiplier,
-              unit: l.smallUnit,
-              warehouse: l.targetWarehouse,
-              supplierId: receipt.supplierId,
-              supplierName: receipt.supplierName || '',
-              receivedBy: currentUserName,
-              timestamp: serverTimestamp(),
-            });
-          }
-        });
-
-        Object.entries(itemDeltas).forEach(([itemId, data]) => {
-          const itemDoc = itemsMaster.find((i) => i.code === itemId);
-          if (itemDoc) {
-            const updatedVariations = (itemDoc.variations || []).map((v) => {
-              const deltaQty = data.variants[v.variantCode] || 0;
-              return {
-                ...v,
-                stock: Math.max(0, (Number(v.stock) || 0) + deltaQty),
-              };
-            });
-            const updatedTotalStock = updatedVariations.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
-
-            batch.set(
-              doc(db, 'items', itemId),
-              {
-                stock: updatedTotalStock,
-                variations: updatedVariations,
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          }
-        });
-      }
-
-      // Reverse General Ledger Journal Entry if approved
-      if (receipt.status === 'approved') {
-        const revJe = buildGrnJournalEntry({
-          grnId: receipt.id,
-          docType: (receipt.docType === 'return' || receipt.id?.startsWith('RTN')) ? 'receipt' : 'return',
-          receiptDate: new Date().toISOString().split('T')[0],
-          supplierId: receipt.supplierId,
-          supplierName: receipt.supplierName,
-          taxInvoiceNumber: receipt.taxInvoiceNumber,
-          supplierDeliveryNote: receipt.supplierDeliveryNote,
-          poId: receipt.poId,
-          computedTotals: receipt.financials || {},
-          accountingLinks,
-          accountsMaster: chartAccounts,
-          currentUserName,
-          isTaxOfficial: Boolean(receipt.isTaxOfficial),
-          etaPortalRegistered: Boolean(receipt.etaPortalRegistered),
-          attachments: receipt.attachments || []
-        });
-        batch.set(doc(db, 'journal_entries', `JE-REV-${receipt.id}`), {
-          ...revJe,
-          id: `JE-REV-${receipt.id}`,
-          entryNumber: `JE-REV-${receipt.id}`,
-          sourceDocType: 'reversal',
-          originalEntryId: `JE-${receipt.id}`,
-          descriptionAr: `قيد عكسي لإلغاء ${docLabel} (${receipt.id}) إدارياً - السبب: ${adminReversalModal.reason || 'إلغاء إداري'}`,
-          descriptionEn: `Reversal JE for ${receipt.id} - Reason: ${adminReversalModal.reason || 'Admin reversal'}`,
-          createdAt: serverTimestamp()
-        });
-        batch.set(doc(db, 'journal_entries', `JE-${receipt.id}`), {
-          status: 'reversed',
-          reversedAt: serverTimestamp(),
-          reversalEntryId: `JE-REV-${receipt.id}`,
-          reversalReason: adminReversalModal.reason || 'إلغاء إداري'
-        }, { merge: true });
-      }
-
-      await batch.commit();
+      const reverseGrnFn = httpsCallable(functions, 'inventoryReverseGoodsReceipt');
+      await reverseGrnFn({
+        grnId: receipt.id,
+        mode: 'admin_reversal',
+        nextVersion: nextVer,
+        reason: reason.trim(),
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
       setAdminReversalModal({ open: false, receipt: null, isReturn: false, reason: '', isSubmitting: false, linesToRollback: [] });
       toast.success(
@@ -2022,7 +1682,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
       );
     } catch (err) {
       console.error('Error reversing receipt:', err);
-      toast.error(isAr ? 'حدث خطأ أثناء إلغاء الإذن.' : 'Failed to reverse document.');
+      toast.error(err.message || (isAr ? 'حدث خطأ أثناء إلغاء الإذن.' : 'Failed to reverse document.'));
       setAdminReversalModal((prev) => ({ ...prev, isSubmitting: false }));
     }
   };
@@ -2224,372 +1884,72 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
 
       if (isNew) grnPayload.createdAt = serverTimestamp();
 
-      batch.set(doc(db, 'goods_receipts', grnId), grnPayload, { merge: true });
-
-      // 2. Process Physical Stock & Variations ONLY IF status is 'approved' or transitioning from approved
-      const wasPreviouslyApproved = editingGrn && editingGrn.status === 'approved';
-      const isNowApproved = statusToSet === 'approved';
-
-      if (isNowApproved || wasPreviouslyApproved) {
-        const oldIncrements = {};
-        if (wasPreviouslyApproved) {
-          const oldIsReturn = editingGrn.docType === 'return' || editingGrn.id?.startsWith('RTN');
-          const oldSign = oldIsReturn ? -1 : 1;
-
-          (editingGrn.lines || []).forEach((l) => {
-            const qty = (Number(l.receivedSmallUnits) || 0) * oldSign;
-            const parentId = getParentItemId(l);
-            const vCode = getVariantCode(l);
-
-            if (parentId) {
-              if (!oldIncrements[parentId]) oldIncrements[parentId] = { total: 0, variants: {} };
-              oldIncrements[parentId].total += qty;
-              if (vCode) {
-                oldIncrements[parentId].variants[vCode] = (oldIncrements[parentId].variants[vCode] || 0) + qty;
-              }
-            }
-          });
-        }
-
-        const newIncrements = {};
-        if (isNowApproved) {
-          const newSign = isReturn ? -1 : 1; // Returns deduct stock from warehouse
-
-          preparedGrnLines.forEach((l) => {
-            const rawQty = Number(l.receivedSmallUnits) || 0;
-            const qty = rawQty * newSign;
-            const parentId = l.parentId;
-            const vCode = l.vCode;
-
-            if (parentId) {
-              if (!newIncrements[parentId]) newIncrements[parentId] = { total: 0, variants: {} };
-              newIncrements[parentId].total += qty;
-              if (vCode) {
-                newIncrements[parentId].variants[vCode] = (newIncrements[parentId].variants[vCode] || 0) + qty;
-              }
-            }
-
-            // Write stock movement ledger with full Lot Passport
-            const ledgerRef = doc(collection(db, 'stock_ledger'));
-            batch.set(ledgerRef, {
-              grnId,
-              lotNumber: l.assignedLotNo,
-              linkedGrnId: l.linkedGrnId || null,
-              action: isReturn ? 'supplier_return' : (isNew ? 'initial_receipt' : 'receipt_modified'),
-              docType: docType,
-              receivingType,
-              poId: receivingType === 'po_linked' ? selectedPoId : null,
-              itemId: parentId,
+      const newVariantsByItem = {};
+      grnLines
+        .filter((l) => l.isNewVariant && getParentItemId(l))
+        .forEach((l) => {
+          const itemId = getParentItemId(l);
+          const vCode = getVariantCode(l);
+          if (!vCode) return;
+          if (!newVariantsByItem[itemId]) newVariantsByItem[itemId] = [];
+          if (!newVariantsByItem[itemId].some((v) => v.variantCode === vCode)) {
+            const validSpecsArray = (l.specsList || []).filter((s) => s.label?.trim() && s.value?.trim());
+            const mergedSpecsStr = validSpecsArray.map((s) => `${s.label.trim()}: ${s.value.trim()}`).join(' | ');
+            const itemMasterDoc = itemsMaster.find((i) => i.code === itemId);
+            newVariantsByItem[itemId].push({
+              suffix: l.variantSuffix,
               variantCode: vCode,
-              materialNameAr: l.nameAr,
-              qty: qty, // Negative for return, positive for receipt
-              unit: l.smallUnit,
-              warehouse: l.targetWarehouse,
               supplierId: selectedSupplierId,
               supplierName: selectedSupplier?.name || '',
-              receiptDate: receiptDate,
-              batchNo: l.supplierBatchNo || 'N/A',
-              productionDate: l.productionDate || null,
-              expiryDate: l.expiryDate || null,
-              unitPrice: Number(l.unitPrice) || 0,
-              currency: l.currency || 'EGP',
-              packagingRatio: Number(l.packagingRatio) || 1,
-              specs: l.specs || '',
-              totalValue: (Number(l.unitPrice) || 0) * Math.abs(qty),
-              receivedBy: currentUserName,
-              timestamp: serverTimestamp(),
+              packagingRatio: Number(l.packagingRatio) || 0,
+              smallUnit: l.smallUnit || itemMasterDoc?.smallUnit || 'عبوة',
+              largeUnitName: l.largeUnitName || itemMasterDoc?.largeUnitName || 'كرتونة',
+              specs: validSpecsArray.length > 0 ? validSpecsArray : [{ label: 'المواصفات', value: l.specs || '' }],
+              mergedSpecs: mergedSpecsStr || l.specs || '',
+              stock: 0,
+              isActive: true,
+              createdAt: new Date().toISOString(),
             });
-          });
-        }
-
-        // Collect all affected Item Master records
-        const allAffectedItemIds = new Set([
-          ...Object.keys(oldIncrements),
-          ...Object.keys(newIncrements),
-          ...grnLines.map((l) => getParentItemId(l)).filter(Boolean)
-        ]);
-
-        allAffectedItemIds.forEach((itemId) => {
-          const itemMasterDoc = itemsMaster.find((i) => i.code === itemId);
-          if (itemMasterDoc) {
-            let workingVariations = [...(itemMasterDoc.variations || [])];
-
-            // Append newly defined variations (if direct receipt)
-            grnLines
-              .filter((l) => l.isNewVariant && getParentItemId(l) === itemId)
-              .forEach((l) => {
-                const vCode = getVariantCode(l);
-                const exists = workingVariations.some((v) => v.variantCode === vCode);
-                if (!exists) {
-                  const validSpecsArray = (l.specsList || []).filter((s) => s.label?.trim() && s.value?.trim());
-                  const mergedSpecsStr = validSpecsArray.map((s) => `${s.label.trim()}: ${s.value.trim()}`).join(' | ');
-
-                  workingVariations.push({
-                    suffix: l.variantSuffix,
-                    variantCode: vCode,
-                    supplierId: selectedSupplierId,
-                    supplierName: selectedSupplier?.name || '',
-                    packagingRatio: Number(l.packagingRatio) || 0,
-                    smallUnit: l.smallUnit || itemMasterDoc.smallUnit || 'عبوة',
-                    largeUnitName: l.largeUnitName || itemMasterDoc.largeUnitName || 'كرتونة',
-                    specs: validSpecsArray.length > 0 ? validSpecsArray : [{ label: 'المواصفات', value: l.specs || '' }],
-                    mergedSpecs: mergedSpecsStr || l.specs || '',
-                    stock: 0,
-                    isActive: true,
-                    createdAt: new Date().toISOString(),
-                  });
-                }
-              });
-
-            // Adjust variant-level stocks: netDelta = (newEffect - oldEffect)
-            const updatedVariations = workingVariations.map((v) => {
-              const oldVarQty = oldIncrements[itemId]?.variants[v.variantCode] || 0;
-              const newVarQty = newIncrements[itemId]?.variants[v.variantCode] || 0;
-              const netDelta = newVarQty - oldVarQty;
-              const currentVarStock = Number(v.stock) || 0;
-              return {
-                ...v,
-                stock: Math.max(0, currentVarStock + netDelta),
-              };
-            });
-
-            // Calculate parent total stock
-            const calculatedTotalStock = updatedVariations.reduce(
-              (sum, v) => sum + (Number(v.stock) || 0),
-              0
-            );
-
-            batch.set(
-              doc(db, 'items', itemId),
-              {
-                stock: calculatedTotalStock,
-                variations: updatedVariations,
-                variationsCount: updatedVariations.length,
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
           }
         });
 
-        // Dynamic PO Status Synchronization & Over-Delivery Fulfillment Logic
-        if (receivingType === 'po_linked' && selectedPoId) {
-          const targetPo = purchaseOrders.find((p) => p.id === selectedPoId);
-          if (targetPo) {
-            let isAllCompleted = true;
-            let totalReceivedAcrossAllLines = 0;
-            let totalOrderedAcrossAllLines = 0;
-
-            (targetPo.lines || []).forEach((poLine) => {
-              const poLineKey = poLine.variantCode || poLine.code || poLine.itemId;
-              
-              let prevSum = 0;
-              receipts
-                .filter((r) => r.poId === selectedPoId && r.status === 'approved' && r.id !== grnId)
-                .forEach((r) => {
-                  (r.lines || []).forEach((l) => {
-                    const grnKey = l.variantCode || l.code || l.itemId;
-                    if (grnKey === poLineKey && (l.qcStatus === 'accepted' || r.docType === 'receipt')) {
-                      const eff = Number(l.receivedSmallUnits) || 0;
-                      prevSum += r.docType === 'return' ? -eff : eff;
-                    }
-                  });
-                });
-
-              const currentGrnLine = isNowApproved
-                ? grnLines.find((l) => (l.variantCode || l.code || l.itemId) === poLineKey)
-                : null;
-              const currentRaw = currentGrnLine && (currentGrnLine.qcStatus === 'accepted' || !isReturn)
-                ? Number(currentGrnLine.receivedSmallUnits) || 0
-                : 0;
-              const currentEffective = isReturn ? -currentRaw : currentRaw;
-
-              const totalCumulativeLineReceived = prevSum + currentEffective;
-              const orderedLineQty = Number(poLine.qty) || 0;
-
-              totalReceivedAcrossAllLines += totalCumulativeLineReceived;
-              totalOrderedAcrossAllLines += orderedLineQty;
-
-              if (totalCumulativeLineReceived < orderedLineQty) {
-                isAllCompleted = false;
-              }
-            });
-
-            let nextPoStatus = 'approved';
-            if (totalReceivedAcrossAllLines > 0) {
-              nextPoStatus = isAllCompleted ? 'delivered' : 'partially_delivered';
-            }
-
-            const existingAuditPo = targetPo.auditTrail || [];
-            const newAuditEntryPo = {
-              version: targetPo.version || '1.0',
-              action: isReturn ? 'goods_returned_deduction' : (nextPoStatus === 'delivered' ? 'order_fully_delivered' : 'partial_delivery_received'),
-              status: nextPoStatus,
-              performedBy: currentUserName,
-              timestamp: new Date().toISOString(),
-              noteAr: isReturn
-                ? `تسجيل إذن مرتجع (${grnId}) - خصم الكميات المرتجعة وتحديث حالة أمر الشراء إلى (${nextPoStatus})`
-                : (nextPoStatus === 'delivered'
-                    ? (totalReceivedAcrossAllLines > totalOrderedAcrossAllLines
-                        ? `استلام إذن توريد (${grnId}) - اكتمل التوريد بالكامل مع استلام كمية إضافية (+${(totalReceivedAcrossAllLines - totalOrderedAcrossAllLines).toLocaleString()})`
-                        : `استلام إذن توريد (${grnId}) - اكتمل التوريد بالكامل بمطابقة الكميات المطلوبة`)
-                    : `استلام إذن توريد (${grnId}) - توريد جزئي (${totalReceivedAcrossAllLines.toLocaleString()} من أصل ${totalOrderedAcrossAllLines.toLocaleString()})`),
-              noteEn: isReturn
-                ? `Return Note (${grnId}) - Quantities deducted, PO status set to (${nextPoStatus})`
-                : `Goods receipt (${grnId}) - PO status updated to (${nextPoStatus})`,
-            };
-
-            batch.set(
-              doc(db, 'purchase_orders', selectedPoId),
-              {
-                status: nextPoStatus,
-                auditTrail: [...existingAuditPo, newAuditEntryPo],
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          }
-        }
+      const isNowApproved = statusToSet === 'approved';
+      let journalEntry = null;
+      if (isNowApproved && (computedTotals.subtotal > 0 || computedTotals.netPayable > 0)) {
+        journalEntry = buildGrnJournalEntry({
+          grnId,
+          docType,
+          receiptDate,
+          supplierId: selectedSupplierId,
+          supplierName: selectedSupplier?.name || selectedSupplier?.taxpayerLegalName || '',
+          taxInvoiceNumber: isTaxOfficial ? taxInvoiceNumber : '',
+          supplierDeliveryNote,
+          poId: receivingType === 'po_linked' ? selectedPoId : '',
+          computedTotals,
+          accountingLinks,
+          accountsMaster: chartAccounts,
+          currentUserName,
+          isTaxOfficial: Boolean(isTaxOfficial),
+          etaPortalRegistered: isTaxOfficial ? Boolean(etaPortalRegistered) : false,
+          attachments: (stagedAttachments && stagedAttachments.length > 0) ? stagedAttachments : (editingGrn?.attachments || [])
+        });
       }
 
-      // 3. Auto-Bind Newly Received LOTs to Awaiting Complementary Work Orders (Option 1 Engine)
-      if (isNowApproved && !isReturn && preparedGrnLines.length > 0) {
-        try {
-          const woQuery = query(
-            collection(db, 'work_orders'),
-            where('status', 'in', ['scheduled', 'in_progress'])
-          );
-          const woSnap = await getDocs(woQuery);
-          const activeOrders = [];
-          woSnap.forEach((d) => activeOrders.push({ id: d.id, ...d.data() }));
+      const postGrnFn = httpsCallable(functions, 'inventoryPostGoodsReceiptOrReturn');
+      await postGrnFn({
+        grnId,
+        isNew,
+        grnPayload,
+        newVariantsByItem,
+        journalEntry,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
-          // Prioritize demand: sort by planDate ascending, then importanceRank ascending (FIFO demand queue)
-          activeOrders.sort((a, b) => {
-            const dateA = a.planDate || '';
-            const dateB = b.planDate || '';
-            if (dateA !== dateB) return dateA.localeCompare(dateB);
-            return (Number(a.importanceRank) || 1) - (Number(b.importanceRank) || 1);
-          });
-
-          preparedGrnLines.forEach((grnLine) => {
-            const parentItemId = grnLine.parentId;
-            const grnLotNo = grnLine.assignedLotNo;
-            const grnVariantSuffix = grnLine.variantSuffix || '';
-            if (!parentItemId || !grnLotNo) return;
-
-            // Find complementary work orders awaiting this item or waiting for LOT assignment
-            const candidateOrders = activeOrders.filter((ord) => {
-              const compSel = ord.componentSelections?.[parentItemId];
-              const isComplementaryOrAwaiting = ord.isComplementary || ord.awaitingReplenishment || (compSel && !compSel.selectedLot);
-              if (!isComplementaryOrAwaiting) return false;
-
-              // Check if order actually requires this component item
-              const usesItem = ord.awaitingComponentItemId?.includes(parentItemId) || compSel !== undefined;
-              if (!usesItem) return false;
-
-              // If a LOT is already assigned, skip
-              if (compSel?.selectedLot) return false;
-
-              // Variant check: if order has a specific variant, verify match or allow generic
-              const ordVarSuffix = compSel?.variantCode;
-              if (ordVarSuffix && grnVariantSuffix && ordVarSuffix !== grnVariantSuffix) {
-                return false;
-              }
-
-              return true;
-            });
-
-            // Bind incoming lot to the candidate orders
-            candidateOrders.forEach((targetOrder) => {
-              const existingSelections = targetOrder.componentSelections || {};
-              const updatedSelections = {
-                ...existingSelections,
-                [parentItemId]: {
-                  ...(existingSelections[parentItemId] || {}),
-                  selectedLot: grnLotNo,
-                  variantCode: existingSelections[parentItemId]?.variantCode || grnVariantSuffix,
-                },
-              };
-
-              const autoBindAuditEntry = {
-                action: 'lot_auto_bound_from_grn',
-                actionLabelAr: 'ربط لوط توريد تلقائياً',
-                actionLabelEn: 'LOT Auto-Bound from GRN',
-                timestamp: new Date().toISOString(),
-                user: currentUserName || 'System GRN Auto-Bind',
-                summary: isAr
-                  ? `تم ربط اللوط الجديد (${grnLotNo}) تلقائياً من إذن التوريد (${grnId}) لتغطية متطلبات أمر التشغيل المكمل (${targetOrder.orderNumber || targetOrder.id}).`
-                  : `Auto-bound newly received LOT (${grnLotNo}) from GRN (${grnId}) to complementary work order (${targetOrder.orderNumber || targetOrder.id}).`,
-              };
-
-              const existingAudit = Array.isArray(targetOrder.auditTrail) ? targetOrder.auditTrail : [];
-              const woRef = doc(db, 'work_orders', targetOrder.id);
-
-              batch.update(woRef, {
-                componentSelections: updatedSelections,
-                lotAutoBound: true,
-                autoBoundLotNo: grnLotNo,
-                autoBoundGrnId: grnId,
-                autoBoundAt: new Date().toISOString(),
-                awaitingReplenishment: false,
-                auditTrail: [autoBindAuditEntry, ...existingAudit].slice(0, 30),
-                updatedAt: serverTimestamp(),
-              });
-
-              // Mark in memory to avoid duplicate binding in this iteration
-              if (!targetOrder.componentSelections) targetOrder.componentSelections = {};
-              targetOrder.componentSelections[parentItemId] = {
-                ...(targetOrder.componentSelections[parentItemId] || {}),
-                selectedLot: grnLotNo,
-              };
-            });
-          });
-        } catch (woBindErr) {
-          console.warn('Error during complementary work order auto-binding from GRN:', woBindErr);
-        }
-      }
-
-      // 4. Automatic 4-Leg Double-Entry Accrual Posting to General Ledger (journal_entries)
-      if (isNowApproved) {
-        if (computedTotals.subtotal > 0 || computedTotals.netPayable > 0) {
-          const jePayload = buildGrnJournalEntry({
-            grnId,
-            docType,
-            receiptDate,
-            supplierId: selectedSupplierId,
-            supplierName: selectedSupplier?.name || selectedSupplier?.taxpayerLegalName || '',
-            taxInvoiceNumber: isTaxOfficial ? taxInvoiceNumber : '',
-            supplierDeliveryNote,
-            poId: receivingType === 'po_linked' ? selectedPoId : '',
-            computedTotals,
-            accountingLinks,
-            accountsMaster: chartAccounts,
-            currentUserName,
-            isTaxOfficial: Boolean(isTaxOfficial),
-            etaPortalRegistered: isTaxOfficial ? Boolean(etaPortalRegistered) : false,
-            attachments: (stagedAttachments && stagedAttachments.length > 0) ? stagedAttachments : (editingGrn?.attachments || [])
-          });
-          batch.set(doc(db, 'journal_entries', jePayload.id), {
-            ...jePayload,
-            updatedAt: serverTimestamp(),
-            createdAt: editingGrn?.createdAt || serverTimestamp()
-          }, { merge: true });
-        }
-      } else if (wasPreviouslyApproved && !isNowApproved) {
-        batch.set(doc(db, 'journal_entries', `JE-${grnId}`), {
-          status: 'reversed',
-          reversedAt: serverTimestamp(),
-          reversedBy: currentUserName,
-          reversalReason: `GRN status changed from approved to ${statusToSet}`
-        }, { merge: true });
-      }
-
-      await batch.commit();
       setShowModal(false);
       setEditingGrn(null);
     } catch (err) {
       console.error('Error saving document:', err);
-      alert(isAr ? 'حدث خطأ أثناء حفظ الإذن في السحابة.' : 'Error saving document.');
+      alert(err.message || (isAr ? 'حدث خطأ أثناء حفظ الإذن في السحابة.' : 'Error saving document.'));
     } finally {
       setIsSavingGrn(false);
     }
@@ -4572,7 +3932,7 @@ export default function GoodsReceipt({ currentUser = {}, permissions = null }) {
                 onClick={handleSaveAttachments}
                 className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold shadow-xs transition disabled:opacity-50 flex items-center gap-1.5"
               >
-                {savingAttachments ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                {savingAttachments ? <PeacockLoader size="xxs" inline variant="white" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
                 <span>{isAr ? 'حفظ وتحديث المرفقات' : 'Save Attachments'}</span>
               </button>
             </div>

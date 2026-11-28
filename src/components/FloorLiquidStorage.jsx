@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
 import {
   collection,
   doc,
@@ -9,6 +9,7 @@ import {
   updateDoc,
   serverTimestamp
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import {
   Activity,
   Layers,
@@ -1042,12 +1043,13 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
         });
       }
 
-      // If scrapped volume > 0, generate and commit formal Stock Transfer (TRN)
+      // If scrapped volume > 0, generate formal Stock Transfer payload
       let trnId = null;
+      let transferDoc = null;
       if (scrappedVol > 0) {
         trnId = `TRN-CIP-${currentMaterial.code}-${Date.now()}`;
         const targetWhName = getWarehouseDisplayName(targetWh, warehouses, isAr);
-        const transferDoc = {
+        transferDoc = {
           id: trnId,
           sourceWarehouse: sourceWhId,
           targetWarehouse: targetWhId,
@@ -1075,29 +1077,21 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
               noteEn: `Transferred ${scrappedVol} L to scrap/quarantine warehouse upon CIP cleanout`,
             }
           ],
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
         };
-
-        await setDoc(doc(db, 'stock_transfers', trnId), transferDoc);
       }
 
-      // Update Floor Liquid Vessel document
       const flushedVol = Math.max(0, totalActiveVolume - scrappedVol);
-      await setDoc(vRef, {
-        ...currentVessel,
-        currentVolume: 0,
-        activeTanks: [],
-        historyTanks: [...retiredActiveTanks, ...existingHistory],
-        lastCleanoutAt: nowIso,
-        lastCleanoutBy: currentUser?.nameAr || currentUser?.name || 'Admin',
-        lastCleanoutReason: cleanoutReason || (isAr ? 'غسيل وتطهير دوري للخزان (CIP)' : 'Periodic CIP'),
-        lastCleanoutScrappedVolume: scrappedVol,
-        lastCleanoutFlushedVolume: flushedVol,
-        lastCleanoutScrapWarehouseId: scrappedVol > 0 ? targetWhId : null,
-        lastCleanoutTransferDocId: trnId,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+      const executeCleanoutFn = httpsCallable(functions, 'inventoryExecuteFloorCleanout');
+      await executeCleanoutFn({
+        materialCode: currentMaterial.code,
+        retiredActiveTanks,
+        scrappedVolume: scrappedVol,
+        flushedVolume: flushedVol,
+        targetWarehouseId: scrappedVol > 0 ? targetWhId : null,
+        reason: cleanoutReason || (isAr ? 'غسيل وتطهير دوري للخزان (CIP)' : 'Periodic CIP'),
+        transferDoc,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
       const successMsg = scrappedVol > 0
         ? (isAr
@@ -1341,7 +1335,7 @@ export default function FloorLiquidStorage({ currentUser = {}, permissions = nul
                 title={isAr ? 'مزامنة فورية مع تبويب التانكات' : 'Force Sync with #liquid_tanks'}
                 className="p-1 hover:bg-slate-200 text-slate-600 rounded-lg cursor-pointer transition disabled:opacity-50"
               >
-                <RefreshCw className={`h-3 w-3 ${isSaving ? 'animate-spin' : ''}`} />
+                {isSaving ? <PeacockLoader size="xxs" inline /> : <RefreshCw className="h-3 w-3" />}
               </button>
             </div>
 

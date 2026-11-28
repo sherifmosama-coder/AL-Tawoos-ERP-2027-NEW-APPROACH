@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCompanyProfile } from '../hooks/useCompanyProfile';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
 import { 
   collection, 
   onSnapshot, 
   doc, 
   setDoc, 
-  deleteDoc, 
   serverTimestamp 
 } from 'firebase/firestore';
 import {
@@ -138,7 +138,9 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
   // Subscribe to Firestore Collections
   useEffect(() => {
     const unsubOrders = onSnapshot(collection(db, 'purchase_orders'), (snap) => {
-      const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+      const list = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id }))
+        .filter((d) => !d.isDeleted);
       list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
       setOrders(list);
       setLoading(false);
@@ -1030,11 +1032,16 @@ export default function POCreation({ currentUser = {}, permissions = null }) {
 
     if (confirmed) {
       try {
-        await deleteDoc(doc(db, 'purchase_orders', poId));
-        toast.success(isAr ? `تم حذف أمر الشراء (${poId}) نهائياً.` : `PO (${poId}) permanently deleted.`);
+        const softDeleteFn = httpsCallable(functions, 'systemSoftDeleteDocument');
+        await softDeleteFn({
+          collectionName: 'purchase_orders',
+          docId: poId,
+          currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+        });
+        toast.success(isAr ? `تم أرشفة وحذف أمر الشراء (${poId}) مع التوثيق.` : `PO (${poId}) archived & soft-deleted.`);
       } catch (error) {
         console.error('Error deleting PO:', error);
-        toast.error(isAr ? 'حدث خطأ أثناء حذف أمر الشراء.' : 'Error deleting PO.');
+        toast.error(error?.message || (isAr ? 'حدث خطأ أثناء حذف أمر الشراء.' : 'Error deleting PO.'));
       }
     }
   };

@@ -65,10 +65,17 @@ import PeacockLoader from './PeacockLoader.jsx';
 import { canAccessAction } from '../config/appArchitecture.js';
 import { RowCommentButton } from './comments';
 import { resolveLocationInfo, normalizeLocationUrl } from '../utils/locationUtils.js';
-import { compareOrdersBySerialAsc, isOrderRetailRoute } from '../utils/salesOrderUtils.js';
+import {
+  compareOrdersBySerialAsc,
+  isOrderRetailRoute,
+  validateLoadingPlanOrderMandatoryFields,
+  buildTripCommentDocId,
+} from '../utils/salesOrderUtils.js';
 import { buildUnifiedPersonnelPool } from '../utils/personnelDirectory.js';
 import RetailSettlementModal from './RetailSettlementModal.jsx';
 import LoadingPlanFgSidebar from './LoadingPlanFgSidebar.jsx';
+import ClientProfileModal from './ClientProfileModal.jsx';
+import TruckNameBadge from './TruckNameBadge.jsx';
 import { buildOrderTripAvailabilityMap } from '../utils/fgStockEngine.js';
 import { makeTripDispatchDocId, evaluateReturnDiscrepancySummary } from '../utils/truckDispatchUtils.js';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
@@ -220,22 +227,23 @@ const FULFILLMENT_CONFIG_MAP = {
 
 /**
  * Standardizes the Vehicle Name (`vehicleModel` / `name` / `nameAr`) as the main reference across the module,
- * falling back to `code` or `id` only if no name is defined.
+ * falling back to `code` or `id` only if no name is defined (never falling back to plateNumber).
  */
 const resolveVehicleDisplayName = (veh, fallbackName = '') => {
   if (!veh && !fallbackName) return '';
-  const candidate = (
+  const plateStr = String(veh?.plateNumber || '').trim();
+  const safeFallback =
+    fallbackName && String(fallbackName).trim() !== plateStr ? String(fallbackName).trim() : '';
+  return (
     veh?.vehicleModel ||
     veh?.name ||
     veh?.nameAr ||
     veh?.nameEn ||
-    fallbackName ||
+    safeFallback ||
     veh?.code ||
     veh?.id ||
     ''
   ).trim();
-  // If fallbackName was actually just the plateNumber or code and veh has a real vehicleModel, veh.vehicleModel wins above
-  return candidate;
 };
 
 const WORKER_ROLE_LABELS = {
@@ -580,7 +588,7 @@ function TripRoadwayCarousel({
                   ? 'bg-rose-950/90 border-rose-500/60 text-rose-200 hover:bg-rose-900'
                   : 'bg-slate-800/95 border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
               }`}
-              title={isAr ? `عرض رحلة #${prevTrip.loadingOrderNumber}` : `View Trip #${prevTrip.loadingOrderNumber}`}
+              title={isAr ? `عرض تحميل #${prevTrip.loadingOrderNumber}` : `View Trip #${prevTrip.loadingOrderNumber}`}
             >
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${renderStatusDot(prevTrip)}`}></span>
               <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
@@ -613,8 +621,8 @@ function TripRoadwayCarousel({
             <Truck className="w-3.5 h-3.5 shrink-0 rtl:-scale-x-100" />
             <span>
               {activeTrip.loadingOrderNumber === 'unnumbered'
-                ? (isAr ? 'بدون رحلة' : 'No Trip#')
-                : (isAr ? `رحلة #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`)}
+                ? (isAr ? 'بدون تحميل' : 'No Trip#')
+                : (isAr ? `تحميل #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`)}
             </span>
             {activeTrip.hasStatusConflict && (
               <button
@@ -648,7 +656,7 @@ function TripRoadwayCarousel({
                   ? 'bg-rose-950/90 border-rose-500/60 text-rose-200 hover:bg-rose-900'
                   : 'bg-slate-800/95 border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
               }`}
-              title={isAr ? `عرض رحلة #${nextTrip.loadingOrderNumber}` : `View Trip #${nextTrip.loadingOrderNumber}`}
+              title={isAr ? `عرض تحميل #${nextTrip.loadingOrderNumber}` : `View Trip #${nextTrip.loadingOrderNumber}`}
             >
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${renderStatusDot(nextTrip)}`}></span>
               <Truck className="w-2.5 h-2.5 text-slate-400 shrink-0 rtl:-scale-x-100" />
@@ -731,6 +739,7 @@ function getTripClientStops(assignedOrders = [], stagedAssignments = {}) {
 function CompactTruckCard({
   truckData,
   allOrders,
+  targetPlanningDate = '',
   selectedTripState,
   onSelectTrip,
   onFilterConflict,
@@ -807,9 +816,16 @@ function CompactTruckCard({
     : 'bg-emerald-50 text-emerald-800 border-emerald-200';
 
   const primaryVehicleName = resolveVehicleDisplayName(veh, isAr ? 'شاحنة' : 'Truck');
+  const tripCommentDocId =
+    activeTrip && activeTrip.loadingOrderNumber && activeTrip.loadingOrderNumber !== 'unnumbered'
+      ? buildTripCommentDocId(activeTrip.loadingDate || targetPlanningDate, activeTrip.loadingOrderNumber)
+      : '';
 
   return (
-    <div className={`rounded-2xl border transition-all duration-200 flex flex-col justify-between ${cardSurfaceClasses}`}>
+    <div
+      data-comment-doc={tripCommentDocId || undefined}
+      className={`rounded-2xl border transition-all duration-200 flex flex-col justify-between ${cardSurfaceClasses}`}
+    >
       {/* 1. COMPACT TOP HEADER ROW */}
       <div className="px-2.5 pt-2.5 pb-1.5 flex items-center justify-between gap-1.5 border-b border-slate-100/90">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -843,16 +859,21 @@ function CompactTruckCard({
               </div>
             }
           >
-            <span className="text-xs font-black text-slate-900 hover:text-indigo-700 cursor-help truncate">
+            <span
+              className="text-xs font-black text-slate-900 hover:text-indigo-700 cursor-help truncate"
+              title={veh.plateNumber ? `${primaryVehicleName} • ${isAr ? 'رقم اللوحة:' : 'Plate #:'} ${veh.plateNumber}` : primaryVehicleName}
+            >
               {primaryVehicleName}
             </span>
           </FleetRichTooltip>
 
           {veh.plateNumber && (
-            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-slate-100 border border-slate-200 text-slate-600 font-mono text-[9px] font-bold shrink-0">
-              <span>{veh.plateNumber}</span>
-              <CopyButton text={veh.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-            </span>
+            <CopyButton
+              text={veh.plateNumber}
+              title={isAr ? `نسخ رقم اللوحة (${veh.plateNumber})` : `Copy Plate # (${veh.plateNumber})`}
+              isAr={isAr}
+              className="border border-slate-200 bg-slate-50 p-1 rounded-md shrink-0"
+            />
           )}
         </div>
 
@@ -1124,6 +1145,18 @@ function CompactTruckCard({
                 </button>
               );
             })()}
+
+            {/* Trip Collaborative Comment Button (Synced Bidirectionally with Floating Manifest Dock) */}
+            {tripCommentDocId && (
+              <span onClick={(e) => e.stopPropagation()} className="inline-flex">
+                <RowCommentButton
+                  docId={tripCommentDocId}
+                  docNumber={isAr ? `تحميل #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`}
+                  tab="loading_plan"
+                  module="sales"
+                />
+              </span>
+            )}
           </div>
 
           {/* Clickable Conflict Alert Icon (triggers manual Trip# filter when trip or vehicle has conflict) */}
@@ -1140,7 +1173,7 @@ function CompactTruckCard({
                   {activeTrip?.hasStatusConflict && (
                     <div className="text-rose-900 font-semibold leading-snug">
                       • {isAr
-                        ? `رحلة #${activeTrip.loadingOrderNumber} تحتوي على أكثر من حالة تنفيذ — انقر لتصفية الطلبات وإصلاحها يدوياً.`
+                        ? `تحميل #${activeTrip.loadingOrderNumber} يحتوي على أكثر من حالة تنفيذ — انقر لتصفية الطلبات وإصلاحه يدوياً.`
                         : `Trip #${activeTrip.loadingOrderNumber} has mixed statuses — click to filter orders & fix manually.`}
                     </div>
                   )}
@@ -1190,7 +1223,7 @@ function CompactTruckCard({
                 {activeTrip.dispatchDocNumber
                   ? activeTrip.dispatchDocNumber
                   : activeTrip.isWarehouseConfirmed
-                  ? (isAr ? 'محمل ✓' : 'Loaded ✓')
+                  ? (isAr ? 'إذن الصرف ✓' : 'Dispatch Doc ✓')
                   : (isAr ? 'صرف' : 'Dispatch')}
               </span>
               <ExternalLink className="w-2 h-2 opacity-70 shrink-0" />
@@ -1267,7 +1300,7 @@ function CompactTruckCard({
             <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0 animate-pulse" />
             <span className="truncate">
               {isAr
-                ? `تعارض حالات رحلة #${activeTrip.loadingOrderNumber} — انقر للإصلاح يدوياً`
+                ? `تعارض حالات تحميل #${activeTrip.loadingOrderNumber} — انقر للإصلاح يدوياً`
                 : `Trip #${activeTrip.loadingOrderNumber} Conflict — Click to Fix`}
             </span>
           </button>
@@ -1363,10 +1396,15 @@ function OrderCartonsAvailabilityChip({ order, availability, onClick, isAr = tru
       subCls = 'text-rose-700';
     }
   } else if (mode === 'dispatched') {
-    const isDel = availability?.fulfillmentStatus === 'delivered' || availability?.fulfillmentStatus === 'paid';
+    const isPaid = availability?.fulfillmentStatus === 'paid';
+    const isDel = availability?.fulfillmentStatus === 'delivered';
     chipCls = 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-800';
     iconCls = 'text-slate-500';
-    subLabel = isDel ? (isAr ? 'تم التسليم' : 'Delivered') : (isAr ? 'تم الشحن' : 'Dispatched');
+    subLabel = isPaid
+      ? (isAr ? 'مدفوع' : 'Paid')
+      : isDel
+      ? (isAr ? 'تم التسليم' : 'Delivered')
+      : (isAr ? 'جاري التوصيل' : 'Out for Delivery');
     subCls = 'text-slate-500';
   } else if (mode === 'return') {
     chipCls = 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-900';
@@ -1563,7 +1601,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, availability = null
               <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold">
                 {availability.tripNum ? (
                   <span className="px-2 py-0.5 rounded-lg bg-white/80 border border-current/20">
-                    {isAr ? `أولوية رحلة #${availability.tripNum}` : `Trip #${availability.tripNum} Priority`}
+                    {isAr ? `أولوية تحميل #${availability.tripNum}` : `Trip #${availability.tripNum} Priority`}
                   </span>
                 ) : (
                   <span className="px-2 py-0.5 rounded-lg bg-white/80 border border-current/20">
@@ -1686,7 +1724,7 @@ function OrderProductsDetailsModal({ isOpen, onClose, order, availability = null
                             if (lineAvail.mode === 'dispatched') {
                               return (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-sans font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                                  {isAr ? 'تم الصرف' : 'Dispatched'}
+                                  {isAr ? 'جاري التوصيل' : 'Out for Delivery'}
                                 </span>
                               );
                             }
@@ -1840,8 +1878,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // Status Jump Confirmation Modal (for admin jump or reverting delivered status)
   const [statusJumpConfirmModal, setStatusJumpConfirmModal] = useState(null);
 
-  // Trucks Fleet Dashboard Collapsed/Expanded State (Default Collapsed)
+  // Filter Bar & Trucks Fleet Operational Dashboard visibility (both hidden by default)
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [isTrucksDashboardOpen, setIsTrucksDashboardOpen] = useState(false);
+
+  // Standardized App-Wide Client Profile Popup Target
+  const [clientProfileTarget, setClientProfileTarget] = useState(null);
 
   // Selected trip carousel index & slide direction per truck: Record<vehicleId, { index, dir }>
   const [selectedTripByVehicle, setSelectedTripByVehicle] = useState({});
@@ -1918,7 +1960,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       loNumber: String(loNumber),
       loadingDate: targetPlanningDate,
       vehicleId: vehicleObj?.id || null,
-      vehicleName: resolveVehicleDisplayName(vehicleObj, vehicleObj?.plateNumber || ''),
+      vehicleName: resolveVehicleDisplayName(vehicleObj, vehicleObj?.code || ''),
       vehiclePlate: vehicleObj?.plateNumber || ''
     });
     setTimeout(() => {
@@ -2295,18 +2337,32 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     setActiveEditingOrderId(order.id);
   };
 
-  // Card-level save check: validate mandatory fields only if advancing from pending; pending status or unplanned bypasses mandatory assignment fields
+  // Card-level save check: Pending saves freely; Preparing+ requires Trip #, Truck, Driver on save
   const handleSaveCardAssignment = (order) => {
     const eff = getEffectiveAssignment(order);
     const targetStatus = eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet';
-    const isPending = targetStatus === 'not_yet';
-    const isMandatoryFilled = isPending || Boolean(
-      eff.loadingOrderNumber &&
-      Number(eff.loadingOrderNumber) > 0 &&
-      eff.assignedVehicleId &&
-      eff.assignedDriverId
-    );
-    if (!isMandatoryFilled) return;
+    const validation = validateLoadingPlanOrderMandatoryFields({
+      fulfillmentStatus: targetStatus,
+      loadingOrderNumber: eff.loadingOrderNumber,
+      assignedVehicleId: eff.assignedVehicleId,
+      assignedDriverId: eff.assignedDriverId,
+    });
+    if (!validation.valid) {
+      const missingLabels = validation.missing.map((k) =>
+        k === 'tripNumber'
+          ? (isAr ? 'رقم الرحلة' : 'Trip #')
+          : k === 'vehicle'
+          ? (isAr ? 'السيارة' : 'Truck')
+          : (isAr ? 'السائق' : 'Driver')
+      );
+      showToast(
+        isAr
+          ? `لحفظ حالة غير "قيد الانتظار"، يرجى استكمال: ${missingLabels.join('، ')}`
+          : `To save a non-Pending order status, please complete: ${missingLabels.join(', ')}`,
+        'error'
+      );
+      return;
+    }
 
     const existingLoadingDate = eff.loadingDate || '';
     const existingInvoiceDate = eff.invoiceDate || '';
@@ -2389,7 +2445,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return;
     }
 
-    // 2. FORWARD MOVEMENT:
+    // 2. FORWARD MOVEMENT (Mandatory Trip # / Truck / Driver verified at Order Save):
     const isClosedOrder = order.fulfillmentStatus === 'delivered' || order.fulfillmentStatus === 'paid';
     const isOrderLocked = isClosedOrder && !canModifyClosedOrders;
     if (isOrderLocked) {
@@ -2400,26 +2456,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         'info'
       );
       return;
-    }
-
-    // MANDATORY CHECK: Moving forward from 'pending' status requires mandatory assignment fields!
-    const eff = getEffectiveAssignment(order);
-    if (currentIndex === 0) {
-      const isAssigned = Boolean(
-        eff.loadingOrderNumber &&
-        Number(eff.loadingOrderNumber) > 0 &&
-        eff.assignedVehicleId &&
-        eff.assignedDriverId
-      );
-      if (!isAssigned) {
-        showToast(
-          isAr
-            ? 'يرجى إكمال بيانات التسكين الإلزامية (رقم الرحلة، السيارة، والسائق) أولاً قبل بدء التجهيز والتنفيذ'
-            : 'Please complete mandatory assignment fields (Trip #, Truck, Driver) before advancing from Pending.',
-          'error'
-        );
-        return;
-      }
     }
 
     // Retail Van-Sales Arrival Gate: intercept forward move to 'delivered' if not yet settled
@@ -2433,7 +2469,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return;
     }
 
-    // Standard 1-step forward (Clickable Next)
+    // Allow changing status freely before mandatory assignment fields are entered
     if (targetIndex === currentIndex + 1) {
       handleStageChange(order.id, 'fulfillmentStatus', step.id);
       return;
@@ -2716,7 +2752,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         const tName = resolveVehicleDisplayName(vObj, eff.assignedVehicleName);
         key = eff.loadingOrderNumber ? `lo_${eff.loadingOrderNumber}` : 'unassigned';
         label = eff.loadingOrderNumber
-          ? `${isAr ? 'رحلة #' : 'Trip #'}${eff.loadingOrderNumber}${tName ? ` — ${tName}` : ''}`
+          ? `${isAr ? 'تحميل #' : 'Trip #'}${eff.loadingOrderNumber}${tName ? ` — ${tName}` : ''}`
           : (isAr ? 'غير مسكن برحلة / شاحنة' : 'Unassigned to Trip / Truck');
       } else if (groupBy === 'fulfillmentStatus') {
         const fulf = FULFILLMENT_STATUSES.find((f) => f.id === order.fulfillmentStatus);
@@ -3139,6 +3175,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
           return {
             tripId,
+            loadingDate: targetPlanningDate,
             loadingOrderNumber: grp.loadingOrderNumber,
             orders: grp.orders,
             totalWeightKg: tripWeightKg,
@@ -3273,7 +3310,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     if (!truckStatusModal || !truckStatusModal.targetStep || !Array.isArray(truckStatusModal.affectedOrders) || truckStatusModal.affectedOrders.length === 0) return;
 
     const { truck, targetStep, affectedOrders, selectedOrderIds, unassignOnRevertToPending, loadingOrderNumber } = truckStatusModal;
-    const truckLabel = resolveVehicleDisplayName(truck, truck?.plateNumber || (isAr ? 'شاحنة' : 'Truck'));
+    const truckLabel = resolveVehicleDisplayName(truck, truck?.code || (isAr ? 'شاحنة' : 'Truck'));
     const selectedSet = Array.isArray(selectedOrderIds)
       ? new Set(selectedOrderIds)
       : new Set(affectedOrders.map((o) => o.id));
@@ -3332,7 +3369,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             action: 'truck_bulk_fulfillment_transition',
             summaryAr: shouldClearAssignment
               ? `إرجاع الطلب إلى "${targetStep.labelAr}" وإلغاء تسكين الشاحنة (${truckLabel})`
-              : `تحديث مجمّع لحالة تنفيذ الرحلة #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) إلى "${targetStep.labelAr}"`,
+              : `تحديث مجمّع لحالة تنفيذ تحميل #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) إلى "${targetStep.labelAr}"`,
             summaryEn: shouldClearAssignment
               ? `Reverted order to "${targetStep.labelEn}" & cleared truck assignment (${truckLabel})`
               : `Trip #${loadingOrderNumber || order.loadingOrderNumber || ''} bulk transition (${truckLabel}) to "${targetStep.labelEn}"`,
@@ -3414,7 +3451,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             performedBy: currentUserName,
             performedById: currentUserId,
             action: 'partial_delivery_return',
-            summaryAr: `استثناء/ارتجاع الطلب من رحلة #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) وإعادته إلى "قيد الانتظار" لإعادة الجدولة`,
+            summaryAr: `استثناء/ارتجاع الطلب من تحميل #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) وإعادته إلى "قيد الانتظار" لإعادة الجدولة`,
             summaryEn: `Detached returned/undelivered order from Trip #${loadingOrderNumber || order.loadingOrderNumber || ''} (${truckLabel}) & reverted to Pending`,
             changes: {
               metadata: [
@@ -3499,7 +3536,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       } else {
         showToast(
           isAr
-            ? `تم تحديث حالة ${advancedCount} أوامر للرحلة #${loadingOrderNumber || ''} (${truckLabel}) إلى "${targetStep.labelAr}" بنجاح`
+            ? `تم تحديث حالة ${advancedCount} أوامر لتحميل #${loadingOrderNumber || ''} (${truckLabel}) إلى "${targetStep.labelAr}" بنجاح`
             : `Successfully updated ${advancedCount} orders on Trip #${loadingOrderNumber || ''} (${truckLabel}) to "${targetStep.labelEn}"`
         );
       }
@@ -3513,25 +3550,17 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   };
 
   // Check if any staged assignment has missing mandatory fields (LO #, Vehicle, or Driver)
-  // Note: Orders at pending/unplanned status or stepped backward to pending bypass mandatory fields
+  // Note: Orders at Pending status bypass mandatory fields; non-Pending orders require Trip #, Truck & Driver
   const hasIncompleteStagedOrder = useMemo(() => {
     return Object.entries(stagedAssignments).some(([orderId, eff]) => {
       const originalOrder = orders.find((o) => o.id === orderId);
       const targetStatus = eff.fulfillmentStatus || originalOrder?.fulfillmentStatus || 'not_yet';
-      // Orders at pending/unplanned status don't require mandatory truck/driver fields
-      if (targetStatus === 'not_yet') {
-        return false;
-      }
-      // If order is completely cleared (no LO #, vehicle, or driver), it's a valid clear
-      if (!eff.loadingOrderNumber && !eff.assignedVehicleId && !eff.assignedDriverId) {
-        return false;
-      }
-      return (
-        !eff.loadingOrderNumber ||
-        Number(eff.loadingOrderNumber) <= 0 ||
-        !eff.assignedVehicleId ||
-        !eff.assignedDriverId
-      );
+      return !validateLoadingPlanOrderMandatoryFields({
+        fulfillmentStatus: targetStatus,
+        loadingOrderNumber: eff.loadingOrderNumber,
+        assignedVehicleId: eff.assignedVehicleId,
+        assignedDriverId: eff.assignedDriverId,
+      }).valid;
     });
   }, [stagedAssignments, orders]);
 
@@ -3565,7 +3594,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
     showToast(
       isAr
-        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق للرحلة #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح`
+        ? `تمت مطابقة وتوحيد بيانات الشاحنة والسائق لتحميل #${loNumber} بتاريخ (${targetLoadingDate}) بنجاح`
         : `Truck and driver aligned for Trip #${loNumber} on ${targetLoadingDate}`
     );
   };
@@ -3595,11 +3624,11 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       const targetStatus = eff.fulfillmentStatus || originalOrder?.fulfillmentStatus || 'not_yet';
       if (targetStatus !== 'not_yet' && eff.loadingOrderNumber) {
         if (!eff.assignedVehicleId) {
-          alert(isAr ? `رحلة #${eff.loadingOrderNumber} ينقصها اختيار السيارة!` : `Trip #${eff.loadingOrderNumber} is missing a selected truck!`);
+          alert(isAr ? `تحميل #${eff.loadingOrderNumber} ينقصه اختيار السيارة!` : `Trip #${eff.loadingOrderNumber} is missing a selected truck!`);
           return;
         }
         if (!eff.assignedDriverId) {
-          alert(isAr ? `رحلة #${eff.loadingOrderNumber} ينقصها تعيين السائق!` : `Trip #${eff.loadingOrderNumber} is missing an assigned driver!`);
+          alert(isAr ? `تحميل #${eff.loadingOrderNumber} ينقصه تعيين السائق!` : `Trip #${eff.loadingOrderNumber} is missing an assigned driver!`);
           return;
         }
       }
@@ -3770,19 +3799,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       {/* Toast Notification */}
       {toastMsg && (
         <div className={`fixed top-4 end-4 z-50 flex items-center gap-2 px-4 py-2.5 rounded-2xl shadow-lg border text-xs font-bold transition animate-in fade-in ${
-          toastMsg.type === 'info'
+          toastMsg.type === 'error'
+            ? 'bg-rose-600 text-white border-rose-700'
+            : toastMsg.type === 'info'
             ? 'bg-slate-900 text-white border-slate-800'
             : 'bg-emerald-600 text-white border-emerald-700'
         }`}>
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          {toastMsg.type === 'error' ? <AlertTriangle className="w-4 h-4 shrink-0" /> : <CheckCircle2 className="w-4 h-4 shrink-0" />}
           <span>{toastMsg.message}</span>
         </div>
       )}
 
       {/* ========================================================================= */}
-      {/* 1. TARGET LOADING DATE DEDICATED ANCHOR BAR (Top Container)               */}
+      {/* 1. COMPACT TARGET LOADING DATE + ICON-ONLY FILTER & FLEET TOGGLE BUTTONS   */}
       {/* ========================================================================= */}
-      <div className="ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-50/90 via-amber-50/50 to-slate-50 border border-amber-200/90 rounded-3xl p-3.5 sm:px-5 sm:py-3 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+      <div className="flex flex-wrap lg:flex-nowrap items-stretch gap-2.5">
+        <div className="flex-1 min-w-0 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-50/90 via-amber-50/50 to-slate-50 border border-amber-200/90 rounded-3xl p-3 sm:px-4 sm:py-2.5 flex flex-wrap items-center justify-between gap-2.5 shadow-2xs">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-700 border border-amber-300/60 flex items-center justify-center shrink-0 shadow-2xs">
@@ -3850,12 +3882,70 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             <span className="text-[10px] font-sans font-extrabold text-amber-700">({isAr ? 'غداً' : 'Tomorrow'})</span>
           )}
         </div>
+        </div>
+
+        {/* Two Icon-Only Toggles: 1) Filter Bar  2) Trucks Fleet Operational Dashboard */}
+        <div className="flex items-center gap-2 shrink-0">
+          {(() => {
+            const lpFilterCount =
+              (fulfillmentFilter !== 'all' ? 1 : 0) +
+              (searchTerm.trim() ? 1 : 0) +
+              (!confirmedOnly ? 1 : 0) +
+              (groupBy !== 'status_hierarchy' ? 1 : 0) +
+              (sortBy !== 'trip_asc' ? 1 : 0);
+            const fleetConflictsCount = truckFleetAnalysis.filter((t) => t.operationalStatus === 'conflict').length;
+            return (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsFiltersOpen((prev) => !prev)}
+                  title={isFiltersOpen ? (isAr ? 'إخفاء شريط الفلاتر' : 'Hide Filter Bar') : (isAr ? 'إظهار شريط الفلاتر' : 'Show Filter Bar')}
+                  aria-label={isFiltersOpen ? (isAr ? 'إخفاء شريط الفلاتر' : 'Hide Filter Bar') : (isAr ? 'إظهار شريط الفلاتر' : 'Show Filter Bar')}
+                  aria-expanded={isFiltersOpen}
+                  className={`relative w-12 min-h-[48px] rounded-2xl border flex items-center justify-center transition cursor-pointer shadow-2xs ${
+                    isFiltersOpen
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+                  }`}
+                >
+                  <Filter className={`w-5 h-5 ${isFiltersOpen ? 'text-emerald-400' : 'text-slate-600'}`} />
+                  {lpFilterCount > 0 && (
+                    <span className="absolute -top-1.5 -end-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-white font-mono text-[10px] font-black flex items-center justify-center shadow-xs">
+                      {lpFilterCount}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsTrucksDashboardOpen((prev) => !prev)}
+                  title={isTrucksDashboardOpen ? (isAr ? 'إخفاء لوحة شاحنات الأسطول' : 'Hide Trucks Fleet Dashboard') : (isAr ? 'عرض لوحة شاحنات الأسطول' : 'Show Trucks Fleet Dashboard')}
+                  aria-label={isTrucksDashboardOpen ? (isAr ? 'إخفاء لوحة شاحنات الأسطول' : 'Hide Trucks Fleet Dashboard') : (isAr ? 'عرض لوحة شاحنات الأسطول' : 'Show Trucks Fleet Dashboard')}
+                  aria-expanded={isTrucksDashboardOpen}
+                  className={`relative w-12 min-h-[48px] rounded-2xl border flex items-center justify-center transition cursor-pointer shadow-2xs ${
+                    isTrucksDashboardOpen
+                      ? 'bg-indigo-600 text-white border-indigo-700'
+                      : 'bg-white hover:bg-indigo-50 text-indigo-700 border-slate-200 hover:border-indigo-200'
+                  }`}
+                >
+                  <Truck className="w-5 h-5 rtl:-scale-x-100" />
+                  {fleetConflictsCount > 0 && (
+                    <span className="absolute -top-1.5 -end-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white font-mono text-[10px] font-black flex items-center justify-center shadow-xs animate-pulse">
+                      {fleetConflictsCount}
+                    </span>
+                  )}
+                </button>
+              </>
+            );
+          })()}
+        </div>
       </div>
 
       {/* ========================================================================= */}
-      {/* 2. ORDERS SCOPE & FILTERS RIBBON (Middle Container)                       */}
+      {/* 2. ORDERS SCOPE & FILTERS RIBBON (Hidden by Default Until Toggled)        */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-4 sm:p-5 space-y-3.5">
+      {isFiltersOpen && (
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-4 sm:p-5 space-y-3.5 animate-in fade-in duration-150">
         {/* Row 1: Operational Status Quick Filter & Target Loading Date Scope Summary */}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
           <div className="flex flex-wrap items-center gap-2">
@@ -3979,23 +4069,23 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           </div>
         </div>
       </div>
+      )}
 
       {/* ========================================================================= */}
-      {/* 3. NEW TRUCKS FLEET OPERATIONAL DASHBOARD                                 */}
+      {/* 3. TRUCKS FLEET OPERATIONAL DASHBOARD (Hidden Until Toggled; Shows Expanded) */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-4 sm:p-5">
+      {isTrucksDashboardOpen && (
+      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-4 sm:p-5 animate-in fade-in duration-150">
         {/* Dashboard Header Bar */}
         <div
-          onClick={() => setIsTrucksDashboardOpen((prev) => !prev)}
-          className={`flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none transition ${
-            isTrucksDashboardOpen ? 'pb-3 border-b border-slate-100' : ''
-          }`}
+          onClick={() => setIsTrucksDashboardOpen(false)}
+          className="flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none transition pb-3 border-b border-slate-100"
           role="button"
           tabIndex={0}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              setIsTrucksDashboardOpen((prev) => !prev);
+              setIsTrucksDashboardOpen(false);
             }
           }}
         >
@@ -4092,7 +4182,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         </div>
 
         {/* Scorecards Grid */}
-        {isTrucksDashboardOpen && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 pt-3">
             {truckFleetAnalysis.length === 0 ? (
               <div className="col-span-full p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-slate-200">
@@ -4105,6 +4194,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   key={truckData.vehicle.id}
                   truckData={truckData}
                   allOrders={orders}
+                  targetPlanningDate={targetPlanningDate}
                   selectedTripState={selectedTripByVehicle[truckData.vehicle.id]}
                   onSelectTrip={handleSelectVehicleTrip}
                   onFilterConflict={handleFilterConflictByLO}
@@ -4127,8 +4217,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               ))
             )}
           </div>
-        )}
       </div>
+      )}
 
       {/* CONFLICT LO # MANUAL FIX FILTER BANNER & SCROLL ANCHOR */}
       <div ref={ordersListRef} className="scroll-mt-4">
@@ -4142,18 +4232,17 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 <div className="text-xs font-black text-rose-900 flex items-center gap-1.5 flex-wrap">
                   <span>{isAr ? 'وضع معالجة التعارض:' : 'Conflict Fix Filter Active:'}</span>
                   <span className="font-mono px-2 py-0.5 rounded-md bg-white border border-rose-300 text-rose-800">
-                    {isAr ? `رحلة #${loFilter.loNumber}` : `Trip #${loFilter.loNumber}`}
+                    {isAr ? `تحميل #${loFilter.loNumber}` : `Trip #${loFilter.loNumber}`}
                   </span>
-                  {loFilter.vehicleName && (
-                    <span className="text-xs text-rose-900 font-black">
-                      ({loFilter.vehicleName})
-                    </span>
-                  )}
-                  {loFilter.vehiclePlate && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white border border-rose-200 font-mono text-[10px] font-bold text-rose-800">
-                      <span>{loFilter.vehiclePlate}</span>
-                      <CopyButton text={loFilter.vehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-                    </span>
+                  {(loFilter.vehicleName || loFilter.vehiclePlate) && (
+                    <TruckNameBadge
+                      name={loFilter.vehicleName}
+                      plate={loFilter.vehiclePlate}
+                      isAr={isAr}
+                      showIcon={false}
+                      nameClassName="text-xs text-rose-900 font-black"
+                      copyClassName="bg-white border border-rose-200 p-1 rounded-md text-rose-700"
+                    />
                   )}
                 </div>
                 <p className="text-[11px] text-rose-700 font-medium mt-0.5">
@@ -4368,13 +4457,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </div>
                                 )}
 
-                                <div
-                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl text-xs font-black shadow-2xs max-w-full truncate"
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (order.clientId) {
+                                      setClientProfileTarget({
+                                        client: clientObj,
+                                        clientId: order.clientId,
+                                        branchId: order.branchId || '',
+                                        branchName: order.branchName || '',
+                                      });
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl text-xs font-black shadow-2xs max-w-full truncate text-start cursor-pointer hover:opacity-90 transition"
                                   style={{
                                     backgroundColor: segColor,
                                     color: getContrastTextColor(segColor)
                                   }}
-                                  title={order.clientName || '—'}
+                                  title={isAr ? `${order.clientName || '—'} — انقر لعرض ملف العميل` : `${order.clientName || '—'} — Click for Client Profile`}
                                 >
                                   <span className="w-4 h-4 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
                                     {clientObj?.logo ? (
@@ -4388,12 +4489,27 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     )}
                                   </span>
                                   <span className="truncate leading-tight">{order.clientName || '—'}</span>
-                                </div>
+                                </button>
 
                                 {showBranchName && (
-                                  <div className="text-[10px] font-bold text-slate-500 truncate" title={order.branchName}>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (order.clientId) {
+                                        setClientProfileTarget({
+                                          client: clientObj,
+                                          clientId: order.clientId,
+                                          branchId: order.branchId || '',
+                                          branchName: order.branchName || '',
+                                        });
+                                      }
+                                    }}
+                                    className="text-[10px] font-bold text-slate-500 hover:text-indigo-700 hover:underline truncate text-start block cursor-pointer"
+                                    title={order.branchName}
+                                  >
                                     {order.branchName}
-                                  </div>
+                                  </button>
                                 )}
 
                                 {order.region && (
@@ -4597,7 +4713,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     >
                                       <option value="">{isAr ? '— اختر السيارة —' : '— Select Truck —'}</option>
                                       {vehicles.map((v) => {
-                                        const truckName = resolveVehicleDisplayName(v, v.plateNumber);
+                                        const truckName = resolveVehicleDisplayName(v, v.code || (isAr ? 'شاحنة' : 'Truck'));
                                         return (
                                           <option key={v.id} value={v.id}>
                                             {truckName}
@@ -4691,28 +4807,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     </button>
                                   )}
 
-                                  {/* Save / Check Button (Disabled if mandatory data is missing) */}
+                                  {/* Save / Check Button (Always clickable — verifies mandatory fields on order Save) */}
                                   <button
                                     type="button"
-                                    disabled={!isMandatoryFilled}
                                     onClick={() => handleSaveCardAssignment(order)}
-                                    className={`group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl transition-all duration-300 shadow-xs overflow-hidden ${
+                                    className={`group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl transition-all duration-300 shadow-xs overflow-hidden cursor-pointer ${
                                       isMandatoryFilled
-                                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
-                                        : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-50 shadow-none'
+                                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                        : 'bg-amber-500 hover:bg-amber-600 text-white'
                                     }`}
                                     title={
                                       isMandatoryFilled
                                         ? (isAr ? 'حفظ' : 'Save')
-                                        : (isAr ? 'يرجى إكمال البيانات الإلزامية: (رقم التحميل، السيارة، والسائق)' : 'Please fill all mandatory fields: LO #, Truck, Driver')
+                                        : (isAr ? 'تحقق من البيانات الإلزامية وحفظ (رقم التحميل، السيارة، والسائق)' : 'Verify mandatory fields & Save: LO #, Truck, Driver')
                                     }
                                   >
                                     <Check className="w-4 h-4 shrink-0" />
-                                    {isMandatoryFilled && (
-                                      <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
-                                        {isAr ? 'حفظ' : 'Save'}
-                                      </span>
-                                    )}
+                                    <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
+                                      {isAr ? 'حفظ' : 'Save'}
+                                    </span>
                                   </button>
 
                                   {/* Cancel / X Button */}
@@ -4901,13 +5014,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {/* Client & Branch & Region & Maps */}
                               <div className="space-y-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <div
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate"
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (order.clientId) {
+                                        setClientProfileTarget({
+                                          client: clientObj,
+                                          clientId: order.clientId,
+                                          branchId: order.branchId || '',
+                                          branchName: order.branchName || '',
+                                        });
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate cursor-pointer hover:opacity-90 transition"
                                     style={{
                                       backgroundColor: segColor,
                                       color: getContrastTextColor(segColor)
                                     }}
-                                    title={order.clientName || order.clientId || '—'}
+                                    title={isAr ? `${order.clientName || order.clientId || '—'} — انقر لعرض ملف العميل` : `${order.clientName || order.clientId || '—'} — Click for Client Profile`}
                                   >
                                     <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
                                       {clientObj?.logo ? (
@@ -4921,11 +5046,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       )}
                                     </span>
                                     <span className="truncate">{order.clientName || order.clientId || '—'}</span>
-                                  </div>
+                                  </button>
                                   {showBranchName && (
-                                    <span className="text-xs font-bold text-slate-500">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (order.clientId) {
+                                          setClientProfileTarget({
+                                            client: clientObj,
+                                            clientId: order.clientId,
+                                            branchId: order.branchId || '',
+                                            branchName: order.branchName || '',
+                                          });
+                                        }
+                                      }}
+                                      className="text-xs font-bold text-slate-500 hover:text-indigo-700 hover:underline cursor-pointer"
+                                    >
                                       ({order.branchName})
-                                    </span>
+                                    </button>
                                   )}
                                 </div>
 
@@ -5101,18 +5240,21 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   {/* Cell 1: Trip Number */}
                                   <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs font-mono font-black text-xs text-slate-800 flex items-center gap-1 truncate">
                                     <Truck className="w-3 h-3 text-emerald-600 shrink-0 rtl:-scale-x-100" />
-                                    <span>{isAr ? `رحلة #${eff.loadingOrderNumber}` : `Trip #${eff.loadingOrderNumber}`}</span>
+                                    <span>{isAr ? `تحميل #${eff.loadingOrderNumber}` : `Trip #${eff.loadingOrderNumber}`}</span>
                                   </div>
 
-                                  {/* Cell 2: Vehicle Truck Name (Truck Name + copyable Plate) */}
-                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 flex items-center justify-between gap-1" title={truckDisplayName || eff.assignedVehiclePlate}>
-                                    <span className="truncate font-black text-slate-900">{truckDisplayName || eff.assignedVehiclePlate || '—'}</span>
-                                    {(eff.assignedVehiclePlate || selectedVehicle?.plateNumber) && (
-                                      <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-100 border border-slate-200 font-mono text-[9px] text-slate-600 shrink-0">
-                                        <span>{eff.assignedVehiclePlate || selectedVehicle?.plateNumber}</span>
-                                        <CopyButton text={eff.assignedVehiclePlate || selectedVehicle?.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
-                                      </span>
-                                    )}
+                                  {/* Cell 2: Vehicle Truck Name (Hover Plate + Icon-Only Copy) */}
+                                  <div className="bg-white p-1.5 rounded-xl border border-slate-200 shadow-2xs text-[10px] font-bold text-slate-800 flex items-center justify-between gap-1 min-w-0">
+                                    <TruckNameBadge
+                                      vehicle={selectedVehicle}
+                                      name={truckDisplayName}
+                                      plate={eff.assignedVehiclePlate || selectedVehicle?.plateNumber || ''}
+                                      isAr={isAr}
+                                      showIcon={false}
+                                      className="w-full justify-between"
+                                      nameClassName="truncate font-black text-slate-900"
+                                      copyClassName="border border-slate-200 bg-slate-50 p-1 rounded-md shrink-0"
+                                    />
                                   </div>
 
                                   {/* Cell 3: Driver Name */}
@@ -5311,13 +5453,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {/* Client & Branch & Region & Maps */}
                               <div className="space-y-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <div
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate"
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (order.clientId) {
+                                        setClientProfileTarget({
+                                          client: clientObj,
+                                          clientId: order.clientId,
+                                          branchId: order.branchId || '',
+                                          branchName: order.branchName || '',
+                                        });
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate cursor-pointer hover:opacity-90 transition"
                                     style={{
                                       backgroundColor: segColor,
                                       color: getContrastTextColor(segColor)
                                     }}
-                                    title={order.clientName || order.clientId || '—'}
+                                    title={isAr ? `${order.clientName || order.clientId || '—'} — انقر لعرض ملف العميل` : `${order.clientName || order.clientId || '—'} — Click for Client Profile`}
                                   >
                                     <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
                                       {clientObj?.logo ? (
@@ -5331,11 +5485,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       )}
                                     </span>
                                     <span className="truncate">{order.clientName || order.clientId || '—'}</span>
-                                  </div>
+                                  </button>
                                   {showBranchName && (
-                                    <span className="text-xs font-bold text-slate-500">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (order.clientId) {
+                                          setClientProfileTarget({
+                                            client: clientObj,
+                                            clientId: order.clientId,
+                                            branchId: order.branchId || '',
+                                            branchName: order.branchName || '',
+                                          });
+                                        }
+                                      }}
+                                      className="text-xs font-bold text-slate-500 hover:text-indigo-700 hover:underline cursor-pointer"
+                                    >
                                       ({order.branchName})
-                                    </span>
+                                    </button>
                                   )}
                                 </div>
 
@@ -5561,17 +5729,16 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             <div>
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="font-mono text-xs font-black text-amber-400">
-                                  {isAr ? `رحلة #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
+                                  {isAr ? `تحميل #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
                                 </span>
-                                <span className="font-bold text-white text-xs truncate max-w-[140px]" title={tm.primaryVehicleName}>
-                                  {tm.primaryVehicleName || (isAr ? 'شاحنة' : 'Truck')}
-                                </span>
-                                {tm.primaryVehiclePlate && (
-                                  <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-800 border border-slate-700 font-mono text-[9px] text-slate-300">
-                                    <span>{tm.primaryVehiclePlate}</span>
-                                    <CopyButton text={tm.primaryVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} className="text-slate-400 hover:text-white hover:bg-slate-700" />
-                                  </span>
-                                )}
+                                <TruckNameBadge
+                                  name={tm.primaryVehicleName}
+                                  plate={tm.primaryVehiclePlate}
+                                  isAr={isAr}
+                                  showIcon={false}
+                                  nameClassName="font-bold text-white text-xs truncate max-w-[160px]"
+                                  copyClassName="text-slate-400 hover:text-white hover:bg-slate-700 border border-slate-700 bg-slate-800/80 p-1 rounded-md"
+                                />
                               </div>
                               <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
                                 <span className="flex items-center gap-1">
@@ -5586,7 +5753,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             <div className="flex items-center gap-1.5 shrink-0">
                               <RowCommentButton
                                 docId={tm.compoundKey}
-                                docNumber={isAr ? `رحلة #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
+                                docNumber={isAr ? `تحميل #${tm.loadingOrderNumber}` : `Trip #${tm.loadingOrderNumber}`}
                                 tab="loading_plan"
                                 module="sales"
                                 className="bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700"
@@ -5781,7 +5948,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                             <div className="mt-3 p-2 rounded-xl bg-rose-900/80 border border-rose-600 text-rose-100 text-[11px] space-y-1.5">
                               <div className="flex items-center gap-1 font-bold">
                                 <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-                                <span>{isAr ? `تعارض في رحلة #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in Trip #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
+                                <span>{isAr ? `تعارض في تحميل #${tm.loadingOrderNumber} بتاريخ (${tm.loadingDate})!` : `Truck/Driver Conflict in Trip #${tm.loadingOrderNumber} on ${tm.loadingDate}!`}</span>
                               </div>
                               <p className="text-[10px] text-rose-200">
                                 {isAr ? 'أوامر مختلفة بنفس رقم الرحلة لنفس اليوم مسندة لشاحنات وسائقين متباينين.' : 'Different orders in this Trip # on this date have conflicting trucks/drivers.'}
@@ -6121,7 +6288,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     >
                       <div className="flex items-center justify-between font-bold text-slate-900">
                         <span className="font-mono text-amber-700">
-                          {isAr ? 'رحلة #' : 'Trip #'}{t.loadingOrderNumber}
+                          {isAr ? 'تحميل #' : 'Trip #'}{t.loadingOrderNumber}
                         </span>
                         <span className="text-[10px] font-mono text-slate-500">
                           {t.loadingDate}
@@ -6169,7 +6336,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     type="button"
                     onClick={() => {
                       setIsIntentionalDiscrepancyModalOpen(false);
-                      setIsSaveModalOpen(true);
+                      handleCommitSavePlan();
                     }}
                     className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold shadow-xs transition cursor-pointer"
                   >
@@ -6278,23 +6445,18 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     {isAr ? 'تأكيد تحديث حالة رحلة الشاحنة' : 'Confirm Truck Trip Transition'}
                   </h4>
                   <div className="text-xs text-slate-600 mt-0.5 flex items-center gap-1.5 flex-wrap">
-                    <span className="font-black text-slate-900">
-                      {resolveVehicleDisplayName(truckStatusModal.truck, isAr ? 'شاحنة' : 'Truck')}
-                    </span>
+                    <TruckNameBadge
+                      vehicle={truckStatusModal.truck}
+                      isAr={isAr}
+                      showIcon={false}
+                      nameClassName="font-black text-slate-900"
+                      copyClassName="border border-slate-200 bg-slate-100 p-1 rounded-md"
+                    />
                     {truckStatusModal.loadingOrderNumber && truckStatusModal.loadingOrderNumber !== 'unnumbered' && (
                       <>
                         <span>•</span>
                         <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono font-black">
-                          {isAr ? `رحلة #${truckStatusModal.loadingOrderNumber}` : `Trip #${truckStatusModal.loadingOrderNumber}`}
-                        </span>
-                      </>
-                    )}
-                    {truckStatusModal.truck?.plateNumber && (
-                      <>
-                        <span>•</span>
-                        <span className="inline-flex items-center gap-1 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 font-mono font-bold text-slate-700">
-                          <span>{truckStatusModal.truck.plateNumber}</span>
-                          <CopyButton text={truckStatusModal.truck.plateNumber} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                          {isAr ? `تحميل #${truckStatusModal.loadingOrderNumber}` : `Trip #${truckStatusModal.loadingOrderNumber}`}
                         </span>
                       </>
                     )}
@@ -6446,7 +6608,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                       <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                       <div>
                         {isAr
-                          ? `سيتم تحديث (${selectedIds.length}) طلب إلى "${truckStatusModal.targetStep.labelAr}"، بينما سيتم إرجاع (${uncheckedCount}) طلب غير محدد تلقائياً إلى "قيد الانتظار" وفصله عن الرحلة #${truckStatusModal.loadingOrderNumber || ''} لإعادة جدولته.`
+                          ? `سيتم تحديث (${selectedIds.length}) طلب إلى "${truckStatusModal.targetStep.labelAr}"، بينما سيتم إرجاع (${uncheckedCount}) طلب غير محدد تلقائياً إلى "قيد الانتظار" وفصله عن التحميل #${truckStatusModal.loadingOrderNumber || ''} لإعادة جدولته.`
                           : `${selectedIds.length} order(s) will advance to "${truckStatusModal.targetStep.labelEn}", while ${uncheckedCount} unchecked order(s) will revert to "Pending" and detach from Trip #${truckStatusModal.loadingOrderNumber || ''}.`}
                       </div>
                     </div>
@@ -6546,7 +6708,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                 <ListOrdered className="w-4 h-4 text-indigo-400" />
                 <div>
                   <h3 className="text-sm font-black">
-                    {isAr ? `أولوية التسليم — رحلة #${sequenceModal.trip.loadingOrderNumber}` : `Delivery Sequence — Trip #${sequenceModal.trip.loadingOrderNumber}`}
+                    {isAr ? `أولوية التسليم — تحميل #${sequenceModal.trip.loadingOrderNumber}` : `Delivery Sequence — Trip #${sequenceModal.trip.loadingOrderNumber}`}
                   </h3>
                   <p className="text-[11px] text-slate-300 font-medium">
                     {isAr ? 'رتّب العملاء حسب أولوية النزول (اختياري)' : 'Order clients by delivery priority (optional)'}
@@ -6661,6 +6823,20 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           </div>
         </div>
       )}
+
+      {/* Standardized App-Wide Client & Branch Profile Modal */}
+      <ClientProfileModal
+        isOpen={Boolean(clientProfileTarget)}
+        onClose={() => setClientProfileTarget(null)}
+        client={clientProfileTarget?.client || null}
+        clientId={clientProfileTarget?.clientId || ''}
+        focusBranchId={clientProfileTarget?.branchId || ''}
+        focusBranchName={clientProfileTarget?.branchName || ''}
+        clients={clients}
+        segments={segments}
+        salesOrders={orders}
+        isAr={isAr}
+      />
 
       {/* Persistent Collapsible FG Stock & Deficit Intelligence Sidebar (Opposite Edge, Pushes Content Inward) */}
       <LoadingPlanFgSidebar

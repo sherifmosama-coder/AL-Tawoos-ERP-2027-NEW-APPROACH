@@ -1,15 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
 import {
   collection,
-  onSnapshot,
-  doc,
-  setDoc,
-  deleteDoc,
-  writeBatch,
-  serverTimestamp
+  onSnapshot
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import PeacockLoader from './PeacockLoader';
 import VariantComboBox from './VariantComboBox';
 import SearchableSelect from './SearchableSelect';
@@ -339,44 +335,11 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
 
     setIsSaving(true);
     try {
-      const batch = writeBatch(db);
-      const todayCompact = new Date().toISOString().split('T')[0].replace(/-/g, '');
-      const todayIssuesCount = issuesList.filter((iss) => (iss.id || '').startsWith(`XISS-${todayCompact}`)).length;
-      const voucherId = `XISS-${todayCompact}-${String(todayIssuesCount + 1).padStart(2, '0')}`;
-
-      const userName = isAr
-        ? currentUser?.nameAr || currentUser?.name || currentUser?.email || 'مسؤول الصيانة'
-        : currentUser?.name || currentUser?.nameAr || currentUser?.email || 'Maintenance User';
-
-      const processedLines = formLines.map((line, lIdx) => {
+      const preparedLines = formLines.map((line) => {
         const itemObj = itemsList.find((i) => i.code === line.itemId);
         const vObj = (itemObj?.variations || []).find((v) => v.variantCode === line.variantCode || v.suffix === line.variantCode);
         const whObj = warehousesList.find((w) => matchWh(line.targetWarehouse, w));
         const whCode = whObj?.code || line.targetWarehouse;
-        const lineLotNo = `XISS-LOT-${voucherId}-${String(lIdx + 1).padStart(2, '0')}`;
-
-        // Outward Stock Ledger Entry
-        const ledgerRef = doc(collection(db, 'stock_ledger'));
-        batch.set(ledgerRef, {
-          grnId: voucherId,
-          lotNumber: lineLotNo,
-          action: 'spare_parts_consumption',
-          docType: 'spare_parts_issue',
-          itemId: line.itemId,
-          variantCode: line.variantCode || line.itemId,
-          variantColorCode: vObj?.colorCode || '',
-          identifierBadgeText: vObj?.identifierBadgeText || '',
-          materialNameAr: itemObj?.nameAr || line.itemId,
-          materialNameEn: itemObj?.nameEn || '',
-          qty: -Math.abs(Number(line.qty)),
-          unit: itemObj?.smallUnit || 'قطعة',
-          warehouse: whCode,
-          purpose: line.notes.trim(),
-          receiptDate: line.issueDate,
-          receivedBy: userName,
-          timestamp: serverTimestamp(),
-        });
-
         return {
           itemId: line.itemId,
           variantCode: line.variantCode || line.itemId,
@@ -392,28 +355,15 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
         };
       });
 
-      // Write Voucher Document
-      const voucherRef = doc(db, 'spare_parts_issues', voucherId);
-      batch.set(voucherRef, {
-        id: voucherId,
-        voucherNumber: voucherId,
-        status: 'completed',
-        linesCount: processedLines.length,
-        lines: processedLines,
-        issuedBy: {
-          uid: currentUser?.id || '',
-          name: userName,
-          email: currentUser?.email || '',
-        },
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      const postSpareFn = httpsCallable(functions, 'inventoryPostSparePartsConsumption');
+      await postSpareFn({
+        lines: preparedLines,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
       });
-
-      await batch.commit();
       setShowModal(false);
     } catch (err) {
       console.error('Error recording consumption:', err);
-      alert(isAr ? 'حدث خطأ أثناء حفظ إذن الصرف وتحديث الأرصدة.' : 'Error saving consumption voucher.');
+      alert(err.message || (isAr ? 'حدث خطأ أثناء حفظ إذن الصرف وتحديث الأرصدة.' : 'Error saving consumption voucher.'));
     } finally {
       setIsSaving(false);
     }
@@ -429,44 +379,14 @@ export default function SparePartsConsumption({ currentUser = {}, permissions = 
     if (window.confirm(isAr ? `هل أنت متأكد من إلغاء إذن الصرف (${voucher.id}) ورد الكميات للمخزن؟` : `Cancel voucher (${voucher.id}) and revert stock?`)) {
       setIsSaving(true);
       try {
-        const batch = writeBatch(db);
-        const userName = isAr
-          ? currentUser?.nameAr || currentUser?.name || 'مسؤول'
-          : currentUser?.name || 'User';
-
-        (voucher.lines || []).forEach((line) => {
-          const ledgerRef = doc(collection(db, 'stock_ledger'));
-          batch.set(ledgerRef, {
-            grnId: `REV-${voucher.id}`,
-            action: 'spare_parts_reversal',
-            docType: 'spare_parts_reversal',
-            itemId: line.itemId,
-            variantCode: line.variantCode || line.itemId,
-            materialNameAr: line.materialNameAr || line.itemId,
-            qty: Math.abs(Number(line.qty)),
-            unit: line.unit,
-            warehouse: line.targetWarehouse,
-            purpose: `إلغاء ورد إذن الصرف ${voucher.id}`,
-            receiptDate: new Date().toISOString().split('T')[0],
-            receivedBy: userName,
-            timestamp: serverTimestamp(),
-          });
+        const cancelSpareFn = httpsCallable(functions, 'inventoryCancelSparePartsConsumption');
+        await cancelSpareFn({
+          voucherId: voucher.id,
+          currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
         });
-
-        batch.set(
-          doc(db, 'spare_parts_issues', voucher.id),
-          {
-            status: 'cancelled',
-            cancelledAt: serverTimestamp(),
-            cancelledBy: userName,
-          },
-          { merge: true }
-        );
-
-        await batch.commit();
       } catch (err) {
         console.error('Error cancelling voucher:', err);
-        alert(isAr ? 'حدث خطأ أثناء إلغاء الإذن.' : 'Error cancelling voucher.');
+        alert(err.message || (isAr ? 'حدث خطأ أثناء إلغاء الإذن.' : 'Error cancelling voucher.'));
       } finally {
         setIsSaving(false);
       }

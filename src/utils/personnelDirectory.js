@@ -232,3 +232,9 @@ export function buildUnifiedPersonnelPool({
   result.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), isAr ? 'ar' : 'en'));
   return result;
 }
+
+export {
+  normalizeUserEmails,
+  findUserByLoginEmail,
+  findEmailConflictUser,
+} from '../schemas/personnelSchema.js';

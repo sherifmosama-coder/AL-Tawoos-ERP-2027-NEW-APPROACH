@@ -1,8 +1,8 @@
 # 🦚 Al-Tawoos FMCG ERP — System Architecture & Technical Master Snapshot
 
-> **Release Version**: `v3.6-reusable-row-comments-cascade-rbac`  
-> **Release Date**: `2026-10-11`  
-> **System Architecture**: React 18 (Vite) + Tailwind CSS + Firebase Cloud Firestore (Multi-Tab IndexedDB Cache) + OneSignal Web Push SDK v16 + i18next (RTL/LTR)  
+> **Release Version**: `v4.1-cloud-architecture-sales-ux`  
+> **Release Date**: `2026-11-28`  
+> **System Architecture**: React 18 (Vite) + Tailwind CSS + Firebase Auth (Custom Claims) + Cloud Functions (`me-central1` / Node 24) + Cloud Firestore (Multi-Tab IndexedDB Cache) + OneSignal Web Push SDK v16 + i18next (RTL/LTR)  
 > **Target Environment**: Food Manufacturing & Bottling (Vinegar, Tahina, Packaging Lines, Outer Cartons, Rice)  
 > **Single Source of Truth (SSOT)**: `src/config/appArchitecture.js`  
 
@@ -99,7 +99,11 @@
 28. [Tri-Surface Navigation Alignment Standard (Home Page, Sidebar & Top Navbar)](#28-tri-surface-navigation-alignment-standard-home-page-sidebar--top-navbar)
 29. [Client Master & Dynamic Market Segmentation Architecture (`#clients` & `#client_segments`)](#29-client-master--dynamic-market-segmentation-architecture-clients--client_segments)
 30. [Zero Component Header Duplication Architecture (Page Header Banner SSOT)](#30-zero-component-header-duplication-architecture-page-header-banner-ssot)
-31. [Sales & Commercial Module Architecture (`sales_orders`, `loading_plan`, `price_lists`, `client_contracts`)](#31-sales--commercial-module-architecture-sales_orders-loading_plan-price_lists-client_contracts)
+31. [Sales & Commercial Module Architecture (`sales_orders`, `loading_plan`, `truck_dispatch`, `price_lists`, `client_contracts`)](#31-sales--commercial-module-architecture-sales_orders-loading_plan-truck_dispatch-price_lists-client_contracts)
+32. [Finished Goods Stock Balances Overview & SSOT Engine (`fg_balances` & `fgStockEngine.js`)](#32-finished-goods-stock-balances-overview--ssot-engine-fg_balances--fgstockenginejs)
+33. [Unified HR-Ready Personnel Directory, Multi-Department Architecture & 3-Layer Permissions](#33-unified-hr-ready-personnel-directory-multi-department-architecture--3-layer-permissions)
+34. [Hybrid Automated System Restore (Time Machine)](#34-hybrid-automated-system-restore-time-machine)
+35. [Cloud Architecture Uplift: Auth Claims, Cloud Functions, Balance Rollups & Audit Logs](#35-cloud-architecture-uplift-auth-claims-cloud-functions-balance-rollups--audit-logs)
 
 ---
 
@@ -117,6 +121,22 @@ fmcg-erp/
 │   │   ├── LandingPage.jsx                  # 5-Module Central ERP Hub, Floating Utility Header & Expandable Chips
 │   │   ├── TopNavbar.jsx                    # Universal Header with Preserved Tab Routing, Universal Refresh & Presence Pill
 │   │   ├── TabPageHeaderBanner.jsx          # Screen Title Banner with Universal Database Refresh & Tab Customization
+│   │   ├── ClientProfileModal.jsx           # Standardized App-Wide Client & Branch Profile + Past Order Duplication Popup
+│   │   ├── TruckNameBadge.jsx               # Standardized Truck Display (Name Only + Plate on Hover & Copy Icon)
+│   │   ├── SalesOrdersMaster.jsx            # Simplified Sales Orders Workbench, Truck & Docs Tracking & Delete Safeguard
+│   │   ├── SalesLoadingPlanMaster.jsx       # Loading Plan, Collapsed-Default Fleet Dashboard & Trip Comment Sync
+│   │   ├── TruckDispatchMaster.jsx          # FG Warehouse Dispatch, Return Reconciliation & Printed Docs Registry
+│   │   ├── DispatchDocumentsHistoryModal.jsx # Valid/Legacy/Unlinked Printed Dispatch Documents Registry Modal
+│   │   ├── salesOrders/
+│   │   │   ├── SalesOrderEditorModal.jsx    # Order Editor (Sales Rep Dropdown, Client Profile & Scoped Order Duplication)
+│   │   │   └── salesOrderConstants.jsx      # Standardized Fulfillment Statuses, VAT Modes & resolveVehicleDisplayName
+│   │   ├── truckDispatch/
+│   │   │   ├── TruckDispatchModal.jsx       # Dispatch Matrix (Locked + Extras + Dual Crew Effort %)
+│   │   │   └── TruckReturnReceivingModal.jsx # 2-Party Return Receiving & Reconciliation Matrix
+│   │   ├── AuditLogsHub.jsx                 # Admin Control Panel Audit Logs Viewer & Soft-Delete Governance
+│   │   ├── DepartmentsMaster.jsx            # Departments Directory & Scoped Department Permissions Launcher
+│   │   ├── EmployeesDirectoryMaster.jsx     # Unified HR-Ready Personnel Directory (Employees, Workers & System Users)
+│   │   ├── SystemRestoreHub.jsx             # 3-Level Hybrid System Restore (Time Machine) Console
 │   │   ├── ScopedPermissionMatrixModal.jsx   # 2D Multi-User Scoped Permissions Matrix Modal with Cascade Deselection
 │   │   ├── ItemMaster.jsx                   # Compound Raw Material SKU Engine, Categories & Decoupled OB Ingest
 │   │   ├── SupplierMaster.jsx               # Certified Supplier Registry & Multi-Tranche Terms
@@ -182,7 +202,13 @@ fmcg-erp/
 │   │   ├── warehouseClassifier.js           # Universal Dynamic Warehouse Resolver (No Static ID Hardcoding)
 │   │   ├── stockResolver.jsx                # Decoupled Multi-Warehouse SSOT Stock Engine (9-Stream Balance Equation)
 │   │   ├── thermalLabelGenerator.js         # Thermal Label Formatting, SVG Barcodes & Canvas Rendering Engine
-│   │   └── qrCodeGenerator.js               # Dynamic High-Speed QR Code Data URL Generator
+│   │   ├── qrCodeGenerator.js               # Dynamic High-Speed QR Code Data URL Generator
+│   │   ├── clientProfileUtils.js            # Branch Spotlight & Client Past Orders SKU/Price/VAT Aggregator
+│   │   ├── salesOrderUtils.js               # Order Calculations, Mandatory Pre-Save Validator, Sales Rep & Duplication Helpers
+│   │   ├── truckDispatchUtils.js            # Trip Catalog Sync, Return Handshake Matrix & Plan Drift Detector
+│   │   ├── dispatchDocumentBuilder.js       # 1-Page Arabic RTL Dispatch Slip Generator & QR Deep-Links
+│   │   ├── dispatchDocumentRegistry.js      # Monotonic Dispatch Document Numbering (DD-XXXXX) & Valid/Legacy Evaluator
+│   │   └── returnDocumentBuilder.js         # Arabic RTL Return Receiving Document Generator (RET-XXXXX)
 │   ├── context/
 │   │   ├── CommentContext.jsx               # Global Collaborative Comments Provider, Context Menu & Popover Coordinator
 │   │   └── NotificationContext.jsx          # Themed Toast, Alert & Confirmation Dialog System
@@ -1581,11 +1607,16 @@ To prevent visual clutter in the Sales Orders master directory, dispatch executi
 ---
 
 ### 31.3 Fleet Dashboard, Corporate Fulfillment Progression & Bidirectional Sync (`SalesOrdersMaster.jsx` & `SalesLoadingPlanMaster.jsx`)
-- **Primary Vehicle Identity & Quick Copy**: Displays vehicle display name (`resolveVehicleDisplayName`) as the primary fleet identifier with 1-click copy chips for truck `plateNumber` and Purchase Order numbers (`PO #`).
-- **5-Stage Fulfillment Status Progression**: Unified styling and RTL/LTR directional gradients (`SALES_FULFILLMENT_STYLE_MAP`) across `not_yet` (Pending), `prepare` (Preparing), `shipped` (Dispatched), `delivered` (Delivered), and `paid` (Paid/Settled).
-- **Fleet Trips Carousel & Conflict Alignment**: Collapsible Trucks Fleet Dashboard in `loading_plan` with 3-slot trip carousel, light hover tooltips, bidirectional middle stepper controls, LO# conflict detection (`loadingOrderNumber`), and conflict filtering.
-- **Trip-Scoped Floating Manifest & Deep-Linking**: Floating manifest dock scopes dynamically to active triggered trips; bidirectional hash navigation links specific order rows between `sales_orders` and `loading_plan` while preserving full `RecordCommentAction` threads (`Section 23`).
+- **Standardized Vehicle Identity (`TruckNameBadge.jsx` & `resolveVehicleDisplayName`)**: Displays strictly the truck's display name (`vehicleModel || name || code`) across all operational cards, tables, modals, and filters, limiting `plateNumber` to hover metadata (`title` / tooltip) and an adjacent icon-only copy button (`CopyButton`). (`VehiclesMaster.jsx` and printable gate documents continue showing plate numbers explicitly where administratively required.)
+- **Standardized 5-Stage Fulfillment Progression & Aligned Terminology**: Unified status chips, group banners, and RTL/LTR directional gradients (`SALES_FULFILLMENT_STYLE_MAP`) across `SalesOrdersMaster`, `SalesLoadingPlanMaster`, `TruckDispatchMaster`, and `ClientProfileModal`: `Pending / قيد الانتظار` (`not_yet`), `Preparing / جاري التجهيز` (`prepare`), `Out for Delivery / جاري التوصيل` (`shipped`), `Delivered / تم التسليم` (`delivered`), and `Paid / مدفوع` (`paid`). All Arabic trip/load badges and printed slips standardize on `تحميل #` (paired with English `Trip #`), and confirmed warehouse dispatch slips render **`Dispatch Doc ✓` / `إذن الصرف ✓`**.
+- **Simplified `SalesOrdersMaster` Workbench**: Top Search input + ranked primary toolbar (`New Sales Order`, `Admin Actions`, `Export`, `Std Retail`, `Filter` toggler with active badge) with collapsed-by-default filter bar (`isFiltersOpen = false`); KPI scorecards removed; Invoice/Loading dates stacked beneath `#` (`Truck` icon for loading date) and client schedule/holidays stacked under Client Name; dedicated **`Truck & Docs`** column before `Status` tracking Truck Name + `#LO`, `DD-XXXXX`, and `RET-XXXXX` chips; viewport-aware top-layer 3-dots (`⋮`) action menu containing the audit entry badge.
+- **Loading Plan Ergonomics, Pre-Save Gate & Bidirectional Trip Comments**: Collapsed-by-default Filter bar and Fleet Operational Dashboard accessible via two icon-only toggle buttons beside a compact `Target Loading Date` bar. Users can switch order fulfillment statuses freely before entering mandatory assignment fields; order-level `Save (✓)` enforces `validateLoadingPlanOrderMandatoryFields` (`Pending` saves freely; `Preparing+` requires `Trip #`, `Truck`, and `Driver`). Floating Dock and Fleet Dashboard `CompactTruckCard` headers share live interactive `<RowCommentButton>` threads keyed by `buildTripCommentDocId` (`YYYY-MM-DD_#LO`).
 - **Tonnage Unit Standard**: Arabic UI labels consistently render `طن` (never `t`).
+
+### 31.3b Simplified Sales Order Editor, Client Profile & Scoped Duplication (`SalesOrderEditorModal.jsx` & `ClientProfileModal.jsx`)
+- **Focused Order Editor (`SalesOrderEditorModal.jsx`)**: Fulfillment Status display removed from Section 4 (preserving saved `fulfillmentStatus` silently in payload), leaving a clean 2-column row (`Confirmation Status` + **Sales Rep / Officer** dropdown populated from unified active `employees` via `resolveSalesRepOptions`).
+- **App-Wide Standardized Client & Branch Profile (`ClientProfileModal.jsx` & `clientProfileUtils.js`)**: Clicking any client/branch chip in `ClientMaster`, `SalesOrdersMaster`, `SalesLoadingPlanMaster`, `TruckDispatchMaster`, `TruckDispatchModal`, `TruckReturnReceivingModal`, or `SalesOrderEditorModal` opens `<ClientProfileModal />` featuring a Branch Contact & Schedule spotlight, Commercial/Tax/Branches/Attachments overview, and Past Orders & SKU/Packing/Price/VAT history (`All Branches` vs `Focused Branch` scope, RBAC-masked).
+- **Quick Past Order Duplication (`extractPastOrderDuplicationSpec`)**: Available inside `SalesOrderEditorModal` via both a Section 3 **`Duplicate Past Order`** quick-picker and a **`Duplicate Items & VAT`** action directly on Past Orders inside `ClientProfileModal`. Strictly copies active allowed **products (with packaging option), `qty`, `bonus`, and `vatMode`**, dynamically recalculating live catalog unit prices and promo discounts for the active `invoiceDate` (confirming only when lines already exist).
 
 ---
 
@@ -1673,22 +1704,22 @@ Implemented centrally in `src/utils/fgStockEngine.js` (`buildFgStockMatrix`, `bu
 
 ---
 
-## 25. Unified HR-Ready Personnel Directory, Multi-Department Architecture & 3-Layer Permissions
+## 33. Unified HR-Ready Personnel Directory, Multi-Department Architecture & 3-Layer Permissions
 
-### 25.1 Canonical Master Data Collections
+### 33.1 Canonical Master Data Collections
 - **`departments` (`DepartmentsMaster.jsx`)**: First-class organizational departments (`id`, `code`, `nameAr`, `nameEn`, `description`, `headEmployeeId`, `color`, `isActive`). Replaces legacy free-text department strings across the ERP.
 - **`employees` (`EmployeesDirectoryMaster.jsx`)**: Unified HR-ready staff, workers, and system users directory (`id`, `employeeCode`, `nameAr`, `nameEn`, `phone`, `email`, `departmentIds[]`, `departmentId` primary, `departmentNameAr`, `jobTitle`, `operationalTags[]`, `isSystemUser`, `linkedUserId`, `role`, `status`, `hrProfile { nationalId, hireDate, contractType, shiftType, notes }`).
   - Supports **multi-department membership** (`departmentIds: string[]`).
   - Automatically syncs active/revoked system login accounts to `users/{linkedUserId}` when `isSystemUser` is toggled.
-  - All operational modules (`TruckDispatchMaster`, `SalesLoadingPlanMaster`, `VehiclesMaster`, `WorkOrdersMaster`, `ProductionProcessesMaster`, `CashSafesMaster`, `ChartOfAccountsMaster`, `cashLedgerEngine`) consume `employees` as the single source of truth via `buildUnifiedPersonnelPool` (`src/utils/personnelDirectory.js`).
+  - All operational modules (`TruckDispatchMaster`, `SalesLoadingPlanMaster`, `SalesOrdersMaster`, `VehiclesMaster`, `WorkOrdersMaster`, `ProductionProcessesMaster`, `CashSafesMaster`, `ChartOfAccountsMaster`, `cashLedgerEngine`) consume `employees` as the single source of truth via `buildUnifiedPersonnelPool` (`src/utils/personnelDirectory.js`).
 
-### 25.2 Navigation Consolidation (Sidebar, Landing Page & Top Navbar)
+### 33.2 Navigation Consolidation (Sidebar, Landing Page & Top Navbar)
 - Master Data exposes a clean 2-tab personnel & access structure across all 3 navigation surfaces (`App.jsx`, `LandingPage.jsx`, `TopNavbar.jsx`) and `tabAppearanceConfig.js`:
   1. `#departments` — **الأقسام وصلاحياتها / Departments & Permissions**
   2. `#employees` — **الموظفون والعمالة والمستخدمون / Staff, Workers & Users**
 - Legacy `#users` and `#production_workers` URLs cleanly redirect into `EmployeesDirectoryMaster` pre-filtered to `system` or `worker`.
 
-### 25.3 3-Layer Permission Resolution (`src/config/appArchitecture.js`)
+### 33.3 3-Layer Permission Resolution (`src/config/appArchitecture.js`)
 - `resolveEffectivePermissions` & `getPermissionCellMeta` evaluate permissions in strict precedence:
   1. **General Admin Bypass**: `isGeneralAdmin || role === 'general_admin'` → full access.
   2. **Layer 1 — Role Defaults**: `DEFAULT_ROLE_PERMISSIONS.standard`.
@@ -1699,7 +1730,7 @@ Implemented centrally in `src/utils/fgStockEngine.js` (`buildFgStockMatrix`, `bu
 
 ---
 
-## 26. Hybrid Automated System Restore (Time Machine)
+## 34. Hybrid Automated System Restore (Time Machine)
 
 - **Access & Placement (`SystemRestoreHub.jsx` inside `AdminControlPanel.jsx`)**: Exclusively accessible to General Admin via `#admin_panel?subTab=system_restore` (`الاستعادة الزمنية / System Restore`), with zero buttons exposed on individual operational tab banners.
 - **Hybrid Capture Engine (`src/utils/systemRestoreEngine.js` & `functions/index.js`)**:
@@ -1710,4 +1741,15 @@ Implemented centrally in `src/utils/fgStockEngine.js` (`buildFgStockMatrix`, `bu
   - Retention defaults: **15m interval**, **12h intra-day**, **14d daily anchors**, **8 safety (`pre_restore`/`pre_purge`) points**, and permanent retention for `manual` / `pinned` checkpoints, with reference-counted orphan blob GC.
 - **3-Level Rollback with Always-Full-Relational-Cascade (`resolveRestoreScopePlan` & `computeRestoreDiffPlan`)**:
   - Supports **System-Wide**, **Module**, and **Tab** rollback with Date/Time jump matching (`findNearestRestorePointForDateTime`), live per-collection Diff Preview (`+Recreate`, `~Revert`, `-Remove`, `Unchanged`, `Untouched`), automatic `pre_restore` safety checkpoint + `RESTORE` typed confirmation, post-restore recalculation of `items.stock` & `cash_safes`/`corporate_banks`, and 1-click Undo via `system_restore_logs`.
+
+---
+
+## 35. Cloud Architecture Uplift: Auth Claims, Cloud Functions, Balance Rollups & Audit Logs
+
+- **Firebase Auth & Custom Claims (`functions/index.js`, `AuthLoginGate.jsx`, `AuthActionPage.jsx`)**:
+  - Supports 1 or 2 emails per ERP user (`primaryEmail` + `secondaryEmail`), enforces allowlist & active status verification before issuing Custom Claims (`erpRole`, `isGeneralAdmin`, `erpUserId`), restricts Persona Switcher strictly to verified General Admin accounts, and provides branded corporate Password Reset (`/auth/action`) + SMTP mailing.
+- **Regional Callable Cloud Functions (`me-central1`, Node.js 24)**:
+  - Atomic multi-collection writes, counter minting, Finance safe/treasury transactions (`Sub-Phase 3A`), Inventory/Production operations (`Sub-Phase 3B`), Truck Dispatch/Return handshake & printed document commits (`Sub-Phase 3C`), Admin/Master operations & soft-deletes (`Phase 4`), and balance rollups (`items.stock`, `cash_safes`, `corporate_banks`), alongside hardened server-owned `firestore.rules`.
+- **Audit Logs Hub & Sales Delete Safeguard (`AuditLogsHub.jsx` & `SalesOrdersMaster.jsx`)**:
+  - Dedicated Audit Logs viewer inside Admin Control Panel paired with both client- and server-enforced Sales Order deletion protection preventing deletion of dispatched or dispatch/return-document-linked orders.
 

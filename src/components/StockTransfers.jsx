@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCompanyProfile } from '../hooks/useCompanyProfile';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
 import {
   collection,
   onSnapshot,
@@ -10,6 +10,7 @@ import {
   writeBatch,
   serverTimestamp
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import {
   Plus,
   Search,
@@ -842,11 +843,14 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
         auditTrail: [auditEntry],
         attachments: [],
         version: '1.0',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
       };
 
-      await setDoc(doc(db, 'stock_transfers', newTrnId), transferDoc);
+      const createTransferFn = httpsCallable(functions, 'inventoryCreateStockTransfer');
+      await createTransferFn({
+        transferId: newTrnId,
+        transferDoc,
+        currentUser: currentUser ? { id: currentUserId, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
       if (initialStatus !== 'completed') {
         const isAdminOnly = initialStatus === 'pending_admin_verification';
@@ -904,33 +908,15 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
     setIsSavingTransfer(true);
     try {
       const isOverride = isGeneralAdmin && verifyModalTransfer.requiredVerifierId && currentUserId !== verifyModalTransfer.requiredVerifierId;
-
-      const auditEntry = {
-        version: '1.1',
-        action: 'transfer_verified_accepted',
-        status: 'completed',
-        performedBy: currentUserName,
-        timestamp: new Date().toISOString(),
+      const respondTransferFn = httpsCallable(functions, 'inventoryRespondStockTransfer');
+      await respondTransferFn({
+        transferId: verifyModalTransfer.id,
+        action: 'verify',
         noteAr: isOverride
           ? `تم اعتماد واستلام التحويل بصلاحية المسؤول العام (اعتماد استثنائي نيابة عن ${getUserName(verifyModalTransfer.requiredVerifierId)})`
           : 'تم فحص الشحنة واستلامها واعتماد التحويل المخزني بنجاح',
-        noteEn: isOverride
-          ? `Verified by General Admin Override on behalf of ${getUserName(verifyModalTransfer.requiredVerifierId)}`
-          : 'Transfer inspected, verified, and completed successfully',
-      };
-
-      await setDoc(
-        doc(db, 'stock_transfers', verifyModalTransfer.id),
-        {
-          status: 'completed',
-          verifiedBy: currentUserName,
-          verifiedById: currentUserId,
-          verifiedAt: new Date().toISOString(),
-          auditTrail: [...(verifyModalTransfer.auditTrail || []), auditEntry],
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+        currentUser: currentUser ? { id: currentUserId, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
       // Complete Action Required & Notify Initiator
       await completeActionRequired({
@@ -983,32 +969,16 @@ export default function StockTransfers({ currentUser = {}, permissions = null })
     setIsSavingTransfer(true);
     try {
       const isOverride = isGeneralAdmin && rejectModalTransfer.requiredVerifierId && currentUserId !== rejectModalTransfer.requiredVerifierId;
-
-      const auditEntry = {
-        version: '1.1',
-        action: 'transfer_rejected',
-        status: 'rejected',
-        performedBy: currentUserName,
-        timestamp: new Date().toISOString(),
+      const respondTransferFn = httpsCallable(functions, 'inventoryRespondStockTransfer');
+      await respondTransferFn({
+        transferId: rejectModalTransfer.id,
+        action: 'reject',
+        reason: rejectionReason.trim(),
         noteAr: isOverride
           ? `تم رفض التحويل من قبل المسؤول العام: ${rejectionReason.trim()}`
           : `تم رفض استلام التحويل: ${rejectionReason.trim()}`,
-        noteEn: `Transfer rejected: ${rejectionReason.trim()}`,
-      };
-
-      await setDoc(
-        doc(db, 'stock_transfers', rejectModalTransfer.id),
-        {
-          status: 'rejected',
-          rejectionReason: rejectionReason.trim(),
-          rejectedBy: currentUserName,
-          rejectedById: currentUserId,
-          rejectedAt: new Date().toISOString(),
-          auditTrail: [...(rejectModalTransfer.auditTrail || []), auditEntry],
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+        currentUser: currentUser ? { id: currentUserId, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
 
       // Complete Action Required & Notify Initiator of Rejection
       await completeActionRequired({

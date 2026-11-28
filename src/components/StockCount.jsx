@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCompanyProfile } from '../hooks/useCompanyProfile';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
 import {
   collection,
   onSnapshot,
   doc,
   setDoc,
-  writeBatch,
   serverTimestamp
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import {
   ClipboardCheck,
   Plus,
@@ -389,7 +389,6 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
 
     setIsSavingDirectAdj(true);
     try {
-      const batch = writeBatch(db);
       const todayStr = new Date().toISOString().split('T')[0];
       const todayCompact = todayStr.replace(/-/g, '');
       const adjId = `ADJ-${todayCompact}-${Math.random().toString(36).substr(2, 5).toUpperCase()}-${targetLotNumber}`;
@@ -400,15 +399,14 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
       const isSurplus = varianceDelta > 0;
       const varianceAbs = Math.abs(varianceDelta);
       const finalUnitCost = Number(unitCost || variantObj.openingUnitCost || 0);
+      const targetSupId = supplierId || variantObj.supplierId || '';
 
-      // 1. Write Approved Adjustment Receipt Voucher to goods_receipts
-      const receiptRef = doc(db, 'goods_receipts', adjId);
-      batch.set(receiptRef, {
+      const receiptPayload = {
         id: adjId,
         docType: 'inventory_reconciliation',
         isDirectAdjustment: true,
         status: 'approved',
-        supplierId: supplierId || variantObj.supplierId || 'STOCK_COUNT_ADJUSTMENT',
+        supplierId: targetSupId || 'STOCK_COUNT_ADJUSTMENT',
         supplierName: supplierName || variantObj.supplierName || (isAr ? 'تسوية جردية مباشرة' : 'Direct Stock Adjustment'),
         affectSupplierBalance: Boolean(affectSupplierBalance),
         receiptDate: todayStr,
@@ -446,13 +444,9 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
           },
         ],
         receivedBy: currentUserName,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      };
 
-      // 2. Post to Movement Ledger
-      const ledgerRef = doc(collection(db, 'stock_ledger'));
-      batch.set(ledgerRef, {
+      const ledgerPayload = {
         grnId: adjId,
         lotNumber: targetLotNumber,
         action: isSurplus ? 'direct_adjustment_surplus' : 'direct_adjustment_deficit',
@@ -467,7 +461,7 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
         variance: varianceDelta,
         unit: variantObj.smallUnit || itemObj?.smallUnit || 'قطعة',
         warehouse: warehouseId,
-        supplierId: supplierId || variantObj.supplierId || '',
+        supplierId: targetSupId,
         supplierName: supplierName || variantObj.supplierName || '',
         affectSupplierBalance: Boolean(affectSupplierBalance),
         placedBy: currentUserName,
@@ -480,36 +474,24 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
         financialImpact: varianceDelta * finalUnitCost,
         approvedBy: currentUserName,
         approverId: currentUserId,
-        timestamp: serverTimestamp(),
+      };
+
+      const postDirectAdjFn = httpsCallable(functions, 'inventoryPostDirectStockAdjustment');
+      await postDirectAdjFn({
+        adjId,
+        receiptPayload,
+        ledgerPayload,
+        affectSupplierBalance: Boolean(affectSupplierBalance),
+        supplierId: targetSupId,
+        financialImpact: varianceDelta * finalUnitCost,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
       });
 
-      // 3. Optional: Affect Supplier Balance if explicitly toggled ON
-      if (affectSupplierBalance && (supplierId || variantObj.supplierId)) {
-        const targetSupId = supplierId || variantObj.supplierId;
-        const supDoc = suppliersList.find((s) => s.id === targetSupId);
-        if (supDoc) {
-          const currentBalance = Number(supDoc.currentBalance || 0);
-          const financialImpact = varianceDelta * finalUnitCost;
-          // Surplus increases payable (+), Deficit decreases payable (-)
-          const updatedBalance = Math.max(0, currentBalance + financialImpact);
-
-          batch.set(
-            doc(db, 'suppliers', targetSupId),
-            {
-              currentBalance: updatedBalance,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
-        }
-      }
-
-      await batch.commit();
       setShowDirectAdjModal(false);
       alert(isAr ? `تمت التسوية المخزنية المباشرة للبند (${variantCode}) ورقم اللوط (${targetLotNumber}) بنجاح!` : `Direct stock adjustment for (${variantCode}) Lot (${targetLotNumber}) posted successfully!`);
     } catch (err) {
       console.error('Error executing direct adjustment:', err);
-      alert(isAr ? 'حدث خطأ أثناء تنفيذ التسوية المباشرة.' : 'Error saving direct adjustment.');
+      alert(err.message || (isAr ? 'حدث خطأ أثناء تنفيذ التسوية المباشرة.' : 'Error saving direct adjustment.'));
     } finally {
       setIsSavingDirectAdj(false);
     }
@@ -1237,120 +1219,13 @@ export default function StockCount({ currentUser = {}, permissions = null }) {
 
     setIsProcessingApproval(true);
     try {
-      const batch = writeBatch(db);
-      const todayStr = new Date().toISOString().split('T')[0];
-      const todayCompact = todayStr.replace(/-/g, '');
-      const updatedLines = [...session.lines];
-
-      indicesToApprove.forEach((idx) => {
-        const line = updatedLines[idx];
-        if (line.status === 'approved' || line.actualSmallQty === null) return;
-
-        line.status = 'approved';
-        line.approvedBy = currentUserName;
-        line.approvedAt = todayStr;
-
-        if (line.variance && line.variance !== 0) {
-          const adjId = `ADJ-${todayCompact}-${session.id}-${line.lotNumber}`;
-          const isSurplus = line.variance > 0;
-          const varianceAbs = Math.abs(line.variance);
-
-          // 1. Create Receipt/Adjustment Document (Stamping Placed-by user & Old Expected Qty)
-          const receiptRef = doc(db, 'goods_receipts', adjId);
-          batch.set(receiptRef, {
-            id: adjId,
-            docType: 'inventory_reconciliation',
-            status: 'approved',
-            supplierId: 'STOCK_COUNT_RECONCILIATION',
-            supplierName: isAr ? `تسوية جرد فعلي (${session.id})` : `Stock Count Adjustment (${session.id})`,
-            receiptDate: todayStr,
-            targetWarehouse: line.warehouseId,
-            placedBy: session.createdBy, // User who placed/conducted the count
-            oldBalance: line.bookSmallQty,
-            actualBalance: line.actualSmallQty,
-            lines: [
-              {
-                lotNumber: line.lotNumber,
-                itemId: line.itemId,
-                code: line.variantCode,
-                variantCode: line.variantCode,
-                nameAr: line.itemNameAr,
-                nameEn: line.itemNameEn,
-                specs: line.variantSpecs,
-                targetWarehouse: line.warehouseId,
-                smallUnit: line.smallUnit,
-                receivedSmallUnits: isSurplus ? varianceAbs : -varianceAbs,
-                oldBookBalance: line.bookSmallQty, // Expected balance before reconciliation
-                actualFoundQty: line.actualSmallQty,
-                variance: line.variance,
-                placedBy: session.createdBy, // User who placed count
-                unitPrice: line.unitCost || 0,
-                currency: line.currency || 'EGP',
-                qcStatus: 'accepted',
-                notes: `Reconciliation: Book=${line.bookSmallQty}, Actual=${line.actualSmallQty}, Diff=${line.variance}`,
-              },
-            ],
-            receivedBy: currentUserName,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          // 2. Post to Immutable Movement Ledger (Audit Trail)
-          const ledgerRef = doc(collection(db, 'stock_ledger'));
-          batch.set(ledgerRef, {
-            grnId: adjId,
-            lotNumber: line.lotNumber,
-            action: isSurplus ? 'reconciliation_surplus' : 'reconciliation_deficit',
-            docType: 'inventory_reconciliation',
-            sessionId: session.id,
-            itemId: line.itemId,
-            variantCode: line.variantCode,
-            materialNameAr: line.itemNameAr,
-            oldBalance: line.bookSmallQty,
-            newActualBalance: line.actualSmallQty,
-            qty: isSurplus ? varianceAbs : -varianceAbs,
-            variance: line.variance,
-            unit: line.smallUnit,
-            warehouse: line.warehouseId,
-            placedBy: session.createdBy, // User who placed count
-            receiptDate: todayStr,
-            unitPrice: line.unitCost || 0,
-            currency: line.currency || 'EGP',
-            financialImpact: line.variance * (line.unitCost || 0),
-            approvedBy: currentUserName,
-            approverId: currentUserId,
-            timestamp: serverTimestamp(),
-          });
-        }
+      const approveCountFn = httpsCallable(functions, 'inventoryApproveStockCountLines');
+      await approveCountFn({
+        sessionId: session.id,
+        indicesToApprove,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
       });
 
-      const allApproved = updatedLines.every((l) => l.status === 'approved');
-      const anyApproved = updatedLines.some((l) => l.status === 'approved');
-      const nextSessionStatus = allApproved ? 'done' : anyApproved ? 'under-review' : session.status;
-
-      const approveLog = createAuditLog(
-        'lines_approved',
-        `اعتماد وتسوية (${indicesToApprove.length}) بند من بنود الجرد المخزني`,
-        `Approved and reconciled (${indicesToApprove.length}) inventory line(s)`,
-        {
-          approvedCount: indicesToApprove.length,
-          allCompleted: allApproved,
-        }
-      );
-
-      const sessionRef = doc(db, 'stock_counts', session.id);
-      batch.set(
-        sessionRef,
-        {
-          lines: updatedLines,
-          status: nextSessionStatus,
-          auditLogs: [...(session.auditLogs || []), approveLog],
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      await batch.commit();
       setSelectedLineIndices([]);
       alert(isAr ? `تم اعتماد وتسوية (${indicesToApprove.length}) بند بنجاح وتحديث أرصدة المخازن فورياً!` : `Approved (${indicesToApprove.length}) reconciliation lines successfully!`);
     } catch (err) {

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { db, fileToDataUrl, openBase64Document } from '../firebase';
+import PeacockLoader from './PeacockLoader';
 import {
   collection,
   onSnapshot,
@@ -71,6 +72,7 @@ import {
 } from 'lucide-react';
 import VatNumberInput from './VatNumberInput';
 import VatNumberDisplay from './VatNumberDisplay';
+import ClientProfileModal from './ClientProfileModal';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster';
 import { RowCommentButton } from './comments';
 import { PricingStrategyBadge } from './PricingStrategiesModal';
@@ -3655,7 +3657,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               onClick={handleApplyBulkEdit}
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
             >
-              {isApplyingBulkEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              {isApplyingBulkEdit ? <PeacockLoader size="xxs" inline variant="white" /> : <Check className="w-3.5 h-3.5" />}
               <span>{isAr ? 'تطبيق' : 'Apply'}</span>
             </button>
           </div>
@@ -3671,7 +3673,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
               className="px-3.5 py-1.5 bg-rose-600/90 hover:bg-rose-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
               title={isAr ? 'حذف جميع العملاء المحددين نهائياً' : 'Permanently delete all selected clients'}
             >
-              {isDeletingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              {isDeletingBulk ? <PeacockLoader size="xxs" inline variant="white" /> : <Trash2 className="w-3.5 h-3.5" />}
               <span>{isAr ? 'حذف المحدد' : 'Delete Selected'}</span>
             </button>
           )}
@@ -3733,7 +3735,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                 onClick={handleBulkDelete}
                 className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shadow-md cursor-pointer flex items-center gap-1.5"
               >
-                {isDeletingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                {isDeletingBulk ? <PeacockLoader size="xxs" inline variant="white" /> : <Trash2 className="w-3.5 h-3.5" />}
                 <span>{isAr ? `تأكيد حذف (${selectedClientIds.size}) عميل` : `Confirm Delete (${selectedClientIds.size})`}</span>
               </button>
             </div>
@@ -3741,365 +3743,19 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* FULL DETAILED VIEW CLIENT PROFILE MODAL                                   */}
-      {/* ========================================================================= */}
-      {detailViewClient && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] animate__animated animate__fadeInUp animate__faster">
-            {/* Modal Header */}
-            <div className="px-6 py-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex items-center justify-between flex-shrink-0">
-              <div className="flex items-center gap-3.5">
-                <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center overflow-hidden shadow-sm shrink-0">
-                  {detailViewClient.logo ? (
-                    <img
-                      src={detailViewClient.logo}
-                      alt={detailViewClient.tradeNameAr}
-                      className="w-full h-full object-contain p-1"
-                    />
-                  ) : (
-                    <Building2 className="w-6 h-6 text-blue-400" />
-                  )}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-300 border border-blue-400/30 font-bold">
-                      {detailViewClient.id}
-                    </span>
-                    <h3 className="font-black text-lg text-white">
-                      {detailViewClient.tradeNameAr || detailViewClient.name}
-                    </h3>
-                  </div>
-                  {detailViewClient.tradeNameEn && (
-                    <p className="text-xs text-slate-400 font-semibold" dir="ltr">
-                      {detailViewClient.tradeNameEn}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {canEdit && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const c = detailViewClient;
-                      setDetailViewClient(null);
-                      handleOpenEditModal(c);
-                    }}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>{isAr ? 'تعديل البيانات' : 'Edit Profile'}</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => setDetailViewClient(null)}
-                  className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-6 overflow-y-auto space-y-5 flex-grow text-slate-700">
-              {/* Top Key Attributes Ribbon */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {/* Segment */}
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
-                  <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'القطاع والتصنيف:' : 'Segment:'}</span>
-                  <span className="text-xs font-black text-slate-800">
-                    {segmentMap[detailViewClient.segmentId]?.nameAr || detailViewClient.segmentId || '—'}
-                  </span>
-                </div>
-
-                {/* Pricing Strategy */}
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
-                  <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'استراتيجية التسعير:' : 'Pricing Strategy:'}</span>
-                  <PricingStrategyBadge
-                    strategyId={detailViewClient.pricingStrategy}
-                    strategies={pricingStrategies}
-                    isAr={isAr}
-                  />
-                </div>
-
-                {/* Settlement Mode */}
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
-                  <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'طريقة السداد:' : 'Settlement Mode:'}</span>
-                  <span className="text-xs font-black text-slate-800">
-                    {SETTLEMENT_MODES.find((m) => m.id === detailViewClient.settlementMode)?.labelAr || detailViewClient.settlementMode || '—'}
-                  </span>
-                </div>
-
-                {/* Credit Limit */}
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl">
-                  <span className="block text-[11px] font-bold text-slate-500 mb-1">{isAr ? 'الحد الائتماني:' : 'Credit Limit:'}</span>
-                  <span className="text-xs font-mono font-black text-slate-800">
-                    {Number(detailViewClient.creditLimit) === 0
-                      ? (isAr ? 'مفتوح (غير مقيد)' : 'Unlimited')
-                      : `${Number(detailViewClient.creditLimit).toLocaleString()} ${isAr ? 'ج.م' : 'EGP'}`}
-                  </span>
-                </div>
-              </div>
-
-              {/* Commercial & Tax Identification */}
-              <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3 shadow-2xs">
-                <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-2">
-                  <FileText className="w-4 h-4 text-blue-600" />
-                  <span>{isAr ? 'البيانات التجارية والقانونية' : 'Commercial & Legal Identification'}</span>
-                </h4>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                  <div>
-                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'الاسم القانوني / الرسمي:' : 'Legal Name:'}</span>
-                    <span className="font-bold text-slate-800">{detailViewClient.legalName || '—'}</span>
-                  </div>
-
-                  <div>
-                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'رقم البطاقة الضريبية:' : 'Tax Card ID:'}</span>
-                    {detailViewClient.taxCardNumber ? (
-                      <VatNumberDisplay value={detailViewClient.taxCardNumber} className="font-mono font-bold text-slate-800" />
-                    ) : (
-                      <span className="text-slate-400 font-mono">—</span>
-                    )}
-                  </div>
-
-                  <div>
-                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'السجل التجاري:' : 'Commercial Register:'}</span>
-                    <span className="font-mono font-bold text-slate-800">{detailViewClient.commercialRegister || '—'}</span>
-                  </div>
-
-                  <div>
-                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'المأمورية الضريبية:' : 'Tax District:'}</span>
-                    <span className="font-bold text-slate-800">{detailViewClient.taxDistrict || '—'}</span>
-                  </div>
-
-                  <div>
-                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'آخر نشاط تسليم فعلي:' : 'Latest Delivery Activity:'}</span>
-                    <span className="font-bold text-slate-800">
-                      {detailViewClient.latestActivityOn
-                        ? new Date(detailViewClient.latestActivityOn).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')
-                        : (isAr ? 'لا يوجد' : 'No records')}
-                    </span>
-                  </div>
-
-                  <div>
-                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'مواعيد العمل والعطلات:' : 'Schedule & Holidays:'}</span>
-                    <span className="font-bold text-slate-800">
-                      {detailViewClient.workingHoursFrom && detailViewClient.workingHoursTo
-                        ? `${detailViewClient.workingHoursFrom} - ${detailViewClient.workingHoursTo}`
-                        : (isAr ? 'غير محددة' : 'Not specified')}{' '}
-                      {detailViewClient.weeklyHolidays && detailViewClient.weeklyHolidays.length > 0 && (
-                        <span className="text-slate-500 font-semibold">
-                          (العطلة: {detailViewClient.weeklyHolidays.map((h) => WEEK_DAYS.find((d) => d.id === h)?.labelAr || h).join('، ')})
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Contact Channels */}
-              <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3 shadow-2xs">
-                <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-2">
-                  <Phone className="w-4 h-4 text-emerald-600" />
-                  <span>{isAr ? 'قنوات الاتصال والتواصل' : 'Contact Channels'}</span>
-                </h4>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                  <div>
-                    <span className="block text-slate-400 font-semibold mb-1">{isAr ? 'أرقام الهواتف:' : 'Phone Numbers:'}</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(detailViewClient.phones && detailViewClient.phones.length > 0) ? (
-                        detailViewClient.phones.map((p, idx) => (
-                          <a
-                            key={idx}
-                            href={`tel:${p}`}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-mono font-bold hover:bg-emerald-100 transition"
-                          >
-                            <Phone className="w-3 h-3 text-emerald-600" />
-                            <span>{p}</span>
-                          </a>
-                        ))
-                      ) : detailViewClient.phone ? (
-                        <a
-                          href={`tel:${detailViewClient.phone}`}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-mono font-bold hover:bg-emerald-100 transition"
-                        >
-                          <Phone className="w-3 h-3 text-emerald-600" />
-                          <span>{detailViewClient.phone}</span>
-                        </a>
-                      ) : (
-                        <span className="text-slate-400 font-mono">—</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <span className="block text-slate-400 font-semibold mb-1">{isAr ? 'عناوين البريد الإلكتروني:' : 'Email Addresses:'}</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(detailViewClient.emails && detailViewClient.emails.length > 0) ? (
-                        detailViewClient.emails.map((em, idx) => (
-                          <a
-                            key={idx}
-                            href={`mailto:${em}`}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-purple-50 text-purple-800 border border-purple-200 rounded-lg font-mono font-bold hover:bg-purple-100 transition"
-                          >
-                            <Mail className="w-3 h-3 text-purple-600" />
-                            <span>{em}</span>
-                          </a>
-                        ))
-                      ) : detailViewClient.email ? (
-                        <a
-                          href={`mailto:${detailViewClient.email}`}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-purple-50 text-purple-800 border border-purple-200 rounded-lg font-mono font-bold hover:bg-purple-100 transition"
-                        >
-                          <Mail className="w-3 h-3 text-purple-600" />
-                          <span>{detailViewClient.email}</span>
-                        </a>
-                      ) : (
-                        <span className="text-slate-400 font-mono">—</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {detailViewClient.notes && (
-                  <div className="pt-2 border-t border-slate-100 text-xs">
-                    <span className="block text-slate-400 font-semibold mb-0.5">{isAr ? 'ملاحظات العميل:' : 'Notes:'}</span>
-                    <p className="text-slate-700 bg-slate-50 p-2.5 rounded-xl border border-slate-200 font-medium whitespace-pre-wrap">
-                      {detailViewClient.notes}
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Multi-Branch Cards Gallery */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5">
-                    <Boxes className="w-4 h-4 text-blue-600" />
-                    <span>{isAr ? 'الفروع المسجلة للعميل' : 'Registered Branches'} ({(detailViewClient.branches || []).length})</span>
-                  </h4>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {(detailViewClient.branches || []).map((b, bIdx) => (
-                    <div key={b.id || bIdx} className="p-3.5 bg-slate-50/80 border border-slate-200 rounded-2xl space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-black text-xs text-slate-900">{b.nameAr}</span>
-                        {b.isMain ? (
-                          <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded-md text-[10px] font-bold">
-                            {isAr ? 'الفرع الرئيسي' : 'Main Branch'}
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md text-[10px] font-semibold">
-                            {isAr ? 'فرع إضافي' : 'Additional'}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="text-xs space-y-1 text-slate-600">
-                        {b.region && (
-                          <div>
-                            <strong className="text-slate-700">{isAr ? 'المنطقة:' : 'Region:'}</strong> {b.region}
-                          </div>
-                        )}
-                        {b.address && (
-                          <div>
-                            <strong className="text-slate-700">{isAr ? 'العنوان:' : 'Address:'}</strong> {b.address}
-                          </div>
-                        )}
-                        {b.contactPerson && (
-                          <div>
-                            <strong className="text-slate-700">{isAr ? 'المسؤول:' : 'Contact:'}</strong> {b.contactPerson}
-                          </div>
-                        )}
-                        {b.phone && (
-                          <div className="font-mono">
-                            <strong className="text-slate-700">{isAr ? 'الهاتف:' : 'Phone:'}</strong> {b.phone}
-                          </div>
-                        )}
-                      </div>
-
-                      {b.gpsCoordinates && (
-                        <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
-                          <span className="font-mono text-[11px] text-slate-500 truncate max-w-[200px]" title={b.gpsCoordinates}>
-                            {b.gpsCoordinates}
-                          </span>
-                          <a
-                            href={normalizeLocationUrl(b.gpsCoordinates)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-xs font-bold transition"
-                          >
-                            <Navigation className="w-3 h-3" />
-                            <span>{isAr ? 'فتح بالخريطة' : 'Open in Maps'}</span>
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Documents & Contracts Attachments */}
-              {detailViewClient.attachments && detailViewClient.attachments.length > 0 && (
-                <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3 shadow-2xs">
-                  <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-2">
-                    <Paperclip className="w-4 h-4 text-amber-600" />
-                    <span>{isAr ? 'المستندات والعقود المرفقة' : 'Attached Documents & Contracts'} ({detailViewClient.attachments.length})</span>
-                  </h4>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                    {detailViewClient.attachments.map((att, aIdx) => (
-                      <div
-                        key={att.id || aIdx}
-                        className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <FileText className="w-4 h-4 text-slate-400 shrink-0" />
-                          <div className="min-w-0">
-                            <span className="block font-bold text-slate-800 truncate" title={att.name}>
-                              {att.name}
-                            </span>
-                            <span className="block text-[10px] text-slate-400 font-mono">
-                              {att.size}
-                            </span>
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => openBase64Document(att)}
-                          className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg font-bold text-[11px] transition flex items-center gap-1 shrink-0 cursor-pointer"
-                        >
-                          <Eye className="w-3 h-3" />
-                          <span>{isAr ? 'معاينة' : 'View'}</span>
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => setDetailViewClient(null)}
-                className="px-5 py-2 bg-slate-200 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-300 transition cursor-pointer"
-              >
-                {isAr ? 'إغلاق' : 'Close'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Standardized App-Wide Client & Branch Profile Modal */}
+      <ClientProfileModal
+        isOpen={Boolean(detailViewClient)}
+        onClose={() => setDetailViewClient(null)}
+        client={detailViewClient}
+        clients={clients}
+        segments={segments}
+        pricingStrategies={pricingStrategies}
+        onEditClient={canEdit ? (c) => handleOpenEditModal(c) : null}
+        canViewCreditLimit={canViewCreditLimit}
+        canViewTaxCard={canViewTaxCard}
+        isAr={isAr}
+      />
 
       {/* ========================================================================= */}
       {/* CREATE / EDIT CLIENT MODAL                                                */}
@@ -6032,7 +5688,7 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
                   className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md transition disabled:opacity-50 flex items-center gap-2 cursor-pointer"
                 >
                   {isCommittingImport ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <PeacockLoader size="xxs" inline variant="white" />
                   ) : (
                     <CheckCircle2 className="w-4 h-4" />
                   )}
@@ -6053,8 +5709,8 @@ export default function ClientMaster({ currentUser = {}, permissions = null }) {
             {isCommittingImport && (
               <div className="absolute inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
                 <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 max-w-md w-full space-y-4 text-center">
-                  <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mx-auto">
-                    <RefreshCw className="w-6 h-6 animate-spin" />
+                  <div className="flex items-center justify-center mx-auto">
+                    <PeacockLoader size="md" />
                   </div>
                   <div>
                     <h3 className="text-base font-bold text-slate-800">

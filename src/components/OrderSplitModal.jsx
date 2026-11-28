@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { doc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
+import PeacockLoader from './PeacockLoader';
 import {
   calculateSalesOrderLineTotals,
   aggregateSalesOrderTotals,
@@ -1020,7 +1021,7 @@ export default function OrderSplitModal({
                                 {isAr ? '— اختر شاحنة (اختياري للسعة) —' : '— Select Truck (Optional) —'}
                               </option>
                               {vehicles.map((v) => {
-                                const name = resolveVehicleDisplayName ? resolveVehicleDisplayName(v) : (v.vehicleModel || v.name || v.plateNumber);
+                                const name = resolveVehicleDisplayName ? resolveVehicleDisplayName(v) : (v.vehicleModel || v.name || v.code || '—');
                                 const capT = Number(v.maxCapacityKg) > 0 ? ` (${(Number(v.maxCapacityKg) / 1000).toFixed(1)} ${isAr ? 'طن' : 'Ton'})` : '';
                                 return (
                                   <option key={v.id} value={v.id}>
@@ -1059,7 +1060,7 @@ export default function OrderSplitModal({
                               <Truck className="w-3 h-3 shrink-0 rtl:-scale-x-100" />
                               <span className="truncate">
                                 {col.existingChild?.loadingOrderNumber
-                                  ? (isAr ? `رحلة #${col.existingChild.loadingOrderNumber}` : `Trip #${col.existingChild.loadingOrderNumber}`)
+                                  ? (isAr ? `تحميل #${col.existingChild.loadingOrderNumber}` : `Trip #${col.existingChild.loadingOrderNumber}`)
                                   : (isAr ? 'تعيين الشاحنة على الطلب' : 'Assign truck to order')}
                               </span>
                             </label>
@@ -1302,7 +1303,7 @@ export default function OrderSplitModal({
               onClick={handleConfirmSplit}
               className="inline-flex items-center gap-1.5 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black shadow-xs transition cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
             >
-              {isSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <GitFork className="w-4 h-4" />}
+              {isSaving ? <PeacockLoader size="xxs" inline variant="white" /> : <GitFork className="w-4 h-4" />}
               <span>
                 {isEditMode
                   ? (isAr ? `حفظ تعديلات التقسيم (${columns.length} أجزاء)` : `Save Split Changes (${columns.length} Portions)`)

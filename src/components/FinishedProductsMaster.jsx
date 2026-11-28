@@ -1407,7 +1407,7 @@ export default function FinishedProductsMaster({ currentUser = {}, permissions =
                   disabled={isSavingCategory}
                   className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition cursor-pointer shadow-xs disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  {isSavingCategory ? <Sparkles className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {isSavingCategory ? <PeacockLoader size="xxs" inline variant="white" /> : null}
                   <span>{editingCatId ? (isAr ? 'حفظ تعديل التصنيف' : 'Update Category') : (isAr ? 'إضافة وحفظ التصنيف' : 'Save Category')}</span>
                 </button>
               </div>

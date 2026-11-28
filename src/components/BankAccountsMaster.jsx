@@ -23,10 +23,10 @@ import {
   doc,
   setDoc,
   updateDoc,
-  deleteDoc,
   onSnapshot
 } from 'firebase/firestore';
-import { db } from '../firebase.js';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../firebase.js';
 
 const CURRENCIES = ['EGP', 'USD', 'EUR', 'SAR', 'AED', 'GBP'];
 
@@ -65,7 +65,9 @@ export default function BankAccountsMaster({ currentUser = {}, permissions = {} 
   // 1. Live Subscriptions
   useEffect(() => {
     const unsubBanks = onSnapshot(collection(db, 'corporate_banks'), (snap) => {
-      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const list = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((d) => !d.isDeleted);
       list.sort((a, b) => (a.code || a.id).localeCompare(b.code || b.id));
       setBanksList(list);
     });
@@ -195,8 +197,13 @@ export default function BankAccountsMaster({ currentUser = {}, permissions = {} 
       return;
     }
     try {
-      await deleteDoc(doc(db, 'corporate_banks', bankId));
-      showToast(isAr ? 'تم حذف الحساب البنكي' : 'Bank account deleted');
+      const softDeleteFn = httpsCallable(functions, 'systemSoftDeleteDocument');
+      await softDeleteFn({
+        collectionName: 'corporate_banks',
+        docId: bankId,
+        currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null,
+      });
+      showToast(isAr ? 'تم أرشفة وحذف الحساب البنكي' : 'Bank account soft-deleted');
     } catch (err) {
       console.error('Error deleting bank:', err);
       setErrorMsg(err.message || 'Error deleting bank account');

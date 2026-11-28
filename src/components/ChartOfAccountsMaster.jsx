@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import PeacockLoader from './PeacockLoader';
 import {
   BadgeDollarSign,
   BookOpen,
@@ -75,8 +76,9 @@ import {
   subscribeToLedgerModeChange,
   isTransactionTaxOfficial
 } from '../utils/dualLedgerEngine.js';
-import { collection, doc, setDoc, onSnapshot, query, orderBy, getDocs, writeBatch } from 'firebase/firestore';
-import { db } from '../firebase.js';
+import { collection, doc, setDoc, onSnapshot, query, orderBy, getDocs } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../firebase.js';
 import {
   generateAccountsCSVTemplate,
   parseAccountsCSV,
@@ -1227,51 +1229,12 @@ export default function ChartOfAccountsMaster({
           currentUser
         });
       } else {
-        // Accrual / Journal Entry reversal
-        const batch = writeBatch(db);
-
-        // 1. Mark original journal entry as reversed
-        const originalJeRef = doc(db, 'journal_entries', entry.id);
-        const reversalJeId = `JE-REV-${entry.sourceDocId || entry.id.replace('JE-', '')}`;
-        batch.update(originalJeRef, {
-          status: 'reversed',
-          isReversed: true,
-          reversalEntryId: reversalJeId,
-          reversalReason: reason,
-          reversedBy: currentUserName,
-          reversedAt: now,
-          updatedAt: now
+        const reverseJournalEntryFn = httpsCallable(functions, 'financeReverseJournalEntry');
+        await reverseJournalEntryFn({
+          entryId: entry.id,
+          reason,
+          currentUser: currentUser ? { id: currentUser.id, name: currentUser.name, nameAr: currentUser.nameAr } : null
         });
-
-        // 2. Build and post reversing entry with inverted debit/credit legs
-        const reversalPayload = buildGrnReversalJournalEntry(entry, reason, currentUserName);
-        if (reversalPayload) {
-          const revJeRef = doc(db, 'journal_entries', reversalJeId);
-          batch.set(revJeRef, {
-            ...reversalPayload,
-            id: reversalJeId,
-            entryNumber: reversalJeId,
-            status: 'posted',
-            createdAt: now,
-            updatedAt: now
-          });
-        }
-
-        // 3. If linked to goods_receipt, also mark it reversed in operations
-        const sourceDocId = entry.sourceDocId || entry.id.replace('JE-REV-', '').replace('JE-', '');
-        if (sourceDocId) {
-          const grnRef = doc(db, 'goods_receipts', sourceDocId);
-          batch.set(grnRef, {
-            status: 'reversed',
-            isReversed: true,
-            reversalReason: reason,
-            reversedBy: currentUserName,
-            reversedAt: now,
-            updatedAt: now
-          }, { merge: true });
-        }
-
-        await batch.commit();
       }
 
       setReversalModal({ isOpen: false, entry: null, reason: '', isSubmitting: false, error: '' });
@@ -4698,7 +4661,7 @@ export default function ChartOfAccountsMaster({
                 >
                   {reversalModal.isSubmitting ? (
                     <>
-                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      <PeacockLoader size="xxs" inline variant="white" />
                       <span>{isAr ? 'جاري العكس...' : 'Reversing...'}</span>
                     </>
                   ) : (

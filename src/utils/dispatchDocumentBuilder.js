@@ -586,7 +586,7 @@ export function renderDispatchDocumentHtml(model, qrAssets = {}, versionMeta = n
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
-  <title>إذن صرف — رحلة #${escapeHtml(loadingOrderNumber)}</title>
+  <title>إذن صرف — تحميل #${escapeHtml(loadingOrderNumber)}</title>
   <style>
     @page {
       size: A4 landscape;
@@ -1040,7 +1040,7 @@ export function renderDispatchDocumentHtml(model, qrAssets = {}, versionMeta = n
         <div class="doc-title-row">
           <span class="doc-title">إذن صرف</span>
           ${docNumber ? `<span class="doc-num-pill" dir="ltr">${escapeHtml(docNumber)}</span>` : ''}
-          <span class="trip-pill">رحلة #${escapeHtml(loadingOrderNumber)}</span>
+          <span class="trip-pill">تحميل #${escapeHtml(loadingOrderNumber)}</span>
           <span class="ver-pill ${isLegacy ? 'legacy' : ''}">${isLegacy ? `قديم v${docVer}` : `v${docVer}`}</span>
           <span class="muted" style="font-size:9px;">${escapeHtml(printedAtDisplay)}</span>
         </div>

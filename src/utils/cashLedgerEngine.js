@@ -17,9 +17,32 @@ import {
   runTransaction,
   writeBatch
 } from 'firebase/firestore';
-import { db } from '../firebase.js';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../firebase.js';
 import { createActionRequired, completeActionRequired } from './notificationEngine.js';
 import { buildAccountsCSVString, UPLOADED_CHART_OF_ACCOUNTS_ROWS } from './preconfiguredChartOfAccounts.js';
+
+async function callFinanceCallable(functionName, payload = {}) {
+  try {
+    const callable = httpsCallable(functions, functionName);
+    const res = await callable(payload);
+    return res?.data || {};
+  } catch (err) {
+    throw new Error(err?.message || `فشل تنفيذ العملية (${functionName})`);
+  }
+}
+
+function serializeActorUser(currentUser) {
+  if (!currentUser) return null;
+  return {
+    id: currentUser.id,
+    name: currentUser.name,
+    nameAr: currentUser.nameAr,
+    role: currentUser.role,
+    isGeneralAdmin: Boolean(currentUser.isGeneralAdmin),
+    permissions: Array.isArray(currentUser.permissions) ? currentUser.permissions : []
+  };
+}
 
 export const EGP_DENOMINATIONS = [200, 100, 50, 20, 10, 5, 1, 0.5];
 
@@ -1570,67 +1593,24 @@ export async function postCashVoucher({
   }
 
   const isBank = Boolean(safeId?.startsWith('BANK-'));
-
-  // Validate banknote breakdown if currency is EGP and it's a physical safe
-  if (currency === 'EGP' && !isBank) {
-    if (!validateBanknoteMatch(numAmount, denominations)) {
-      const actualCounted = calculateBanknoteTotal(denominations);
-      throw new Error(
-        `إجمالي تفقيط الفئات الورقية (${actualCounted.toLocaleString()} ج.م) لا يتطابق مع إجمالي السند (${numAmount.toLocaleString()} ج.م)`
-      );
-    }
+  if (currency === 'EGP' && !isBank && !validateBanknoteMatch(numAmount, denominations)) {
+    const actualCounted = calculateBanknoteTotal(denominations);
+    throw new Error(
+      `إجمالي تفقيط الفئات الورقية (${actualCounted.toLocaleString()} ج.م) لا يتطابق مع إجمالي السند (${numAmount.toLocaleString()} ج.م)`
+    );
   }
 
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const randSuffix = Math.floor(1000 + Math.random() * 9000);
-  
-  let voucherId = customVoucherId;
-  if (!voucherId) {
-    if (type === 'custody_issue' || type === 'salary_advance') {
-      voucherId = generateCustodyOrAdvanceId({ type, safeId, date: now });
-    } else {
-      voucherId = `VCH-${safeId}-${dateStr}-${randSuffix}`;
-    }
-  }
-  const finalSsotId = ssotId || voucherId;
-
-  const typeConfig = CASH_TRANSACTION_TYPES.find((t) => t.id === type) || CASH_TRANSACTION_TYPES[0];
-  const isOutflow = typeConfig.direction === 'out';
-  const isInflow = typeConfig.direction === 'in';
-
-  // Fiscal Dimensions
-  const fiscalYear = now.getFullYear();
-  const fiscalPeriod = now.toISOString().slice(0, 7);
-
-  // Promote registered COA child account to effective mainAccount for strict child adherence
   const subCodeCandidate = String(subAccountId || '').trim();
   const isSubRegisteredInCoa = Boolean(
     subCodeCandidate &&
     Array.isArray(accountsMaster) &&
     accountsMaster.some((a) => String(a.code || a.id).trim() === subCodeCandidate)
   );
-
-  let effectiveMainAccount = mainAccount;
-  let effectiveParentAccountCode = null;
-  if (isSubRegisteredInCoa) {
-    effectiveParentAccountCode = mainAccount;
-    effectiveMainAccount = subCodeCandidate;
-  }
-
-  // Auto-stamp financial statement classification from effectiveMainAccount
+  const effectiveMainAccount = isSubRegisteredInCoa ? subCodeCandidate : mainAccount;
   const matchedGl = MAIN_GL_ACCOUNTS.find((a) => a.id === effectiveMainAccount);
   const matchedMaster = Array.isArray(accountsMaster)
     ? accountsMaster.find((a) => String(a.code || a.id).trim() === String(effectiveMainAccount).trim())
     : null;
-  const resolvedMainAccountAr =
-    (isSubRegisteredInCoa ? subAccountName : null) ||
-    mainAccountNameAr ||
-    mainAccountName ||
-    matchedMaster?.nameAr ||
-    matchedGl?.nameAr ||
-    effectiveMainAccount;
-
   const normalizedAccountInfo = normalizeAccountAttributes({
     code: effectiveMainAccount,
     statement: matchedMaster?.statement || matchedGl?.statement,
@@ -1638,301 +1618,65 @@ export async function postCashVoucher({
     cashFlowCategory: matchedMaster?.cashFlowCategory || matchedGl?.cashFlowCategory,
     nature: matchedMaster?.nature || matchedGl?.nature
   });
+  const compactMaster = isSubRegisteredInCoa
+    ? [{ id: matchedMaster?.id || subCodeCandidate, code: subCodeCandidate, nameAr: matchedMaster?.nameAr || subAccountName }]
+    : [];
 
-  // Bank Account Direct Execution (No physical banknote vault mutation)
-  if (isBank) {
-    const bankAccount = CORPORATE_BANK_ACCOUNTS.find((b) => b.id === safeId);
-    const voucherData = {
-      id: voucherId,
-      safeId,
-      bankAccountId: safeId,
-      bankAccountNameAr: bankAccount?.bankNameAr || safeId,
-      bankAccountNameEn: bankAccount?.bankNameEn || safeId,
-      isBank: true,
-      type,
-      typeAr: typeConfig.labelAr,
-      direction: typeConfig.direction,
-      status: 'posted',
-      amount: numAmount,
-      currency,
-      exchangeRate: Number(exchangeRate) || 1,
-      amountInEGP: currency === 'EGP' ? numAmount : numAmount * (Number(exchangeRate) || 1),
-      denominations: {},
-      mainAccount: effectiveMainAccount,
-      parentAccountCode: effectiveParentAccountCode,
-      mainAccountAr: resolvedMainAccountAr,
-      statement: normalizedAccountInfo.statement,
-      reportCategory: normalizedAccountInfo.reportCategory,
-      cashFlowCategory: normalizedAccountInfo.cashFlowCategory,
-      nature: normalizedAccountInfo.nature,
-      fiscalYear,
-      fiscalPeriod,
-      costCenterId,
-      costCenterName,
-      subAccountId,
-      subAccountName,
-      supplierAllocation,
-      taxDocumentType,
-      taxDetails,
-      description,
-      attachments,
-      issuedByUserId: currentUser.id,
-      issuedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
+  const result = await callFinanceCallable('financePostCashVoucher', {
+    safeId,
+    type,
+    amount: numAmount,
+    currency,
+    exchangeRate,
+    denominations,
+    mainAccount,
+    mainAccountName,
+    mainAccountNameAr:
+      (isSubRegisteredInCoa ? subAccountName : null) ||
+      mainAccountNameAr ||
+      mainAccountName ||
+      matchedMaster?.nameAr ||
+      matchedGl?.nameAr ||
+      effectiveMainAccount,
+    accountsMaster: compactMaster,
+    statement: normalizedAccountInfo.statement,
+    reportCategory: normalizedAccountInfo.reportCategory,
+    cashFlowCategory: normalizedAccountInfo.cashFlowCategory,
+    nature: normalizedAccountInfo.nature,
+    subAccountId,
+    subAccountName,
+    costCenterId,
+    costCenterName,
+    supplierAllocation,
+    taxDocumentType,
+    taxDetails,
+    description,
+    attachments,
+    currentUser: serializeActorUser(currentUser),
+    targetSafeId,
+    requiresApproval,
+    customVoucherId,
+    ssotId,
+    targetCustodyId,
+    targetAdvanceId
+  });
 
-    await setDoc(doc(db, 'cash_transactions', voucherId), {
-      ...voucherData,
-      ssotId: finalSsotId,
-      targetCustodyId,
-      targetAdvanceId
-    });
-
-    if (subAccountId && (type === 'custody_issue' || type === 'custody_settle' || type === 'salary_advance' || type === 'advance_settle')) {
-      await updateCustodyLedgerAfterVoucher({
-        workerId: subAccountId,
-        workerName: subAccountName,
-        voucherId,
-        ssotId: finalSsotId,
-        targetCustodyId,
-        targetAdvanceId,
-        type,
-        amount: numAmount,
-        description: `${description || ''} (${bankAccount?.bankNameAr || safeId})`,
-        safeId,
-        attachments
-      }).catch((e) => console.warn('[Custody Ledger Sync Error]:', e));
-    }
-
-    return { success: true, voucherId, status: 'posted' };
-  }
-
-  const safeRef = doc(db, 'cash_safes', safeId);
-
-  // If requires approval, create voucher in pending_approval state without mutating safe balance
-  if (requiresApproval) {
-    const pendingVoucher = {
-      id: voucherId,
-      safeId,
-      type,
-      typeAr: typeConfig.labelAr,
-      direction: typeConfig.direction,
-      status: 'pending_approval',
-      amount: numAmount,
-      currency,
-      exchangeRate: Number(exchangeRate) || 1,
-      amountInEGP: currency === 'EGP' ? numAmount : numAmount * (Number(exchangeRate) || 1),
-      denominations,
-      mainAccount: effectiveMainAccount,
-      parentAccountCode: effectiveParentAccountCode,
-      mainAccountAr: resolvedMainAccountAr,
-      statement: normalizedAccountInfo.statement,
-      reportCategory: normalizedAccountInfo.reportCategory,
-      cashFlowCategory: normalizedAccountInfo.cashFlowCategory,
-      nature: normalizedAccountInfo.nature,
-      fiscalYear,
-      fiscalPeriod,
-      costCenterId,
-      costCenterName,
-      subAccountId,
-      subAccountName,
-      supplierAllocation,
-      taxDocumentType,
-      taxDetails,
-      description,
-      attachments,
-      targetSafeId,
-      issuedByUserId: currentUser.id,
-      issuedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-
-    await setDoc(doc(db, 'cash_transactions', voucherId), pendingVoucher);
-
-    // Push action required to authorizer or general admin
+  if (result.status === 'pending_approval' && result.voucherId) {
+    const typeConfig = CASH_TRANSACTION_TYPES.find((t) => t.id === type) || CASH_TRANSACTION_TYPES[0];
     await createActionRequired({
       actionType: 'approve_cash_voucher',
-      docId: voucherId,
-      title: `مطلوب اعتماد سند ${typeConfig.labelAr}: ${voucherId}`,
+      docId: result.voucherId,
+      title: `مطلوب اعتماد سند ${typeConfig.labelAr}: ${result.voucherId}`,
       details: `مبلغ ${numAmount.toLocaleString()} ${currency} من ${safeId} لحساب ${subAccountName || mainAccount}`,
       targetModule: 'cash_treasury',
       targetTab: safeId.toLowerCase().replace('-', '_'),
-      highlightId: voucherId,
+      highlightId: result.voucherId,
       targetRoles: ['general_admin'],
-      createdBy: currentUser.id
-    });
-
-    return { success: true, voucherId, status: 'pending_approval' };
+      createdBy: currentUser?.id
+    }).catch((e) => console.warn('[Action Required Error]:', e));
   }
 
-  // Atomic Execution: Read safe, verify balance & notes, update balances, and commit voucher
-  await runTransaction(db, async (transaction) => {
-    const safeSnap = await transaction.get(safeRef);
-    if (!safeSnap.exists()) {
-      throw new Error(`الخزينة (${safeId}) غير موجودة في قاعدة البيانات`);
-    }
-
-    const safeData = safeSnap.data();
-    const currWallet = safeData.balances?.[currency] || { currentBalance: 0, denominations: {} };
-    const currentBal = Number(currWallet.currentBalance) || 0;
-    const currentDenoms = currWallet.denominations || {};
-
-    if (isOutflow) {
-      if (currentBal < numAmount) {
-        throw new Error(
-          `رصيد الخزينة الحالي (${currentBal.toLocaleString()} ${currency}) لا يكفي لصرف مبلغ (${numAmount.toLocaleString()} ${currency})`
-        );
-      }
-
-      if (currency === 'EGP') {
-        const sufficiency = checkSufficientBanknotes(currentDenoms, denominations, true);
-        if (!sufficiency.isSufficient) {
-          const detailStr = sufficiency.shortages
-            .map((s) => `فئة ${s.denom} ج (المطلوب صرفها: ${s.requested}، المتوفر: ${s.available})`)
-            .join('، ');
-          throw new Error(`الفئات الورقية المتوفرة بالخزينة لا تكفي لإتمام الصرف: ${detailStr}`);
-        }
-      }
-    } else if (isInflow) {
-      if (currency === 'EGP') {
-        const sufficiency = checkSufficientBanknotes(currentDenoms, denominations, false);
-        if (!sufficiency.isSufficient) {
-          const detailStr = sufficiency.shortages
-            .map((s) => `فئة ${s.denom} ج (المطلوب ردها كفكة: ${s.requested}، المتوفر بالخزينة: ${s.available})`)
-            .join('، ');
-          throw new Error(`الفئات الورقية المتوفرة بالخزينة لا تكفي لرد الفكة المطلوبة: ${detailStr}`);
-        }
-      }
-    }
-
-    // Compute updated balances
-    const newBal = isOutflow ? currentBal - numAmount : (isInflow ? currentBal + numAmount : currentBal);
-    const newDenoms = { ...currentDenoms };
-
-    if (currency === 'EGP') {
-      for (const denom of EGP_DENOMINATIONS) {
-        const count = Number(denominations[denom]) || 0;
-        const currentCount = Number(newDenoms[denom]) || 0;
-        if (isOutflow) {
-          newDenoms[denom] = Math.max(0, currentCount - count);
-        } else if (isInflow) {
-          newDenoms[denom] = Math.max(0, currentCount + count);
-        }
-      }
-    }
-
-    // Commit safe balance update
-    const safeUpdatePayload = {
-      [`balances.${currency}.currentBalance`]: newBal,
-      [`balances.${currency}.denominations`]: newDenoms,
-      updatedAt: now.toISOString()
-    };
-    if (currency === 'EGP') {
-      safeUpdatePayload.currentBalance = newBal;
-      safeUpdatePayload.balance = newBal;
-      safeUpdatePayload.denominations = newDenoms;
-    }
-    transaction.update(safeRef, safeUpdatePayload);
-
-    // Commit voucher record
-    const voucherDocRef = doc(db, 'cash_transactions', voucherId);
-    transaction.set(voucherDocRef, {
-      id: voucherId,
-      ssotId: finalSsotId,
-      targetCustodyId,
-      targetAdvanceId,
-      safeId,
-      type,
-      typeAr: typeConfig.labelAr,
-      direction: typeConfig.direction,
-      status: 'posted',
-      amount: numAmount,
-      currency,
-      exchangeRate: Number(exchangeRate) || 1,
-      amountInEGP: currency === 'EGP' ? numAmount : numAmount * (Number(exchangeRate) || 1),
-      denominations,
-      mainAccount: effectiveMainAccount,
-      parentAccountCode: effectiveParentAccountCode,
-      mainAccountAr: resolvedMainAccountAr,
-      statement: normalizedAccountInfo.statement,
-      reportCategory: normalizedAccountInfo.reportCategory,
-      cashFlowCategory: normalizedAccountInfo.cashFlowCategory,
-      nature: normalizedAccountInfo.nature,
-      fiscalYear,
-      fiscalPeriod,
-      costCenterId,
-      costCenterName,
-      subAccountId,
-      subAccountName,
-      supplierAllocation,
-      taxDocumentType,
-      taxDetails,
-      description,
-      attachments,
-      targetSafeId,
-      issuedByUserId: currentUser.id,
-      issuedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      approvedByUserId: currentUser.id,
-      approvedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      approvedAt: now.toISOString(),
-      balanceAfter: newBal,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    });
-
-    // If Inter-Safe Transfer, credit recipient safe
-    if (type === 'safe_transfer' && targetSafeId) {
-      const targetSafeRef = doc(db, 'cash_safes', targetSafeId);
-      const targetSnap = await transaction.get(targetSafeRef);
-      if (targetSnap.exists()) {
-        const targetData = targetSnap.data();
-        const targetCurr = targetData.balances?.[currency] || { currentBalance: 0, denominations: {} };
-        const targetBal = Number(targetCurr.currentBalance) || 0;
-        const targetDenoms = { ...(targetCurr.denominations || {}) };
-
-        if (currency === 'EGP') {
-          for (const denom of EGP_DENOMINATIONS) {
-            const count = Number(denominations[denom]) || 0;
-            targetDenoms[denom] = (Number(targetDenoms[denom]) || 0) + count;
-          }
-        }
-
-        const nextTargetBal = targetBal + numAmount;
-        const targetUpdatePayload = {
-          [`balances.${currency}.currentBalance`]: nextTargetBal,
-          [`balances.${currency}.denominations`]: targetDenoms,
-          updatedAt: now.toISOString()
-        };
-        if (currency === 'EGP') {
-          targetUpdatePayload.currentBalance = nextTargetBal;
-          targetUpdatePayload.balance = nextTargetBal;
-          targetUpdatePayload.denominations = targetDenoms;
-        }
-        transaction.update(targetSafeRef, targetUpdatePayload);
-      }
-    }
-  });
-
-  // Post-Transaction Side Effects: Update Custody Ledger if custody/advance
-  if (subAccountId && (type === 'custody_issue' || type === 'custody_settle' || type === 'salary_advance' || type === 'advance_settle')) {
-    await updateCustodyLedgerAfterVoucher({
-      workerId: subAccountId,
-      workerName: subAccountName,
-      voucherId,
-      ssotId: finalSsotId,
-      targetCustodyId,
-      targetAdvanceId,
-      type,
-      amount: numAmount,
-      description,
-      safeId,
-      attachments
-    }).catch((e) => console.warn('[Custody Ledger Sync Error]:', e));
-  }
-
-  return { success: true, voucherId, status: 'posted' };
+  return result;
 }
 
 /**
@@ -1962,168 +1706,41 @@ export async function initiateInterSafeTransfer({
   if (numAmount <= 0) {
     throw new Error('مبلغ التحويل يجب أن يكون أكبر من الصفر');
   }
-
-  if (currency === 'EGP') {
-    const isBalanced = validateBanknoteMatch(numAmount, denominations);
-    if (!isBalanced) {
-      throw new Error('إجمالي الفئات الورقية لا يتطابق مع مبلغ التحويل');
-    }
+  if (currency === 'EGP' && !validateBanknoteMatch(numAmount, denominations)) {
+    throw new Error('إجمالي الفئات الورقية لا يتطابق مع مبلغ التحويل');
   }
 
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const voucherId = `TRF-${sourceSafeId.toUpperCase()}-${dateStr}-${Date.now().toString().slice(-4)}`;
-
-  const sourceSafeRef = doc(db, 'cash_safes', sourceSafeId);
-  const targetSafeRef = doc(db, 'cash_safes', targetSafeId);
-  const voucherRef = doc(db, 'cash_transactions', voucherId);
-
-  let targetSafeData = null;
-  let sourceSafeData = null;
-
-  await runTransaction(db, async (transaction) => {
-    const sourceSnap = await transaction.get(sourceSafeRef);
-    if (!sourceSnap.exists()) {
-      throw new Error(`الخزينة المصدر (${sourceSafeId}) غير موجودة`);
-    }
-    sourceSafeData = sourceSnap.data();
-
-    const targetSnap = await transaction.get(targetSafeRef);
-    if (!targetSnap.exists()) {
-      throw new Error(`الخزينة المستلمة (${targetSafeId}) غير موجودة`);
-    }
-    targetSafeData = targetSnap.data();
-
-    // Verify source wallet balance
-    const sourceWallet = sourceSafeData.balances?.[currency] || { currentBalance: 0, denominations: {} };
-    const currentBal = Number(sourceWallet.currentBalance) || 0;
-    const currentDenoms = { ...(sourceWallet.denominations || {}) };
-
-    if (currentBal < numAmount) {
-      throw new Error(
-        `رصيد الخزينة المصدر (${currentBal.toLocaleString()} ${currency}) لا يكفي لتحويل (${numAmount.toLocaleString()} ${currency})`
-      );
-    }
-
-    // Verify banknote sufficiency in source safe
-    if (currency === 'EGP') {
-      const sufficiency = checkSufficientBanknotes(currentDenoms, denominations, true);
-      if (!sufficiency.isSufficient) {
-        const detailStr = sufficiency.shortages
-          .map((s) => `فئة ${s.denom} ج (المطلوب: ${s.requested}، المتوفر: ${s.available})`)
-          .join('، ');
-        throw new Error(`الفئات الورقية المتوفرة بالخزينة المصدر لا تكفي: ${detailStr}`);
-      }
-
-      // Check if any negative denominations require notes from target safe (change return)
-      const targetWallet = targetSafeData.balances?.[currency] || { currentBalance: 0, denominations: {} };
-      const targetDenoms = targetWallet.denominations || {};
-      const targetShortages = [];
-      for (const denom of EGP_DENOMINATIONS) {
-        const count = Number(denominations[denom]) || 0;
-        if (count < 0) {
-          const neededFromTarget = -count;
-          const availableInTarget = Number(targetDenoms[denom]) || 0;
-          if (neededFromTarget > availableInTarget) {
-            targetShortages.push(`فئة ${denom} ج (المطلوب كفكة من الخزينة المستلمة: ${neededFromTarget}، المتوفر: ${availableInTarget})`);
-          }
-        }
-      }
-      if (targetShortages.length > 0) {
-        throw new Error(`الفئات الورقية المطلوب استردادها كفكة غير متوفرة بالخزينة المستلمة: ${targetShortages.join('، ')}`);
-      }
-
-      // Decrement notes from source safe (positive counts leave source safe; negative counts enter source safe)
-      for (const denom of EGP_DENOMINATIONS) {
-        const count = Number(denominations[denom]) || 0;
-        currentDenoms[denom] = Math.max(0, (Number(currentDenoms[denom]) || 0) - count);
-      }
-    }
-
-    const newSourceBal = Math.max(0, currentBal - numAmount);
-
-    // Update Source Safe (money physically leaves source custody)
-    const sourceUpdatePayload = {
-      [`balances.${currency}.currentBalance`]: newSourceBal,
-      [`balances.${currency}.denominations`]: currentDenoms,
-      updatedAt: now.toISOString()
-    };
-    if (currency === 'EGP') {
-      sourceUpdatePayload.currentBalance = newSourceBal;
-      sourceUpdatePayload.balance = newSourceBal;
-      sourceUpdatePayload.denominations = currentDenoms;
-    }
-    transaction.update(sourceSafeRef, sourceUpdatePayload);
-
-    const sourceNameAr = sourceSafeData.nameAr || sourceSafeId;
-    const sourceNameEn = sourceSafeData.nameEn || sourceSafeData.nameAr || sourceSafeId;
-    const targetNameAr = targetSafeData.nameAr || targetSafeId;
-    const targetNameEn = targetSafeData.nameEn || targetSafeData.nameAr || targetSafeId;
-
-    const defaultDesc = `تحويل سيولة نقدية من ${sourceNameAr} إلى ${targetNameAr}`;
-
-    // Stage transaction doc with pending_receiver_approval status
-    transaction.set(voucherRef, {
-      id: voucherId,
-      voucherNumber: voucherId,
-      type: 'safe_transfer',
-      typeAr: 'تحويل بين الخزائن',
-      typeEn: 'Inter-Safe Transfer',
-      status: 'pending_receiver_approval',
-      direction: 'out',
-      safeId: sourceSafeId,
-      sourceSafeId,
-      sourceSafeNameAr: sourceNameAr,
-      sourceSafeNameEn: sourceNameEn,
-      targetSafeId,
-      targetSafeNameAr: targetNameAr,
-      targetSafeNameEn: targetNameEn,
-      amount: numAmount,
-      amountInEGP: numAmount,
-      currency,
-      exchangeRate: 1,
-      denominations,
-      mainAccount: '1020101',
-      mainAccountAr: 'تحويلات داخلية بين الخزائن',
-      mainAccountEn: 'Internal Safe Transfers',
-      description: description.trim() || defaultDesc,
-      attachments: attachments || [],
-      // Two-party audit trail
-      sourceCustodianId: sourceSafeData.responsibleUserId || currentUser.id,
-      targetCustodianId: targetSafeData.responsibleUserId || '',
-      targetAuthorizerId: targetSafeData.authorizerUserId || '',
-      issuedByUserId: currentUser.id,
-      issuedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      initiatedByUserId: currentUser.id,
-      initiatedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      initiatedAt: now.toISOString(),
-      balanceAfter: newSourceBal,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    });
+  const result = await callFinanceCallable('financeInitiateInterSafeTransfer', {
+    sourceSafeId,
+    targetSafeId,
+    amount: numAmount,
+    currency,
+    denominations,
+    description,
+    attachments,
+    currentUser: serializeActorUser(currentUser)
   });
 
-  // Create Action Required for the Target Safe custodian (and General Admin)
-  const targetCustodianId = targetSafeData?.responsibleUserId || null;
-  const sourceName = sourceSafeData?.nameAr || sourceSafeId;
-  const targetName = targetSafeData?.nameAr || targetSafeId;
+  const targetCustodianId = result.targetCustodianId || null;
+  const sourceName = result.sourceName || sourceSafeId;
+  const targetName = result.targetName || targetSafeId;
 
   await createActionRequired({
     actionType: 'confirm_inter_safe_transfer',
-    docId: voucherId,
-    docNumber: voucherId,
-    title: `مطلوب استلام وتأكيد تحويل نقدي: ${voucherId}`,
-    titleEn: `Cash Transfer Receipt Confirmation Required: ${voucherId}`,
+    docId: result.voucherId,
+    docNumber: result.voucherId,
+    title: `مطلوب استلام وتأكيد تحويل نقدي: ${result.voucherId}`,
+    titleEn: `Cash Transfer Receipt Confirmation Required: ${result.voucherId}`,
     message: `تحويل مبلغ ${numAmount.toLocaleString()} ${currency} من [${sourceName}] إلى [${targetName}] بانتظار استلامك وتأكيد الفئات بالخزينة.`,
     messageEn: `Transfer of ${numAmount.toLocaleString()} ${currency} from [${sourceName}] to [${targetName}] awaiting receipt.`,
     targetTab: 'cash_safes',
     targetModule: 'finance',
-    highlightId: voucherId,
+    highlightId: result.voucherId,
     targetUserId: targetCustodianId,
     targetUserIds: targetCustodianId ? [targetCustodianId] : [],
     targetRoles: ['general_admin'],
-    createdBy: currentUser.id,
-    createdByName: currentUser.name || currentUser.nameAr || currentUser.id,
+    createdBy: currentUser?.id,
+    createdByName: currentUser?.name || currentUser?.nameAr || currentUser?.id,
     metadata: {
       sourceSafeId,
       targetSafeId,
@@ -2134,9 +1751,9 @@ export async function initiateInterSafeTransfer({
 
   return {
     success: true,
-    voucherId,
-    status: 'pending_receiver_approval',
-    message: `تم خصم المبلغ من ${sourceName} وإرسال إشعار استلام لمسؤول ${targetName}`
+    voucherId: result.voucherId,
+    status: result.status || 'pending_receiver_approval',
+    message: result.message || `تم خصم المبلغ من ${sourceName} وإرسال إشعار استلام لمسؤول ${targetName}`
   };
 }
 
@@ -2151,78 +1768,18 @@ export async function confirmInterSafeTransfer({
 }) {
   if (!voucherId) throw new Error('معرف السند غير صالح');
 
-  const now = new Date();
-  const voucherRef = doc(db, 'cash_transactions', voucherId);
-
-  await runTransaction(db, async (transaction) => {
-    const vSnap = await transaction.get(voucherRef);
-    if (!vSnap.exists()) {
-      throw new Error(`سند التحويل (${voucherId}) غير موجود`);
-    }
-    const voucher = vSnap.data();
-
-    if (voucher.status !== 'pending_receiver_approval') {
-      throw new Error(`حالة التحويل الحالية (${voucher.status}) لا تسمح بالتأكيد`);
-    }
-
-    const targetSafeId = voucher.targetSafeId;
-    const targetSafeRef = doc(db, 'cash_safes', targetSafeId);
-    const targetSnap = await transaction.get(targetSafeRef);
-    if (!targetSnap.exists()) {
-      throw new Error(`الخزينة المستلمة (${targetSafeId}) غير موجودة`);
-    }
-    const targetSafeData = targetSnap.data();
-
-    const currency = voucher.currency || 'EGP';
-    const numAmount = Number(voucher.amount) || 0;
-    const targetWallet = targetSafeData.balances?.[currency] || { currentBalance: 0, denominations: {} };
-    const currentTargetBal = Number(targetWallet.currentBalance) || 0;
-    const targetDenoms = { ...(targetWallet.denominations || {}) };
-
-    if (currency === 'EGP') {
-      for (const denom of EGP_DENOMINATIONS) {
-        const count = Number(voucher.denominations?.[denom]) || 0;
-        targetDenoms[denom] = Math.max(0, (Number(targetDenoms[denom]) || 0) + count);
-      }
-    }
-
-    const newTargetBal = currentTargetBal + numAmount;
-
-    // Credit Target Safe
-    const targetUpdatePayload = {
-      [`balances.${currency}.currentBalance`]: newTargetBal,
-      [`balances.${currency}.denominations`]: targetDenoms,
-      updatedAt: now.toISOString()
-    };
-    if (currency === 'EGP') {
-      targetUpdatePayload.currentBalance = newTargetBal;
-      targetUpdatePayload.balance = newTargetBal;
-      targetUpdatePayload.denominations = targetDenoms;
-    }
-    transaction.update(targetSafeRef, targetUpdatePayload);
-
-    // Update Voucher to posted
-    transaction.update(voucherRef, {
-      status: 'posted',
-      receivedByUserId: currentUser.id,
-      receivedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      receivedAt: now.toISOString(),
-      approvedByUserId: currentUser.id,
-      approvedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      approvedAt: now.toISOString(),
-      targetBalanceAfter: newTargetBal,
-      updatedAt: now.toISOString()
-    });
+  const result = await callFinanceCallable('financeConfirmInterSafeTransfer', {
+    voucherId,
+    currentUser: serializeActorUser(currentUser)
   });
 
-  // Complete action required
   await completeActionRequired({
     actionType: 'confirm_inter_safe_transfer',
     docId: voucherId,
-    completedBy: currentUser.id
+    completedBy: currentUser?.id
   }).catch((e) => console.warn('[Complete Action Error]:', e));
 
-  return { success: true, voucherId, status: 'posted' };
+  return result;
 }
 
 /**
@@ -2237,76 +1794,19 @@ export async function rejectInterSafeTransfer({
 }) {
   if (!voucherId) throw new Error('معرف السند غير صالح');
 
-  const now = new Date();
-  const voucherRef = doc(db, 'cash_transactions', voucherId);
-
-  await runTransaction(db, async (transaction) => {
-    const vSnap = await transaction.get(voucherRef);
-    if (!vSnap.exists()) {
-      throw new Error(`سند التحويل (${voucherId}) غير موجود`);
-    }
-    const voucher = vSnap.data();
-
-    if (voucher.status !== 'pending_receiver_approval') {
-      throw new Error(`حالة التحويل الحالية (${voucher.status}) لا تسمح بالرفض`);
-    }
-
-    const sourceSafeId = voucher.sourceSafeId || voucher.safeId;
-    const sourceSafeRef = doc(db, 'cash_safes', sourceSafeId);
-    const sourceSnap = await transaction.get(sourceSafeRef);
-    if (!sourceSnap.exists()) {
-      throw new Error(`الخزينة المصدر (${sourceSafeId}) غير موجودة لإعادة الأموال`);
-    }
-    const sourceSafeData = sourceSnap.data();
-
-    const currency = voucher.currency || 'EGP';
-    const numAmount = Number(voucher.amount) || 0;
-    const sourceWallet = sourceSafeData.balances?.[currency] || { currentBalance: 0, denominations: {} };
-    const currentSourceBal = Number(sourceWallet.currentBalance) || 0;
-    const sourceDenoms = { ...(sourceWallet.denominations || {}) };
-
-    if (currency === 'EGP') {
-      for (const denom of EGP_DENOMINATIONS) {
-        const count = Number(voucher.denominations?.[denom]) || 0;
-        sourceDenoms[denom] = Math.max(0, (Number(sourceDenoms[denom]) || 0) + count);
-      }
-    }
-
-    const refundedBal = currentSourceBal + numAmount;
-
-    // Refund Source Safe
-    const refundPayload = {
-      [`balances.${currency}.currentBalance`]: refundedBal,
-      [`balances.${currency}.denominations`]: sourceDenoms,
-      updatedAt: now.toISOString()
-    };
-    if (currency === 'EGP') {
-      refundPayload.currentBalance = refundedBal;
-      refundPayload.balance = refundedBal;
-      refundPayload.denominations = sourceDenoms;
-    }
-    transaction.update(sourceSafeRef, refundPayload);
-
-    // Update Voucher to rejected
-    transaction.update(voucherRef, {
-      status: 'rejected',
-      rejectedByUserId: currentUser.id,
-      rejectedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      rejectedReason: reason.trim() || 'تم رفض استلام التحويل من قبل مسؤول الخزينة المستلمة',
-      rejectedAt: now.toISOString(),
-      refundedBalanceAfter: refundedBal,
-      updatedAt: now.toISOString()
-    });
+  const result = await callFinanceCallable('financeRejectInterSafeTransfer', {
+    voucherId,
+    reason,
+    currentUser: serializeActorUser(currentUser)
   });
 
-  // Complete action required
   await completeActionRequired({
     actionType: 'confirm_inter_safe_transfer',
     docId: voucherId,
-    completedBy: currentUser.id
+    completedBy: currentUser?.id
   }).catch((e) => console.warn('[Complete Action Error]:', e));
 
-  return { success: true, voucherId, status: 'rejected' };
+  return result;
 }
 
 /**
@@ -2327,81 +1827,17 @@ export async function executeChangeExchange({
       `عملية الفكة يجب أن تكون متوازنة القيمة تماماً: الخارج (${outTotal} ج.م) لا يساوي الداخل (${inTotal} ج.م)`
     );
   }
-
   if (outTotal <= 0) {
     throw new Error('يرجى تحديد الفئات المراد فكها واستبدالها');
   }
 
-  const safeRef = doc(db, 'cash_safes', safeId);
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const randSuffix = Math.floor(1000 + Math.random() * 9000);
-  const voucherId = `VCH-${safeId}-${dateStr}-EXCH-${randSuffix}`;
-
-  await runTransaction(db, async (transaction) => {
-    const safeSnap = await transaction.get(safeRef);
-    if (!safeSnap.exists()) throw new Error('الخزينة غير موجودة');
-
-    const safeData = safeSnap.data();
-    const currWallet = safeData.balances?.EGP || { currentBalance: 0, denominations: {} };
-    const currentDenoms = currWallet.denominations || {};
-
-    // Verify sufficient notes for the ones leaving
-    const sufficiency = checkSufficientBanknotes(currentDenoms, notesGivenOut);
-    if (!sufficiency.isSufficient) {
-      const detailStr = sufficiency.shortages
-        .map((s) => `فئة ${s.denom} ج (المطلوب: ${s.requested}، المتوفر: ${s.available})`)
-        .join('، ');
-      throw new Error(`الفئات المراد فكها غير متوفرة بالكامل في الخزينة: ${detailStr}`);
-    }
-
-    const updatedDenoms = { ...currentDenoms };
-    for (const denom of EGP_DENOMINATIONS) {
-      const outC = Number(notesGivenOut[denom]) || 0;
-      const inC = Number(notesTakenIn[denom]) || 0;
-      const currentC = Number(updatedDenoms[denom]) || 0;
-      updatedDenoms[denom] = Math.max(0, currentC - outC + inC);
-    }
-
-    // Update Safe Denominations (Balance stays identical)
-    transaction.update(safeRef, {
-      'balances.EGP.denominations': updatedDenoms,
-      denominations: updatedDenoms,
-      updatedAt: now.toISOString()
-    });
-
-    // Commit Change Exchange Voucher
-    const voucherDocRef = doc(db, 'cash_transactions', voucherId);
-    transaction.set(voucherDocRef, {
-      id: voucherId,
-      safeId,
-      type: 'change_exchange',
-      typeAr: 'فكة وتظبيط فئات',
-      direction: 'zero_sum',
-      status: 'posted',
-      amount: outTotal,
-      currency: 'EGP',
-      exchangeRate: 1,
-      amountInEGP: outTotal,
-      denominations: notesTakenIn,
-      changeExchangeDetails: {
-        notesGivenOut,
-        notesTakenIn
-      },
-      mainAccount: '1020101',
-      mainAccountAr: 'فكة وتظبيط فئات نقدية',
-      description: notes || 'عملية فكة وتبديل فئات ورقية داخل الخزينة',
-      issuedByUserId: currentUser.id,
-      issuedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      approvedByUserId: currentUser.id,
-      approvedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      balanceAfter: currWallet.currentBalance,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    });
+  return callFinanceCallable('financeExecuteChangeExchange', {
+    safeId,
+    notesGivenOut,
+    notesTakenIn,
+    notes,
+    currentUser: serializeActorUser(currentUser)
   });
-
-  return { success: true, voucherId };
 }
 
 /**
@@ -2414,90 +1850,13 @@ export async function executeSafeCountAuditAndAdjustment({
   currentUser,
   accountingLinks = null
 }) {
-  const countedTotal = calculateBanknoteTotal(countedDenominations);
-  const safeRef = doc(db, 'cash_safes', safeId);
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const countSessionId = `COUNT-${safeId}-${dateStr}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-  let adjustmentVoucherId = null;
-
-  await runTransaction(db, async (transaction) => {
-    const safeSnap = await transaction.get(safeRef);
-    if (!safeSnap.exists()) throw new Error('الخزينة غير موجودة');
-
-    const safeData = safeSnap.data();
-    const currWallet = safeData.balances?.EGP || { currentBalance: 0, denominations: {} };
-    const bookTotal = Number(currWallet.currentBalance) || 0;
-    const variance = countedTotal - bookTotal;
-
-    // If variance exists, create automated adjustment voucher
-    if (Math.abs(variance) >= 0.01) {
-      const isSurplus = variance > 0;
-      const absVariance = Math.abs(variance);
-      const discrepancyCode = accountingLinks?.cashDiscrepancyAccount?.primaryCode || (isSurplus ? '4010204' : '3020209');
-      const discrepancyName = isSurplus
-        ? (accountingLinks?.cashDiscrepancyAccount?.nameAr || 'أرباح وفروق تسوية جرد الخزينة (زيادة نقدية)')
-        : (accountingLinks?.cashDiscrepancyAccount?.nameAr || 'عجز وفروق تسوية جرد الخزينة (عجز نقدي)');
-
-      adjustmentVoucherId = `VCH-${safeId}-${dateStr}-ADJ-${Math.floor(1000 + Math.random() * 9000)}`;
-
-      const adjRef = doc(db, 'cash_transactions', adjustmentVoucherId);
-      transaction.set(adjRef, {
-        id: adjustmentVoucherId,
-        safeId,
-        type: 'balance_adjustment',
-        typeAr: isSurplus ? 'تظبيط رصيد (زيادة خزينة)' : 'تظبيط رصيد (عجز خزينة)',
-        direction: isSurplus ? 'in' : 'out',
-        status: 'posted',
-        amount: absVariance,
-        currency: 'EGP',
-        exchangeRate: 1,
-        amountInEGP: absVariance,
-        denominations: countedDenominations,
-        mainAccount: discrepancyCode,
-        mainAccountAr: discrepancyName,
-        description: `تسوية جرد فعلي (${isSurplus ? 'زيادة' : 'عجز'} بقيمة ${absVariance.toLocaleString()} ج.م): ${notes}`,
-        issuedByUserId: currentUser.id,
-        issuedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-        approvedByUserId: currentUser.id,
-        approvedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-        balanceAfter: countedTotal,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString()
-      });
-    }
-
-    // Set safe balance and denominations directly to the verified physical count
-    transaction.update(safeRef, {
-      'balances.EGP.currentBalance': countedTotal,
-      'balances.EGP.denominations': countedDenominations,
-      currentBalance: countedTotal,
-      balance: countedTotal,
-      denominations: countedDenominations,
-      updatedAt: now.toISOString()
-    });
-
-    // Record formal audit session
-    const sessionRef = doc(db, 'cash_count_sessions', countSessionId);
-    transaction.set(sessionRef, {
-      id: countSessionId,
-      safeId,
-      auditDate: now.toISOString(),
-      auditorUserId: currentUser.id,
-      auditorName: currentUser.name || currentUser.nameAr || currentUser.id,
-      countedAmount: countedTotal,
-      bookAmount: bookTotal,
-      variance,
-      denominationsCount: countedDenominations,
-      adjustmentTransactionId: adjustmentVoucherId,
-      notes: notes || (variance === 0 ? 'جرد فعلي مطابق للدفاتر بالكامل' : `تم تسوية فارق قدره ${variance} ج.م`),
-      status: variance === 0 ? 'verified_balanced' : 'adjusted_with_voucher',
-      createdAt: now.toISOString()
-    });
+  return callFinanceCallable('financeExecuteSafeCountAudit', {
+    safeId,
+    countedDenominations,
+    notes,
+    accountingLinks,
+    currentUser: serializeActorUser(currentUser)
   });
-
-  return { success: true, countSessionId, adjustmentVoucherId, countedTotal };
 }
 
 /**
@@ -2508,70 +1867,11 @@ export async function reverseCashVoucher({
   reason = '',
   currentUser
 }) {
-  const voucherRef = doc(db, 'cash_transactions', voucherId);
-  const now = new Date();
-
-  await runTransaction(db, async (transaction) => {
-    const voucherSnap = await transaction.get(voucherRef);
-    if (!voucherSnap.exists()) throw new Error('السند غير موجود');
-
-    const v = voucherSnap.data();
-    if (v.status !== 'posted') {
-      throw new Error(`لا يمكن إلغاء سند بحالة (${v.status})`);
-    }
-
-    const safeRef = doc(db, 'cash_safes', v.safeId);
-    const safeSnap = await transaction.get(safeRef);
-    if (!safeSnap.exists()) throw new Error('الخزينة غير موجودة');
-
-    const safeData = safeSnap.data();
-    const currWallet = safeData.balances?.[v.currency] || { currentBalance: 0, denominations: {} };
-    const currentBal = Number(currWallet.currentBalance) || 0;
-    const currentDenoms = { ...(currWallet.denominations || {}) };
-
-    // Reverse financial direction
-    const isOriginalOutflow = v.direction === 'out';
-    const isOriginalInflow = v.direction === 'in';
-    const restoredBal = isOriginalOutflow ? currentBal + v.amount : (isOriginalInflow ? currentBal - v.amount : currentBal);
-
-    if (v.currency === 'EGP' && v.denominations) {
-      for (const denom of EGP_DENOMINATIONS) {
-        const count = Number(v.denominations[denom]) || 0;
-        const currentCount = Number(currentDenoms[denom]) || 0;
-        if (isOriginalOutflow) {
-          currentDenoms[denom] = Math.max(0, currentCount + count);
-        } else if (isOriginalInflow) {
-          currentDenoms[denom] = Math.max(0, currentCount - count);
-        }
-      }
-    }
-
-    // Update safe
-    const reverseSafePayload = {
-      [`balances.${v.currency}.currentBalance`]: restoredBal,
-      [`balances.${v.currency}.denominations`]: currentDenoms,
-      updatedAt: now.toISOString()
-    };
-    if (v.currency === 'EGP') {
-      reverseSafePayload.currentBalance = restoredBal;
-      reverseSafePayload.balance = restoredBal;
-      reverseSafePayload.denominations = currentDenoms;
-    }
-    transaction.update(safeRef, reverseSafePayload);
-
-    // Mark voucher reversed
-    transaction.update(voucherRef, {
-      status: 'reversed',
-      isReversed: true,
-      reversalReason: reason,
-      reversedByUserId: currentUser.id,
-      reversedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      reversedAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    });
+  return callFinanceCallable('financeReverseCashVoucher', {
+    voucherId,
+    reason,
+    currentUser: serializeActorUser(currentUser)
   });
-
-  return { success: true };
 }
 
 /**
@@ -2810,80 +2110,12 @@ export async function updateCashVoucher({
     throw new Error('رقم السند غير محدد');
   }
 
-  const isGeneralAdmin = currentUser?.isGeneralAdmin || currentUser?.role === 'general_admin';
-  const isFinanceManager = currentUser?.role === 'financial_manager' || currentUser?.role === 'treasury_manager';
-  const hasEditPermission = currentUser?.permissions?.includes('edit_cash_voucher');
-
-  if (!isGeneralAdmin && !isFinanceManager && !hasEditPermission) {
-    throw new Error('غير مصرح لك بتعديل بيانات السندات المالية. يلزم صلاحية مدير عام أو مدير خزانة.');
-  }
-
-  const voucherRef = doc(db, 'cash_transactions', voucherId);
-  const snap = await getDoc(voucherRef);
-  if (!snap.exists()) {
-    throw new Error('السند المالي غير موجود في قاعدة البيانات');
-  }
-
-  const existing = snap.data();
-  const now = new Date().toISOString();
-
-  // Calculate field-level diff
-  const diff = {};
-  const allowedFields = [
-    'description',
-    'mainAccount',
-    'mainAccountAr',
-    'statement',
-    'reportCategory',
-    'cashFlowCategory',
-    'nature',
-    'subAccountId',
-    'subAccountName',
-    'costCenterId',
-    'costCenterName',
-    'taxDocumentType',
-    'taxDetails',
-    'attachments'
-  ];
-
-  const sanitizedUpdates = {};
-  allowedFields.forEach((field) => {
-    if (updates[field] !== undefined) {
-      sanitizedUpdates[field] = updates[field];
-      const oldVal = existing[field] !== undefined ? existing[field] : null;
-      const newVal = updates[field] !== undefined ? updates[field] : null;
-      if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
-        diff[field] = {
-          before: oldVal,
-          after: newVal
-        };
-      }
-    }
+  return callFinanceCallable('financeUpdateCashVoucher', {
+    voucherId,
+    updates,
+    reason,
+    currentUser: serializeActorUser(currentUser)
   });
-
-  const auditEntry = {
-    action: 'voucher_edited',
-    timestamp: now,
-    userId: currentUser.id || 'unknown',
-    userName: currentUser.name || currentUser.nameAr || currentUser.id || 'Admin',
-    userRole: currentUser.role || 'user',
-    reason: reason || 'تعديل بيانات السند المالي',
-    diff
-  };
-
-  const currentAuditLog = Array.isArray(existing.auditLog) ? existing.auditLog : [];
-  const newAuditLog = [...currentAuditLog, auditEntry];
-
-  await updateDoc(voucherRef, {
-    ...sanitizedUpdates,
-    auditLog: newAuditLog,
-    updatedAt: now,
-    lastEditedByUserId: currentUser.id || 'unknown',
-    lastEditedByName: currentUser.name || currentUser.nameAr || currentUser.id || 'Admin',
-    lastEditedAt: now
-  });
-
-  return { success: true, voucherId, auditEntry };
 }
 
 /**
@@ -3841,137 +3073,13 @@ export async function approveCashVoucher({
   if (!voucherId) throw new Error('رقم السند مطلوب');
   if (!currentUser?.id) throw new Error('بيانات المستخدم المعتمِد مطلوبة');
 
-  const now = new Date();
-  const voucherRef = doc(db, 'cash_transactions', voucherId);
-  let voucherData = null;
-  let finalNewBal = 0;
-
-  await runTransaction(db, async (transaction) => {
-    const voucherSnap = await transaction.get(voucherRef);
-    if (!voucherSnap.exists()) {
-      throw new Error(`السند (${voucherId}) غير موجود في قاعدة البيانات`);
-    }
-    voucherData = voucherSnap.data();
-    if (voucherData.status !== 'pending_approval') {
-      throw new Error(`حالة السند الحالية (${voucherData.status}) لا تسمح بالاعتماد، قد تم اعتماده أو تعديله مسبقاً`);
-    }
-
-    const safeId = voucherData.safeId;
-    const safeRef = doc(db, 'cash_safes', safeId);
-    const safeSnap = await transaction.get(safeRef);
-    if (!safeSnap.exists()) {
-      throw new Error(`الخزينة (${safeId}) غير موجودة في قاعدة البيانات`);
-    }
-
-    const safeData = safeSnap.data();
-    const currency = voucherData.currency || 'EGP';
-    const numAmount = Number(voucherData.amount) || 0;
-    const isOutflow = voucherData.direction === 'out';
-    const isInflow = voucherData.direction === 'in';
-    const currWallet = safeData.balances?.[currency] || { currentBalance: 0, denominations: {} };
-    const currentBal = Number(currWallet.currentBalance) || 0;
-    const currentDenoms = currWallet.denominations || {};
-    const denominations = voucherData.denominations || {};
-
-    if (isOutflow) {
-      if (currentBal < numAmount && !allowOverdraft) {
-        throw new Error(
-          `رصيد الخزينة الحالي (${currentBal.toLocaleString()} ${currency}) لا يكفي لصرف مبلغ السند (${numAmount.toLocaleString()} ${currency}). يرجى تغذية الخزينة أو التحويل إليها أولاً.`
-        );
-      }
-
-      if (currency === 'EGP') {
-        const denomSum = Object.entries(denominations).reduce(
-          (acc, [d, c]) => acc + (Number(d) * (Number(c) || 0)),
-          0
-        );
-        if (denomSum > 0) {
-          const sufficiency = checkSufficientBanknotes(currentDenoms, denominations, true);
-          if (!sufficiency.isSufficient && !allowOverdraft) {
-            const detailStr = sufficiency.shortages
-              .map((s) => `فئة ${s.denom} ج (المطلوب: ${s.requested}، المتوفر: ${s.available})`)
-              .join('، ');
-            throw new Error(`الفئات الورقية المتوفرة بالخزينة لا تكفي لإتمام الصرف: ${detailStr}`);
-          }
-        }
-      }
-    } else if (isInflow) {
-      if (currency === 'EGP') {
-        const sufficiency = checkSufficientBanknotes(currentDenoms, denominations, false);
-        if (!sufficiency.isSufficient) {
-          const detailStr = sufficiency.shortages
-            .map((s) => `فئة ${s.denom} ج (المطلوب ردها كفكة: ${s.requested}، المتوفر بالخزينة: ${s.available})`)
-            .join('، ');
-          throw new Error(`الفئات الورقية المتوفرة بالخزينة لا تكفي لرد الفكة المطلوبة: ${detailStr}`);
-        }
-      }
-    }
-
-    // Compute updated balances
-    const newBal = isOutflow ? currentBal - numAmount : (isInflow ? currentBal + numAmount : currentBal);
-    finalNewBal = newBal;
-    const newDenoms = { ...currentDenoms };
-
-    if (currency === 'EGP') {
-      for (const denom of EGP_DENOMINATIONS) {
-        const count = Number(denominations[denom]) || 0;
-        const currentCount = Number(newDenoms[denom]) || 0;
-        if (isOutflow) {
-          newDenoms[denom] = Math.max(0, currentCount - count);
-        } else if (isInflow) {
-          newDenoms[denom] = Math.max(0, currentCount + count);
-        }
-      }
-    }
-
-    // Commit safe balance update
-    const approveSafePayload = {
-      [`balances.${currency}.currentBalance`]: newBal,
-      [`balances.${currency}.denominations`]: newDenoms,
-      updatedAt: now.toISOString()
-    };
-    if (currency === 'EGP') {
-      approveSafePayload.currentBalance = newBal;
-      approveSafePayload.balance = newBal;
-      approveSafePayload.denominations = newDenoms;
-    }
-    transaction.update(safeRef, approveSafePayload);
-
-    // Commit voucher status transition
-    const updatePayload = {
-      status: 'posted',
-      approvedByUserId: currentUser.id,
-      approvedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-      approvedAt: now.toISOString(),
-      balanceAfter: newBal,
-      approvalNotes: approvalNotes || '',
-      updatedAt: now.toISOString()
-    };
-
-    transaction.update(voucherRef, updatePayload);
+  const result = await callFinanceCallable('financeApproveCashVoucher', {
+    voucherId,
+    approvalNotes,
+    allowOverdraft,
+    currentUser: serializeActorUser(currentUser)
   });
 
-  // Post-Transaction Side Effects (Custody Ledger)
-  if (
-    voucherData?.subAccountId &&
-    ['custody_issue', 'custody_settle', 'salary_advance', 'advance_settle'].includes(voucherData.type)
-  ) {
-    await updateCustodyLedgerAfterVoucher({
-      workerId: voucherData.subAccountId,
-      workerName: voucherData.subAccountName,
-      voucherId,
-      ssotId: voucherData.ssotId || voucherId,
-      targetCustodyId: voucherData.targetCustodyId,
-      targetAdvanceId: voucherData.targetAdvanceId,
-      type: voucherData.type,
-      amount: Number(voucherData.amount) || 0,
-      description: voucherData.description,
-      safeId: voucherData.safeId,
-      attachments: voucherData.attachments
-    }).catch((e) => console.warn('[Custody Ledger Sync Error on Approval]:', e));
-  }
-
-  // Complete any action required notifications
   await completeActionRequired({
     actionType: 'approve_cash_voucher',
     docId: voucherId,
@@ -3980,7 +3088,7 @@ export async function approveCashVoucher({
     resolutionNote: approvalNotes || 'تم الاعتماد المالي والصرف'
   }).catch((e) => console.warn('[Action Complete Error]:', e));
 
-  return { success: true, voucherId, status: 'posted', balanceAfter: finalNewBal };
+  return result;
 }
 
 /**
@@ -3995,29 +3103,13 @@ export async function rejectCashVoucher({
   if (!voucherId) throw new Error('رقم السند مطلوب');
   if (!currentUser?.id) throw new Error('بيانات المستخدم المعتمِد مطلوبة');
 
-  const now = new Date();
-  const voucherRef = doc(db, 'cash_transactions', voucherId);
-  const voucherSnap = await getDoc(voucherRef);
-  if (!voucherSnap.exists()) {
-    throw new Error(`السند (${voucherId}) غير موجود في قاعدة البيانات`);
-  }
-  const voucherData = voucherSnap.data();
-  if (voucherData.status !== 'pending_approval') {
-    throw new Error(`حالة السند الحالية (${voucherData.status}) لا تسمح بالرفض`);
-  }
-
   const cleanReason = rejectionReason.trim() || 'تم الرفض بواسطة المعتمد المالي';
-
-  await updateDoc(voucherRef, {
-    status: 'rejected',
-    rejectedByUserId: currentUser.id,
-    rejectedByName: currentUser.name || currentUser.nameAr || currentUser.id,
-    rejectedAt: now.toISOString(),
+  const result = await callFinanceCallable('financeRejectCashVoucher', {
+    voucherId,
     rejectionReason: cleanReason,
-    updatedAt: now.toISOString()
+    currentUser: serializeActorUser(currentUser)
   });
 
-  // Complete/cancel any action required notifications
   await completeActionRequired({
     actionType: 'approve_cash_voucher',
     docId: voucherId,
@@ -4026,5 +3118,5 @@ export async function rejectCashVoucher({
     resolutionNote: `مرفوض: ${cleanReason}`
   }).catch((e) => console.warn('[Action Complete Error]:', e));
 
-  return { success: true, voucherId, status: 'rejected' };
+  return result;
 }
