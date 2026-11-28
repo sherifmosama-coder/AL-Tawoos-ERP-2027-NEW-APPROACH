@@ -79,6 +79,7 @@ import SalesOrderAuditModal from './SalesOrderAuditModal';
 import OrderSplitModal from './OrderSplitModal';
 import RetailSettlementModal from './RetailSettlementModal';
 import StandardRetailListModal from './StandardRetailListModal';
+import ClientProfileModal from './ClientProfileModal';
 import PeacockLoader from './PeacockLoader';
 import { canAccessAction } from '../config/appArchitecture';
 import {
@@ -172,6 +173,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
   const [endDateFilter, setEndDateFilter] = useState('');
   const [groupBy, setGroupBy] = useState('none'); // 'none' | 'fulfillmentStatus' | 'confirmationStatus' | 'client' | 'region' | 'vatMode' | 'orderType'
   const [revisedOnlyFilter, setRevisedOnlyFilter] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [clientProfileTarget, setClientProfileTarget] = useState(null);
 
   // Expandable Rows State
   const [expandedOrderIds, setExpandedOrderIds] = useState(new Set());
@@ -1099,38 +1102,30 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
     return Object.values(groupsMap);
   }, [filteredOrders, groupBy, isAr, vehicles]);
 
-  // KPI Summary Metrics: skip split parent reference ONLY when billed separately per portion (merged parents represent the sole row)
-  const summaryMetrics = useMemo(() => {
-    let totalOrders = 0;
-    let totalCartons = 0;
-    let totalWeightKg = 0;
-    let totalValue = 0;
-    let pendingFulfillment = 0;
-    let confirmedCount = 0;
-
-    filteredOrders.forEach((o) => {
-      if (o.isSplitParent && o.invoiceSplitMode !== 'merged_on_parent') return;
-      totalOrders++;
-      totalCartons += Number(o.totalCartons || o.totalQty || 0);
-      totalWeightKg += Number(o.totalWeightKg || 0);
-      totalValue += Number(o.grandTotal || 0);
-      if (o.fulfillmentStatus === 'not_yet' || o.fulfillmentStatus === 'prepare') {
-        pendingFulfillment++;
-      }
-      if (o.confirmationStatus === 'confirmed') {
-        confirmedCount++;
-      }
-    });
-
-    return {
-      totalOrders,
-      totalCartons,
-      totalWeightTons: (totalWeightKg / 1000).toFixed(2),
-      totalValue,
-      pendingFulfillment,
-      confirmedCount
-    };
-  }, [filteredOrders]);
+  const activeFiltersCount = useMemo(() => {
+    let cnt = 0;
+    if (clientFilter !== 'all') cnt++;
+    if (orderTypeFilter !== 'all') cnt++;
+    if (confirmationFilter !== 'all') cnt++;
+    if (fulfillmentFilter !== 'all') cnt++;
+    if (assignmentFilter !== 'all') cnt++;
+    if (vatModeFilter !== 'all') cnt++;
+    if (startDateFilter || endDateFilter) cnt++;
+    if (revisedOnlyFilter) cnt++;
+    if (groupBy !== 'none') cnt++;
+    return cnt;
+  }, [
+    clientFilter,
+    orderTypeFilter,
+    confirmationFilter,
+    fulfillmentFilter,
+    assignmentFilter,
+    vatModeFilter,
+    startDateFilter,
+    endDateFilter,
+    revisedOnlyFilter,
+    groupBy
+  ]);
 
   // Trigger Split Order Workflow (Create new split OR Edit/Reallocate existing split parent)
   const handleRequestSplitOrder = (order) => {
@@ -1357,94 +1352,11 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
         );
       })()}
 
-      {/* KPI Summary Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        {/* 1. Total Orders */}
-        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
-              {isAr ? 'إجمالي أوامر البيع' : 'Total Orders'}
-            </span>
-            <span className="text-xl font-black text-slate-800 font-mono">
-              {summaryMetrics.totalOrders}
-            </span>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-            <ShoppingCart className="w-5 h-5" />
-          </div>
-        </div>
-
-        {/* 2. Pending Fulfillment */}
-        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
-              {isAr ? 'قيد التحميل والتجهيز' : 'Pending Loading'}
-            </span>
-            <span className="text-xl font-black text-amber-600 font-mono">
-              {summaryMetrics.pendingFulfillment}
-            </span>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-            <Truck className="w-5 h-5" />
-          </div>
-        </div>
-
-        {/* 3. Confirmed Orders */}
-        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
-              {isAr ? 'أوامر مؤكدة' : 'Confirmed Orders'}
-            </span>
-            <span className="text-xl font-black text-blue-600 font-mono">
-              {summaryMetrics.confirmedCount}
-            </span>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-            <CheckCircle2 className="w-5 h-5" />
-          </div>
-        </div>
-
-        {/* 4. Total Cartons & Weight */}
-        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
-              {isAr ? 'إجمالي الكراتين / الشحن' : 'Total Cartons / Tons'}
-            </span>
-            <div className="flex items-baseline gap-1.5 font-mono">
-              <span className="text-xl font-black text-slate-800">
-                {summaryMetrics.totalCartons.toLocaleString()}
-              </span>
-              <span className="text-xs text-slate-400 font-semibold">
-                ({summaryMetrics.totalWeightTons} {isAr ? 'طن' : 'Ton'})
-              </span>
-            </div>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-            <Boxes className="w-5 h-5" />
-          </div>
-        </div>
-
-        {/* 5. Total Value (EGP) */}
-        <div className="p-3.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs flex items-center justify-between col-span-2 sm:col-span-1">
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block mb-0.5">
-              {isAr ? 'إجمالي القيمة المالية' : 'Total Revenue'}
-            </span>
-            <span className="text-xl font-black text-emerald-700 font-mono truncate block">
-              {summaryMetrics.totalValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} EGP
-            </span>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-            <Receipt className="w-5 h-5" />
-          </div>
-        </div>
-      </div>
-
-      {/* Main Filter & Action Toolbar */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Main Action & Search Toolbar (Filter Bar Hidden Until Toggled) */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-3.5 sm:p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
           {/* Search Input */}
-          <div className="relative flex-1 min-w-[240px]">
+          <div className="relative flex-1 min-w-[220px]">
             <Search className="w-4 h-4 text-slate-400 absolute start-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -1455,49 +1367,25 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
             />
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex items-center gap-2">
-            {canManageStdRetailList && (
+          {/* Grouped Action Controls Ordered by Operational Importance */}
+          <div className="inline-flex flex-wrap items-center gap-1.5 bg-slate-100/80 p-1 rounded-2xl border border-slate-200/80">
+            {/* 1. Primary Action: New Sales Order */}
+            {canCreateSalesOrder && (
               <button
                 type="button"
-                onClick={() => setIsStdRetailModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition cursor-pointer"
-                title={isAr ? 'إعداد القائمة القياسية لتحميل التجزئة' : 'Configure Standard Retail Load List'}
+                onClick={() => {
+                  setEditingOrder(null);
+                  setIsAdminModal(false);
+                  setIsEditorOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs hover:shadow transition cursor-pointer"
               >
-                <ClipboardList className="w-3.5 h-3.5 text-cyan-600" />
-                <span>{isAr ? 'قائمة التجزئة القياسية' : 'Std Retail List'}</span>
-                {(stdRetailListDoc.items || []).length > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-md bg-slate-200/80 text-slate-700 text-[10px] font-black">
-                    {stdRetailListDoc.items.length}
-                  </span>
-                )}
+                <Plus className="w-4 h-4" />
+                <span>{isAr ? 'أمر بيع جديد' : 'New Sales Order'}</span>
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={handleExportCsv}
-              className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition cursor-pointer"
-              title={isAr ? 'تصدير إلى ملف CSV' : 'Export to CSV'}
-            >
-              <Download className="w-3.5 h-3.5 text-slate-500" />
-              <span>{isAr ? 'تصدير CSV' : 'Export'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setEditingOrder(null);
-                setIsAdminModal(false);
-                setIsEditorOpen(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs hover:shadow transition cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>{isAr ? 'أمر بيع جديد' : 'New Sales Order'}</span>
-            </button>
-
-            {/* Less Prominent Administrative Action Button */}
+            {/* 2. Secondary Action: Administrative / Financial Action */}
             <button
               type="button"
               onClick={() => {
@@ -1505,17 +1393,68 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                 setIsAdminModal(true);
                 setIsEditorOpen(true);
               }}
-              className="inline-flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition cursor-pointer shadow-2xs"
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-indigo-50 text-slate-800 border border-slate-200 hover:border-indigo-200 rounded-xl text-xs font-bold transition cursor-pointer shadow-2xs"
               title={isAr ? 'إجراء إداري / مالي (إداري، تحصيل، فاتورة فقط)' : 'Administrative / Financial Action (Admin, Collection, Invoice Only)'}
             >
               <Receipt className="w-3.5 h-3.5 text-indigo-600" />
               <span>{isAr ? 'إجراء إداري / مالي' : 'Admin Action'}</span>
             </button>
+
+            {/* 3. Utility: Export CSV */}
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="inline-flex items-center gap-1.5 px-2.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition cursor-pointer"
+              title={isAr ? 'تصدير إلى ملف CSV' : 'Export to CSV'}
+            >
+              <Download className="w-3.5 h-3.5 text-slate-500" />
+              <span>{isAr ? 'تصدير' : 'Export'}</span>
+            </button>
+
+            {/* 4. Utility: Standard Retail List */}
+            {canManageStdRetailList && (
+              <button
+                type="button"
+                onClick={() => setIsStdRetailModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition cursor-pointer"
+                title={isAr ? 'إعداد القائمة القياسية لتحميل التجزئة' : 'Configure Standard Retail Load List'}
+              >
+                <ClipboardList className="w-3.5 h-3.5 text-cyan-600" />
+                <span>{isAr ? 'قائمة التجزئة' : 'Std Retail'}</span>
+                {(stdRetailListDoc.items || []).length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-md bg-cyan-50 text-cyan-800 border border-cyan-200 text-[10px] font-black font-mono">
+                    {stdRetailListDoc.items.length}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* 5. Filter Bar Toggler */}
+            <button
+              type="button"
+              onClick={() => setIsFiltersOpen((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                isFiltersOpen || activeFiltersCount > 0
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+              }`}
+              title={isFiltersOpen ? (isAr ? 'إخفاء شريط الفلاتر' : 'Hide Filters') : (isAr ? 'إظهار شريط الفلاتر' : 'Show Filters')}
+            >
+              <Filter className={`w-3.5 h-3.5 ${isFiltersOpen || activeFiltersCount > 0 ? 'text-emerald-400' : 'text-slate-500'}`} />
+              <span>{isAr ? 'تصفية' : 'Filters'}</span>
+              {activeFiltersCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-emerald-500 text-white font-mono text-[10px] font-black">
+                  {activeFiltersCount}
+                </span>
+              )}
+            </button>
           </div>
         </div>
 
-        {/* Dropdown Filters Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 xl:grid-cols-8 gap-2 pt-2 border-t border-slate-100 text-xs">
+        {/* Collapsible Dropdown Filters Row & Date Range Sub-Bar */}
+        {isFiltersOpen && (
+          <>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 xl:grid-cols-8 gap-2 pt-2.5 border-t border-slate-100 text-xs animate-in fade-in duration-150">
           {/* 1. Client SearchableSelect */}
           <div className="lg:col-span-2">
             <SearchableSelect
@@ -1696,6 +1635,8 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               : `Showing ${filteredOrders.length} of ${orders.length} orders`}
           </div>
         </div>
+          </>
+        )}
       </div>
 
       {/* Orders Table Container */}
@@ -1720,13 +1661,12 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               <thead>
                 <tr className="bg-slate-50/90 border-b border-slate-200 text-xs font-black text-slate-500 uppercase tracking-wider whitespace-nowrap">
                   <th className="py-3 px-3 text-start">{isAr ? '#' : '#'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'العميل' : 'Client'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'التاريخ' : 'Dates'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'التشغيل' : 'Schedule'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'العميل والتشغيل' : 'Client & Schedule'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'الكمية والوزن' : 'Qty & Weight'}</th>
                   <th className="py-3 px-2 text-center w-20">{isAr ? 'VAT' : 'VAT'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'أمر الشراء والمرفقات' : 'PO & Files'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'الملاحظات' : 'Notes'}</th>
+                  <th className="py-3 px-3 text-start">{isAr ? 'التوزيع والمستندات' : 'Truck & Docs'}</th>
                   <th className="py-3 px-3 text-start">{isAr ? 'الحالة' : 'Status'}</th>
                   <th className="py-3 px-3 text-center w-12">{isAr ? 'إجراءات' : 'Actions'}</th>
                 </tr>
@@ -1742,7 +1682,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                         : 'ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-slate-100/95 via-slate-50 to-white border-slate-200 border-s-[4px] border-s-indigo-500 text-slate-900';
                       return (
                         <tr className={`border-t-2 border-b-2 ${gClasses}`}>
-                          <td colSpan={10} className={`py-2.5 px-4 font-black text-xs ${gStyle ? gStyle.startBorderClasses : 'border-s-[4px] border-s-indigo-500'}`}>
+                          <td colSpan={9} className={`py-2.5 px-4 font-black text-xs ${gStyle ? gStyle.startBorderClasses : 'border-s-[4px] border-s-indigo-500'}`}>
                             <div className="flex items-center justify-between gap-2 flex-wrap">
                               <div className="flex items-center gap-2">
                                 <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${gStyle ? gStyle.dotClasses : 'bg-indigo-500'}`}></span>
@@ -1801,7 +1741,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                             onClick={() => toggleRowExpand(order.id)}
                             className={`transition cursor-pointer select-none ${resolveRowBackground(order, isExpanded)}`}
                           >
-                            {/* 1. Type & Serial */}
+                            {/* 1. Type, Serial & Dates */}
                             <td className={`py-3 px-3 whitespace-nowrap ${resolveRowStartBorder(order, isExpanded)}`}>
                               <div className="flex flex-col gap-1 items-start">
                                 {/* Order Type Badge */}
@@ -1824,7 +1764,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                   <span>{isAr ? orderTypeObj.labelAr : orderTypeObj.labelEn}</span>
                                 </span>
 
-                                {/* Subtle Serial & Audit History */}
+                                {/* Serial & Split Attribution */}
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   <span
                                     className="font-mono text-[11px] text-slate-500 font-bold tracking-tight select-all"
@@ -1885,34 +1825,59 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                       {isAr ? `مفوتر على #${order.baseSerial || ''}` : `Billed under #${order.baseSerial || ''}`}
                                     </span>
                                   )}
+                                </div>
 
-                                  {order.auditTrail?.length > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setAuditModalOrder(order);
-                                      }}
-                                      className="inline-flex items-center gap-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-1 py-0.2 rounded cursor-pointer transition shadow-2xs"
-                                      title={isAr ? `سجل التعديلات (${order.auditTrail.length})` : `Audit trail (${order.auditTrail.length})`}
+                                {/* Invoice & Loading Dates directly under # */}
+                                <div className="flex flex-col gap-0.5 pt-0.5 text-[10.5px] font-mono">
+                                  <div
+                                    className="flex items-center gap-1 text-slate-700 font-bold"
+                                    title={isAr ? 'تاريخ الفاتورة / التسليم' : 'Invoice Date'}
+                                  >
+                                    <Receipt className="w-3 h-3 text-emerald-600 shrink-0" />
+                                    <span>{order.invoiceDate || '—'}</span>
+                                  </div>
+                                  {!['admin', 'collection'].includes(order.orderType) && (
+                                    <div
+                                      className="flex items-center gap-1 text-slate-500 font-medium"
+                                      title={isAr ? 'تاريخ التحميل والشحن' : 'Loading Date'}
                                     >
-                                      <History className="w-2.5 h-2.5 text-indigo-600" />
-                                      <span>{order.auditTrail.length}</span>
-                                    </button>
+                                      <Truck className="w-3 h-3 text-amber-500 shrink-0 rtl:-scale-x-100" />
+                                      <span>{order.loadingDate || order.invoiceDate || '—'}</span>
+                                    </div>
                                   )}
                                 </div>
                               </div>
                             </td>
 
-                            {/* 2. Client & Branch & Region & Location */}
+                            {/* 2. Client, Branch, Region, Location & Schedule */}
                             <td className="py-3 px-3">
                               <div className="flex flex-col gap-1">
-                                <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                                  {order.orderType === 'admin' && !order.clientId ? (
+                                {order.orderType === 'admin' && !order.clientId ? (
+                                  <span className="font-bold text-slate-900 flex items-center gap-1.5">
                                     <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-purple-50 text-purple-700 border border-purple-200">
                                       <Landmark className="w-3.5 h-3.5" />
                                     </span>
-                                  ) : (
+                                    <span className="truncate max-w-[200px]">
+                                      {isAr ? 'إجراء إداري عام' : 'General Administrative'}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (order.clientId) {
+                                        setClientProfileTarget({
+                                          client: clientObj,
+                                          clientId: order.clientId,
+                                          branchId: order.branchId || '',
+                                          branchName: order.branchName || '',
+                                        });
+                                      }
+                                    }}
+                                    title={isAr ? 'انقر لعرض ملف العميل وسجل الطلبات والأسعار' : 'Click to view Client Profile & Past Orders'}
+                                    className="font-bold text-slate-900 hover:text-indigo-700 flex items-center gap-1.5 text-start transition cursor-pointer group/client"
+                                  >
                                     <span
                                       className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 shadow-2xs overflow-hidden"
                                       style={{
@@ -1932,18 +1897,32 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                         <SegIcon className="w-3.5 h-3.5 shrink-0" />
                                       )}
                                     </span>
-                                  )}
-                                  <span className="truncate max-w-[200px]">
-                                    {order.orderType === 'admin' && !order.clientId
-                                      ? (isAr ? 'إجراء إداري عام' : 'General Administrative')
-                                      : (order.clientName || order.clientId || '—')}
-                                  </span>
-                                </span>
+                                    <span className="truncate max-w-[200px] group-hover/client:underline">
+                                      {order.clientName || order.clientId || '—'}
+                                    </span>
+                                  </button>
+                                )}
 
                                 <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
-                                  {/* Branch Name: only shown if client has multiple branches */}
+                                  {/* Branch Name: clickable into ClientProfileModal */}
                                   {showBranchName && (
-                                    <span className="font-medium text-slate-600">{order.branchName}</span>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (order.clientId) {
+                                          setClientProfileTarget({
+                                            client: clientObj,
+                                            clientId: order.clientId,
+                                            branchId: order.branchId || '',
+                                            branchName: order.branchName || '',
+                                          });
+                                        }
+                                      }}
+                                      className="font-semibold text-slate-600 hover:text-indigo-700 hover:underline cursor-pointer"
+                                    >
+                                      {order.branchName}
+                                    </button>
                                   )}
 
                                   {/* Region Chip */}
@@ -1975,131 +1954,25 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                                     </span>
                                   )}
                                 </div>
-                              </div>
-                            </td>
 
-                            {/* 3. Dates & Preserved Truck Assignment */}
-                            <td className="py-3 px-3 whitespace-nowrap text-[11px]">
-                              <div className="flex flex-col gap-1">
-                                <div className="flex items-center gap-1 text-slate-700 font-bold font-mono">
-                                  <Receipt className="w-3 h-3 text-emerald-600 shrink-0" />
-                                  <span>{order.invoiceDate || '—'}</span>
-                                </div>
-                                {!['admin', 'collection'].includes(order.orderType) && (
-                                  <div className="flex items-center gap-1 text-slate-500 font-medium font-mono">
-                                    <Calendar className="w-3 h-3 text-amber-500 shrink-0" />
-                                    <span>{order.loadingDate || order.invoiceDate || '—'}</span>
-                                  </div>
-                                )}
-                                {/* Preserved Truck / Dispatch Badge */}
-                                {(orderVehicleDisplayName || order.loadingOrderNumber) ? (
-                                  <div className="flex flex-col gap-1 items-start">
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleNavigateToLoadingPlan(order);
-                                      }}
-                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-black bg-indigo-50 text-indigo-800 hover:bg-indigo-100 hover:text-indigo-950 border border-indigo-200/90 shadow-2xs transition cursor-pointer max-w-[180px] truncate"
-                                      title={
-                                        isAr
-                                          ? `مُسكن في رحلة #${order.loadingOrderNumber || '—'} — سيارة: ${orderVehicleDisplayName || ''} (${orderVehiclePlate || ''}) — سائق: ${order.assignedDriverName || '—'} — انقر لفتح وتعديل خطة التحميل والتوزيع`
-                                          : `Assigned to Trip #${order.loadingOrderNumber || '—'} — Truck: ${orderVehicleDisplayName || ''} (${orderVehiclePlate || ''}) — Driver: ${order.assignedDriverName || '—'} — Click to open in Loading Plan`
-                                      }
-                                    >
-                                      <Truck className="w-3 h-3 text-indigo-600 shrink-0 rtl:-scale-x-100" />
-                                      <span className="truncate">{orderVehicleDisplayName || orderVehiclePlate || (isAr ? 'شاحنة' : 'Truck')}</span>
-                                      {order.loadingOrderNumber && (
-                                        <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-200/80 text-indigo-950 font-mono font-black shrink-0">
-                                          #{order.loadingOrderNumber}
-                                        </span>
-                                      )}
-                                    </button>
-                                    {orderVehiclePlate && (
-                                      <span
-                                        onClick={(e) => e.stopPropagation()}
-                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-slate-100 border border-slate-200 font-mono text-[9px] font-bold text-slate-600"
-                                      >
-                                        <span>{orderVehiclePlate}</span>
-                                        <CopyButton text={orderVehiclePlate} title={isAr ? 'نسخ رقم اللوحة' : 'Copy Plate #'} isAr={isAr} />
+                                {/* Schedule & Weekly Holidays placed cleanly under Client */}
+                                {(profile.hasHours || profile.hasHolidays) && (
+                                  <div className="flex flex-wrap items-center gap-2 text-[10.5px] pt-0.5">
+                                    {profile.hasHours && (
+                                      <span className="inline-flex items-center gap-1 font-mono text-slate-600 font-semibold">
+                                        <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                                        <span>{profile.scheduleDisplay}</span>
                                       </span>
                                     )}
-                                    {(orderDispatchDoc?.latestDispatchDocNumber || orderReturnDisc.hasDiscrepancy || orderDispatchDoc?.latestReturnDocNumber) && (
-                                      <div className="flex flex-wrap items-center gap-1 mt-0.5">
-                                        {orderDispatchDoc?.latestDispatchDocNumber && (
-                                          <button
-                                            type="button"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleNavigateToTruckDispatch(order, { openReturn: false });
-                                            }}
-                                            title={isAr ? 'فتح رحلة الصرف في تبويب صرف الشاحنات' : 'Open Trip in Truck Dispatch'}
-                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-300 font-mono text-[9px] font-black cursor-pointer transition"
-                                          >
-                                            <FileText className="w-2.5 h-2.5 shrink-0" />
-                                            <span>{orderDispatchDoc.latestDispatchDocNumber}</span>
-                                          </button>
-                                        )}
-                                        {orderReturnDisc.hasDiscrepancy ? (
-                                          <button
-                                            type="button"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleNavigateToTruckDispatch(order, { openReturn: true });
-                                            }}
-                                            title={isAr ? 'تنبيه: يوجد فرق مرتجع — انقر للمراجعة' : 'Return discrepancy detected — click to review'}
-                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-400 font-mono text-[9px] font-black cursor-pointer animate-pulse"
-                                          >
-                                            <AlertTriangle className="w-2.5 h-2.5 text-rose-600 shrink-0" />
-                                            <span>{isAr ? 'فرق مرتجع' : 'Ret Variance'}</span>
-                                          </button>
-                                        ) : orderDispatchDoc?.latestReturnDocNumber ? (
-                                          <button
-                                            type="button"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleNavigateToTruckDispatch(order, { openReturn: true });
-                                            }}
-                                            title={isAr ? 'فتح إذن المرتجع في تبويب صرف الشاحنات' : 'Open Return Doc in Truck Dispatch'}
-                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-mono text-[9px] font-black cursor-pointer transition"
-                                          >
-                                            <RotateCcw className="w-2.5 h-2.5 shrink-0" />
-                                            <span>{orderDispatchDoc.latestReturnDocNumber} ✓</span>
-                                          </button>
-                                        ) : null}
-                                      </div>
+                                    {profile.hasHolidays && (
+                                      <span
+                                        className="inline-flex items-center gap-1 text-[10px] text-rose-700 font-bold"
+                                        title={isAr ? 'عطلة أسبوعية' : 'Weekly holiday'}
+                                      >
+                                        <Calendar className="w-2.5 h-2.5 text-rose-500 shrink-0" />
+                                        <span className="truncate max-w-[130px]">{profile.holidaysDisplay}</span>
+                                      </span>
                                     )}
-                                  </div>
-                                ) : !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleNavigateToLoadingPlan(order);
-                                    }}
-                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-indigo-600 hover:bg-slate-100 px-1 py-0.5 rounded transition cursor-pointer"
-                                    title={isAr ? 'الطلب غير مسكن بشاحنة — انقر للتسكين في خطة التحميل' : 'Unassigned — Click to assign in Loading Plan'}
-                                  >
-                                    <Truck className="w-2.5 h-2.5 text-slate-300 rtl:-scale-x-100" />
-                                    <span className="italic">{isAr ? 'غير مسكن' : 'Unassigned'}</span>
-                                  </button>
-                                ) : null}
-                              </div>
-                            </td>
-
-                            {/* 4. Operating Schedule Key Info */}
-                            <td className="py-3 px-3 whitespace-nowrap">
-                              <div className="flex flex-col gap-0.5">
-                                <div className="flex items-center gap-1 font-mono text-[11px] text-slate-700 font-semibold">
-                                  <Clock className="w-3 h-3 text-slate-400 shrink-0" />
-                                  <span>{profile.scheduleDisplay}</span>
-                                </div>
-                                {profile.hasHolidays && (
-                                  <div className="flex items-center gap-1 text-[10px] text-rose-700 font-bold">
-                                    <Calendar className="w-2.5 h-2.5 text-rose-500 shrink-0" />
-                                    <span className="truncate max-w-[130px]" title={isAr ? 'عطلة أسبوعية' : 'Weekly holiday'}>
-                                      {profile.holidaysDisplay}
-                                    </span>
                                   </div>
                                 )}
                               </div>
@@ -2215,7 +2088,107 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                               </div>
                             </td>
 
-                            {/* 9. Status (Confirmation, Complementary Revised Toggle & Fulfillment) - MOVED TO THE END */}
+                            {/* 7. Truck Assignment & Dispatch Documents Column (Right Before Status) */}
+                            <td className="py-3 px-3 whitespace-nowrap">
+                              {(orderVehicleDisplayName || order.loadingOrderNumber) ? (
+                                <div className="flex flex-col gap-1 items-start">
+                                  <div className="inline-flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleNavigateToLoadingPlan(order);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-black bg-indigo-50 text-indigo-800 hover:bg-indigo-100 hover:text-indigo-950 border border-indigo-200/90 shadow-2xs transition cursor-pointer max-w-[175px] truncate"
+                                      title={
+                                        isAr
+                                          ? `شاحنة: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — رحلة #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — سائق: ${order.assignedDriverName}` : ''}`
+                                          : `Truck: ${orderVehicleDisplayName || '—'}${orderVehiclePlate ? ` (${orderVehiclePlate})` : ''} — Trip #${order.loadingOrderNumber || '—'}${order.assignedDriverName ? ` — Driver: ${order.assignedDriverName}` : ''}`
+                                      }
+                                    >
+                                      <Truck className="w-3 h-3 text-indigo-600 shrink-0 rtl:-scale-x-100" />
+                                      <span className="truncate">{orderVehicleDisplayName || (isAr ? 'شاحنة' : 'Truck')}</span>
+                                      {order.loadingOrderNumber && (
+                                        <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-200/80 text-indigo-950 font-mono font-black shrink-0">
+                                          #{order.loadingOrderNumber}
+                                        </span>
+                                      )}
+                                    </button>
+                                    {orderVehiclePlate && (
+                                      <CopyButton
+                                        text={orderVehiclePlate}
+                                        title={isAr ? `نسخ رقم اللوحة (${orderVehiclePlate})` : `Copy Plate # (${orderVehiclePlate})`}
+                                        isAr={isAr}
+                                        className="border border-slate-200 bg-slate-50 p-1 rounded-md"
+                                      />
+                                    )}
+                                  </div>
+
+                                  {(orderDispatchDoc?.latestDispatchDocNumber || orderReturnDisc.hasDiscrepancy || orderDispatchDoc?.latestReturnDocNumber) && (
+                                    <div className="flex flex-wrap items-center gap-1">
+                                      {orderDispatchDoc?.latestDispatchDocNumber && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleNavigateToTruckDispatch(order, { openReturn: false });
+                                          }}
+                                          title={isAr ? 'فتح رحلة الصرف في تبويب صرف الشاحنات' : 'Open Trip in Truck Dispatch'}
+                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-300 font-mono text-[9px] font-black cursor-pointer transition"
+                                        >
+                                          <FileText className="w-2.5 h-2.5 shrink-0" />
+                                          <span>{orderDispatchDoc.latestDispatchDocNumber}</span>
+                                        </button>
+                                      )}
+                                      {orderReturnDisc.hasDiscrepancy ? (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleNavigateToTruckDispatch(order, { openReturn: true });
+                                          }}
+                                          title={isAr ? 'تنبيه: يوجد فرق مرتجع — انقر للمراجعة' : 'Return discrepancy detected — click to review'}
+                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-400 font-mono text-[9px] font-black cursor-pointer animate-pulse"
+                                        >
+                                          <AlertTriangle className="w-2.5 h-2.5 text-rose-600 shrink-0" />
+                                          <span>{isAr ? 'فرق مرتجع' : 'Ret Variance'}</span>
+                                        </button>
+                                      ) : orderDispatchDoc?.latestReturnDocNumber ? (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleNavigateToTruckDispatch(order, { openReturn: true });
+                                          }}
+                                          title={isAr ? 'فتح إذن المرتجع في تبويب صرف الشاحنات' : 'Open Return Doc in Truck Dispatch'}
+                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-mono text-[9px] font-black cursor-pointer transition"
+                                        >
+                                          <RotateCcw className="w-2.5 h-2.5 shrink-0" />
+                                          <span>{orderDispatchDoc.latestReturnDocNumber} ✓</span>
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : !['admin', 'collection', 'invoice_only_with_tax', 'invoice_only_no_tax'].includes(order.orderType) ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleNavigateToLoadingPlan(order);
+                                  }}
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-indigo-600 hover:bg-slate-100 px-1.5 py-0.5 rounded-md transition cursor-pointer border border-dashed border-slate-200"
+                                  title={isAr ? 'الطلب غير مسكن بشاحنة — انقر للتسكين في خطة التحميل' : 'Unassigned — Click to assign in Loading Plan'}
+                                >
+                                  <Truck className="w-2.5 h-2.5 text-slate-300 rtl:-scale-x-100" />
+                                  <span className="italic">{isAr ? 'غير مسكن' : 'Unassigned'}</span>
+                                </button>
+                              ) : (
+                                <span className="text-slate-300 font-mono">—</span>
+                              )}
+                            </td>
+
+                            {/* 8. Status (Confirmation, Complementary Revised Toggle & Fulfillment) */}
                             <td className="py-3 px-3 whitespace-nowrap">
                               <div className="flex flex-col gap-1.5 items-start">
                                 {/* Confirmation Status & Revised Toggle Row */}
@@ -2433,7 +2406,7 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
                           {/* Expandable Order Details Row */}
                           {isExpanded && (
                             <tr className="bg-slate-50/75 border-b-[3px] border-slate-200/95">
-                              <td colSpan={10} className={`py-3 px-4 sm:ps-8 sm:pe-6 ${resolveRowStartBorder(order, isExpanded)}`}>
+                              <td colSpan={9} className={`py-3 px-4 sm:ps-8 sm:pe-6 ${resolveRowStartBorder(order, isExpanded)}`}>
                                 <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
                                   {order.orderType === 'admin' ? (
                                     /* Administrative Directive Display */
@@ -3583,10 +3556,17 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
               setAuditModalOrder(activeOrderForMenu);
               setActiveActionsMenuOrderId(null);
             }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-100 hover:text-slate-900 rounded-xl transition cursor-pointer font-bold text-start"
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 text-slate-700 hover:bg-slate-100 hover:text-slate-900 rounded-xl transition cursor-pointer font-bold text-start"
           >
-            <History className="w-3.5 h-3.5 text-indigo-600" />
-            <span>{isAr ? 'عرض سجل التدقيق' : 'View Audit Trail'}</span>
+            <span className="inline-flex items-center gap-2">
+              <History className="w-3.5 h-3.5 text-indigo-600" />
+              <span>{isAr ? 'عرض سجل التدقيق' : 'View Audit Trail'}</span>
+            </span>
+            {activeOrderForMenu.auditTrail?.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200 font-mono text-[10px] font-black">
+                {activeOrderForMenu.auditTrail.length}
+              </span>
+            )}
           </button>
 
           {/* Cancel or Restore Action */}
@@ -4093,6 +4073,21 @@ export default function SalesOrdersMaster({ currentUser = {}, permissions = null
           </div>
         </div>
       )}
+
+      {/* Standardized App-Wide Client & Branch Profile Modal */}
+      <ClientProfileModal
+        isOpen={Boolean(clientProfileTarget)}
+        onClose={() => setClientProfileTarget(null)}
+        client={clientProfileTarget?.client || null}
+        clientId={clientProfileTarget?.clientId || ''}
+        focusBranchId={clientProfileTarget?.branchId || ''}
+        focusBranchName={clientProfileTarget?.branchName || ''}
+        clients={clients}
+        segments={segments}
+        pricingStrategies={strategies}
+        salesOrders={orders}
+        isAr={isAr}
+      />
     </div>
   );
 }

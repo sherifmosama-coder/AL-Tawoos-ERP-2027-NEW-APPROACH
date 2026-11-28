@@ -32,6 +32,7 @@ export default function TruckDispatchModal({
   stockMatrixSkuMap = {},
   currentUser = {},
   canConfirmDispatch = false,
+  onOpenClientProfile = null,
   onSaved,
   isAr = true,
 }) {
@@ -679,9 +680,25 @@ export default function TruckDispatchModal({
                   clientRows.map((row) => (
                     <tr key={row.orderId} className="hover:bg-slate-50/70 transition">
                       <td className="py-2 px-3 sticky start-0 bg-white border-e border-slate-200 z-10">
-                        <div className="font-extrabold text-slate-900 text-xs truncate max-w-[220px]">
-                          {row.clientName}
-                        </div>
+                        {onOpenClientProfile && row.clientId ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onOpenClientProfile({
+                                clientId: row.clientId,
+                                branchId: row.branchId || '',
+                                branchName: row.branchName || '',
+                              })
+                            }
+                            className="font-extrabold text-slate-900 hover:text-indigo-700 hover:underline text-xs truncate max-w-[220px] text-start block cursor-pointer"
+                          >
+                            {row.clientName}
+                          </button>
+                        ) : (
+                          <div className="font-extrabold text-slate-900 text-xs truncate max-w-[220px]">
+                            {row.clientName}
+                          </div>
+                        )}
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <span className="font-mono text-[10px] font-bold text-slate-500">#{row.serial}</span>
                           <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${ORDER_TYPE_META[row.orderType]?.cls || ''}`}>

@@ -65,10 +65,16 @@ import PeacockLoader from './PeacockLoader.jsx';
 import { canAccessAction } from '../config/appArchitecture.js';
 import { RowCommentButton } from './comments';
 import { resolveLocationInfo, normalizeLocationUrl } from '../utils/locationUtils.js';
-import { compareOrdersBySerialAsc, isOrderRetailRoute } from '../utils/salesOrderUtils.js';
+import {
+  compareOrdersBySerialAsc,
+  isOrderRetailRoute,
+  validateLoadingPlanOrderMandatoryFields,
+  buildTripCommentDocId,
+} from '../utils/salesOrderUtils.js';
 import { buildUnifiedPersonnelPool } from '../utils/personnelDirectory.js';
 import RetailSettlementModal from './RetailSettlementModal.jsx';
 import LoadingPlanFgSidebar from './LoadingPlanFgSidebar.jsx';
+import ClientProfileModal from './ClientProfileModal.jsx';
 import { buildOrderTripAvailabilityMap } from '../utils/fgStockEngine.js';
 import { makeTripDispatchDocId, evaluateReturnDiscrepancySummary } from '../utils/truckDispatchUtils.js';
 import { SEGMENT_ICON_MAP } from './ClientSegmentsMaster.jsx';
@@ -731,6 +737,7 @@ function getTripClientStops(assignedOrders = [], stagedAssignments = {}) {
 function CompactTruckCard({
   truckData,
   allOrders,
+  targetPlanningDate = '',
   selectedTripState,
   onSelectTrip,
   onFilterConflict,
@@ -807,9 +814,16 @@ function CompactTruckCard({
     : 'bg-emerald-50 text-emerald-800 border-emerald-200';
 
   const primaryVehicleName = resolveVehicleDisplayName(veh, isAr ? 'شاحنة' : 'Truck');
+  const tripCommentDocId =
+    activeTrip && activeTrip.loadingOrderNumber && activeTrip.loadingOrderNumber !== 'unnumbered'
+      ? buildTripCommentDocId(activeTrip.loadingDate || targetPlanningDate, activeTrip.loadingOrderNumber)
+      : '';
 
   return (
-    <div className={`rounded-2xl border transition-all duration-200 flex flex-col justify-between ${cardSurfaceClasses}`}>
+    <div
+      data-comment-doc={tripCommentDocId || undefined}
+      className={`rounded-2xl border transition-all duration-200 flex flex-col justify-between ${cardSurfaceClasses}`}
+    >
       {/* 1. COMPACT TOP HEADER ROW */}
       <div className="px-2.5 pt-2.5 pb-1.5 flex items-center justify-between gap-1.5 border-b border-slate-100/90">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -1124,6 +1138,18 @@ function CompactTruckCard({
                 </button>
               );
             })()}
+
+            {/* Trip Collaborative Comment Button (Synced Bidirectionally with Floating Manifest Dock) */}
+            {tripCommentDocId && (
+              <span onClick={(e) => e.stopPropagation()} className="inline-flex">
+                <RowCommentButton
+                  docId={tripCommentDocId}
+                  docNumber={isAr ? `رحلة #${activeTrip.loadingOrderNumber}` : `Trip #${activeTrip.loadingOrderNumber}`}
+                  tab="loading_plan"
+                  module="sales"
+                />
+              </span>
+            )}
           </div>
 
           {/* Clickable Conflict Alert Icon (triggers manual Trip# filter when trip or vehicle has conflict) */}
@@ -1840,8 +1866,12 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   // Status Jump Confirmation Modal (for admin jump or reverting delivered status)
   const [statusJumpConfirmModal, setStatusJumpConfirmModal] = useState(null);
 
-  // Trucks Fleet Dashboard Collapsed/Expanded State (Default Collapsed)
+  // Filter Bar & Trucks Fleet Operational Dashboard visibility (both hidden by default)
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [isTrucksDashboardOpen, setIsTrucksDashboardOpen] = useState(false);
+
+  // Standardized App-Wide Client Profile Popup Target
+  const [clientProfileTarget, setClientProfileTarget] = useState(null);
 
   // Selected trip carousel index & slide direction per truck: Record<vehicleId, { index, dir }>
   const [selectedTripByVehicle, setSelectedTripByVehicle] = useState({});
@@ -2295,18 +2325,32 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
     setActiveEditingOrderId(order.id);
   };
 
-  // Card-level save check: validate mandatory fields only if advancing from pending; pending status or unplanned bypasses mandatory assignment fields
+  // Card-level save check: Pending saves freely; Preparing+ requires Trip #, Truck, Driver on save
   const handleSaveCardAssignment = (order) => {
     const eff = getEffectiveAssignment(order);
     const targetStatus = eff.fulfillmentStatus || order.fulfillmentStatus || 'not_yet';
-    const isPending = targetStatus === 'not_yet';
-    const isMandatoryFilled = isPending || Boolean(
-      eff.loadingOrderNumber &&
-      Number(eff.loadingOrderNumber) > 0 &&
-      eff.assignedVehicleId &&
-      eff.assignedDriverId
-    );
-    if (!isMandatoryFilled) return;
+    const validation = validateLoadingPlanOrderMandatoryFields({
+      fulfillmentStatus: targetStatus,
+      loadingOrderNumber: eff.loadingOrderNumber,
+      assignedVehicleId: eff.assignedVehicleId,
+      assignedDriverId: eff.assignedDriverId,
+    });
+    if (!validation.valid) {
+      const missingLabels = validation.missing.map((k) =>
+        k === 'tripNumber'
+          ? (isAr ? 'رقم الرحلة' : 'Trip #')
+          : k === 'vehicle'
+          ? (isAr ? 'السيارة' : 'Truck')
+          : (isAr ? 'السائق' : 'Driver')
+      );
+      showToast(
+        isAr
+          ? `لحفظ حالة غير "قيد الانتظار"، يرجى استكمال: ${missingLabels.join('، ')}`
+          : `To save a non-Pending order status, please complete: ${missingLabels.join(', ')}`,
+        'error'
+      );
+      return;
+    }
 
     const existingLoadingDate = eff.loadingDate || '';
     const existingInvoiceDate = eff.invoiceDate || '';
@@ -2389,7 +2433,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return;
     }
 
-    // 2. FORWARD MOVEMENT:
+    // 2. FORWARD MOVEMENT (Mandatory Trip # / Truck / Driver verified at Order Save):
     const isClosedOrder = order.fulfillmentStatus === 'delivered' || order.fulfillmentStatus === 'paid';
     const isOrderLocked = isClosedOrder && !canModifyClosedOrders;
     if (isOrderLocked) {
@@ -2400,26 +2444,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         'info'
       );
       return;
-    }
-
-    // MANDATORY CHECK: Moving forward from 'pending' status requires mandatory assignment fields!
-    const eff = getEffectiveAssignment(order);
-    if (currentIndex === 0) {
-      const isAssigned = Boolean(
-        eff.loadingOrderNumber &&
-        Number(eff.loadingOrderNumber) > 0 &&
-        eff.assignedVehicleId &&
-        eff.assignedDriverId
-      );
-      if (!isAssigned) {
-        showToast(
-          isAr
-            ? 'يرجى إكمال بيانات التسكين الإلزامية (رقم الرحلة، السيارة، والسائق) أولاً قبل بدء التجهيز والتنفيذ'
-            : 'Please complete mandatory assignment fields (Trip #, Truck, Driver) before advancing from Pending.',
-          'error'
-        );
-        return;
-      }
     }
 
     // Retail Van-Sales Arrival Gate: intercept forward move to 'delivered' if not yet settled
@@ -2433,7 +2457,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       return;
     }
 
-    // Standard 1-step forward (Clickable Next)
+    // Allow changing status freely before mandatory assignment fields are entered
     if (targetIndex === currentIndex + 1) {
       handleStageChange(order.id, 'fulfillmentStatus', step.id);
       return;
@@ -3139,6 +3163,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
 
           return {
             tripId,
+            loadingDate: targetPlanningDate,
             loadingOrderNumber: grp.loadingOrderNumber,
             orders: grp.orders,
             totalWeightKg: tripWeightKg,
@@ -3513,25 +3538,17 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
   };
 
   // Check if any staged assignment has missing mandatory fields (LO #, Vehicle, or Driver)
-  // Note: Orders at pending/unplanned status or stepped backward to pending bypass mandatory fields
+  // Note: Orders at Pending status bypass mandatory fields; non-Pending orders require Trip #, Truck & Driver
   const hasIncompleteStagedOrder = useMemo(() => {
     return Object.entries(stagedAssignments).some(([orderId, eff]) => {
       const originalOrder = orders.find((o) => o.id === orderId);
       const targetStatus = eff.fulfillmentStatus || originalOrder?.fulfillmentStatus || 'not_yet';
-      // Orders at pending/unplanned status don't require mandatory truck/driver fields
-      if (targetStatus === 'not_yet') {
-        return false;
-      }
-      // If order is completely cleared (no LO #, vehicle, or driver), it's a valid clear
-      if (!eff.loadingOrderNumber && !eff.assignedVehicleId && !eff.assignedDriverId) {
-        return false;
-      }
-      return (
-        !eff.loadingOrderNumber ||
-        Number(eff.loadingOrderNumber) <= 0 ||
-        !eff.assignedVehicleId ||
-        !eff.assignedDriverId
-      );
+      return !validateLoadingPlanOrderMandatoryFields({
+        fulfillmentStatus: targetStatus,
+        loadingOrderNumber: eff.loadingOrderNumber,
+        assignedVehicleId: eff.assignedVehicleId,
+        assignedDriverId: eff.assignedDriverId,
+      }).valid;
     });
   }, [stagedAssignments, orders]);
 
@@ -3770,19 +3787,22 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
       {/* Toast Notification */}
       {toastMsg && (
         <div className={`fixed top-4 end-4 z-50 flex items-center gap-2 px-4 py-2.5 rounded-2xl shadow-lg border text-xs font-bold transition animate-in fade-in ${
-          toastMsg.type === 'info'
+          toastMsg.type === 'error'
+            ? 'bg-rose-600 text-white border-rose-700'
+            : toastMsg.type === 'info'
             ? 'bg-slate-900 text-white border-slate-800'
             : 'bg-emerald-600 text-white border-emerald-700'
         }`}>
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          {toastMsg.type === 'error' ? <AlertTriangle className="w-4 h-4 shrink-0" /> : <CheckCircle2 className="w-4 h-4 shrink-0" />}
           <span>{toastMsg.message}</span>
         </div>
       )}
 
       {/* ========================================================================= */}
-      {/* 1. TARGET LOADING DATE DEDICATED ANCHOR BAR (Top Container)               */}
+      {/* 1. COMPACT TARGET LOADING DATE + ICON-ONLY FILTER & FLEET TOGGLE BUTTONS   */}
       {/* ========================================================================= */}
-      <div className="ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-50/90 via-amber-50/50 to-slate-50 border border-amber-200/90 rounded-3xl p-3.5 sm:px-5 sm:py-3 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+      <div className="flex flex-wrap lg:flex-nowrap items-stretch gap-2.5">
+        <div className="flex-1 min-w-0 ltr:bg-gradient-to-r rtl:bg-gradient-to-l from-amber-50/90 via-amber-50/50 to-slate-50 border border-amber-200/90 rounded-3xl p-3 sm:px-4 sm:py-2.5 flex flex-wrap items-center justify-between gap-2.5 shadow-2xs">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-700 border border-amber-300/60 flex items-center justify-center shrink-0 shadow-2xs">
@@ -3850,12 +3870,70 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
             <span className="text-[10px] font-sans font-extrabold text-amber-700">({isAr ? 'غداً' : 'Tomorrow'})</span>
           )}
         </div>
+        </div>
+
+        {/* Two Icon-Only Toggles: 1) Filter Bar  2) Trucks Fleet Operational Dashboard */}
+        <div className="flex items-center gap-2 shrink-0">
+          {(() => {
+            const lpFilterCount =
+              (fulfillmentFilter !== 'all' ? 1 : 0) +
+              (searchTerm.trim() ? 1 : 0) +
+              (confirmedOnly ? 1 : 0) +
+              (groupBy !== 'status_hierarchy' ? 1 : 0) +
+              (sortBy !== 'trip_asc' ? 1 : 0);
+            const fleetConflictsCount = truckFleetAnalysis.filter((t) => t.operationalStatus === 'conflict').length;
+            return (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsFiltersOpen((prev) => !prev)}
+                  title={isFiltersOpen ? (isAr ? 'إخفاء شريط الفلاتر' : 'Hide Filter Bar') : (isAr ? 'إظهار شريط الفلاتر' : 'Show Filter Bar')}
+                  aria-label={isFiltersOpen ? (isAr ? 'إخفاء شريط الفلاتر' : 'Hide Filter Bar') : (isAr ? 'إظهار شريط الفلاتر' : 'Show Filter Bar')}
+                  aria-expanded={isFiltersOpen}
+                  className={`relative w-12 min-h-[48px] rounded-2xl border flex items-center justify-center transition cursor-pointer shadow-2xs ${
+                    isFiltersOpen || lpFilterCount > 0
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+                  }`}
+                >
+                  <Filter className={`w-5 h-5 ${isFiltersOpen || lpFilterCount > 0 ? 'text-emerald-400' : 'text-slate-600'}`} />
+                  {lpFilterCount > 0 && (
+                    <span className="absolute -top-1.5 -end-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-white font-mono text-[10px] font-black flex items-center justify-center shadow-xs">
+                      {lpFilterCount}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsTrucksDashboardOpen((prev) => !prev)}
+                  title={isTrucksDashboardOpen ? (isAr ? 'إخفاء لوحة شاحنات الأسطول' : 'Hide Trucks Fleet Dashboard') : (isAr ? 'عرض لوحة شاحنات الأسطول' : 'Show Trucks Fleet Dashboard')}
+                  aria-label={isTrucksDashboardOpen ? (isAr ? 'إخفاء لوحة شاحنات الأسطول' : 'Hide Trucks Fleet Dashboard') : (isAr ? 'عرض لوحة شاحنات الأسطول' : 'Show Trucks Fleet Dashboard')}
+                  aria-expanded={isTrucksDashboardOpen}
+                  className={`relative w-12 min-h-[48px] rounded-2xl border flex items-center justify-center transition cursor-pointer shadow-2xs ${
+                    isTrucksDashboardOpen
+                      ? 'bg-indigo-600 text-white border-indigo-700'
+                      : 'bg-white hover:bg-indigo-50 text-indigo-700 border-slate-200 hover:border-indigo-200'
+                  }`}
+                >
+                  <Truck className="w-5 h-5 rtl:-scale-x-100" />
+                  {fleetConflictsCount > 0 && (
+                    <span className="absolute -top-1.5 -end-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white font-mono text-[10px] font-black flex items-center justify-center shadow-xs animate-pulse">
+                      {fleetConflictsCount}
+                    </span>
+                  )}
+                </button>
+              </>
+            );
+          })()}
+        </div>
       </div>
 
       {/* ========================================================================= */}
-      {/* 2. ORDERS SCOPE & FILTERS RIBBON (Middle Container)                       */}
+      {/* 2. ORDERS SCOPE & FILTERS RIBBON (Hidden by Default Until Toggled)        */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-4 sm:p-5 space-y-3.5">
+      {isFiltersOpen && (
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-4 sm:p-5 space-y-3.5 animate-in fade-in duration-150">
         {/* Row 1: Operational Status Quick Filter & Target Loading Date Scope Summary */}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
           <div className="flex flex-wrap items-center gap-2">
@@ -3979,23 +4057,23 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           </div>
         </div>
       </div>
+      )}
 
       {/* ========================================================================= */}
-      {/* 3. NEW TRUCKS FLEET OPERATIONAL DASHBOARD                                 */}
+      {/* 3. TRUCKS FLEET OPERATIONAL DASHBOARD (Hidden Until Toggled; Shows Expanded) */}
       {/* ========================================================================= */}
-      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-4 sm:p-5">
+      {isTrucksDashboardOpen && (
+      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-4 sm:p-5 animate-in fade-in duration-150">
         {/* Dashboard Header Bar */}
         <div
-          onClick={() => setIsTrucksDashboardOpen((prev) => !prev)}
-          className={`flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none transition ${
-            isTrucksDashboardOpen ? 'pb-3 border-b border-slate-100' : ''
-          }`}
+          onClick={() => setIsTrucksDashboardOpen(false)}
+          className="flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none transition pb-3 border-b border-slate-100"
           role="button"
           tabIndex={0}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              setIsTrucksDashboardOpen((prev) => !prev);
+              setIsTrucksDashboardOpen(false);
             }
           }}
         >
@@ -4092,7 +4170,6 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
         </div>
 
         {/* Scorecards Grid */}
-        {isTrucksDashboardOpen && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 pt-3">
             {truckFleetAnalysis.length === 0 ? (
               <div className="col-span-full p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-slate-200">
@@ -4105,6 +4182,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                   key={truckData.vehicle.id}
                   truckData={truckData}
                   allOrders={orders}
+                  targetPlanningDate={targetPlanningDate}
                   selectedTripState={selectedTripByVehicle[truckData.vehicle.id]}
                   onSelectTrip={handleSelectVehicleTrip}
                   onFilterConflict={handleFilterConflictByLO}
@@ -4127,8 +4205,8 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
               ))
             )}
           </div>
-        )}
       </div>
+      )}
 
       {/* CONFLICT LO # MANUAL FIX FILTER BANNER & SCROLL ANCHOR */}
       <div ref={ordersListRef} className="scroll-mt-4">
@@ -4368,13 +4446,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                   </div>
                                 )}
 
-                                <div
-                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl text-xs font-black shadow-2xs max-w-full truncate"
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (order.clientId) {
+                                      setClientProfileTarget({
+                                        client: clientObj,
+                                        clientId: order.clientId,
+                                        branchId: order.branchId || '',
+                                        branchName: order.branchName || '',
+                                      });
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-xl text-xs font-black shadow-2xs max-w-full truncate text-start cursor-pointer hover:opacity-90 transition"
                                   style={{
                                     backgroundColor: segColor,
                                     color: getContrastTextColor(segColor)
                                   }}
-                                  title={order.clientName || '—'}
+                                  title={isAr ? `${order.clientName || '—'} — انقر لعرض ملف العميل` : `${order.clientName || '—'} — Click for Client Profile`}
                                 >
                                   <span className="w-4 h-4 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
                                     {clientObj?.logo ? (
@@ -4388,12 +4478,27 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     )}
                                   </span>
                                   <span className="truncate leading-tight">{order.clientName || '—'}</span>
-                                </div>
+                                </button>
 
                                 {showBranchName && (
-                                  <div className="text-[10px] font-bold text-slate-500 truncate" title={order.branchName}>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (order.clientId) {
+                                        setClientProfileTarget({
+                                          client: clientObj,
+                                          clientId: order.clientId,
+                                          branchId: order.branchId || '',
+                                          branchName: order.branchName || '',
+                                        });
+                                      }
+                                    }}
+                                    className="text-[10px] font-bold text-slate-500 hover:text-indigo-700 hover:underline truncate text-start block cursor-pointer"
+                                    title={order.branchName}
+                                  >
                                     {order.branchName}
-                                  </div>
+                                  </button>
                                 )}
 
                                 {order.region && (
@@ -4691,28 +4796,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                     </button>
                                   )}
 
-                                  {/* Save / Check Button (Disabled if mandatory data is missing) */}
+                                  {/* Save / Check Button (Always clickable — verifies mandatory fields on order Save) */}
                                   <button
                                     type="button"
-                                    disabled={!isMandatoryFilled}
                                     onClick={() => handleSaveCardAssignment(order)}
-                                    className={`group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl transition-all duration-300 shadow-xs overflow-hidden ${
+                                    className={`group/btn inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl transition-all duration-300 shadow-xs overflow-hidden cursor-pointer ${
                                       isMandatoryFilled
-                                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
-                                        : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-50 shadow-none'
+                                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                        : 'bg-amber-500 hover:bg-amber-600 text-white'
                                     }`}
                                     title={
                                       isMandatoryFilled
                                         ? (isAr ? 'حفظ' : 'Save')
-                                        : (isAr ? 'يرجى إكمال البيانات الإلزامية: (رقم التحميل، السيارة، والسائق)' : 'Please fill all mandatory fields: LO #, Truck, Driver')
+                                        : (isAr ? 'تحقق من البيانات الإلزامية وحفظ (رقم التحميل، السيارة، والسائق)' : 'Verify mandatory fields & Save: LO #, Truck, Driver')
                                     }
                                   >
                                     <Check className="w-4 h-4 shrink-0" />
-                                    {isMandatoryFilled && (
-                                      <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
-                                        {isAr ? 'حفظ' : 'Save'}
-                                      </span>
-                                    )}
+                                    <span className="max-w-0 opacity-0 group-hover/btn:max-w-xs group-hover/btn:opacity-100 transition-all duration-300 text-xs font-bold whitespace-nowrap overflow-hidden">
+                                      {isAr ? 'حفظ' : 'Save'}
+                                    </span>
                                   </button>
 
                                   {/* Cancel / X Button */}
@@ -4901,13 +5003,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {/* Client & Branch & Region & Maps */}
                               <div className="space-y-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <div
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate"
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (order.clientId) {
+                                        setClientProfileTarget({
+                                          client: clientObj,
+                                          clientId: order.clientId,
+                                          branchId: order.branchId || '',
+                                          branchName: order.branchName || '',
+                                        });
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate cursor-pointer hover:opacity-90 transition"
                                     style={{
                                       backgroundColor: segColor,
                                       color: getContrastTextColor(segColor)
                                     }}
-                                    title={order.clientName || order.clientId || '—'}
+                                    title={isAr ? `${order.clientName || order.clientId || '—'} — انقر لعرض ملف العميل` : `${order.clientName || order.clientId || '—'} — Click for Client Profile`}
                                   >
                                     <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
                                       {clientObj?.logo ? (
@@ -4921,11 +5035,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       )}
                                     </span>
                                     <span className="truncate">{order.clientName || order.clientId || '—'}</span>
-                                  </div>
+                                  </button>
                                   {showBranchName && (
-                                    <span className="text-xs font-bold text-slate-500">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (order.clientId) {
+                                          setClientProfileTarget({
+                                            client: clientObj,
+                                            clientId: order.clientId,
+                                            branchId: order.branchId || '',
+                                            branchName: order.branchName || '',
+                                          });
+                                        }
+                                      }}
+                                      className="text-xs font-bold text-slate-500 hover:text-indigo-700 hover:underline cursor-pointer"
+                                    >
                                       ({order.branchName})
-                                    </span>
+                                    </button>
                                   )}
                                 </div>
 
@@ -5311,13 +5439,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                               {/* Client & Branch & Region & Maps */}
                               <div className="space-y-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <div
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate"
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (order.clientId) {
+                                        setClientProfileTarget({
+                                          client: clientObj,
+                                          clientId: order.clientId,
+                                          branchId: order.branchId || '',
+                                          branchName: order.branchName || '',
+                                        });
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs sm:text-sm font-black shadow-2xs max-w-full truncate cursor-pointer hover:opacity-90 transition"
                                     style={{
                                       backgroundColor: segColor,
                                       color: getContrastTextColor(segColor)
                                     }}
-                                    title={order.clientName || order.clientId || '—'}
+                                    title={isAr ? `${order.clientName || order.clientId || '—'} — انقر لعرض ملف العميل` : `${order.clientName || order.clientId || '—'} — Click for Client Profile`}
                                   >
                                     <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-white/95 shadow-2xs overflow-hidden">
                                       {clientObj?.logo ? (
@@ -5331,11 +5471,25 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                                       )}
                                     </span>
                                     <span className="truncate">{order.clientName || order.clientId || '—'}</span>
-                                  </div>
+                                  </button>
                                   {showBranchName && (
-                                    <span className="text-xs font-bold text-slate-500">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (order.clientId) {
+                                          setClientProfileTarget({
+                                            client: clientObj,
+                                            clientId: order.clientId,
+                                            branchId: order.branchId || '',
+                                            branchName: order.branchName || '',
+                                          });
+                                        }
+                                      }}
+                                      className="text-xs font-bold text-slate-500 hover:text-indigo-700 hover:underline cursor-pointer"
+                                    >
                                       ({order.branchName})
-                                    </span>
+                                    </button>
                                   )}
                                 </div>
 
@@ -6169,7 +6323,7 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
                     type="button"
                     onClick={() => {
                       setIsIntentionalDiscrepancyModalOpen(false);
-                      setIsSaveModalOpen(true);
+                      handleCommitSavePlan();
                     }}
                     className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold shadow-xs transition cursor-pointer"
                   >
@@ -6661,6 +6815,20 @@ export default function SalesLoadingPlanMaster({ currentUser = {}, permissions =
           </div>
         </div>
       )}
+
+      {/* Standardized App-Wide Client & Branch Profile Modal */}
+      <ClientProfileModal
+        isOpen={Boolean(clientProfileTarget)}
+        onClose={() => setClientProfileTarget(null)}
+        client={clientProfileTarget?.client || null}
+        clientId={clientProfileTarget?.clientId || ''}
+        focusBranchId={clientProfileTarget?.branchId || ''}
+        focusBranchName={clientProfileTarget?.branchName || ''}
+        clients={clients}
+        segments={segments}
+        salesOrders={orders}
+        isAr={isAr}
+      />
 
       {/* Persistent Collapsible FG Stock & Deficit Intelligence Sidebar (Opposite Edge, Pushes Content Inward) */}
       <LoadingPlanFgSidebar

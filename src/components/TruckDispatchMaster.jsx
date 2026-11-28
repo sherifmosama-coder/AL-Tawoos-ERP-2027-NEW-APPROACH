@@ -70,6 +70,7 @@ import { buildUnifiedPersonnelPool } from '../utils/personnelDirectory.js';
 import { fmtCtn } from './truckDispatch/truckDispatchConstants.js';
 import TruckDispatchModal from './truckDispatch/TruckDispatchModal.jsx';
 import TruckReturnReceivingModal from './truckDispatch/TruckReturnReceivingModal.jsx';
+import ClientProfileModal from './ClientProfileModal.jsx';
 
 // =========================================================================
 // MAIN TAB COMPONENT: TruckDispatchMaster
@@ -143,6 +144,7 @@ export default function TruckDispatchMaster({
   const [highlightHistoryDocNumber, setHighlightHistoryDocNumber] = useState('');
   const [scannedDocAlert, setScannedDocAlert] = useState(null); // { tripId, docVersion, docNumber, openLatestDoc }
   const [openMenuTripId, setOpenMenuTripId] = useState(null);
+  const [clientProfileTarget, setClientProfileTarget] = useState(null);
   const [openQtyTooltipTripId, setOpenQtyTooltipTripId] = useState(null);
   const [copiedPlateTripId, setCopiedPlateTripId] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
@@ -1641,20 +1643,9 @@ export default function TruckDispatchMaster({
                           const orderSerial = o.serial || String(o.id || '').replace(/^SO-/, '');
                           const seqNum = Number(o.deliverySequence) > 0 ? Math.floor(Number(o.deliverySequence)) : null;
                           return (
-                            <button
+                            <div
                               key={o.id}
-                              type="button"
-                              onClick={() => {
-                                const hashUrl = `#sales_orders?module=sales&focusOrder=${encodeURIComponent(orderSerial)}&orderId=${encodeURIComponent(o.id)}`;
-                                window.location.hash = hashUrl;
-                                window.dispatchEvent(
-                                  new CustomEvent('app-navigate', {
-                                    detail: { tab: 'sales_orders', module: 'sales', orderId: o.id, focusOrder: orderSerial },
-                                  })
-                                );
-                              }}
-                              title={isAr ? `عرض الأمر #${orderSerial} في تبويب أوامر البيع` : `Open order #${orderSerial} in Sales Orders`}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 text-[10px] font-bold text-slate-700 hover:text-indigo-800 transition cursor-pointer"
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-50 border border-slate-200 text-[10px] font-bold text-slate-700"
                             >
                               {isMultiClient && seqNum && (
                                 <span
@@ -1664,9 +1655,39 @@ export default function TruckDispatchMaster({
                                   #{seqNum}
                                 </span>
                               )}
-                              <span className="font-mono text-slate-400">#{orderSerial}</span>
-                              <span>{o.clientName || '—'}</span>
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const hashUrl = `#sales_orders?module=sales&focusOrder=${encodeURIComponent(orderSerial)}&orderId=${encodeURIComponent(o.id)}`;
+                                  window.location.hash = hashUrl;
+                                  window.dispatchEvent(
+                                    new CustomEvent('app-navigate', {
+                                      detail: { tab: 'sales_orders', module: 'sales', orderId: o.id, focusOrder: orderSerial },
+                                    })
+                                  );
+                                }}
+                                title={isAr ? `عرض الأمر #${orderSerial} في تبويب أوامر البيع` : `Open order #${orderSerial} in Sales Orders`}
+                                className="font-mono text-slate-500 hover:text-indigo-700 hover:underline transition cursor-pointer"
+                              >
+                                #{orderSerial}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (o.clientId) {
+                                    setClientProfileTarget({
+                                      clientId: o.clientId,
+                                      branchId: o.branchId || '',
+                                      branchName: o.branchName || '',
+                                    });
+                                  }
+                                }}
+                                title={isAr ? 'انقر لعرض ملف العميل وسجل الطلبات' : 'Click to view Client Profile'}
+                                className="hover:text-indigo-700 hover:underline transition cursor-pointer"
+                              >
+                                {o.clientName || '—'}
+                              </button>
+                            </div>
                           );
                         });
                       })()}
@@ -2078,6 +2099,7 @@ export default function TruckDispatchMaster({
           workerPool={workerPool}
           stockMatrixSkuMap={stockMatrixSkuMap}
           currentUser={currentUser}
+          onOpenClientProfile={(target) => setClientProfileTarget(target)}
           canConfirmDispatch={
             activeDispatchMode === 'view'
               ? false
@@ -2115,6 +2137,7 @@ export default function TruckDispatchMaster({
           returnAuthority={returnAuthority}
           eligibleOrderSettlers={eligibleOrderSettlers}
           todayStr={todayStr}
+          onOpenClientProfile={(target) => setClientProfileTarget(target)}
           onSaved={(_payload, evalRes) => {
             showToast(
               evalRes.nextStatus === 'reconciled'
@@ -2381,6 +2404,21 @@ export default function TruckDispatchMaster({
         todayStr={todayStr}
         onPreviewOrPrint={handleOpenRegistryDocument}
         highlightDocNumber={highlightHistoryDocNumber}
+        isAr={isAr}
+      />
+
+      {/* Standardized App-Wide Client & Branch Profile Modal */}
+      <ClientProfileModal
+        isOpen={Boolean(clientProfileTarget)}
+        onClose={() => setClientProfileTarget(null)}
+        clientId={clientProfileTarget?.clientId || ''}
+        focusBranchId={clientProfileTarget?.branchId || ''}
+        focusBranchName={clientProfileTarget?.branchName || ''}
+        clients={clients}
+        segments={segments}
+        pricingStrategies={strategies}
+        salesOrders={orders}
+        zIndexClass="z-[80]"
         isAr={isAr}
       />
     </div>

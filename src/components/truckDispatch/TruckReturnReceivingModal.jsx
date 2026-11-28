@@ -57,6 +57,7 @@ export default function TruckReturnReceivingModal({
   returnAuthority = {},
   eligibleOrderSettlers = [],
   todayStr = '',
+  onOpenClientProfile = null,
   onSaved,
   isAr = true,
 }) {
@@ -1493,7 +1494,23 @@ export default function TruckReturnReceivingModal({
                 {clientReturnRows.map((cr) => (
                   <tr key={cr.orderId} className="hover:bg-slate-50/70">
                     <td className="py-2 px-3 sticky start-0 bg-white border-e border-slate-200 z-10">
-                      <div className="font-extrabold text-slate-900 truncate max-w-[210px]">{cr.clientName}</div>
+                      {onOpenClientProfile && cr.clientId ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onOpenClientProfile({
+                              clientId: cr.clientId,
+                              branchId: cr.branchId || '',
+                              branchName: cr.branchName || '',
+                            })
+                          }
+                          className="font-extrabold text-slate-900 hover:text-indigo-700 hover:underline truncate max-w-[210px] text-start block cursor-pointer"
+                        >
+                          {cr.clientName}
+                        </button>
+                      ) : (
+                        <div className="font-extrabold text-slate-900 truncate max-w-[210px]">{cr.clientName}</div>
+                      )}
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         <span className="font-mono text-[10px] text-slate-500">#{cr.serial}</span>
                         <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${ORDER_TYPE_META[cr.orderType]?.cls || ''}`}>

@@ -721,3 +721,35 @@ export function openPrintableRetailSettlementSlip(order, isAr = true) {
     win.document.close();
   }
 }
+
+/**
+ * Validates mandatory Loading Plan assignment fields on order-level Save.
+ * Users can freely switch fulfillment statuses before entering Trip #, Truck, and Driver:
+ * - 'not_yet' (Pending) requires zero mandatory fields to save.
+ * - Any status beyond Pending ('prepare', 'shipped', 'delivered', 'paid') requires all 3.
+ */
+export function validateLoadingPlanOrderMandatoryFields({
+  fulfillmentStatus = 'not_yet',
+  loadingOrderNumber = null,
+  assignedVehicleId = '',
+  assignedDriverId = '',
+} = {}) {
+  const normStatus = fulfillmentStatus || 'not_yet';
+  if (normStatus === 'not_yet') {
+    return { valid: true, missing: [] };
+  }
+  const missing = [];
+  if (!loadingOrderNumber || Number(loadingOrderNumber) <= 0) missing.push('tripNumber');
+  if (!assignedVehicleId) missing.push('vehicle');
+  if (!assignedDriverId) missing.push('driver');
+  return { valid: missing.length === 0, missing };
+}
+
+/**
+ * Canonical compound trip identifier shared by Loading Plan floating dock & Fleet Dashboard comments.
+ */
+export function buildTripCommentDocId(loadingDate = '', loadingOrderNumber = null) {
+  const loNum = Number(loadingOrderNumber);
+  if (!loadingDate || !loNum || loNum <= 0) return '';
+  return `${String(loadingDate).trim()}_#${loNum}`;
+}
